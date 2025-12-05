@@ -1,0 +1,31 @@
+version: '3.8'
+
+services:
+  nanoidp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: nanoidp
+    ports:
+      - "8000:8000"
+    volumes:
+      # Mount config for customization
+      - ./config:/app/config:ro
+      # Persist generated keys
+      - nanoidp-keys:/app/keys
+    environment:
+      - NANOIDP_CONFIG_DIR=/app/config
+      # Override settings via environment
+      # - ISSUER=https://idp.example.com
+      # - AUDIENCE=my-app
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    restart: unless-stopped
+
+volumes:
+  nanoidp-keys:
+    driver: local

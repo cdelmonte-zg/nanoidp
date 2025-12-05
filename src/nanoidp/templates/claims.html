@@ -1,0 +1,241 @@
+{% extends "base.html" %}
+
+{% block title %}Claims Configuration - NanoIDP{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2><i class="bi bi-tags me-2"></i>Claims & Authority Prefixes</h2>
+</div>
+
+<div class="row g-4">
+    <!-- Authority Prefixes -->
+    <div class="col-md-6">
+        <form method="post">
+            <div class="card">
+                <div class="card-header">
+                    <i class="bi bi-hash me-2"></i>Authority Prefixes
+                </div>
+                <div class="card-body">
+                    <p class="text-muted small">These prefixes are added to user attributes when building the JWT authorities array.</p>
+
+                    <h6 class="text-muted mb-2">Core Attribute Prefixes</h6>
+                    <div class="mb-3">
+                        <label for="prefix_roles" class="form-label">Roles Prefix</label>
+                        <input type="text" class="form-control" id="prefix_roles" name="prefix_roles"
+                               value="{{ settings.authority_prefixes.get('roles', 'ROLE_') }}">
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="prefix_identity_class" class="form-label">Identity Class Prefix</label>
+                        <input type="text" class="form-control" id="prefix_identity_class" name="prefix_identity_class"
+                               value="{{ settings.authority_prefixes.get('identity_class', 'IDENTITY_') }}">
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="prefix_entitlements" class="form-label">Entitlements Prefix</label>
+                        <input type="text" class="form-control" id="prefix_entitlements" name="prefix_entitlements"
+                               value="{{ settings.authority_prefixes.get('entitlements', 'ENT_') }}">
+                    </div>
+
+                    <hr class="my-3">
+                    <h6 class="text-muted mb-2">
+                        <i class="bi bi-tags me-1"></i>Custom Attribute Prefixes
+                    </h6>
+                    <p class="text-muted small">Add prefixes for custom user attributes. If a user's custom attribute key matches one of these, it will be added to authorities.</p>
+
+                    <div id="prefixes-container">
+                        {% set core_prefixes = ['roles', 'identity_class', 'entitlements'] %}
+                        {% for key, value in settings.authority_prefixes.items() %}
+                        {% if key not in core_prefixes %}
+                        <div class="row g-2 mb-2 prefix-row">
+                            <div class="col-5">
+                                <input type="text" class="form-control form-control-sm" name="custom_prefix_key[]" value="{{ key }}" placeholder="Attribute key">
+                            </div>
+                            <div class="col-5">
+                                <input type="text" class="form-control form-control-sm" name="custom_prefix_value[]" value="{{ value }}" placeholder="Prefix">
+                            </div>
+                            <div class="col-2">
+                                <button type="button" class="btn btn-outline-danger btn-sm w-100" onclick="removePrefix(this)">
+                                    <i class="bi bi-trash"></i>
+                                </button>
+                            </div>
+                        </div>
+                        {% endif %}
+                        {% endfor %}
+                    </div>
+                    <button type="button" class="btn btn-outline-secondary btn-sm mb-3" onclick="addPrefix()">
+                        <i class="bi bi-plus me-1"></i>Add Prefix
+                    </button>
+
+                    <div class="d-grid">
+                        <button type="submit" class="btn btn-primary">
+                            <i class="bi bi-check-lg me-2"></i>Save Prefixes
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </form>
+    </div>
+
+    <!-- Claims Preview -->
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header">
+                <i class="bi bi-eye me-2"></i>Claims Preview
+            </div>
+            <div class="card-body">
+                <div class="mb-3">
+                    <label for="previewUser" class="form-label">Select User</label>
+                    <select class="form-select" id="previewUser" onchange="loadPreview()">
+                        <option value="">-- Select a user --</option>
+                        {% for username in settings.allowed_identity_classes %}{% endfor %}
+                    </select>
+                </div>
+
+                <div id="previewResult" class="d-none">
+                    <h6 class="text-muted mb-2">Authorities</h6>
+                    <div id="previewAuthorities" class="mb-3"></div>
+
+                    <h6 class="text-muted mb-2">Claims</h6>
+                    <pre id="previewClaims" class="bg-dark text-light p-3 rounded" style="font-size: 0.85rem; max-height: 200px; overflow: auto;"></pre>
+                </div>
+
+                <div id="previewEmpty" class="text-center text-muted py-4">
+                    <i class="bi bi-person-circle fs-1 d-block mb-2"></i>
+                    Select a user to preview their claims
+                </div>
+            </div>
+        </div>
+
+        <!-- Claims Mapping Info -->
+        <div class="card mt-4">
+            <div class="card-header">
+                <i class="bi bi-info-circle me-2"></i>How Claims Work
+            </div>
+            <div class="card-body">
+                <p class="small mb-2">User attributes are mapped to JWT claims and authorities:</p>
+                <table class="table table-sm small mb-0">
+                    <thead>
+                        <tr>
+                            <th>User Attribute</th>
+                            <th>JWT Claim</th>
+                            <th>Authority Example</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>roles</td>
+                            <td><code>roles</code></td>
+                            <td><code>ROLE_ADMIN</code></td>
+                        </tr>
+                        <tr>
+                            <td>identity_class</td>
+                            <td><code>identity_class</code></td>
+                            <td><code>IDENTITY_INTERNAL</code></td>
+                        </tr>
+                        <tr>
+                            <td>entitlements</td>
+                            <td><code>entitlements</code></td>
+                            <td><code>ENT_DOCUMENT_READ</code></td>
+                        </tr>
+                        <tr>
+                            <td>source_acl</td>
+                            <td><code>source_acl</code></td>
+                            <td><code>ACL_READ</code> (no prefix)</td>
+                        </tr>
+                        <tr>
+                            <td>attributes.*</td>
+                            <td><code>attributes.{key}</code></td>
+                            <td>Uses custom prefix if configured</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+// Load users into the dropdown
+document.addEventListener('DOMContentLoaded', async function() {
+    try {
+        const response = await fetch('/api/users');
+        const data = await response.json();
+        const select = document.getElementById('previewUser');
+
+        data.users.forEach(user => {
+            const option = document.createElement('option');
+            option.value = user.username;
+            option.textContent = user.username;
+            select.appendChild(option);
+        });
+    } catch (e) {
+        console.error('Failed to load users', e);
+    }
+});
+
+async function loadPreview() {
+    const username = document.getElementById('previewUser').value;
+    const resultDiv = document.getElementById('previewResult');
+    const emptyDiv = document.getElementById('previewEmpty');
+
+    if (!username) {
+        resultDiv.classList.add('d-none');
+        emptyDiv.classList.remove('d-none');
+        return;
+    }
+
+    try {
+        const response = await fetch(`/claims/preview/${username}`);
+        const data = await response.json();
+
+        // Show authorities as badges
+        const authDiv = document.getElementById('previewAuthorities');
+        authDiv.innerHTML = data.authorities.map(auth => {
+            let bgClass = 'bg-dark';
+            if (auth.startsWith('ROLE_')) bgClass = 'bg-primary';
+            else if (auth.startsWith('IDENTITY_')) bgClass = 'bg-success';
+            else if (auth.startsWith('ENT_')) bgClass = 'bg-info text-dark';
+            else if (auth.startsWith('ACL_')) bgClass = 'bg-secondary';
+
+            return `<span class="badge ${bgClass} me-1 mb-1">${auth}</span>`;
+        }).join('');
+
+        // Show claims as JSON
+        document.getElementById('previewClaims').textContent = JSON.stringify(data.claims, null, 2);
+
+        resultDiv.classList.remove('d-none');
+        emptyDiv.classList.add('d-none');
+    } catch (e) {
+        console.error('Failed to load preview', e);
+    }
+}
+
+// Custom prefix management
+function addPrefix() {
+    const container = document.getElementById('prefixes-container');
+    const row = document.createElement('div');
+    row.className = 'row g-2 mb-2 prefix-row';
+    row.innerHTML = `
+        <div class="col-5">
+            <input type="text" class="form-control form-control-sm" name="custom_prefix_key[]" placeholder="Attribute key">
+        </div>
+        <div class="col-5">
+            <input type="text" class="form-control form-control-sm" name="custom_prefix_value[]" placeholder="Prefix">
+        </div>
+        <div class="col-2">
+            <button type="button" class="btn btn-outline-danger btn-sm w-100" onclick="removePrefix(this)">
+                <i class="bi bi-trash"></i>
+            </button>
+        </div>
+    `;
+    container.appendChild(row);
+}
+
+function removePrefix(button) {
+    button.closest('.prefix-row').remove();
+}
+</script>
+{% endblock %}

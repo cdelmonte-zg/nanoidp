@@ -1,0 +1,212 @@
+{% extends "base.html" %}
+
+{% block title %}{{ user.username }} - NanoIDP{% endblock %}
+
+{% block content %}
+<nav aria-label="breadcrumb" class="mb-4">
+    <ol class="breadcrumb">
+        <li class="breadcrumb-item"><a href="{{ url_for('ui.users') }}">Users</a></li>
+        <li class="breadcrumb-item active">{{ user.username }}</li>
+    </ol>
+</nav>
+
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <div class="d-flex align-items-center">
+        <div class="user-avatar me-3" style="width: 60px; height: 60px; font-size: 1.5rem;">
+            {{ user.username[0]|upper }}
+        </div>
+        <div>
+            <h2 class="mb-0">{{ user.username }}</h2>
+            <small class="text-muted">{{ user.email }}</small>
+        </div>
+    </div>
+    <div>
+        <a href="{{ url_for('ui.user_edit', username=user.username) }}" class="btn btn-outline-primary me-2">
+            <i class="bi bi-pencil me-2"></i>Edit
+        </a>
+        <a href="{{ url_for('ui.test_page') }}?user={{ user.username }}" class="btn btn-primary">
+            <i class="bi bi-key me-2"></i>Generate Token
+        </a>
+    </div>
+</div>
+
+<div class="row g-4">
+    <!-- Basic Info -->
+    <div class="col-md-6">
+        <div class="card h-100">
+            <div class="card-header">
+                <i class="bi bi-person me-2"></i>Basic Information
+            </div>
+            <div class="card-body">
+                <table class="table table-sm mb-0">
+                    <tr>
+                        <td class="text-muted" style="width: 40%;">Tenant</td>
+                        <td>{{ user.tenant }}</td>
+                    </tr>
+                    <tr>
+                        <td class="text-muted">Identity Class</td>
+                        <td>
+                            {% if user.identity_class %}
+                            <span class="badge {% if user.identity_class == 'INTERNAL' %}bg-success{% elif user.identity_class == 'EXTERNAL' %}bg-warning text-dark{% elif user.identity_class == 'SERVICE' %}bg-info{% else %}bg-secondary{% endif %}">
+                                {{ user.identity_class }}
+                            </span>
+                            {% else %}
+                            <span class="text-muted">Not set</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% if user.attributes %}
+                    {% for key, value in user.attributes.items() %}
+                    <tr>
+                        <td class="text-muted">{{ key }}</td>
+                        <td>
+                            {% if value is iterable and value is not string %}
+                            <code>{{ value|join(', ') }}</code>
+                            {% else %}
+                            {{ value }}
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                    {% else %}
+                    <tr>
+                        <td colspan="2" class="text-muted">No custom attributes</td>
+                    </tr>
+                    {% endif %}
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- Roles & Entitlements -->
+    <div class="col-md-6">
+        <div class="card h-100">
+            <div class="card-header">
+                <i class="bi bi-shield-check me-2"></i>Roles & Entitlements
+            </div>
+            <div class="card-body">
+                <h6 class="text-muted mb-2">Roles</h6>
+                <div class="mb-3">
+                    {% for role in user.roles %}
+                    <span class="badge bg-primary me-1 mb-1">{{ role }}</span>
+                    {% else %}
+                    <span class="text-muted">No roles</span>
+                    {% endfor %}
+                </div>
+
+                <h6 class="text-muted mb-2">Entitlements</h6>
+                <div class="mb-3">
+                    {% for ent in user.entitlements %}
+                    <span class="badge bg-info text-dark me-1 mb-1">{{ ent }}</span>
+                    {% else %}
+                    <span class="text-muted">No entitlements</span>
+                    {% endfor %}
+                </div>
+
+                <h6 class="text-muted mb-2">Source ACL</h6>
+                <div>
+                    {% for acl in user.source_acl %}
+                    <span class="badge bg-secondary me-1 mb-1">{{ acl }}</span>
+                    {% else %}
+                    <span class="text-muted">No ACLs</span>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Authorities -->
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span><i class="bi bi-key me-2"></i>JWT Authorities ({{ authorities|length }})</span>
+                <small class="text-muted">These will be included in the token</small>
+            </div>
+            <div class="card-body">
+                <div class="d-flex flex-wrap gap-2">
+                    {% for auth in authorities %}
+                    <span class="badge badge-authority
+                        {% if auth.startswith('ROLE_') %}bg-primary
+                        {% elif auth.startswith('IDENTITY_') %}bg-success
+                        {% elif auth.startswith('ENT_') %}bg-info text-dark
+                        {% elif auth.startswith('STRUCTURE_') %}bg-warning text-dark
+                        {% elif auth.startswith('ACL_') %}bg-secondary
+                        {% else %}bg-dark
+                        {% endif %}">
+                        {{ auth }}
+                    </span>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Access Control Summary -->
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header">
+                <i class="bi bi-shield-lock me-2"></i>Access Control Summary
+            </div>
+            <div class="card-body">
+                <div class="row g-3">
+                    <div class="col-md-3">
+                        <div class="card {% if user.identity_class %}border-success{% else %}border-danger{% endif %}">
+                            <div class="card-body text-center py-3">
+                                <h6 class="mb-1">Identity</h6>
+                                <small class="text-muted d-block">Classification</small>
+                                {% if user.identity_class %}
+                                <i class="bi bi-check-circle text-success"></i>
+                                <span class="badge bg-light text-dark">{{ user.identity_class }}</span>
+                                {% else %}
+                                <i class="bi bi-x-circle text-danger"></i>
+                                {% endif %}
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="card {% if user.entitlements %}border-success{% else %}border-warning{% endif %}">
+                            <div class="card-body text-center py-3">
+                                <h6 class="mb-1">Entitlements</h6>
+                                <small class="text-muted d-block">Feature Access</small>
+                                {% if user.entitlements %}
+                                <i class="bi bi-check-circle text-success"></i>
+                                <span class="badge bg-light text-dark">{{ user.entitlements|length }} items</span>
+                                {% else %}
+                                <i class="bi bi-dash-circle text-warning"></i>
+                                {% endif %}
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="card {% if user.source_acl %}border-success{% else %}border-warning{% endif %}">
+                            <div class="card-body text-center py-3">
+                                <h6 class="mb-1">ACL</h6>
+                                <small class="text-muted d-block">Data Access</small>
+                                {% if user.source_acl %}
+                                <i class="bi bi-check-circle text-success"></i>
+                                <span class="badge bg-light text-dark">{{ user.source_acl|length }} ACLs</span>
+                                {% else %}
+                                <i class="bi bi-dash-circle text-warning"></i>
+                                {% endif %}
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="card {% if 'ADMIN' in user.roles %}border-danger{% else %}border-secondary{% endif %}">
+                            <div class="card-body text-center py-3">
+                                <h6 class="mb-1">Admin</h6>
+                                <small class="text-muted d-block">Privileged</small>
+                                {% if 'ADMIN' in user.roles %}
+                                <i class="bi bi-star-fill text-danger"></i>
+                                {% else %}
+                                <i class="bi bi-dash-circle text-secondary"></i>
+                                {% endif %}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

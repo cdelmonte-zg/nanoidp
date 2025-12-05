@@ -1,0 +1,604 @@
+{% extends "base.html" %}
+
+{% block title %}Token Tester - NanoIDP{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2><i class="bi bi-terminal me-2"></i>Token Tester</h2>
+</div>
+
+<div class="row g-4">
+    <!-- Token Generator -->
+    <div class="col-md-5">
+        <div class="card">
+            <div class="card-header">
+                <i class="bi bi-key me-2"></i>Generate Token
+            </div>
+            <div class="card-body">
+                <form id="tokenForm">
+                    <div class="mb-3">
+                        <label class="form-label">User</label>
+                        <select class="form-select" id="username" name="username">
+                            {% for user in users %}
+                            <option value="{{ user }}" {% if request.args.get('user') == user %}selected{% endif %}>{{ user }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label">Expiration (minutes)</label>
+                        <input type="number" class="form-control" id="exp_minutes" name="exp_minutes" value="{{ settings.token_expiry_minutes }}">
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label">Grant Type</label>
+                        <select class="form-select" id="grant_type" name="grant_type">
+                            <option value="api">API (direct token generation)</option>
+                            <option value="password">OAuth2 Password Grant</option>
+                        </select>
+                    </div>
+
+                    <div class="mb-3" id="password_field" style="display: none;">
+                        <label class="form-label">Password</label>
+                        <input type="password" class="form-control" id="password" name="password" placeholder="Enter user password">
+                        <div class="form-text">Required for OAuth2 Password Grant</div>
+                    </div>
+
+                    <button type="submit" class="btn btn-primary w-100">
+                        <i class="bi bi-lightning me-2"></i>Generate Token
+                    </button>
+                </form>
+            </div>
+        </div>
+
+        <!-- User Preview -->
+        <div class="card mt-4">
+            <div class="card-header">
+                <i class="bi bi-person me-2"></i>User Preview
+            </div>
+            <div class="card-body" id="userPreview">
+                <p class="text-muted text-center">Select a user to see their details</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Token Result -->
+    <div class="col-md-7">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span><i class="bi bi-file-earmark-code me-2"></i>Token Result</span>
+                <button class="btn btn-sm btn-outline-secondary" onclick="copyToken()" id="copyBtn" disabled>
+                    <i class="bi bi-clipboard"></i> Copy
+                </button>
+            </div>
+            <div class="card-body">
+                <div id="tokenResult">
+                    <p class="text-muted text-center py-5">Generate a token to see the result</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Decoded Token with Tabs -->
+        <div class="card mt-4" id="decodedCard" style="display: none;">
+            <div class="card-header">
+                <ul class="nav nav-tabs card-header-tabs" id="tokenTabs" role="tablist">
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link active" id="payload-tab" data-bs-toggle="tab" data-bs-target="#payload-pane" type="button" role="tab">
+                            <i class="bi bi-braces me-1"></i>Payload
+                        </button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="header-tab" data-bs-toggle="tab" data-bs-target="#header-pane" type="button" role="tab">
+                            <i class="bi bi-file-code me-1"></i>Header
+                        </button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="signature-tab" data-bs-toggle="tab" data-bs-target="#signature-pane" type="button" role="tab">
+                            <i class="bi bi-fingerprint me-1"></i>Signature
+                        </button>
+                    </li>
+                </ul>
+            </div>
+            <div class="card-body">
+                <div class="tab-content" id="tokenTabContent">
+                    <!-- Payload Tab -->
+                    <div class="tab-pane fade show active" id="payload-pane" role="tabpanel">
+                        <pre class="json mb-0" id="decodedPayload"></pre>
+                    </div>
+                    <!-- Header Tab -->
+                    <div class="tab-pane fade" id="header-pane" role="tabpanel">
+                        <pre class="json mb-0" id="decodedHeader"></pre>
+                    </div>
+                    <!-- Signature Tab -->
+                    <div class="tab-pane fade" id="signature-pane" role="tabpanel">
+                        <div class="mb-2">
+                            <small class="text-muted">Base64URL encoded signature:</small>
+                        </div>
+                        <pre class="mb-0" style="word-break: break-all; white-space: pre-wrap;" id="decodedSignature"></pre>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Token Timestamps -->
+        <div class="card mt-4" id="timestampsCard" style="display: none;">
+            <div class="card-header">
+                <i class="bi bi-clock-history me-2"></i>Token Timestamps
+            </div>
+            <div class="card-body" id="timestampsList">
+            </div>
+        </div>
+
+        <!-- Authority Mapping -->
+        <div class="card mt-4" id="authorityMappingCard" style="display: none;">
+            <div class="card-header">
+                <i class="bi bi-diagram-3 me-2"></i>Authority Mapping (Spring Security)
+            </div>
+            <div class="card-body" id="authorityMappingList">
+            </div>
+        </div>
+
+        <!-- Authorities -->
+        <div class="card mt-4" id="authoritiesCard" style="display: none;">
+            <div class="card-header">
+                <i class="bi bi-shield-check me-2"></i>All Authorities
+            </div>
+            <div class="card-body" id="authoritiesList">
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- cURL Example -->
+<div class="card mt-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-code-slash me-2"></i>cURL Example</span>
+        <button class="btn btn-sm btn-outline-light" onclick="copyCurl()" id="copyCurlBtn">
+            <i class="bi bi-clipboard"></i> Copy
+        </button>
+    </div>
+    <div class="card-body">
+        <pre class="mb-0" style="background: #1a1a2e; color: #fff; padding: 1rem; border-radius: 0.375rem; overflow-x: auto;"><code id="curlExample">curl -X POST '{{ settings.issuer }}/token' \
+  -u 'demo-client:demo-secret' \
+  -d 'grant_type=password&username=<span class="text-warning">USER</span>&password=<span class="text-warning">PASSWORD</span>'</code></pre>
+    </div>
+</div>
+
+<!-- Decode External Token -->
+<div class="card mt-4">
+    <div class="card-header">
+        <i class="bi bi-search me-2"></i>Decode External Token
+    </div>
+    <div class="card-body">
+        <div class="mb-3">
+            <label class="form-label">Paste JWT Token</label>
+            <textarea class="form-control font-monospace" id="externalToken" rows="3" placeholder="eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9..."></textarea>
+        </div>
+        <div class="d-flex gap-2">
+            <button class="btn btn-primary" onclick="decodeExternalToken()">
+                <i class="bi bi-unlock me-2"></i>Decode
+            </button>
+            <button class="btn btn-success" onclick="verifyExternalToken()">
+                <i class="bi bi-shield-check me-2"></i>Verify Signature
+            </button>
+        </div>
+        <div id="externalTokenResult" class="mt-3"></div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+let currentToken = '';
+
+// Show/hide password field based on grant type
+document.getElementById('grant_type').addEventListener('change', (e) => {
+    const passwordField = document.getElementById('password_field');
+    passwordField.style.display = e.target.value === 'password' ? 'block' : 'none';
+});
+
+document.getElementById('tokenForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+
+    const username = document.getElementById('username').value;
+    const expMinutes = document.getElementById('exp_minutes').value;
+    const grantType = document.getElementById('grant_type').value;
+    const password = document.getElementById('password').value;
+
+    try {
+        let response;
+
+        if (grantType === 'api') {
+            // Direct API call
+            response = await fetch(`/api/users/${username}/token`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ exp_minutes: parseInt(expMinutes) })
+            });
+        } else {
+            // OAuth2 password grant
+            if (!password) {
+                document.getElementById('tokenResult').innerHTML = `
+                    <div class="alert alert-warning">
+                        <i class="bi bi-exclamation-triangle me-2"></i>
+                        Password is required for OAuth2 Password Grant
+                    </div>`;
+                return;
+            }
+            response = await fetch('/token', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                    'Authorization': 'Basic ' + btoa('demo-client:demo-secret')
+                },
+                body: `grant_type=password&username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}`
+            });
+        }
+
+        const data = await response.json();
+
+        if (data.access_token) {
+            currentToken = data.access_token;
+            displayToken(data);
+        } else {
+            document.getElementById('tokenResult').innerHTML = `
+                <div class="alert alert-danger">
+                    <i class="bi bi-exclamation-triangle me-2"></i>
+                    Error: ${data.error || 'Failed to generate token'}
+                </div>`;
+        }
+    } catch (error) {
+        document.getElementById('tokenResult').innerHTML = `
+            <div class="alert alert-danger">
+                <i class="bi bi-exclamation-triangle me-2"></i>
+                Error: ${error.message}
+            </div>`;
+    }
+});
+
+function displayToken(data) {
+    document.getElementById('tokenResult').innerHTML = `
+        <div class="mb-3">
+            <label class="form-label text-muted small">Access Token</label>
+            <textarea class="form-control font-monospace" rows="4" readonly style="font-size: 0.75rem;">${data.access_token}</textarea>
+        </div>
+        <div class="row">
+            <div class="col-6">
+                <small class="text-muted">Token Type:</small>
+                <span class="badge bg-primary">${data.token_type}</span>
+            </div>
+            <div class="col-6">
+                <small class="text-muted">Expires In:</small>
+                <span class="badge bg-secondary">${data.expires_in}s</span>
+            </div>
+        </div>`;
+
+    document.getElementById('copyBtn').disabled = false;
+
+    // Decode JWT
+    try {
+        const parts = data.access_token.split('.');
+        const header = JSON.parse(atob(parts[0]));
+        const payload = JSON.parse(atob(parts[1]));
+        const signature = parts[2];
+
+        // Show decoded card with tabs
+        document.getElementById('decodedCard').style.display = 'block';
+        document.getElementById('decodedHeader').textContent = JSON.stringify(header, null, 2);
+        document.getElementById('decodedPayload').textContent = JSON.stringify(payload, null, 2);
+        document.getElementById('decodedSignature').textContent = signature;
+
+        // Show timestamps with countdown
+        displayTimestamps(payload);
+
+        // Show authority mapping
+        displayAuthorityMapping(payload);
+
+        // Show authorities
+        if (payload.authorities) {
+            document.getElementById('authoritiesCard').style.display = 'block';
+            const authHtml = payload.authorities.map(auth => {
+                let cls = 'bg-dark';
+                if (auth.startsWith('ROLE_')) cls = 'bg-primary';
+                else if (auth.startsWith('IDENTITY_')) cls = 'bg-success';
+                else if (auth.startsWith('ENT_')) cls = 'bg-info text-dark';
+                else if (auth.startsWith('STRUCTURE_')) cls = 'bg-warning text-dark';
+                else if (auth.startsWith('ACL_')) cls = 'bg-secondary';
+                return `<span class="badge ${cls} me-1 mb-1" style="font-family: monospace;">${auth}</span>`;
+            }).join('');
+            document.getElementById('authoritiesList').innerHTML = authHtml;
+        }
+    } catch (e) {
+        console.error('Failed to decode token', e);
+    }
+}
+
+function displayTimestamps(payload) {
+    const timestampFields = ['iat', 'exp', 'nbf'];
+    const hasTimestamps = timestampFields.some(f => payload[f]);
+
+    if (!hasTimestamps) return;
+
+    document.getElementById('timestampsCard').style.display = 'block';
+
+    let html = '<div class="row g-3">';
+
+    timestampFields.forEach(field => {
+        if (!payload[field]) return;
+
+        const ts = payload[field];
+        const date = new Date(ts * 1000);
+        const now = Date.now();
+        const diff = (ts * 1000) - now;
+
+        let statusBadge = '';
+        let timeInfo = '';
+
+        if (field === 'exp') {
+            const minutesLeft = Math.floor(diff / 60000);
+            if (diff <= 0) {
+                statusBadge = '<span class="badge bg-danger">Expired</span>';
+                timeInfo = `expired ${formatDuration(-diff)} ago`;
+            } else if (minutesLeft < 5) {
+                statusBadge = '<span class="badge bg-danger">Expiring soon</span>';
+                timeInfo = `expires in ${formatDuration(diff)}`;
+            } else if (minutesLeft < 30) {
+                statusBadge = '<span class="badge bg-warning text-dark">Expiring</span>';
+                timeInfo = `expires in ${formatDuration(diff)}`;
+            } else {
+                statusBadge = '<span class="badge bg-success">Valid</span>';
+                timeInfo = `expires in ${formatDuration(diff)}`;
+            }
+        } else if (field === 'iat') {
+            timeInfo = `issued ${formatDuration(-diff)} ago`;
+        } else if (field === 'nbf') {
+            if (diff > 0) {
+                statusBadge = '<span class="badge bg-warning text-dark">Not yet valid</span>';
+                timeInfo = `valid in ${formatDuration(diff)}`;
+            } else {
+                timeInfo = `valid since ${formatDuration(-diff)} ago`;
+            }
+        }
+
+        const labels = { iat: 'Issued At', exp: 'Expires At', nbf: 'Not Before' };
+
+        html += `
+            <div class="col-md-4">
+                <div class="border rounded p-3">
+                    <div class="d-flex justify-content-between align-items-start mb-2">
+                        <strong>${labels[field]}</strong>
+                        ${statusBadge}
+                    </div>
+                    <div class="font-monospace small text-muted">${ts}</div>
+                    <div class="mt-1">${date.toLocaleString()}</div>
+                    <div class="small text-muted mt-1">${timeInfo}</div>
+                </div>
+            </div>`;
+    });
+
+    html += '</div>';
+    document.getElementById('timestampsList').innerHTML = html;
+}
+
+function formatDuration(ms) {
+    const absMs = Math.abs(ms);
+    const seconds = Math.floor(absMs / 1000);
+    const minutes = Math.floor(seconds / 60);
+    const hours = Math.floor(minutes / 60);
+    const days = Math.floor(hours / 24);
+
+    if (days > 0) return `${days}d ${hours % 24}h`;
+    if (hours > 0) return `${hours}h ${minutes % 60}m`;
+    if (minutes > 0) return `${minutes}m ${seconds % 60}s`;
+    return `${seconds}s`;
+}
+
+function displayAuthorityMapping(payload) {
+    const mappings = [];
+
+    // Roles mapping
+    if (payload.roles && payload.roles.length > 0) {
+        payload.roles.forEach(role => {
+            mappings.push({
+                source: 'roles',
+                value: role,
+                authority: `ROLE_${role}`,
+                badgeClass: 'bg-primary'
+            });
+        });
+    }
+
+    // Identity class mapping
+    if (payload.identity_class) {
+        mappings.push({
+            source: 'identity_class',
+            value: payload.identity_class,
+            authority: `IDENTITY_${payload.identity_class}`,
+            badgeClass: 'bg-success'
+        });
+    }
+
+    // Entitlements mapping
+    if (payload.entitlements && payload.entitlements.length > 0) {
+        payload.entitlements.forEach(ent => {
+            mappings.push({
+                source: 'entitlements',
+                value: ent,
+                authority: `ENT_${ent}`,
+                badgeClass: 'bg-info text-dark'
+            });
+        });
+    }
+
+    // Source ACL mapping (no prefix)
+    if (payload.source_acl && payload.source_acl.length > 0) {
+        payload.source_acl.forEach(acl => {
+            mappings.push({
+                source: 'source_acl',
+                value: acl,
+                authority: acl,
+                badgeClass: 'bg-secondary'
+            });
+        });
+    }
+
+    if (mappings.length === 0) return;
+
+    document.getElementById('authorityMappingCard').style.display = 'block';
+
+    let html = `
+        <table class="table table-sm mb-0">
+            <thead>
+                <tr>
+                    <th>Source Field</th>
+                    <th>Value</th>
+                    <th></th>
+                    <th>Spring GrantedAuthority</th>
+                </tr>
+            </thead>
+            <tbody>`;
+
+    mappings.forEach(m => {
+        html += `
+            <tr>
+                <td><code>${m.source}</code></td>
+                <td><code>${m.value}</code></td>
+                <td class="text-center text-muted"><i class="bi bi-arrow-right"></i></td>
+                <td><span class="badge ${m.badgeClass}" style="font-family: monospace;">${m.authority}</span></td>
+            </tr>`;
+    });
+
+    html += '</tbody></table>';
+    document.getElementById('authorityMappingList').innerHTML = html;
+}
+
+function copyToken() {
+    navigator.clipboard.writeText(currentToken);
+    const btn = document.getElementById('copyBtn');
+    btn.innerHTML = '<i class="bi bi-check"></i> Copied!';
+    setTimeout(() => {
+        btn.innerHTML = '<i class="bi bi-clipboard"></i> Copy';
+    }, 2000);
+}
+
+// Load user preview
+document.getElementById('username').addEventListener('change', async (e) => {
+    const username = e.target.value;
+    try {
+        const response = await fetch(`/api/users/${username}`);
+        const user = await response.json();
+
+        document.getElementById('userPreview').innerHTML = `
+            <table class="table table-sm mb-0">
+                <tr><td class="text-muted">Identity Class</td><td>${user.identity_class || '-'}</td></tr>
+                <tr><td class="text-muted">Roles</td><td>${user.roles.join(', ') || '-'}</td></tr>
+                <tr><td class="text-muted">Entitlements</td><td>${user.entitlements.length} items</td></tr>
+                <tr><td class="text-muted">ACLs</td><td>${user.source_acl.length} items</td></tr>
+                <tr><td class="text-muted">Authorities</td><td><strong>${user.authorities.length}</strong> total</td></tr>
+            </table>`;
+
+        // Update cURL example
+        document.getElementById('curlExample').innerHTML = `curl -X POST '{{ settings.issuer }}/token' \\
+  -u 'demo-client:demo-secret' \\
+  -d 'grant_type=password&username=<span class="text-warning">${username}</span>&password=<span class="text-warning">PASSWORD</span>'`;
+    } catch (e) {
+        console.error('Failed to load user', e);
+    }
+});
+
+// Trigger initial load
+document.getElementById('username').dispatchEvent(new Event('change'));
+
+// Copy cURL command
+function copyCurl() {
+    const curlText = document.getElementById('curlExample').textContent;
+    navigator.clipboard.writeText(curlText);
+    const btn = document.getElementById('copyCurlBtn');
+    btn.innerHTML = '<i class="bi bi-check"></i> Copied!';
+    setTimeout(() => {
+        btn.innerHTML = '<i class="bi bi-clipboard"></i> Copy';
+    }, 2000);
+}
+
+// Decode external token (without verification)
+function decodeExternalToken() {
+    const token = document.getElementById('externalToken').value.trim();
+    if (!token) {
+        document.getElementById('externalTokenResult').innerHTML = `
+            <div class="alert alert-warning">Please paste a JWT token</div>`;
+        return;
+    }
+
+    try {
+        const parts = token.split('.');
+        if (parts.length !== 3) {
+            throw new Error('Invalid JWT format (expected 3 parts)');
+        }
+
+        const header = JSON.parse(atob(parts[0]));
+        const payload = JSON.parse(atob(parts[1]));
+
+        document.getElementById('externalTokenResult').innerHTML = `
+            <div class="row">
+                <div class="col-md-6">
+                    <h6>Header</h6>
+                    <pre class="json">${JSON.stringify(header, null, 2)}</pre>
+                </div>
+                <div class="col-md-6">
+                    <h6>Payload</h6>
+                    <pre class="json">${JSON.stringify(payload, null, 2)}</pre>
+                </div>
+            </div>
+            ${payload.exp ? `
+            <div class="mt-2">
+                <small class="text-muted">
+                    Expires: ${new Date(payload.exp * 1000).toLocaleString()}
+                    ${Date.now() > payload.exp * 1000 ? '<span class="badge bg-danger ms-2">Expired</span>' : '<span class="badge bg-success ms-2">Valid</span>'}
+                </small>
+            </div>` : ''}`;
+    } catch (e) {
+        document.getElementById('externalTokenResult').innerHTML = `
+            <div class="alert alert-danger"><i class="bi bi-exclamation-triangle me-2"></i>${e.message}</div>`;
+    }
+}
+
+// Verify external token signature via API
+async function verifyExternalToken() {
+    const token = document.getElementById('externalToken').value.trim();
+    if (!token) {
+        document.getElementById('externalTokenResult').innerHTML = `
+            <div class="alert alert-warning">Please paste a JWT token</div>`;
+        return;
+    }
+
+    try {
+        const response = await fetch('/introspect', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded',
+                'Authorization': 'Basic ' + btoa('demo-client:demo-secret')
+            },
+            body: `token=${encodeURIComponent(token)}`
+        });
+
+        const data = await response.json();
+
+        if (data.active) {
+            document.getElementById('externalTokenResult').innerHTML = `
+                <div class="alert alert-success">
+                    <i class="bi bi-shield-check me-2"></i><strong>Token is valid!</strong>
+                </div>
+                <pre class="json">${JSON.stringify(data, null, 2)}</pre>`;
+        } else {
+            document.getElementById('externalTokenResult').innerHTML = `
+                <div class="alert alert-danger">
+                    <i class="bi bi-shield-x me-2"></i><strong>Token is invalid or expired</strong>
+                </div>`;
+        }
+    } catch (e) {
+        document.getElementById('externalTokenResult').innerHTML = `
+            <div class="alert alert-danger"><i class="bi bi-exclamation-triangle me-2"></i>Verification failed: ${e.message}</div>`;
+    }
+}
+</script>
+{% endblock %}

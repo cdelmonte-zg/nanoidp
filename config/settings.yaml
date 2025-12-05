@@ -1,0 +1,39 @@
+server:
+  host: 0.0.0.0
+  port: 8000
+  debug: false
+oauth:
+  issuer: http://localhost:8000
+  audience: my-app
+  token_expiry_minutes: 60
+  clients:
+  - client_id: demo-client
+    client_secret: demo-secret
+    description: Default demo client for development
+  - client_id: test-client
+    client_secret: test-secret
+    description: Test client for integration tests
+saml:
+  entity_id: http://localhost:8000/saml
+  sso_url: http://localhost:8000/saml/sso
+  default_acs_url: http://localhost:8080/login/saml2/sso/nanoidp
+jwt:
+  algorithm: RS256
+  keys_dir: ./keys
+authority_prefixes:
+  roles: ROLE_
+  identity_class: IDENTITY_
+  entitlements: ENT_
+allowed_identity_classes:
+- INTERNAL
+- EXTERNAL
+- PARTNER
+- SERVICE
+session:
+  secret_key: dev-secret-key-change-in-production
+  permanent: true
+logging:
+  level: INFO
+  format: '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+  log_token_requests: true
+  log_saml_requests: true

@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}NanoIDP{% endblock %}</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css" rel="stylesheet">
+    <style>
+        :root {
+            --primary-color: #0d6efd;
+            --sidebar-width: 250px;
+        }
+        [data-bs-theme="dark"] {
+            --bs-body-bg: #1a1a2e;
+            --bs-body-color: #e9ecef;
+        }
+        [data-bs-theme="dark"] .card {
+            background-color: #16213e;
+            border-color: #2d3a4f;
+        }
+        [data-bs-theme="dark"] .card-header {
+            background-color: #1a1a2e;
+            border-color: #2d3a4f;
+        }
+        [data-bs-theme="dark"] .table {
+            --bs-table-bg: #16213e;
+            --bs-table-striped-bg: #1a1a2e;
+            --bs-table-hover-bg: #2d3a4f;
+        }
+        [data-bs-theme="dark"] pre.json {
+            background-color: #0f0f1a;
+            border-color: #2d3a4f;
+        }
+        body {
+            min-height: 100vh;
+            background-color: #f8f9fa;
+        }
+        [data-bs-theme="dark"] body {
+            background-color: #0f0f1a;
+        }
+        .sidebar {
+            position: fixed;
+            top: 0;
+            left: 0;
+            height: 100vh;
+            width: var(--sidebar-width);
+            background: linear-gradient(180deg, #1a1a2e 0%, #16213e 100%);
+            padding-top: 1rem;
+            z-index: 1000;
+        }
+        .sidebar .nav-link {
+            color: rgba(255, 255, 255, 0.7);
+            padding: 0.75rem 1.5rem;
+            border-radius: 0;
+            transition: all 0.2s;
+        }
+        .sidebar .nav-link:hover {
+            color: #fff;
+            background-color: rgba(255, 255, 255, 0.1);
+        }
+        .sidebar .nav-link.active {
+            color: #fff;
+            background-color: var(--primary-color);
+        }
+        .sidebar .nav-link i {
+            width: 24px;
+            margin-right: 0.5rem;
+        }
+        .sidebar-header {
+            color: #fff;
+            padding: 0.5rem 1.5rem 1.5rem;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+            margin-bottom: 1rem;
+        }
+        .sidebar-header h4 {
+            margin: 0;
+            font-weight: 600;
+        }
+        .sidebar-header small {
+            color: rgba(255, 255, 255, 0.5);
+        }
+        .main-content {
+            margin-left: var(--sidebar-width);
+            padding: 2rem;
+        }
+        .card {
+            border: none;
+            box-shadow: 0 0.125rem 0.25rem rgba(0, 0, 0, 0.075);
+        }
+        .card-header {
+            background-color: #fff;
+            border-bottom: 1px solid #e9ecef;
+            font-weight: 600;
+        }
+        .stat-card {
+            border-left: 4px solid var(--primary-color);
+        }
+        .stat-card .stat-value {
+            font-size: 2rem;
+            font-weight: 700;
+            color: var(--primary-color);
+        }
+        .badge-authority {
+            font-family: monospace;
+            font-size: 0.75rem;
+        }
+        .log-entry {
+            font-family: monospace;
+            font-size: 0.85rem;
+        }
+        .log-entry.success {
+            border-left: 3px solid #198754;
+        }
+        .log-entry.failed {
+            border-left: 3px solid #dc3545;
+        }
+        pre.json {
+            background-color: #f8f9fa;
+            border: 1px solid #e9ecef;
+            border-radius: 0.375rem;
+            padding: 1rem;
+            font-size: 0.85rem;
+            max-height: 400px;
+            overflow: auto;
+        }
+        .user-avatar {
+            width: 40px;
+            height: 40px;
+            background: linear-gradient(135deg, var(--primary-color) 0%, #6610f2 100%);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #fff;
+            font-weight: 600;
+        }
+        /* Mobile hamburger */
+        .mobile-header {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 56px;
+            background: linear-gradient(180deg, #1a1a2e 0%, #16213e 100%);
+            z-index: 1001;
+            padding: 0 1rem;
+        }
+        .sidebar-backdrop {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.5);
+            z-index: 999;
+        }
+        /* Responsive */
+        @media (max-width: 768px) {
+            .mobile-header {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+            }
+            .sidebar {
+                transform: translateX(-100%);
+                transition: transform 0.3s ease;
+            }
+            .sidebar.show {
+                transform: translateX(0);
+            }
+            .sidebar-backdrop.show {
+                display: block;
+            }
+            .main-content {
+                margin-left: 0;
+                padding-top: 70px;
+            }
+        }
+        /* Toast container */
+        .toast-container {
+            position: fixed;
+            bottom: 1rem;
+            right: 1rem;
+            z-index: 1100;
+        }
+        /* Theme toggle */
+        .theme-toggle {
+            cursor: pointer;
+            padding: 0.5rem;
+            border-radius: 50%;
+            transition: background 0.2s;
+        }
+        .theme-toggle:hover {
+            background: rgba(255,255,255,0.1);
+        }
+    </style>
+    {% block extra_css %}{% endblock %}
+</head>
+<body>
+    <!-- Mobile Header -->
+    <header class="mobile-header">
+        <button class="btn btn-link text-white p-0" id="sidebarToggle">
+            <i class="bi bi-list fs-4"></i>
+        </button>
+        <span class="text-white fw-bold"><i class="bi bi-shield-lock me-2"></i>NanoIDP</span>
+        <span class="theme-toggle text-white" id="mobileThemeToggle" title="Toggle dark mode">
+            <i class="bi bi-moon-fill"></i>
+        </span>
+    </header>
+
+    <!-- Sidebar Backdrop -->
+    <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
+
+    <!-- Sidebar -->
+    <nav class="sidebar" id="sidebar">
+        <div class="sidebar-header d-flex justify-content-between align-items-start">
+            <div>
+                <h4><i class="bi bi-shield-lock"></i> NanoIDP</h4>
+                <small>v{{ app_version }}</small>
+            </div>
+            <span class="theme-toggle text-white" id="themeToggle" title="Toggle dark mode">
+                <i class="bi bi-moon-fill" id="themeIcon"></i>
+            </span>
+        </div>
+        <ul class="nav flex-column">
+            <li class="nav-item">
+                <a class="nav-link {% if request.endpoint == 'ui.index' %}active{% endif %}" href="{{ url_for('ui.index') }}">
+                    <i class="bi bi-speedometer2"></i> Dashboard
+                </a>
+            </li>
+            <li class="nav-item">
+                <a class="nav-link {% if 'user' in request.endpoint and 'client' not in request.endpoint %}active{% endif %}" href="{{ url_for('ui.users') }}">
+                    <i class="bi bi-people"></i> Users
+                </a>
+            </li>
+            <li class="nav-item">
+                <a class="nav-link {% if 'client' in request.endpoint %}active{% endif %}" href="{{ url_for('ui.clients') }}">
+                    <i class="bi bi-app"></i> OAuth Clients
+                </a>
+            </li>
+            <hr class="my-2" style="border-color: rgba(255,255,255,0.1);">
+            <li class="nav-item">
+                <a class="nav-link {% if request.endpoint == 'ui.settings' %}active{% endif %}" href="{{ url_for('ui.settings') }}">
+                    <i class="bi bi-gear"></i> Settings
+                </a>
+            </li>
+            <li class="nav-item">
+                <a class="nav-link {% if request.endpoint == 'ui.keys' %}active{% endif %}" href="{{ url_for('ui.keys') }}">
+                    <i class="bi bi-key"></i> Keys & Certs
+                </a>
+            </li>
+            <li class="nav-item">
+                <a class="nav-link {% if request.endpoint == 'ui.claims' %}active{% endif %}" href="{{ url_for('ui.claims') }}">
+                    <i class="bi bi-tags"></i> Claims
+                </a>
+            </li>
+            <hr class="my-2" style="border-color: rgba(255,255,255,0.1);">
+            <li class="nav-item">
+                <a class="nav-link {% if request.endpoint == 'ui.audit' %}active{% endif %}" href="{{ url_for('ui.audit') }}">
+                    <i class="bi bi-journal-text"></i> Audit Log
+                </a>
+            </li>
+            <li class="nav-item">
+                <a class="nav-link {% if request.endpoint == 'ui.test_page' %}active{% endif %}" href="{{ url_for('ui.test_page') }}">
+                    <i class="bi bi-terminal"></i> Token Tester
+                </a>
+            </li>
+            <hr class="my-2" style="border-color: rgba(255,255,255,0.1);">
+            <li class="nav-item">
+                <a class="nav-link" href="/.well-known/openid-configuration" target="_blank">
+                    <i class="bi bi-box-arrow-up-right"></i> OIDC Config
+                </a>
+            </li>
+            <li class="nav-item">
+                <a class="nav-link" href="/saml/metadata" target="_blank">
+                    <i class="bi bi-box-arrow-up-right"></i> SAML Metadata
+                </a>
+            </li>
+        </ul>
+
+        {% if current_user %}
+        <div class="position-absolute bottom-0 w-100 p-3 border-top" style="border-color: rgba(255,255,255,0.1) !important;">
+            <div class="d-flex align-items-center text-white">
+                <div class="user-avatar me-2">{{ current_user[0]|upper }}</div>
+                <div class="flex-grow-1">
+                    <small class="d-block">{{ current_user }}</small>
+                </div>
+                <a href="{{ url_for('ui.logout') }}" class="btn btn-sm btn-outline-light">
+                    <i class="bi bi-box-arrow-right"></i>
+                </a>
+            </div>
+        </div>
+        {% endif %}
+    </nav>
+
+    <!-- Main Content -->
+    <main class="main-content">
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                {% for category, message in messages %}
+                    <div class="alert alert-{{ category if category != 'message' else 'info' }} alert-dismissible fade show" role="alert">
+                        {{ message }}
+                        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                    </div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+
+        {% block content %}{% endblock %}
+    </main>
+
+    <!-- Toast Container -->
+    <div class="toast-container" id="toastContainer"></div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+    // Theme management
+    function setTheme(theme) {
+        document.documentElement.setAttribute('data-bs-theme', theme);
+        localStorage.setItem('theme', theme);
+        const icon = theme === 'dark' ? 'bi-sun-fill' : 'bi-moon-fill';
+        document.querySelectorAll('#themeIcon, #mobileThemeToggle i').forEach(el => {
+            el.className = 'bi ' + icon;
+        });
+    }
+
+    // Initialize theme
+    const savedTheme = localStorage.getItem('theme') || 'light';
+    setTheme(savedTheme);
+
+    // Theme toggle handlers
+    document.getElementById('themeToggle').addEventListener('click', () => {
+        const current = document.documentElement.getAttribute('data-bs-theme');
+        setTheme(current === 'dark' ? 'light' : 'dark');
+    });
+    document.getElementById('mobileThemeToggle').addEventListener('click', () => {
+        const current = document.documentElement.getAttribute('data-bs-theme');
+        setTheme(current === 'dark' ? 'light' : 'dark');
+    });
+
+    // Mobile sidebar toggle
+    const sidebar = document.getElementById('sidebar');
+    const backdrop = document.getElementById('sidebarBackdrop');
+
+    document.getElementById('sidebarToggle').addEventListener('click', () => {
+        sidebar.classList.add('show');
+        backdrop.classList.add('show');
+    });
+
+    backdrop.addEventListener('click', () => {
+        sidebar.classList.remove('show');
+        backdrop.classList.remove('show');
+    });
+
+    // Close sidebar on nav click (mobile)
+    document.querySelectorAll('.sidebar .nav-link').forEach(link => {
+        link.addEventListener('click', () => {
+            if (window.innerWidth <= 768) {
+                sidebar.classList.remove('show');
+                backdrop.classList.remove('show');
+            }
+        });
+    });
+
+    // Toast notification function
+    function showToast(message, type = 'success') {
+        const container = document.getElementById('toastContainer');
+        const id = 'toast-' + Date.now();
+        const bgClass = type === 'success' ? 'bg-success' : type === 'error' ? 'bg-danger' : 'bg-info';
+        const icon = type === 'success' ? 'check-circle' : type === 'error' ? 'exclamation-circle' : 'info-circle';
+
+        container.innerHTML += `
+            <div id="${id}" class="toast align-items-center text-white ${bgClass} border-0" role="alert">
+                <div class="d-flex">
+                    <div class="toast-body">
+                        <i class="bi bi-${icon}-fill me-2"></i>${message}
+                    </div>
+                    <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button>
+                </div>
+            </div>`;
+
+        const toastEl = document.getElementById(id);
+        const toast = new bootstrap.Toast(toastEl, { delay: 3000 });
+        toast.show();
+
+        toastEl.addEventListener('hidden.bs.toast', () => toastEl.remove());
+    }
+
+    // Initialize Bootstrap tooltips
+    document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(el => {
+        new bootstrap.Tooltip(el);
+    });
+    </script>
+    {% block extra_js %}{% endblock %}
+</body>
+</html>

@@ -1,0 +1,33 @@
+# NanoIDP Settings - Spring Boot SAML Integration
+# Copy this file to your config directory
+
+server:
+  host: "0.0.0.0"
+  port: 8000
+
+oauth:
+  issuer: "http://localhost:8000"
+  audience: "spring-boot-app"
+  token_expiry_minutes: 60
+  clients:
+    - client_id: "spring-saml-client"
+      client_secret: "spring-saml-secret"
+      description: "Spring Boot SAML application"
+
+saml:
+  entity_id: "http://localhost:8000/saml"
+  sso_url: "http://localhost:8000/saml/sso"
+  # Change this to match your Spring Boot app's ACS URL
+  default_acs_url: "http://localhost:8080/login/saml2/sso/nanoidp"
+
+# Authority prefix mapping for Spring Security GrantedAuthority
+authority_prefixes:
+  roles: "ROLE_"
+  identity_class: "IDENTITY_"
+  entitlements: "ENT_"
+
+# Allowed identity classes
+allowed_identity_classes:
+  - "INTERNAL"
+  - "EXTERNAL"
+  - "CONTRACTOR"

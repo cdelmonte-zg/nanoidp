@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Device Authorization - NanoIDP</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css" rel="stylesheet">
+    <style>
+        body {
+            min-height: 100vh;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .device-card {
+            width: 100%;
+            max-width: 460px;
+            background: #fff;
+            border-radius: 1rem;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.3);
+        }
+        .device-header {
+            background: linear-gradient(135deg, #6610f2 0%, #0d6efd 100%);
+            color: #fff;
+            padding: 2rem;
+            border-radius: 1rem 1rem 0 0;
+            text-align: center;
+        }
+        .device-header i {
+            font-size: 3rem;
+            margin-bottom: 0.5rem;
+        }
+        .device-body {
+            padding: 2rem;
+        }
+        .form-floating > label {
+            color: #6c757d;
+        }
+        .user-code-input {
+            font-family: monospace;
+            font-size: 1.5rem;
+            text-transform: uppercase;
+            letter-spacing: 0.3em;
+            text-align: center;
+        }
+        .success-message {
+            text-align: center;
+            padding: 2rem 0;
+        }
+        .success-message i {
+            font-size: 4rem;
+            color: #198754;
+        }
+    </style>
+</head>
+<body>
+    <div class="device-card">
+        <div class="device-header">
+            <i class="bi bi-phone"></i>
+            <h3 class="mb-0">NanoIDP</h3>
+            <small class="opacity-75">Device Authorization</small>
+        </div>
+        <div class="device-body">
+            {% if success %}
+            <div class="success-message">
+                <i class="bi bi-check-circle-fill mb-3"></i>
+                <h5 class="text-success">{{ success }}</h5>
+                <p class="text-muted mt-3">
+                    The device has been authorized. You can now return to your device.
+                </p>
+            </div>
+            {% else %}
+                {% if error %}
+                <div class="alert alert-danger alert-dismissible fade show" role="alert">
+                    <i class="bi bi-exclamation-triangle me-2"></i>{{ error }}
+                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                </div>
+                {% endif %}
+
+                <div class="text-center mb-4">
+                    <p class="text-muted">
+                        Enter the code displayed on your device and sign in to authorize it.
+                    </p>
+                </div>
+
+                <form method="POST">
+                    <div class="form-floating mb-3">
+                        <input type="text" class="form-control user-code-input" id="user_code" name="user_code"
+                               placeholder="XXXX-XXXX" value="{{ user_code }}" required autofocus
+                               maxlength="8" pattern="[A-Za-z0-9]{8}">
+                        <label for="user_code"><i class="bi bi-upc me-2"></i>Device Code</label>
+                    </div>
+
+                    <hr class="my-4">
+
+                    <div class="form-floating mb-3">
+                        <input type="text" class="form-control" id="username" name="username" placeholder="Username" required>
+                        <label for="username"><i class="bi bi-person me-2"></i>Username</label>
+                    </div>
+
+                    <div class="form-floating mb-4">
+                        <input type="password" class="form-control" id="password" name="password" placeholder="Password" required>
+                        <label for="password"><i class="bi bi-key me-2"></i>Password</label>
+                    </div>
+
+                    <div class="d-grid gap-2">
+                        <button type="submit" name="action" value="authorize" class="btn btn-primary py-2">
+                            <i class="bi bi-check-circle me-2"></i>Authorize Device
+                        </button>
+                        <button type="submit" name="action" value="deny" class="btn btn-outline-danger py-2">
+                            <i class="bi bi-x-circle me-2"></i>Deny
+                        </button>
+                    </div>
+                </form>
+
+                <div class="text-center mt-3">
+                    <small class="text-muted">
+                        <i class="bi bi-info-circle me-1"></i>
+                        This code will expire in 10 minutes
+                    </small>
+                </div>
+            {% endif %}
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        // Auto-uppercase the user code input
+        document.getElementById('user_code')?.addEventListener('input', function(e) {
+            e.target.value = e.target.value.toUpperCase();
+        });
+    </script>
+</body>
+</html>

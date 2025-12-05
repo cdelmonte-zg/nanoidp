@@ -1,0 +1,32 @@
+# NanoIDP Users - CLI / Device Flow Integration
+# Copy this file to your config directory
+
+users:
+  admin:
+    password: "admin"
+    email: "admin@example.org"
+    identity_class: "INTERNAL"
+    entitlements:
+      - "ADMIN_ACCESS"
+      - "CLI_ACCESS"
+    roles:
+      - "ADMIN"
+      - "USER"
+    tenant: "default"
+    source_acl:
+      - "ACL_READ"
+      - "ACL_WRITE"
+
+  user:
+    password: "user"
+    email: "user@example.org"
+    identity_class: "INTERNAL"
+    entitlements:
+      - "CLI_ACCESS"
+    roles:
+      - "USER"
+    tenant: "default"
+    source_acl:
+      - "ACL_READ"
+
+default_user: "admin"

@@ -1,0 +1,32 @@
+# NanoIDP Settings - Microservices Client Credentials
+# Copy this file to your config directory
+
+server:
+  host: "0.0.0.0"
+  port: 8000
+
+oauth:
+  issuer: "http://localhost:8000"
+  audience: "microservices"
+  token_expiry_minutes: 60
+  clients:
+    # Order Service
+    - client_id: "order-service"
+      client_secret: "order-service-secret"
+      description: "Order management microservice"
+
+    # Inventory Service
+    - client_id: "inventory-service"
+      client_secret: "inventory-service-secret"
+      description: "Inventory management microservice"
+
+    # Notification Service
+    - client_id: "notification-service"
+      client_secret: "notification-service-secret"
+      description: "Notification delivery microservice"
+
+# Authority prefix mapping
+authority_prefixes:
+  roles: "ROLE_"
+  identity_class: "IDENTITY_"
+  entitlements: "ENT_"

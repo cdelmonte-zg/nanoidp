@@ -1,0 +1,99 @@
+# NanoIDP User Configuration
+# ==========================
+# Define users with their authentication credentials and authorization attributes.
+#
+# Core fields:
+#   - password: User password (required)
+#   - email: User email address
+#   - identity_class: User identity classification (e.g., INTERNAL, EXTERNAL)
+#   - entitlements: List of entitlements (will be prefixed with ENT_)
+#   - roles: List of user roles (will be prefixed with ROLE_)
+#   - tenant: Tenant identifier
+#   - source_acl: List of ACL entries for data source access control
+#
+# Custom attributes:
+#   - attributes: Dictionary of custom key/value pairs (included in JWT/SAML)
+#     Any organization-specific fields go here (e.g., department, cost_center, etc.)
+
+users:
+  # ============================================================
+  #  ADMIN USER - Full access
+  # ============================================================
+  admin:
+    password: "admin"
+    email: "admin@example.org"
+    identity_class: "INTERNAL"
+    entitlements:
+      - "ADMIN_ACCESS"
+      - "USER_MANAGEMENT"
+      - "CONFIG_EDIT"
+    roles:
+      - "USER"
+      - "ADMIN"
+    tenant: "default"
+    source_acl:
+      - "ACL_READ"
+      - "ACL_WRITE"
+      - "ACL_DELETE"
+    attributes:
+      department: "IT"
+      cost_center: "CC001"
+
+  # ============================================================
+  #  REGULAR USERS
+  # ============================================================
+  user1:
+    password: "password"
+    email: "user1@example.org"
+    identity_class: "INTERNAL"
+    entitlements:
+      - "DOCUMENT_READ"
+      - "DOCUMENT_WRITE"
+    roles:
+      - "USER"
+    tenant: "default"
+    source_acl:
+      - "ACL_READ"
+    attributes:
+      department: "Sales"
+      cost_center: "CC002"
+      manager: "admin"
+
+  user2:
+    password: "password"
+    email: "user2@example.org"
+    identity_class: "EXTERNAL"
+    entitlements:
+      - "DOCUMENT_READ"
+    roles:
+      - "USER"
+    tenant: "default"
+    source_acl:
+      - "ACL_READ"
+    attributes:
+      company: "Partner Corp"
+      contract_id: "CONTRACT-001"
+
+  # ============================================================
+  #  API / SERVICE ACCOUNTS
+  # ============================================================
+  api-client:
+    password: "api-secret"
+    email: "api@example.org"
+    identity_class: "SERVICE"
+    entitlements:
+      - "API_ACCESS"
+      - "DATA_INGESTION"
+    roles:
+      - "API_CLIENT"
+      - "DATA_WRITER"
+    tenant: "default"
+    source_acl:
+      - "ACL_READ"
+      - "ACL_WRITE"
+    attributes:
+      service_type: "batch"
+      rate_limit: 1000
+
+# Default user for client_credentials grant
+default_user: "admin"

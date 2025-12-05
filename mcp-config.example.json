@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "nanoidp": {
+      "command": "nanoidp-mcp",
+      "env": {
+        "NANOIDP_CONFIG_DIR": "./config"
+      }
+    }
+  }
+}

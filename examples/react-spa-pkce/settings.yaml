@@ -1,0 +1,32 @@
+# NanoIDP Settings - React SPA PKCE Integration
+# Copy this file to your config directory
+
+server:
+  host: "0.0.0.0"
+  port: 8000
+
+oauth:
+  issuer: "http://localhost:8000"
+  audience: "spa-client"
+  token_expiry_minutes: 60
+  refresh_token_expiry_minutes: 1440  # 24 hours
+  clients:
+    - client_id: "spa-client"
+      client_secret: ""  # Public client, no secret needed for PKCE
+      description: "React SPA with PKCE"
+
+# CORS configuration for SPA
+cors_allowed_origins:
+  - "http://localhost:3000"
+  - "http://localhost:5173"  # Vite default port
+
+# Authority prefix mapping
+authority_prefixes:
+  roles: "ROLE_"
+  identity_class: "IDENTITY_"
+  entitlements: "ENT_"
+
+# Allowed identity classes
+allowed_identity_classes:
+  - "INTERNAL"
+  - "EXTERNAL"

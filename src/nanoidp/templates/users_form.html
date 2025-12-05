@@ -1,0 +1,252 @@
+{% extends "base.html" %}
+
+{% block title %}{% if user %}Edit User{% else %}Create User{% endif %} - NanoIDP{% endblock %}
+
+{% block content %}
+<nav aria-label="breadcrumb" class="mb-4">
+    <ol class="breadcrumb">
+        <li class="breadcrumb-item"><a href="{{ url_for('ui.users') }}">Users</a></li>
+        <li class="breadcrumb-item active">{% if user %}Edit {{ user.username }}{% else %}Create User{% endif %}</li>
+    </ol>
+</nav>
+
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2>
+        <i class="bi bi-{% if user %}pencil{% else %}person-plus{% endif %} me-2"></i>
+        {% if user %}Edit User: {{ user.username }}{% else %}Create New User{% endif %}
+    </h2>
+</div>
+
+<form method="post" class="needs-validation" novalidate>
+    <div class="row g-4">
+        <!-- Basic Information -->
+        <div class="col-md-6">
+            <div class="card h-100">
+                <div class="card-header">
+                    <i class="bi bi-person me-2"></i>Basic Information
+                </div>
+                <div class="card-body">
+                    <div class="mb-3">
+                        <label for="username" class="form-label">Username <span class="text-danger">*</span></label>
+                        <input type="text" class="form-control" id="username" name="username"
+                               value="{{ user.username if user else '' }}"
+                               {% if user %}readonly{% endif %} required
+                               pattern="[a-zA-Z0-9_-]+" title="Only letters, numbers, underscores and hyphens">
+                        <div class="form-text">Unique identifier for the user</div>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="password" class="form-label">Password {% if not user %}<span class="text-danger">*</span>{% endif %}</label>
+                        <input type="password" class="form-control" id="password" name="password"
+                               {% if not user %}required{% endif %}>
+                        {% if user %}
+                        <div class="form-text">Leave empty to keep current password</div>
+                        {% endif %}
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="email" class="form-label">Email</label>
+                        <input type="email" class="form-control" id="email" name="email"
+                               value="{{ user.email if user else '' }}">
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="tenant" class="form-label">Tenant</label>
+                        <input type="text" class="form-control" id="tenant" name="tenant"
+                               value="{{ user.tenant if user else 'default' }}">
+                        <div class="form-text">Tenant/organization identifier</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Identity & Classification -->
+        <div class="col-md-6">
+            <div class="card h-100">
+                <div class="card-header">
+                    <i class="bi bi-diagram-3 me-2"></i>Identity & Classification
+                </div>
+                <div class="card-body">
+                    <div class="mb-3">
+                        <label for="identity_class" class="form-label">Identity Class</label>
+                        <select class="form-select" id="identity_class" name="identity_class">
+                            <option value="">-- Select --</option>
+                            {% for ic in allowed_identity_classes %}
+                            <option value="{{ ic }}" {% if user and user.identity_class == ic %}selected{% endif %}>{{ ic }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+
+                    <hr class="my-3">
+                    <h6 class="text-muted mb-3">
+                        <i class="bi bi-tags me-1"></i>Custom Attributes
+                    </h6>
+                    <div id="attributes-container">
+                        {% if user and user.attributes %}
+                        {% for key, value in user.attributes.items() %}
+                        <div class="row g-2 mb-2 attribute-row">
+                            <div class="col-5">
+                                <input type="text" class="form-control form-control-sm" name="attr_key[]" value="{{ key }}" placeholder="Key">
+                            </div>
+                            <div class="col-5">
+                                <input type="text" class="form-control form-control-sm" name="attr_value[]" value="{{ value }}" placeholder="Value">
+                            </div>
+                            <div class="col-2">
+                                <button type="button" class="btn btn-outline-danger btn-sm w-100" onclick="removeAttribute(this)">
+                                    <i class="bi bi-trash"></i>
+                                </button>
+                            </div>
+                        </div>
+                        {% endfor %}
+                        {% endif %}
+                    </div>
+                    <button type="button" class="btn btn-outline-secondary btn-sm mt-2" onclick="addAttribute()">
+                        <i class="bi bi-plus me-1"></i>Add Attribute
+                    </button>
+                    <div class="form-text mt-2">Custom key/value pairs included in JWT and SAML tokens</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Roles -->
+        <div class="col-md-6">
+            <div class="card">
+                <div class="card-header">
+                    <i class="bi bi-shield me-2"></i>Roles
+                </div>
+                <div class="card-body">
+                    <div class="mb-3">
+                        <label for="roles" class="form-label">Roles</label>
+                        <input type="text" class="form-control" id="roles" name="roles"
+                               value="{{ user.roles|join(', ') if user else 'USER' }}"
+                               placeholder="USER, ADMIN, API_CLIENT">
+                        <div class="form-text">Comma-separated list of roles</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Entitlements -->
+        <div class="col-md-6">
+            <div class="card">
+                <div class="card-header">
+                    <i class="bi bi-key me-2"></i>Entitlements
+                </div>
+                <div class="card-body">
+                    <div class="mb-3">
+                        <label for="entitlements" class="form-label">Entitlements</label>
+                        <textarea class="form-control" id="entitlements" name="entitlements" rows="3"
+                                  placeholder="DOCUMENT_READ&#10;DOCUMENT_WRITE&#10;API_ACCESS">{{ user.entitlements|join('\n') if user else '' }}</textarea>
+                        <div class="form-text">One entitlement per line</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Source ACL -->
+        <div class="col-12">
+            <div class="card">
+                <div class="card-header">
+                    <i class="bi bi-database me-2"></i>Source ACL (Access Control Lists)
+                </div>
+                <div class="card-body">
+                    <div class="mb-3">
+                        <label for="source_acl" class="form-label">ACL Entries</label>
+                        <textarea class="form-control" id="source_acl" name="source_acl" rows="3"
+                                  placeholder="ACL_READ&#10;ACL_WRITE&#10;ACL_DELETE">{{ user.source_acl|join('\n') if user else '' }}</textarea>
+                        <div class="form-text">One ACL entry per line. Used for data source access control.</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Actions -->
+    <div class="d-flex justify-content-between mt-4">
+        <a href="{{ url_for('ui.users') }}" class="btn btn-outline-secondary">
+            <i class="bi bi-arrow-left me-2"></i>Cancel
+        </a>
+        <div>
+            {% if user %}
+            <button type="button" class="btn btn-outline-danger me-2" data-bs-toggle="modal" data-bs-target="#deleteModal">
+                <i class="bi bi-trash me-2"></i>Delete User
+            </button>
+            {% endif %}
+            <button type="submit" class="btn btn-primary">
+                <i class="bi bi-check-lg me-2"></i>{% if user %}Save Changes{% else %}Create User{% endif %}
+            </button>
+        </div>
+    </div>
+</form>
+
+{% if user %}
+<!-- Delete Confirmation Modal -->
+<div class="modal fade" id="deleteModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-exclamation-triangle text-danger me-2"></i>Delete User</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <p>Are you sure you want to delete user <strong>{{ user.username }}</strong>?</p>
+                <p class="text-muted mb-0">This action cannot be undone.</p>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <form action="{{ url_for('ui.user_delete', username=user.username) }}" method="post" class="d-inline">
+                    <button type="submit" class="btn btn-danger">
+                        <i class="bi bi-trash me-2"></i>Delete
+                    </button>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+{% endblock %}
+
+{% block extra_js %}
+<script>
+// Form validation
+(function() {
+    'use strict';
+    var forms = document.querySelectorAll('.needs-validation');
+    Array.prototype.slice.call(forms).forEach(function(form) {
+        form.addEventListener('submit', function(event) {
+            if (!form.checkValidity()) {
+                event.preventDefault();
+                event.stopPropagation();
+            }
+            form.classList.add('was-validated');
+        }, false);
+    });
+})();
+
+// Dynamic attributes management
+function addAttribute() {
+    const container = document.getElementById('attributes-container');
+    const row = document.createElement('div');
+    row.className = 'row g-2 mb-2 attribute-row';
+    row.innerHTML = `
+        <div class="col-5">
+            <input type="text" class="form-control form-control-sm" name="attr_key[]" placeholder="Key">
+        </div>
+        <div class="col-5">
+            <input type="text" class="form-control form-control-sm" name="attr_value[]" placeholder="Value">
+        </div>
+        <div class="col-2">
+            <button type="button" class="btn btn-outline-danger btn-sm w-100" onclick="removeAttribute(this)">
+                <i class="bi bi-trash"></i>
+            </button>
+        </div>
+    `;
+    container.appendChild(row);
+}
+
+function removeAttribute(button) {
+    button.closest('.attribute-row').remove();
+}
+</script>
+{% endblock %}

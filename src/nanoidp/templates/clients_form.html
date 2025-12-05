@@ -1,0 +1,118 @@
+{% extends "base.html" %}
+
+{% block title %}{% if client %}Edit Client{% else %}Create Client{% endif %} - NanoIDP{% endblock %}
+
+{% block content %}
+<nav aria-label="breadcrumb" class="mb-4">
+    <ol class="breadcrumb">
+        <li class="breadcrumb-item"><a href="{{ url_for('ui.clients') }}">OAuth Clients</a></li>
+        <li class="breadcrumb-item active">{% if client %}Edit {{ client.client_id }}{% else %}Create Client{% endif %}</li>
+    </ol>
+</nav>
+
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2>
+        <i class="bi bi-{% if client %}pencil{% else %}plus-lg{% endif %} me-2"></i>
+        {% if client %}Edit OAuth Client{% else %}Create OAuth Client{% endif %}
+    </h2>
+</div>
+
+<div class="row">
+    <div class="col-md-8">
+        <form method="post" class="needs-validation" novalidate>
+            <div class="card">
+                <div class="card-body">
+                    <div class="mb-3">
+                        <label for="client_id" class="form-label">Client ID <span class="text-danger">*</span></label>
+                        <input type="text" class="form-control" id="client_id" name="client_id"
+                               value="{{ client.client_id if client else '' }}"
+                               {% if client %}readonly{% endif %} required
+                               pattern="[a-zA-Z0-9_-]+" title="Only letters, numbers, underscores and hyphens">
+                        <div class="form-text">Unique identifier for the OAuth client</div>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="client_secret" class="form-label">
+                            Client Secret {% if not client %}<span class="text-danger">*</span>{% endif %}
+                        </label>
+                        <div class="input-group">
+                            <input type="text" class="form-control" id="client_secret" name="client_secret"
+                                   value="{{ generated_secret if generated_secret else '' }}"
+                                   {% if not client %}required{% endif %}>
+                            {% if not client %}
+                            <button type="button" class="btn btn-outline-secondary" onclick="generateSecret()">
+                                <i class="bi bi-arrow-clockwise"></i> Generate
+                            </button>
+                            {% endif %}
+                        </div>
+                        {% if client %}
+                        <div class="form-text">Leave empty to keep current secret</div>
+                        {% else %}
+                        <div class="form-text">A random secret has been generated. You can change it if needed.</div>
+                        {% endif %}
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="description" class="form-label">Description</label>
+                        <input type="text" class="form-control" id="description" name="description"
+                               value="{{ client.description if client else '' }}"
+                               placeholder="e.g., Frontend application client">
+                    </div>
+                </div>
+            </div>
+
+            <div class="d-flex justify-content-between mt-4">
+                <a href="{{ url_for('ui.clients') }}" class="btn btn-outline-secondary">
+                    <i class="bi bi-arrow-left me-2"></i>Cancel
+                </a>
+                <button type="submit" class="btn btn-primary">
+                    <i class="bi bi-check-lg me-2"></i>{% if client %}Save Changes{% else %}Create Client{% endif %}
+                </button>
+            </div>
+        </form>
+    </div>
+
+    <div class="col-md-4">
+        <div class="card bg-light">
+            <div class="card-body">
+                <h6><i class="bi bi-info-circle me-2"></i>About OAuth Clients</h6>
+                <p class="small mb-2">OAuth clients are used to authenticate applications requesting tokens from the IdP.</p>
+                <ul class="small mb-0">
+                    <li>Store secrets securely</li>
+                    <li>Use unique client IDs</li>
+                    <li>Rotate secrets periodically</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+function generateSecret() {
+    const array = new Uint8Array(32);
+    crypto.getRandomValues(array);
+    const secret = btoa(String.fromCharCode.apply(null, array))
+        .replace(/\+/g, '-')
+        .replace(/\//g, '_')
+        .replace(/=/g, '');
+    document.getElementById('client_secret').value = secret;
+}
+
+// Form validation
+(function() {
+    'use strict';
+    var forms = document.querySelectorAll('.needs-validation');
+    Array.prototype.slice.call(forms).forEach(function(form) {
+        form.addEventListener('submit', function(event) {
+            if (!form.checkValidity()) {
+                event.preventDefault();
+                event.stopPropagation();
+            }
+            form.classList.add('was-validated');
+        }, false);
+    });
+})();
+</script>
+{% endblock %}

@@ -1,0 +1,17 @@
+# NanoIDP Users - Microservices Client Credentials
+# This preset doesn't require users for client_credentials grant,
+# but includes an admin user for management purposes.
+
+users:
+  admin:
+    password: "admin"
+    email: "admin@example.org"
+    identity_class: "INTERNAL"
+    entitlements:
+      - "ADMIN_ACCESS"
+    roles:
+      - "ADMIN"
+    tenant: "default"
+    source_acl: []
+
+default_user: "admin"

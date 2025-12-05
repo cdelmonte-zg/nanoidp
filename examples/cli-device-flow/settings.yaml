@@ -1,0 +1,38 @@
+# NanoIDP Settings - CLI / Device Flow Integration
+# Copy this file to your config directory
+
+server:
+  host: "0.0.0.0"
+  port: 8000
+
+oauth:
+  issuer: "http://localhost:8000"
+  audience: "cli-devices"
+  token_expiry_minutes: 60
+  refresh_token_expiry_minutes: 10080  # 7 days for CLI tools
+  clients:
+    # CLI Tool
+    - client_id: "cli-tool"
+      client_secret: "cli-tool-secret"
+      description: "Command-line interface tool"
+
+    # IoT Device
+    - client_id: "iot-device"
+      client_secret: "iot-device-secret"
+      description: "IoT / Smart device"
+
+# Device flow settings
+device_flow:
+  code_expiry_seconds: 600  # 10 minutes
+  polling_interval: 5       # seconds
+
+# Authority prefix mapping
+authority_prefixes:
+  roles: "ROLE_"
+  identity_class: "IDENTITY_"
+  entitlements: "ENT_"
+
+# Allowed identity classes
+allowed_identity_classes:
+  - "INTERNAL"
+  - "EXTERNAL"

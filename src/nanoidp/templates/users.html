@@ -1,0 +1,203 @@
+{% extends "base.html" %}
+
+{% block title %}Users - NanoIDP{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2><i class="bi bi-people me-2"></i>Users</h2>
+    <div>
+        <span class="badge bg-secondary fs-6 me-2">{{ users|length }} users</span>
+        <a href="{{ url_for('ui.user_create') }}" class="btn btn-primary">
+            <i class="bi bi-plus-lg me-2"></i>New User
+        </a>
+    </div>
+</div>
+
+<!-- Search Bar -->
+<div class="card mb-3">
+    <div class="card-body py-2">
+        <div class="input-group">
+            <span class="input-group-text bg-transparent border-end-0"><i class="bi bi-search"></i></span>
+            <input type="text" class="form-control border-start-0" id="userSearch" placeholder="Search users by username, email, role...">
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-hover mb-0">
+                <thead class="table-light">
+                    <tr>
+                        <th>Username</th>
+                        <th>Email</th>
+                        <th>Identity Class</th>
+                        <th>Roles</th>
+                        <th>Entitlements</th>
+                        <th>ACL</th>
+                        <th>Quick Token</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="usersTable">
+                    {% for username, user in users.items() %}
+                    <tr class="user-row" data-search="{{ username }} {{ user.email }} {{ user.identity_class or '' }} {{ user.roles|join(' ') }} {{ user.tenant }}">
+                        <td>
+                            <div class="d-flex align-items-center">
+                                <div class="user-avatar me-2" style="width: 32px; height: 32px; font-size: 0.8rem;">
+                                    {{ username[0]|upper }}
+                                </div>
+                                <strong>{{ username }}</strong>
+                            </div>
+                        </td>
+                        <td><small class="text-muted">{{ user.email }}</small></td>
+                        <td>
+                            {% if user.identity_class %}
+                            <span class="badge {% if user.identity_class == 'INTERNAL' %}bg-success{% elif user.identity_class == 'EXTERNAL' %}bg-warning text-dark{% elif user.identity_class == 'SERVICE' %}bg-info{% else %}bg-secondary{% endif %}">
+                                {{ user.identity_class }}
+                            </span>
+                            {% else %}
+                            <span class="text-muted">-</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% for role in user.roles %}
+                            <span class="badge bg-primary me-1">{{ role }}</span>
+                            {% endfor %}
+                        </td>
+                        <td>
+                            {% if user.entitlements %}
+                            <span class="badge bg-info text-dark">{{ user.entitlements|length }} entitlements</span>
+                            {% else %}
+                            <span class="text-muted">-</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if user.source_acl %}
+                            <span class="badge bg-secondary">{{ user.source_acl|length }} ACLs</span>
+                            {% else %}
+                            <span class="text-muted">-</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            <button class="btn btn-sm btn-outline-success quick-token-btn" data-username="{{ username }}" title="Generate token for {{ username }}">
+                                <i class="bi bi-lightning"></i>
+                            </button>
+                        </td>
+                        <td>
+                            <a href="{{ url_for('ui.user_detail', username=username) }}" class="btn btn-sm btn-outline-primary">
+                                <i class="bi bi-eye"></i> Details
+                            </a>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- Legend -->
+<div class="card mt-4">
+    <div class="card-header">
+        <i class="bi bi-info-circle me-2"></i>User Attributes Legend
+    </div>
+    <div class="card-body">
+        <div class="row">
+            <div class="col-md-6">
+                <h6>Identity Classes</h6>
+                <ul class="list-unstyled">
+                    <li><span class="badge bg-success">INTERNAL</span> - Internal employees</li>
+                    <li><span class="badge bg-warning text-dark">EXTERNAL</span> - External users</li>
+                    <li><span class="badge bg-secondary">PARTNER</span> - Partner organizations</li>
+                    <li><span class="badge bg-info">SERVICE</span> - Service accounts / APIs</li>
+                </ul>
+            </div>
+            <div class="col-md-6">
+                <h6>Authorization Methods</h6>
+                <ul class="list-unstyled">
+                    <li><strong>Entitlements</strong> - Feature-based access control</li>
+                    <li><strong>Roles</strong> - Role-based access control (RBAC)</li>
+                    <li><strong>ACL</strong> - Data source access control lists</li>
+                    <li><strong>Attributes</strong> - Attribute-based access control (ABAC)</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Token Modal -->
+<div class="modal fade" id="tokenModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-key me-2"></i>Generated Token</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div id="tokenModalContent"></div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+// User search functionality
+document.getElementById('userSearch').addEventListener('input', function() {
+    const search = this.value.toLowerCase();
+    document.querySelectorAll('.user-row').forEach(row => {
+        const text = row.dataset.search.toLowerCase();
+        row.style.display = text.includes(search) ? '' : 'none';
+    });
+});
+
+// Quick token generation
+document.querySelectorAll('.quick-token-btn').forEach(btn => {
+    btn.addEventListener('click', async function() {
+        const username = this.dataset.username;
+        const originalHtml = this.innerHTML;
+        this.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+        this.disabled = true;
+
+        try {
+            const response = await fetch(`/api/users/${username}/token`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ exp_minutes: 60 })
+            });
+            const data = await response.json();
+
+            if (data.access_token) {
+                document.getElementById('tokenModalContent').innerHTML = `
+                    <div class="mb-3">
+                        <label class="form-label">Access Token for <strong>${username}</strong></label>
+                        <div class="input-group">
+                            <input type="text" class="form-control font-monospace" value="${data.access_token}" readonly id="quickToken">
+                            <button class="btn btn-outline-primary" onclick="copyQuickToken()">
+                                <i class="bi bi-clipboard"></i>
+                            </button>
+                        </div>
+                    </div>
+                    <small class="text-muted">Expires in: ${data.expires_in} seconds</small>`;
+                new bootstrap.Modal(document.getElementById('tokenModal')).show();
+            } else {
+                alert('Failed to generate token: ' + (data.error || 'Unknown error'));
+            }
+        } catch (e) {
+            alert('Failed to generate token: ' + e.message);
+        } finally {
+            this.innerHTML = originalHtml;
+            this.disabled = false;
+        }
+    });
+});
+
+function copyQuickToken() {
+    const token = document.getElementById('quickToken').value;
+    navigator.clipboard.writeText(token);
+    showToast('Token copied to clipboard!');
+}
+</script>
+{% endblock %}

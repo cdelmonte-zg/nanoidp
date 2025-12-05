@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Authorize - NanoIDP</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css" rel="stylesheet">
+    <style>
+        body {
+            min-height: 100vh;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .authorize-card {
+            width: 100%;
+            max-width: 460px;
+            background: #fff;
+            border-radius: 1rem;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.3);
+        }
+        .authorize-header {
+            background: linear-gradient(135deg, #0d6efd 0%, #6610f2 100%);
+            color: #fff;
+            padding: 2rem;
+            border-radius: 1rem 1rem 0 0;
+            text-align: center;
+        }
+        .authorize-header i {
+            font-size: 3rem;
+            margin-bottom: 0.5rem;
+        }
+        .authorize-body {
+            padding: 2rem;
+        }
+        .form-floating > label {
+            color: #6c757d;
+        }
+        .client-info {
+            background: #f8f9fa;
+            border-radius: 0.5rem;
+            padding: 1rem;
+            margin-bottom: 1.5rem;
+        }
+        .scope-badge {
+            font-size: 0.8rem;
+            margin: 0.2rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="authorize-card">
+        <div class="authorize-header">
+            <i class="bi bi-shield-check"></i>
+            <h3 class="mb-0">NanoIDP</h3>
+            <small class="opacity-75">Authorization Request</small>
+        </div>
+        <div class="authorize-body">
+            {% if error %}
+            <div class="alert alert-danger alert-dismissible fade show" role="alert">
+                <i class="bi bi-exclamation-triangle me-2"></i>{{ error }}
+                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+            </div>
+            {% endif %}
+
+            <div class="client-info">
+                <div class="d-flex align-items-center mb-2">
+                    <i class="bi bi-app-indicator text-primary me-2 fs-4"></i>
+                    <div>
+                        <strong>{{ client_id }}</strong>
+                        <small class="text-muted d-block">wants to access your account</small>
+                    </div>
+                </div>
+                <div class="mt-2">
+                    <small class="text-muted">Requested permissions:</small>
+                    <div class="mt-1">
+                        {% for s in scope.split() %}
+                        <span class="badge bg-secondary scope-badge">
+                            {% if s == 'openid' %}
+                            <i class="bi bi-person-badge me-1"></i>
+                            {% elif s == 'profile' %}
+                            <i class="bi bi-person-circle me-1"></i>
+                            {% elif s == 'email' %}
+                            <i class="bi bi-envelope me-1"></i>
+                            {% elif s == 'offline_access' %}
+                            <i class="bi bi-arrow-repeat me-1"></i>
+                            {% else %}
+                            <i class="bi bi-key me-1"></i>
+                            {% endif %}
+                            {{ s }}
+                        </span>
+                        {% endfor %}
+                    </div>
+                </div>
+            </div>
+
+            <form method="POST">
+                <div class="form-floating mb-3">
+                    <input type="text" class="form-control" id="username" name="username" placeholder="Username" required autofocus>
+                    <label for="username"><i class="bi bi-person me-2"></i>Username</label>
+                </div>
+
+                <div class="form-floating mb-4">
+                    <input type="password" class="form-control" id="password" name="password" placeholder="Password" required>
+                    <label for="password"><i class="bi bi-key me-2"></i>Password</label>
+                </div>
+
+                <button type="submit" class="btn btn-primary w-100 py-2">
+                    <i class="bi bi-check-circle me-2"></i>Authorize
+                </button>
+            </form>
+
+            <div class="text-center mt-3">
+                <small class="text-muted">
+                    <i class="bi bi-info-circle me-1"></i>
+                    Sign in to authorize this application
+                </small>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>

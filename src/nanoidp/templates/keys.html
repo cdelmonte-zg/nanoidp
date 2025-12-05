@@ -1,0 +1,187 @@
+{% extends "base.html" %}
+
+{% block title %}Keys & Certificates - NanoIDP{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2><i class="bi bi-key me-2"></i>Keys & Certificates</h2>
+    <form action="{{ url_for('ui.keys_regenerate') }}" method="post" class="d-inline">
+        <button type="submit" class="btn btn-warning" onclick="return confirm('Regenerate all keys? This will invalidate all existing tokens!')">
+            <i class="bi bi-arrow-clockwise me-2"></i>Regenerate Keys
+        </button>
+    </form>
+</div>
+
+<div class="row g-4">
+    <!-- Key Info -->
+    <div class="col-md-4">
+        <div class="card h-100">
+            <div class="card-header">
+                <i class="bi bi-info-circle me-2"></i>Active Key
+            </div>
+            <div class="card-body">
+                <table class="table table-sm mb-0">
+                    <tr>
+                        <td class="text-muted">Key ID (KID)</td>
+                        <td><code>{{ kid }}</code></td>
+                    </tr>
+                    <tr>
+                        <td class="text-muted">Algorithm</td>
+                        <td><code>RS256</code></td>
+                    </tr>
+                    <tr>
+                        <td class="text-muted">Key Size</td>
+                        <td>2048 bits</td>
+                    </tr>
+                    {% if key_created %}
+                    <tr>
+                        <td class="text-muted">Created</td>
+                        <td><small>{{ key_created }}</small></td>
+                    </tr>
+                    {% endif %}
+                    <tr>
+                        <td class="text-muted">Keys Directory</td>
+                        <td><code>{{ keys_dir }}</code></td>
+                    </tr>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- Download Links -->
+    <div class="col-md-4">
+        <div class="card h-100">
+            <div class="card-header">
+                <i class="bi bi-download me-2"></i>Download
+            </div>
+            <div class="card-body">
+                <div class="d-grid gap-2">
+                    <a href="{{ url_for('ui.keys_download', key_type='public_key') }}" class="btn btn-outline-primary">
+                        <i class="bi bi-file-earmark-text me-2"></i>Public Key (PEM)
+                    </a>
+                    <a href="{{ url_for('ui.keys_download', key_type='certificate') }}" class="btn btn-outline-primary">
+                        <i class="bi bi-file-earmark-lock me-2"></i>Certificate (PEM)
+                    </a>
+                    <a href="/.well-known/jwks.json" target="_blank" class="btn btn-outline-secondary">
+                        <i class="bi bi-filetype-json me-2"></i>JWKS Endpoint
+                    </a>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Quick Links -->
+    <div class="col-md-4">
+        <div class="card h-100">
+            <div class="card-header">
+                <i class="bi bi-link-45deg me-2"></i>Related Endpoints
+            </div>
+            <div class="card-body">
+                <ul class="list-unstyled mb-0">
+                    <li class="mb-2">
+                        <a href="/.well-known/jwks.json" target="_blank">
+                            <i class="bi bi-box-arrow-up-right me-2"></i>JWKS
+                        </a>
+                        <small class="text-muted d-block">JSON Web Key Set</small>
+                    </li>
+                    <li class="mb-2">
+                        <a href="/saml/metadata" target="_blank">
+                            <i class="bi bi-box-arrow-up-right me-2"></i>SAML Metadata
+                        </a>
+                        <small class="text-muted d-block">IdP metadata with certificate</small>
+                    </li>
+                    <li>
+                        <a href="/saml/cert.pem" target="_blank">
+                            <i class="bi bi-box-arrow-up-right me-2"></i>Certificate (raw)
+                        </a>
+                        <small class="text-muted d-block">Direct PEM download</small>
+                    </li>
+                </ul>
+            </div>
+        </div>
+    </div>
+
+    <!-- Public Key -->
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span><i class="bi bi-file-earmark-text me-2"></i>Public Key</span>
+                <button type="button" class="btn btn-sm btn-outline-secondary" onclick="copyToClipboard('publicKey')">
+                    <i class="bi bi-clipboard"></i> Copy
+                </button>
+            </div>
+            <div class="card-body">
+                <pre id="publicKey" class="bg-dark text-light p-3 rounded mb-0" style="font-size: 0.75rem; max-height: 300px; overflow: auto;">{{ public_key_pem }}</pre>
+            </div>
+        </div>
+    </div>
+
+    <!-- Certificate -->
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span><i class="bi bi-file-earmark-lock me-2"></i>X.509 Certificate</span>
+                <button type="button" class="btn btn-sm btn-outline-secondary" onclick="copyToClipboard('certificate')">
+                    <i class="bi bi-clipboard"></i> Copy
+                </button>
+            </div>
+            <div class="card-body">
+                <pre id="certificate" class="bg-dark text-light p-3 rounded mb-0" style="font-size: 0.75rem; max-height: 300px; overflow: auto;">{{ certificate_pem }}</pre>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Previous Keys -->
+{% if previous_keys %}
+<div class="col-12 mt-4">
+    <div class="card">
+        <div class="card-header">
+            <i class="bi bi-clock-history me-2"></i>Previous Keys (for token validation)
+            <span class="badge bg-secondary ms-2">max {{ max_previous_keys }} keys retained</span>
+        </div>
+        <div class="card-body p-0">
+            <table class="table table-sm mb-0">
+                <thead class="table-light">
+                    <tr>
+                        <th>Key ID (KID)</th>
+                        <th>Created</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for key in previous_keys %}
+                    <tr>
+                        <td><code>{{ key.kid }}</code></td>
+                        <td><small class="text-muted">{{ key.created_at }}</small></td>
+                        <td><span class="badge bg-secondary">Retired (validation only)</span></td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+<!-- Warning -->
+<div class="alert alert-warning mt-4">
+    <i class="bi bi-exclamation-triangle me-2"></i>
+    <strong>Warning:</strong> Regenerating keys will rotate the active key. Previous keys remain valid for token validation until they age out (max {{ max_previous_keys }} retained).
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+function copyToClipboard(elementId) {
+    const text = document.getElementById(elementId).textContent;
+    navigator.clipboard.writeText(text).then(() => {
+        // Show feedback
+        const btn = event.target.closest('button');
+        const originalHtml = btn.innerHTML;
+        btn.innerHTML = '<i class="bi bi-check"></i> Copied!';
+        setTimeout(() => { btn.innerHTML = originalHtml; }, 2000);
+    });
+}
+</script>
+{% endblock %}

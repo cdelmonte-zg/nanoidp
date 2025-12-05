@@ -1,0 +1,217 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard - NanoIDP{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2><i class="bi bi-speedometer2 me-2"></i>Dashboard</h2>
+    <div class="d-flex gap-2">
+        <span class="badge {% if settings.security_profile == 'stricter-dev' %}bg-warning text-dark{% else %}bg-secondary{% endif %} fs-6" title="Security Profile">
+            <i class="bi bi-shield-lock me-1"></i> {{ settings.security_profile }}
+        </span>
+        <span class="badge bg-success fs-6"><i class="bi bi-check-circle me-1"></i> IDP Running</span>
+    </div>
+</div>
+
+<!-- Stats Cards -->
+<div class="row g-4 mb-4">
+    <div class="col-md-3">
+        <div class="card stat-card h-100">
+            <div class="card-body">
+                <div class="d-flex justify-content-between">
+                    <div>
+                        <h6 class="text-muted mb-2">Total Users</h6>
+                        <div class="stat-value">{{ users_count }}</div>
+                    </div>
+                    <div class="text-primary opacity-50">
+                        <i class="bi bi-people" style="font-size: 2.5rem;"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card stat-card h-100" style="border-left-color: #198754;">
+            <div class="card-body">
+                <div class="d-flex justify-content-between">
+                    <div>
+                        <h6 class="text-muted mb-2">Token Requests</h6>
+                        <div class="stat-value" style="color: #198754;">{{ stats.token_requests }}</div>
+                    </div>
+                    <div class="text-success opacity-50">
+                        <i class="bi bi-key" style="font-size: 2.5rem;"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card stat-card h-100" style="border-left-color: #6610f2;">
+            <div class="card-body">
+                <div class="d-flex justify-content-between">
+                    <div>
+                        <h6 class="text-muted mb-2">SAML Requests</h6>
+                        <div class="stat-value" style="color: #6610f2;">{{ stats.saml_requests }}</div>
+                    </div>
+                    <div class="text-purple opacity-50">
+                        <i class="bi bi-file-earmark-lock" style="font-size: 2.5rem;"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card stat-card h-100" style="border-left-color: #ffc107;">
+            <div class="card-body">
+                <div class="d-flex justify-content-between">
+                    <div>
+                        <h6 class="text-muted mb-2">Login Attempts</h6>
+                        <div class="stat-value" style="color: #ffc107;">{{ stats.login_attempts }}</div>
+                        <small class="text-muted">
+                            <span class="text-success">{{ stats.successful_logins }} success</span> /
+                            <span class="text-danger">{{ stats.failed_logins }} failed</span>
+                        </small>
+                    </div>
+                    <div class="text-warning opacity-50">
+                        <i class="bi bi-door-open" style="font-size: 2.5rem;"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Configuration & Endpoints -->
+<div class="row g-4">
+    <div class="col-md-6">
+        <div class="card h-100">
+            <div class="card-header">
+                <i class="bi bi-gear me-2"></i>Configuration
+            </div>
+            <div class="card-body">
+                <table class="table table-sm mb-0">
+                    <tr>
+                        <td class="text-muted">Issuer</td>
+                        <td><code>{{ settings.issuer }}</code></td>
+                    </tr>
+                    <tr>
+                        <td class="text-muted">Audience</td>
+                        <td><code>{{ settings.audience }}</code></td>
+                    </tr>
+                    <tr>
+                        <td class="text-muted">Token Expiry</td>
+                        <td>{{ settings.token_expiry_minutes }} minutes</td>
+                    </tr>
+                    <tr>
+                        <td class="text-muted">SAML Entity ID</td>
+                        <td><code>{{ settings.saml_entity_id }}</code></td>
+                    </tr>
+                    <tr>
+                        <td class="text-muted">OAuth Clients</td>
+                        <td>{{ settings.clients|length }} configured</td>
+                    </tr>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-md-6">
+        <div class="card h-100">
+            <div class="card-header">
+                <i class="bi bi-link-45deg me-2"></i>Endpoints
+            </div>
+            <div class="card-body">
+                <div class="list-group list-group-flush">
+                    <a href="/.well-known/openid-configuration" target="_blank" class="list-group-item list-group-item-action d-flex justify-content-between align-items-center">
+                        <span><i class="bi bi-braces me-2"></i>OIDC Discovery</span>
+                        <code class="small">/.well-known/openid-configuration</code>
+                    </a>
+                    <a href="/.well-known/jwks.json" target="_blank" class="list-group-item list-group-item-action d-flex justify-content-between align-items-center">
+                        <span><i class="bi bi-key me-2"></i>JWKS</span>
+                        <code class="small">/.well-known/jwks.json</code>
+                    </a>
+                    <a href="/token" class="list-group-item list-group-item-action d-flex justify-content-between align-items-center">
+                        <span><i class="bi bi-ticket me-2"></i>Token Endpoint</span>
+                        <code class="small">POST /token</code>
+                    </a>
+                    <a href="/saml/metadata" target="_blank" class="list-group-item list-group-item-action d-flex justify-content-between align-items-center">
+                        <span><i class="bi bi-file-earmark-code me-2"></i>SAML Metadata</span>
+                        <code class="small">/saml/metadata</code>
+                    </a>
+                    <a href="/saml/sso" class="list-group-item list-group-item-action d-flex justify-content-between align-items-center">
+                        <span><i class="bi bi-box-arrow-in-right me-2"></i>SAML SSO</span>
+                        <code class="small">POST /saml/sso</code>
+                    </a>
+                    <a href="/saml/attribute-query" class="list-group-item list-group-item-action d-flex justify-content-between align-items-center">
+                        <span><i class="bi bi-person-badge me-2"></i>SAML Attribute Query</span>
+                        <code class="small">POST /saml/attribute-query</code>
+                    </a>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Recent Activity & Quick Actions -->
+<div class="row g-4 mt-2">
+    <div class="col-md-8">
+        <div class="card h-100">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span><i class="bi bi-activity me-2"></i>Recent Activity</span>
+                <a href="{{ url_for('ui.audit') }}" class="btn btn-sm btn-outline-secondary">View All</a>
+            </div>
+            <div class="card-body p-0">
+                {% if recent_events %}
+                <div class="list-group list-group-flush">
+                    {% for event in recent_events %}
+                    <div class="list-group-item py-2">
+                        <div class="d-flex justify-content-between align-items-center">
+                            <div>
+                                <span class="badge {% if event.status == 'success' %}bg-success{% else %}bg-danger{% endif %} me-2">
+                                    {{ event.status }}
+                                </span>
+                                <span class="badge bg-secondary me-2">{{ event.event_type }}</span>
+                                <span class="text-muted small">{{ event.endpoint }}</span>
+                                {% if event.username %}
+                                <span class="ms-2"><i class="bi bi-person"></i> {{ event.username }}</span>
+                                {% endif %}
+                            </div>
+                            <small class="text-muted">{{ event.timestamp }}</small>
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+                {% else %}
+                <div class="text-center py-4 text-muted">
+                    <i class="bi bi-inbox fs-3"></i>
+                    <p class="mt-2 mb-0">No recent activity</p>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="card h-100">
+            <div class="card-header">
+                <i class="bi bi-lightning me-2"></i>Quick Actions
+            </div>
+            <div class="card-body">
+                <div class="d-grid gap-2">
+                    <a href="{{ url_for('ui.test_page') }}" class="btn btn-outline-primary">
+                        <i class="bi bi-terminal me-2"></i>Generate Token
+                    </a>
+                    <a href="{{ url_for('ui.users') }}" class="btn btn-outline-success">
+                        <i class="bi bi-people me-2"></i>View Users
+                    </a>
+                    <a href="{{ url_for('ui.audit') }}" class="btn btn-outline-warning">
+                        <i class="bi bi-journal-text me-2"></i>Audit Log
+                    </a>
+                    <a href="{{ url_for('ui.clients') }}" class="btn btn-outline-info">
+                        <i class="bi bi-app me-2"></i>OAuth Clients
+                    </a>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

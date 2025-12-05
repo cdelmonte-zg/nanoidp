@@ -1,0 +1,179 @@
+{% extends "base.html" %}
+
+{% block title %}Settings - NanoIDP{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2><i class="bi bi-gear me-2"></i>IdP Settings</h2>
+</div>
+
+<form method="post">
+    <div class="row g-4">
+        <!-- OAuth Settings -->
+        <div class="col-md-6">
+            <div class="card h-100">
+                <div class="card-header">
+                    <i class="bi bi-key me-2"></i>OAuth2 / OIDC Settings
+                </div>
+                <div class="card-body">
+                    <div class="mb-3">
+                        <label for="issuer" class="form-label">Issuer URL</label>
+                        <input type="url" class="form-control" id="issuer" name="issuer"
+                               value="{{ settings.issuer }}">
+                        <div class="form-text">Base URL used in JWT "iss" claim</div>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="audience" class="form-label">Audience</label>
+                        <input type="text" class="form-control" id="audience" name="audience"
+                               value="{{ settings.audience }}">
+                        <div class="form-text">Default audience for JWT "aud" claim</div>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="token_expiry_minutes" class="form-label">Token Expiry (minutes)</label>
+                        <input type="number" class="form-control" id="token_expiry_minutes" name="token_expiry_minutes"
+                               value="{{ settings.token_expiry_minutes }}" min="1" max="525600">
+                        <div class="form-text">How long tokens are valid (default: 60 minutes)</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- SAML Settings -->
+        <div class="col-md-6">
+            <div class="card h-100">
+                <div class="card-header">
+                    <i class="bi bi-shield me-2"></i>SAML Settings
+                </div>
+                <div class="card-body">
+                    <div class="mb-3">
+                        <label for="saml_entity_id" class="form-label">Entity ID</label>
+                        <input type="text" class="form-control" id="saml_entity_id" name="saml_entity_id"
+                               value="{{ settings.saml_entity_id }}">
+                        <div class="form-text">SAML IdP Entity ID</div>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="saml_sso_url" class="form-label">SSO URL</label>
+                        <input type="url" class="form-control" id="saml_sso_url" name="saml_sso_url"
+                               value="{{ settings.saml_sso_url }}">
+                        <div class="form-text">SAML Single Sign-On endpoint</div>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="default_acs_url" class="form-label">Default ACS URL</label>
+                        <input type="url" class="form-control" id="default_acs_url" name="default_acs_url"
+                               value="{{ settings.default_acs_url }}">
+                        <div class="form-text">Default Assertion Consumer Service URL</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Identity Classes -->
+        <div class="col-12">
+            <div class="card">
+                <div class="card-header">
+                    <i class="bi bi-person-badge me-2"></i>Allowed Identity Classes
+                </div>
+                <div class="card-body">
+                    <div class="mb-3">
+                        <label for="allowed_identity_classes" class="form-label">Identity Classes</label>
+                        <textarea class="form-control" id="allowed_identity_classes" name="allowed_identity_classes" rows="4">{{ settings.allowed_identity_classes|join('\n') }}</textarea>
+                        <div class="form-text">One identity class per line (e.g., INTERNAL, EXTERNAL, PARTNER, SERVICE)</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Settings Preview -->
+    <div class="card mt-4">
+        <div class="card-header d-flex justify-content-between align-items-center">
+            <span><i class="bi bi-eye me-2"></i>Preview Changes</span>
+            <button type="button" class="btn btn-sm btn-outline-secondary" onclick="updatePreview()">
+                <i class="bi bi-arrow-clockwise"></i> Refresh
+            </button>
+        </div>
+        <div class="card-body">
+            <pre id="settingsPreview" class="json mb-0" style="max-height: 200px;">Click "Refresh" to preview changes</pre>
+        </div>
+    </div>
+
+    <div class="d-flex justify-content-end mt-4 gap-2">
+        <button type="button" class="btn btn-outline-secondary" onclick="updatePreview()">
+            <i class="bi bi-eye me-2"></i>Preview
+        </button>
+        <button type="submit" class="btn btn-primary">
+            <i class="bi bi-check-lg me-2"></i>Save Settings
+        </button>
+    </div>
+</form>
+
+<!-- Endpoints Reference -->
+<div class="card mt-4">
+    <div class="card-header">
+        <i class="bi bi-link-45deg me-2"></i>IdP Endpoints
+    </div>
+    <div class="card-body">
+        <table class="table table-sm mb-0">
+            <tbody>
+                <tr>
+                    <td class="text-muted" style="width: 200px;">OIDC Discovery</td>
+                    <td><a href="/.well-known/openid-configuration" target="_blank">/.well-known/openid-configuration</a></td>
+                </tr>
+                <tr>
+                    <td class="text-muted">JWKS Endpoint</td>
+                    <td><a href="/.well-known/jwks.json" target="_blank">/.well-known/jwks.json</a></td>
+                </tr>
+                <tr>
+                    <td class="text-muted">Token Endpoint</td>
+                    <td><code>/token</code></td>
+                </tr>
+                <tr>
+                    <td class="text-muted">SAML Metadata</td>
+                    <td><a href="/saml/metadata" target="_blank">/saml/metadata</a></td>
+                </tr>
+                <tr>
+                    <td class="text-muted">SAML SSO</td>
+                    <td><code>/saml/sso</code></td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+function updatePreview() {
+    const preview = {
+        oauth: {
+            issuer: document.getElementById('issuer').value,
+            audience: document.getElementById('audience').value,
+            token_expiry_minutes: parseInt(document.getElementById('token_expiry_minutes').value) || 60
+        },
+        saml: {
+            entity_id: document.getElementById('saml_entity_id').value,
+            sso_url: document.getElementById('saml_sso_url').value,
+            default_acs_url: document.getElementById('default_acs_url').value
+        },
+        allowed_identity_classes: document.getElementById('allowed_identity_classes').value
+            .split('\n')
+            .map(s => s.trim())
+            .filter(s => s)
+    };
+
+    document.getElementById('settingsPreview').textContent = JSON.stringify(preview, null, 2);
+}
+
+// Auto-update preview on input change
+document.querySelectorAll('input, textarea').forEach(el => {
+    el.addEventListener('input', updatePreview);
+});
+
+// Initial preview
+updatePreview();
+</script>
+{% endblock %}
