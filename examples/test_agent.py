@@ -171,7 +171,8 @@ class NanoIDPTestAgent:
         result = TestResult(name, category, success, message, data)
         self.suite.add(result)
         status = "OK" if success else "FAIL"
-        print(f"  [{status}] {name}: {message}")
+        # Don't log message to avoid exposing sensitive data (passwords, tokens)
+        print(f"  [{status}] {name}")
         return result
 
     # =========================================================================
