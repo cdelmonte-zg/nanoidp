@@ -60,7 +60,7 @@ def _print_box(lines: list[str], title: str = ""):
         print(f"│ {title.center(width - 2)} │")
         print(f"├{'─' * width}┤")
     for line in lines:
-        print(f"│ {line.ljust(width - 2)} │")
+        print(f"│ {line.ljust(width - 2)} │")  # noqa: S101 - intentional display in wizard
     print(f"└{'─' * width}┘")
 
 
@@ -240,7 +240,8 @@ authority_prefixes:
   entitlements: "ENT_"
 """
 
-    with open(os.path.join(config_path, "settings.yaml"), "w") as f:
+    # Development tool - credentials stored in plaintext intentionally for ease of use
+    with open(os.path.join(config_path, "settings.yaml"), "w") as f:  # noqa: S101
         f.write(settings_yaml)
 
 

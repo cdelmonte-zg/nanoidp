@@ -1427,15 +1427,17 @@ class NanoIDPTestAgent:
                 data = response.json()
                 oauth = data.get("oauth", {})
                 saml = data.get("saml", {})
+                logging_config = data.get("logging", {})
                 issuer = oauth.get("issuer", "?")
                 audience = oauth.get("audience", "?")
                 entity_id = saml.get("entity_id", "?")
+                verbose_logging = logging_config.get("verbose_logging", "?")
                 return self._add_result(
                     "API Config",
                     TestCategory.API,
                     True,
-                    f"issuer={issuer}, audience={audience}",
-                    {"issuer": issuer, "audience": audience, "saml_entity": entity_id}
+                    f"issuer={issuer}, verbose_logging={verbose_logging}",
+                    {"issuer": issuer, "audience": audience, "saml_entity": entity_id, "verbose_logging": verbose_logging}
                 )
             return self._add_result(
                 "API Config",
@@ -1445,6 +1447,35 @@ class NanoIDPTestAgent:
             )
         except Exception as e:
             return self._add_result("API Config", TestCategory.API, False, str(e))
+
+    def test_api_verbose_logging_setting(self) -> TestResult:
+        """REST API - Verbose logging setting in config."""
+        try:
+            response = self.session.get(f"{self.base_url}/api/config", timeout=5)
+            if response.status_code == 200:
+                data = response.json()
+                logging_config = data.get("logging", {})
+
+                # Check that logging section exists with verbose_logging
+                has_logging_section = "logging" in data
+                has_verbose_logging = "verbose_logging" in logging_config
+                verbose_value = logging_config.get("verbose_logging")
+
+                return self._add_result(
+                    "Verbose Logging Setting",
+                    TestCategory.API,
+                    has_logging_section and has_verbose_logging,
+                    f"has_section={has_logging_section}, verbose_logging={verbose_value}",
+                    {"has_logging_section": has_logging_section, "verbose_logging": verbose_value}
+                )
+            return self._add_result(
+                "Verbose Logging Setting",
+                TestCategory.API,
+                False,
+                f"Status: {response.status_code}"
+            )
+        except Exception as e:
+            return self._add_result("Verbose Logging Setting", TestCategory.API, False, str(e))
 
     def test_api_config_reload(self) -> TestResult:
         """REST API - Reload configuration."""
@@ -1584,6 +1615,7 @@ class NanoIDPTestAgent:
                 self.test_api_user_details,
                 self.test_api_direct_token,
                 self.test_api_config,
+                self.test_api_verbose_logging_setting,
                 self.test_api_config_reload,
                 self.test_api_audit_log,
                 self.test_api_audit_stats,

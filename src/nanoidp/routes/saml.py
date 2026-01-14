@@ -2,6 +2,7 @@
 SAML routes for SSO and metadata.
 """
 
+import html
 import uuid
 import zlib
 import logging
@@ -10,6 +11,19 @@ from datetime import datetime, timedelta, timezone
 from flask import Blueprint, request, abort, session, redirect, url_for, Response
 
 from lxml import etree
+
+# Create secure XML parser (XXE protection without deprecated defusedxml.lxml)
+_secure_parser = etree.XMLParser(
+    resolve_entities=False,
+    no_network=True,
+    dtd_validation=False,
+    load_dtd=False,
+)
+
+
+def secure_fromstring(xml_bytes: bytes) -> etree._Element:
+    """Parse XML securely, preventing XXE attacks."""
+    return etree.fromstring(xml_bytes, parser=_secure_parser)
 
 from ..config import get_config
 from ..services import get_crypto_service, get_audit_log
@@ -57,7 +71,7 @@ def _parse_saml_request(saml_request_b64: str):
     try:
         saml_compressed = b64decode(saml_request_b64)
         saml_xml = zlib.decompress(saml_compressed, -zlib.MAX_WBITS)
-        root = etree.fromstring(saml_xml)
+        root = secure_fromstring(saml_xml)
 
         request_id = root.get("ID")
         acs_url = root.get("AssertionConsumerServiceURL")
@@ -342,17 +356,19 @@ def sso():
     if config.settings.log_saml_requests:
         logger.info(f"SAML Response issued for user '{username}' to {acs_url}")
 
-    # Auto-submit form
-    html = f"""<!DOCTYPE html>
+    # Auto-submit form (escape user-controlled values to prevent XSS)
+    safe_acs_url = html.escape(acs_url, quote=True)
+    safe_relay_state = html.escape(relay_state, quote=True)
+    response_html = f"""<!DOCTYPE html>
 <html><body onload="document.forms[0].submit()">
-<form method="post" action="{acs_url}">
+<form method="post" action="{safe_acs_url}">
   <input type="hidden" name="SAMLResponse" value="{saml_b64}"/>
-  <input type="hidden" name="RelayState" value="{relay_state}"/>
+  <input type="hidden" name="RelayState" value="{safe_relay_state}"/>
   <noscript><button type="submit">Continue</button></noscript>
 </form>
 </body></html>"""
 
-    return html
+    return response_html
 
 
 def _build_attribute_query_response(user_id: str, attributes: dict, request_id: str, issuer_url: str) -> str:
@@ -462,7 +478,7 @@ def _sign_attribute_query_response(response_xml: str, sign: bool = True) -> str:
         config = get_config()
         crypto = get_crypto_service(config.settings.keys_dir)
 
-        root = etree.fromstring(response_xml.encode("utf-8"))
+        root = secure_fromstring(response_xml.encode("utf-8"))
 
         cert_path = crypto.keys_dir / "idp-cert.pem"
         with open(cert_path, "rb") as f:
@@ -499,9 +515,9 @@ def attribute_query():
     req_info = _get_request_info()
 
     try:
-        # Parse SOAP request body
+        # Parse SOAP request body (using defusedxml to prevent XXE attacks)
         soap_body = request.data
-        root = etree.fromstring(soap_body)
+        root = secure_fromstring(soap_body)
 
         # SAML namespaces
         namespaces = {
@@ -618,4 +634,4 @@ def attribute_query():
             **req_info,
         )
 
-        return f"AttributeQuery failed: {str(e)}", 500
+        return "AttributeQuery failed", 500

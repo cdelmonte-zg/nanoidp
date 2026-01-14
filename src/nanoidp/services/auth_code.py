@@ -86,7 +86,18 @@ class AuthCodeStore:
         )
 
         self._codes[code] = auth_code
-        logger.debug(f"Created authorization code for user '{username}', client '{client_id}'")
+
+        # Verbose logging controlled by settings (late import to avoid circular dependency)
+        try:
+            from ..config import get_config
+            verbose = get_config().settings.verbose_logging
+        except Exception:
+            verbose = True  # Default to verbose if config not available
+
+        if verbose:
+            logger.debug(f"Created authorization code for user '{username}', client '{client_id}'")
+        else:
+            logger.debug("Created authorization code")
 
         return code
 

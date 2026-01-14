@@ -132,6 +132,9 @@ def get_configuration():
             "sign_responses": settings.saml_sign_responses,
             "c14n_algorithm": settings.saml_c14n_algorithm,
         },
+        "logging": {
+            "verbose_logging": settings.verbose_logging,
+        },
         "authority_prefixes": settings.authority_prefixes,
         "allowed_identity_classes": settings.allowed_identity_classes,
         "users_count": len(config.users),

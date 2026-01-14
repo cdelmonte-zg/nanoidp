@@ -88,12 +88,20 @@ class AuditLog:
             self._entries.append(entry)
             self._update_stats(event_type, status)
 
-        # Also log to standard logger
+        # Verbose logging controlled by settings (late import to avoid circular dependency)
+        try:
+            from ..config import get_config
+            verbose = get_config().settings.verbose_logging
+        except Exception:
+            verbose = True  # Default to verbose if config not available
+
+        # Build log message - include identifiers only if verbose logging is enabled
         log_msg = f"[{event_type}] {method} {endpoint} - {status}"
-        if username:
-            log_msg += f" (user: {username})"
-        if client_id:
-            log_msg += f" (client: {client_id})"
+        if verbose:
+            if username:
+                log_msg += f" (user: {username})"
+            if client_id:
+                log_msg += f" (client: {client_id})"
 
         if status == "success":
             logger.info(log_msg)
