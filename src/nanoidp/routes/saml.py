@@ -305,7 +305,7 @@ def sso():
         name_id=name_id,
         attributes={k: v for k, v in saml_attrs.items() if v is not None},
         in_response_to=in_response_to,
-        sign=True,
+        sign=config.settings.saml_sign_responses,
     )
     saml_b64 = b64encode(xml).decode("ascii")
 
@@ -430,8 +430,10 @@ def _build_attribute_query_response(user_id: str, attributes: dict, request_id: 
     return etree.tostring(response, encoding="unicode", pretty_print=True)
 
 
-def _sign_attribute_query_response(response_xml: str) -> str:
+def _sign_attribute_query_response(response_xml: str, sign: bool = True) -> str:
     """Sign a SAML Response for AttributeQuery using signxml."""
+    if not sign:
+        return response_xml
     if not SIGNXML_AVAILABLE:
         logger.warning("signxml not available, returning unsigned response")
         return response_xml
@@ -555,8 +557,8 @@ def attribute_query():
             issuer_url=issuer_url,
         )
 
-        # Sign the response
-        signed_response = _sign_attribute_query_response(response_xml)
+        # Sign the response (if configured)
+        signed_response = _sign_attribute_query_response(response_xml, config.settings.saml_sign_responses)
 
         # Wrap in SOAP envelope
         soap_response = f"""<?xml version="1.0" encoding="UTF-8"?>

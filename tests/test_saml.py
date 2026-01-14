@@ -416,6 +416,140 @@ class TestSAMLAttributeQuery:
         assert 'identity_class' in attr_names
 
 
+class TestSAMLSigningConfiguration:
+    """Tests for configurable SAML response signing."""
+
+    def test_unsigned_response_has_no_signature(self, client):
+        """Test that SAML response without signing has no Signature element."""
+        from nanoidp.routes.saml import _build_saml_response
+
+        xml = _build_saml_response(
+            acs_url='http://sp.example.com/acs',
+            issuer='http://localhost:8000/saml',
+            audience='http://sp.example.com',
+            name_id='admin',
+            attributes={'email': 'admin@example.com'},
+            sign=False
+        )
+
+        root = etree.fromstring(xml)
+        signature = root.find(".//ds:Signature", SAML_NS)
+        assert signature is None, "Unsigned response should not contain Signature element"
+
+    def test_signed_response_has_signature(self, client):
+        """Test that SAML response with signing has Signature element."""
+        from nanoidp.routes.saml import _build_saml_response
+
+        xml = _build_saml_response(
+            acs_url='http://sp.example.com/acs',
+            issuer='http://localhost:8000/saml',
+            audience='http://sp.example.com',
+            name_id='admin',
+            attributes={'email': 'admin@example.com'},
+            sign=True
+        )
+
+        root = etree.fromstring(xml)
+        # If signxml is available, signature should be present
+        try:
+            from signxml import XMLSigner
+            signature = root.find(".//ds:Signature", SAML_NS)
+            assert signature is not None, "Signed response should contain Signature element"
+        except ImportError:
+            # signxml not available, skip signature check
+            pass
+
+    def test_config_controls_sso_signing(self, client):
+        """Test that saml_sign_responses config controls SSO response signing."""
+        from nanoidp.config import get_config
+
+        # Authenticate
+        with client.session_transaction() as sess:
+            sess['user'] = 'admin'
+
+        # Create a minimal SAMLRequest
+        saml_request = """<?xml version="1.0" encoding="UTF-8"?>
+<samlp:AuthnRequest
+    xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"
+    xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion"
+    ID="_req123"
+    Version="2.0"
+    IssueInstant="2025-01-01T00:00:00Z"
+    AssertionConsumerServiceURL="http://sp.example.com/acs">
+    <saml:Issuer>http://sp.example.com</saml:Issuer>
+</samlp:AuthnRequest>"""
+        compressed = zlib.compress(saml_request.encode('utf-8'))[2:-4]
+        saml_request_b64 = base64.b64encode(compressed).decode('ascii')
+
+        # Get config and temporarily disable signing
+        config = get_config()
+        original_value = config.settings.saml_sign_responses
+        config.settings.saml_sign_responses = False
+
+        try:
+            response = client.post('/saml/sso',
+                data={'SAMLRequest': saml_request_b64}
+            )
+            assert response.status_code == 200
+
+            # Extract SAMLResponse from the form
+            response_text = response.data.decode('utf-8')
+            import re
+            match = re.search(r'name="SAMLResponse"\s+value="([^"]+)"', response_text)
+            assert match, "SAMLResponse not found in form"
+
+            saml_response_b64 = match.group(1)
+            saml_response_xml = base64.b64decode(saml_response_b64)
+            root = etree.fromstring(saml_response_xml)
+
+            # When sign_responses=False, there should be no signature
+            signature = root.find(".//ds:Signature", SAML_NS)
+            assert signature is None, "Response should be unsigned when saml_sign_responses=False"
+        finally:
+            # Restore original config
+            config.settings.saml_sign_responses = original_value
+
+    def test_attribute_query_respects_signing_config(self, client):
+        """Test that AttributeQuery response respects saml_sign_responses config."""
+        from nanoidp.config import get_config
+
+        config = get_config()
+        original_value = config.settings.saml_sign_responses
+        config.settings.saml_sign_responses = False
+
+        try:
+            query = """<?xml version="1.0" encoding="UTF-8"?>
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+    <soap:Body>
+        <saml2p:AttributeQuery
+            xmlns:saml2p="urn:oasis:names:tc:SAML:2.0:protocol"
+            xmlns:saml2="urn:oasis:names:tc:SAML:2.0:assertion"
+            ID="_req123"
+            Version="2.0"
+            IssueInstant="2025-01-01T00:00:00Z">
+            <saml2:Issuer>http://sp.example.com</saml2:Issuer>
+            <saml2:Subject>
+                <saml2:NameID Format="urn:oasis:names:tc:SAML:1.1:nameid-format:unspecified">admin</saml2:NameID>
+            </saml2:Subject>
+        </saml2p:AttributeQuery>
+    </soap:Body>
+</soap:Envelope>"""
+
+            response = client.post('/saml/attribute-query',
+                data=query,
+                content_type='text/xml'
+            )
+
+            assert response.status_code == 200
+            root = etree.fromstring(response.data)
+
+            # When sign_responses=False, there should be no signature
+            signature = root.find(".//ds:Signature", SAML_NS)
+            assert signature is None, "AttributeQuery response should be unsigned when saml_sign_responses=False"
+        finally:
+            config.settings.saml_sign_responses = original_value
+
+
 class TestSAMLStatus:
     """Tests for SAML status codes in responses."""
 
