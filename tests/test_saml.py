@@ -549,6 +549,118 @@ class TestSAMLSigningConfiguration:
         finally:
             config.settings.saml_sign_responses = original_value
 
+    def test_signed_response_uses_c14n_1_0(self, client):
+        """Test that signed SAML response uses C14N 1.0 for pysaml2 compatibility.
+
+        pysaml2 and many other SAML libraries expect C14N 1.0:
+        http://www.w3.org/TR/2001/REC-xml-c14n-20010315
+
+        Not C14N 1.1:
+        http://www.w3.org/2006/12/xml-c14n11
+        """
+        from nanoidp.routes.saml import _build_saml_response
+
+        try:
+            from signxml import XMLSigner
+        except ImportError:
+            pytest.skip("signxml not available")
+
+        xml = _build_saml_response(
+            acs_url='http://sp.example.com/acs',
+            issuer='http://localhost:8000/saml',
+            audience='http://sp.example.com',
+            name_id='admin',
+            attributes={'email': 'admin@example.com'},
+            sign=True
+        )
+
+        root = etree.fromstring(xml)
+
+        # Check CanonicalizationMethod
+        c14n_method = root.find(".//ds:CanonicalizationMethod", SAML_NS)
+        assert c14n_method is not None, "CanonicalizationMethod element not found"
+
+        c14n_algo = c14n_method.get("Algorithm")
+        # C14N 1.0 (compatible with pysaml2)
+        expected_c14n = "http://www.w3.org/TR/2001/REC-xml-c14n-20010315"
+        # C14N 1.1 (NOT compatible with pysaml2)
+        incompatible_c14n = "http://www.w3.org/2006/12/xml-c14n11"
+
+        assert c14n_algo != incompatible_c14n, \
+            f"C14N 1.1 is not compatible with pysaml2. Use C14N 1.0 instead."
+        assert c14n_algo == expected_c14n, \
+            f"Expected C14N 1.0 algorithm, got: {c14n_algo}"
+
+    def test_signed_response_transform_uses_c14n_1_0(self, client):
+        """Test that Transform element also uses C14N 1.0."""
+        from nanoidp.routes.saml import _build_saml_response
+
+        try:
+            from signxml import XMLSigner
+        except ImportError:
+            pytest.skip("signxml not available")
+
+        xml = _build_saml_response(
+            acs_url='http://sp.example.com/acs',
+            issuer='http://localhost:8000/saml',
+            audience='http://sp.example.com',
+            name_id='admin',
+            attributes={'email': 'admin@example.com'},
+            sign=True
+        )
+
+        root = etree.fromstring(xml)
+
+        # Check Transform elements for C14N algorithm
+        transforms = root.findall(".//ds:Transform", SAML_NS)
+
+        incompatible_c14n = "http://www.w3.org/2006/12/xml-c14n11"
+        expected_c14n = "http://www.w3.org/TR/2001/REC-xml-c14n-20010315"
+
+        for transform in transforms:
+            algo = transform.get("Algorithm")
+            if "c14n" in algo.lower():
+                assert algo != incompatible_c14n, \
+                    f"Transform uses C14N 1.1 which is not compatible with pysaml2"
+                assert algo == expected_c14n, \
+                    f"Expected C14N 1.0 in Transform, got: {algo}"
+
+    def test_c14n_algorithm_configurable_to_c14n11(self, client):
+        """Test that c14n_algorithm can be configured to use C14N 1.1."""
+        from nanoidp.config import get_config
+        from nanoidp.routes.saml import _build_saml_response
+
+        try:
+            from signxml import XMLSigner
+        except ImportError:
+            pytest.skip("signxml not available")
+
+        config = get_config()
+        original_value = config.settings.saml_c14n_algorithm
+        config.settings.saml_c14n_algorithm = "c14n11"
+
+        try:
+            xml = _build_saml_response(
+                acs_url='http://sp.example.com/acs',
+                issuer='http://localhost:8000/saml',
+                audience='http://sp.example.com',
+                name_id='admin',
+                attributes={'email': 'admin@example.com'},
+                sign=True
+            )
+
+            root = etree.fromstring(xml)
+            c14n_method = root.find(".//ds:CanonicalizationMethod", SAML_NS)
+            assert c14n_method is not None
+
+            c14n_algo = c14n_method.get("Algorithm")
+            expected_c14n11 = "http://www.w3.org/2006/12/xml-c14n11"
+
+            assert c14n_algo == expected_c14n11, \
+                f"Expected C14N 1.1 when configured, got: {c14n_algo}"
+        finally:
+            config.settings.saml_c14n_algorithm = original_value
+
 
 class TestSAMLSigningUI:
     """Tests for SAML signing configuration via UI."""

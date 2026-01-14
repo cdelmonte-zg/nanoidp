@@ -5,19 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.1.0] - 2026-01-14
 
 ### Added
 - Configurable SAML response signing via `saml.sign_responses` setting
 - UI toggle for SAML signing in Settings page (`/settings`)
 - `sign_responses` exposed in `/api/config` endpoint
+- Configurable XML canonicalization algorithm via `saml.c14n_algorithm` setting
 - Test agent (`examples/test_agent.py`) for comprehensive endpoint testing
 
 ### Changed
 - SAML SSO and AttributeQuery endpoints now respect `sign_responses` configuration
+- Changed default XML canonicalization to C14N 1.0 for pysaml2 compatibility
 - Updated documentation with SAML signing configuration instructions
 
-## [0.1.0] - 2025-12-04
+## [1.0.0] - 2025-12-04
 
 ### Added
 - Initial release
@@ -37,5 +39,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Key rotation with JWKS support for multiple keys
 - External key import support
 
-[Unreleased]: https://github.com/cdelmonte-zg/nanoidp/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/cdelmonte-zg/nanoidp/releases/tag/v0.1.0
+[1.1.0]: https://github.com/cdelmonte-zg/nanoidp/compare/v1.0.0...v1.1.0
+[1.0.0]: https://github.com/cdelmonte-zg/nanoidp/releases/tag/v1.0.0
