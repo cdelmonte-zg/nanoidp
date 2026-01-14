@@ -1069,6 +1069,92 @@ class NanoIDPTestAgent:
         except Exception as e:
             return self._add_result("SAML Signing Config", TestCategory.SAML, False, str(e))
 
+    def test_saml_c14n_algorithm(self) -> TestResult:
+        """Test SAML canonicalization algorithm configuration."""
+        try:
+            # Get current config
+            config_response = self.session.get(f"{self.base_url}/api/config", timeout=5)
+            if config_response.status_code != 200:
+                return self._add_result(
+                    "SAML C14N Config",
+                    TestCategory.SAML,
+                    False,
+                    f"Cannot get config: {config_response.status_code}"
+                )
+
+            config = config_response.json()
+            saml_config = config.get("saml", {})
+            c14n_setting = saml_config.get("c14n_algorithm", "c14n")
+            sign_responses = saml_config.get("sign_responses", True)
+
+            # If signing is disabled, we can't test C14N algorithm
+            if not sign_responses:
+                return self._add_result(
+                    "SAML C14N Config",
+                    TestCategory.SAML,
+                    True,
+                    f"config={c14n_setting}, signing disabled (cannot verify algorithm)",
+                    {"c14n_setting": c14n_setting, "sign_responses": False}
+                )
+
+            # Use attribute query to get a signed SAML response (like test_saml_signing_config)
+            attr_query = f"""
+            <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+                <soap:Body>
+                    <samlp:AttributeQuery xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"
+                        xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion"
+                        ID="_c14ntest123" Version="2.0" IssueInstant="2024-01-01T00:00:00Z">
+                        <saml:Issuer>test-sp</saml:Issuer>
+                        <saml:Subject>
+                            <saml:NameID>{self.username}</saml:NameID>
+                        </saml:Subject>
+                    </samlp:AttributeQuery>
+                </soap:Body>
+            </soap:Envelope>
+            """.strip()
+
+            response = requests.post(
+                f"{self.base_url}/saml/attribute-query",
+                data=attr_query,
+                headers={"Content-Type": "text/xml"},
+                timeout=10
+            )
+
+            if response.status_code == 200:
+                saml_response_xml = response.text
+
+                # Check which C14N algorithm is used in the signature
+                c14n_1_0 = "http://www.w3.org/TR/2001/REC-xml-c14n-20010315"
+                c14n_1_1 = "http://www.w3.org/2006/12/xml-c14n11"
+
+                uses_c14n_1_0 = c14n_1_0 in saml_response_xml
+                uses_c14n_1_1 = c14n_1_1 in saml_response_xml
+
+                # Verify config matches actual usage
+                if c14n_setting == "c14n":
+                    expected_correct = uses_c14n_1_0 and not uses_c14n_1_1
+                    algo_name = "C14N 1.0"
+                else:
+                    expected_correct = uses_c14n_1_1 and not uses_c14n_1_0
+                    algo_name = "C14N 1.1"
+
+                return self._add_result(
+                    "SAML C14N Config",
+                    TestCategory.SAML,
+                    expected_correct,
+                    f"config={c14n_setting}, uses {algo_name}, pysaml2_compatible={uses_c14n_1_0}",
+                    {"c14n_setting": c14n_setting, "uses_c14n_1_0": uses_c14n_1_0, "uses_c14n_1_1": uses_c14n_1_1}
+                )
+
+            return self._add_result(
+                "SAML C14N Config",
+                TestCategory.SAML,
+                False,
+                f"Cannot get SAML response: {response.status_code}"
+            )
+        except Exception as e:
+            return self._add_result("SAML C14N Config", TestCategory.SAML, False, str(e))
+
     # =========================================================================
     # KEY MANAGEMENT TESTS
     # =========================================================================
@@ -1486,6 +1572,7 @@ class NanoIDPTestAgent:
                 self.test_saml_sso,
                 self.test_saml_attribute_query,
                 self.test_saml_signing_config,
+                self.test_saml_c14n_algorithm,
             ]),
             (TestCategory.KEYS, "Key Management", [
                 self.test_key_info,
