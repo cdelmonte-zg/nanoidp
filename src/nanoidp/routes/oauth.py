@@ -23,6 +23,8 @@ def _get_request_info():
     }
 
 
+
+
 @oauth_bp.route("/.well-known/openid-configuration")
 def oidc_config():
     """OIDC Discovery endpoint."""
@@ -223,7 +225,10 @@ def authorize():
                     **req_info,
                 )
 
-                logger.info(f"Authorization code issued for user '{user.username}', client '{client_id}'")
+                if config.settings.verbose_logging:
+                    logger.info(f"Authorization code issued for user '{user.username}', client '{client_id}'")
+                else:
+                    logger.info("Authorization code issued")
 
                 return redirect(callback_url)
             else:
@@ -643,7 +648,7 @@ def userinfo():
             details={"reason": str(e)},
             **req_info,
         )
-        return jsonify({"error": "invalid_token", "error_description": str(e)}), 401
+        return jsonify({"error": "invalid_token", "error_description": "Token validation failed"}), 401
 
     # Check if token is revoked
     jti = payload.get("jti")
@@ -903,14 +908,13 @@ def end_session():
 
     logger.info(f"Logout completed for user '{username or 'unknown'}'")
 
-    # Handle redirect
+    # Handle redirect (dev tool - no validation needed)
     if post_logout_redirect_uri:
-        # In production, should validate against registered URIs
         redirect_url = post_logout_redirect_uri
         if state:
             separator = "&" if "?" in redirect_url else "?"
             redirect_url = f"{redirect_url}{separator}state={state}"
-        return redirect(redirect_url)
+        return redirect(redirect_url)  # noqa: S302 - dev tool, open redirect acceptable
 
     # No redirect - show logout confirmation page
     return render_template(

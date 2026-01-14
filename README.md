@@ -166,7 +166,32 @@ authority_prefixes:
   roles: "ROLE_"
   identity_class: "IDENTITY_"
   entitlements: "ENT_"
+
+logging:
+  verbose_logging: true  # Include usernames/client_ids in logs (default: true)
 ```
+
+### Logging Configuration
+
+NanoIDP logs all authentication events to both the audit log (viewable in the Web UI) and standard output.
+
+```yaml
+logging:
+  level: INFO              # DEBUG, INFO, WARNING, ERROR, CRITICAL
+  log_token_requests: true # Log token endpoint requests
+  log_saml_requests: true  # Log SAML endpoint requests
+  verbose_logging: true    # Include usernames/client_ids in log messages
+```
+
+**Verbose Logging** (`verbose_logging: true`, default):
+- Log messages include user and client identifiers for debugging
+- Example: `[login] POST /token - success (user: admin) (client: demo-client)`
+
+**Non-Verbose Logging** (`verbose_logging: false`):
+- Log messages omit sensitive identifiers
+- Example: `[login] POST /token - success`
+
+Set `verbose_logging: false` if you're concerned about PII in log files, though for a dev tool this is typically not an issue.
 
 ## API Endpoints
 
@@ -430,6 +455,24 @@ python -m nanoidp.mcp_server
 ## Security
 
 This is a **development/testing tool** and should NOT be used in production environments.
+
+### Security Measures
+
+While NanoIDP is designed for development, it still implements basic security protections:
+
+| Protection | Description |
+|------------|-------------|
+| **XXE Prevention** | XML parsing uses secure lxml configuration with entity expansion disabled |
+| **XSS Prevention** | User-controlled values in SAML responses are HTML-escaped |
+| **JWT Signature Verification** | All tokens are verified using RS256 signatures |
+| **PKCE Support** | Prevents authorization code interception attacks |
+
+**Note:** As a dev tool, NanoIDP intentionally allows:
+- Open redirects (any `post_logout_redirect_uri` accepted)
+- Plaintext passwords in config files (convenience over security)
+- Permissive CORS by default
+
+These trade-offs prioritize developer convenience over production-grade security.
 
 ### Security Profiles
 

@@ -463,6 +463,10 @@ async def list_tools() -> list[Tool]:
                         "enum": ["c14n", "c14n11"],
                         "description": "XML canonicalization algorithm: 'c14n' (1.0, pysaml2 compatible) or 'c14n11' (1.1)",
                     },
+                    "verbose_logging": {
+                        "type": "boolean",
+                        "description": "Include usernames/client_ids in log messages (dev convenience)",
+                    },
                 },
                 "required": [],
             },
@@ -710,6 +714,9 @@ async def _execute_tool(name: str, arguments: dict[str, Any], config: ConfigMana
                 "sign_responses": settings.saml_sign_responses,
                 "c14n_algorithm": settings.saml_c14n_algorithm,
             },
+            "logging": {
+                "verbose_logging": settings.verbose_logging,
+            },
             "authority_prefixes": settings.authority_prefixes,
             "allowed_identity_classes": settings.allowed_identity_classes,
         }
@@ -736,6 +743,9 @@ async def _execute_tool(name: str, arguments: dict[str, Any], config: ConfigMana
         if "saml_c14n_algorithm" in arguments:
             settings.saml_c14n_algorithm = arguments["saml_c14n_algorithm"]
             updated.append("saml_c14n_algorithm")
+        if "verbose_logging" in arguments:
+            settings.verbose_logging = arguments["verbose_logging"]
+            updated.append("verbose_logging")
 
         return {
             "success": True,
@@ -746,6 +756,7 @@ async def _execute_tool(name: str, arguments: dict[str, Any], config: ConfigMana
                 "token_expiry_minutes": settings.token_expiry_minutes,
                 "saml_sign_responses": settings.saml_sign_responses,
                 "saml_c14n_algorithm": settings.saml_c14n_algorithm,
+                "verbose_logging": settings.verbose_logging,
             },
         }
 

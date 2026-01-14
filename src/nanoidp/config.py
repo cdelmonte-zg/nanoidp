@@ -97,6 +97,7 @@ class Settings(BaseModel):
     log_level: str = Field(default="INFO", description="Logging level")
     log_token_requests: bool = Field(default=True, description="Log token requests")
     log_saml_requests: bool = Field(default=True, description="Log SAML requests")
+    verbose_logging: bool = Field(default=True, description="Include usernames/client_ids in logs (dev convenience)")
 
     # Security (stricter-dev profile)
     security_profile: str = Field(default="dev", description="Security profile: dev or stricter-dev")
@@ -232,6 +233,7 @@ class ConfigManager:
             log_level=logging_config.get("level", "INFO"),
             log_token_requests=logging_config.get("log_token_requests", True),
             log_saml_requests=logging_config.get("log_saml_requests", True),
+            verbose_logging=logging_config.get("verbose_logging", True),
         )
 
     def _set_default_settings(self):
