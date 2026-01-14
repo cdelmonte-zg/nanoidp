@@ -74,6 +74,7 @@ class Settings(BaseModel):
     saml_entity_id: str = Field(default="http://localhost:8000/saml", description="SAML entity ID")
     saml_sso_url: str = Field(default="http://localhost:8000/saml/sso", description="SAML SSO URL")
     default_acs_url: str = Field(default="http://localhost:8080/login/saml2/sso/samlIdp", description="Default ACS URL")
+    saml_sign_responses: bool = Field(default=True, description="Sign SAML responses (set to false for testing unsigned flows)")
 
     # JWT
     jwt_algorithm: str = Field(default="RS256", description="JWT signing algorithm")
@@ -212,6 +213,7 @@ class ConfigManager:
             saml_entity_id=saml.get("entity_id", "http://localhost:8000/saml"),
             saml_sso_url=saml.get("sso_url", "http://localhost:8000/saml/sso"),
             default_acs_url=saml.get("default_acs_url", "http://localhost:8080/login/saml2/sso/samlIdp"),
+            saml_sign_responses=saml.get("sign_responses", True),
             # JWT
             jwt_algorithm=jwt_config.get("algorithm", "RS256"),
             keys_dir=jwt_config.get("keys_dir", "./keys"),
@@ -412,6 +414,7 @@ class ConfigManager:
                 "entity_id": self.settings.saml_entity_id,
                 "sso_url": self.settings.saml_sso_url,
                 "default_acs_url": self.settings.default_acs_url,
+                "sign_responses": self.settings.saml_sign_responses,
             },
             "authority_prefixes": self.settings.authority_prefixes,
         }

@@ -17,6 +17,8 @@ saml:
   entity_id: http://localhost:8000/saml
   sso_url: http://localhost:8000/saml/sso
   default_acs_url: http://localhost:8080/login/saml2/sso/nanoidp
+  # Set to false to disable SAML response signing (useful for testing unsigned flows)
+  sign_responses: true
 jwt:
   algorithm: RS256
   keys_dir: ./keys

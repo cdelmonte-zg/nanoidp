@@ -1,5 +1,7 @@
 # NanoIDP
 
+[![Tests](https://github.com/cdelmonte-zg/nanoidp/actions/workflows/tests.yml/badge.svg)](https://github.com/cdelmonte-zg/nanoidp/actions/workflows/tests.yml)
+
 A lightweight, configurable Identity Provider for development and testing. Supports OAuth2/OIDC and SAML 2.0 protocols with a full-featured web UI for configuration.
 
 ## Features
@@ -9,7 +11,7 @@ A lightweight, configurable Identity Provider for development and testing. Suppo
 - **Token Management** - Introspection (RFC 7662) and Revocation (RFC 7009) endpoints
 - **OIDC Logout** - End Session endpoint for RP-initiated logout
 - **Device Flow** - Device Authorization Grant (RFC 8628) for CLI/IoT applications
-- **SAML 2.0** - SSO and AttributeQuery endpoints with signed assertions
+- **SAML 2.0** - SSO and AttributeQuery endpoints with configurable signed assertions
 - **MCP Server** - Model Context Protocol integration for Claude Code
 - **Web UI** - Full configuration interface for users, clients, settings, and more
 - **YAML Configuration** - File-based configuration, no database required
@@ -158,6 +160,7 @@ saml:
   entity_id: "http://localhost:8000/saml"
   sso_url: "http://localhost:8000/saml/sso"
   default_acs_url: "http://localhost:8080/login/saml2/sso/nanoidp"
+  sign_responses: true  # Set to false for testing unsigned SAML flows
 
 authority_prefixes:
   roles: "ROLE_"
@@ -189,6 +192,29 @@ authority_prefixes:
 | `GET /saml/metadata` | IdP Metadata |
 | `POST /saml/sso` | Single Sign-On |
 | `POST /saml/attribute-query` | Attribute Query |
+
+#### SAML Response Signing
+
+By default, NanoIDP signs all SAML responses with an XML digital signature. You can disable signing for testing scenarios that require unsigned SAML flows (e.g., testing with Mujina IdP replacement):
+
+**Via configuration file (`settings.yaml`):**
+
+```yaml
+saml:
+  sign_responses: false  # Disable SAML response signing
+```
+
+**Via Web UI:**
+
+1. Go to `http://localhost:8000/settings`
+2. In the SAML Settings section, toggle **"Sign SAML Responses"**
+3. Click **Save Settings**
+
+When `sign_responses: true` (default), responses include:
+- `<ds:Signature>` element with RSA-SHA256 signature
+- `<ds:X509Certificate>` with the IdP certificate
+
+When `sign_responses: false`, responses are sent without any signature elements.
 
 ### REST API
 
@@ -514,6 +540,42 @@ For detailed usage examples with Claude Code, see [docs/MCP_WORKFLOW.md](docs/MC
 | `NANOIDP_MCP_ADMIN_SECRET` | Secret required for mutating MCP operations | (none) |
 | `NANOIDP_MCP_READONLY` | Disable mutating MCP tools when set to `true` | `false` |
 | `PORT` | Server port | `8000` |
+
+## Releasing
+
+NanoIDP uses GitHub Actions with PyPI Trusted Publishing for automated releases.
+
+### Release Process
+
+```bash
+# 1. Update version in pyproject.toml
+# 2. Update CHANGELOG.md
+# 3. Commit changes
+git add -A && git commit -m "Release v1.0.1"
+
+# 4. Create and push tag
+git tag v1.0.1
+git push origin main --tags
+```
+
+The workflow automatically:
+1. Runs all tests
+2. Builds the package
+3. Publishes to TestPyPI
+4. Publishes to PyPI (only for non-prerelease tags)
+
+### Pre-release Testing
+
+For testing releases before publishing to PyPI:
+
+```bash
+# Create a pre-release tag (only publishes to TestPyPI)
+git tag v1.0.1-rc1
+git push origin v1.0.1-rc1
+
+# Install from TestPyPI to verify
+pip install -i https://test.pypi.org/simple/ nanoidp==1.0.1rc1
+```
 
 ## License
 

@@ -67,6 +67,16 @@
                                value="{{ settings.default_acs_url }}">
                         <div class="form-text">Default Assertion Consumer Service URL</div>
                     </div>
+
+                    <div class="mb-3">
+                        <div class="form-check form-switch">
+                            <input class="form-check-input" type="checkbox" role="switch"
+                                   id="saml_sign_responses" name="saml_sign_responses" value="true"
+                                   {% if settings.saml_sign_responses %}checked{% endif %}>
+                            <label class="form-check-label" for="saml_sign_responses">Sign SAML Responses</label>
+                        </div>
+                        <div class="form-text">Enable XML signature on SAML responses. Disable for testing unsigned flows.</div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -157,7 +167,8 @@ function updatePreview() {
         saml: {
             entity_id: document.getElementById('saml_entity_id').value,
             sso_url: document.getElementById('saml_sso_url').value,
-            default_acs_url: document.getElementById('default_acs_url').value
+            default_acs_url: document.getElementById('default_acs_url').value,
+            sign_responses: document.getElementById('saml_sign_responses').checked
         },
         allowed_identity_classes: document.getElementById('allowed_identity_classes').value
             .split('\n')
