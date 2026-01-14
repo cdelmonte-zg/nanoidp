@@ -503,6 +503,7 @@ def settings():
             entity_id=request.form.get("saml_entity_id"),
             sso_url=request.form.get("saml_sso_url"),
             default_acs_url=request.form.get("default_acs_url"),
+            sign_responses=request.form.get("saml_sign_responses") == "true",
         )
 
         # Identity classes

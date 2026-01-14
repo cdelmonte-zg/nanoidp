@@ -550,6 +550,98 @@ class TestSAMLSigningConfiguration:
             config.settings.saml_sign_responses = original_value
 
 
+class TestSAMLSigningUI:
+    """Tests for SAML signing configuration via UI."""
+
+    def test_settings_page_shows_sign_responses_toggle(self, client):
+        """Test that settings page contains sign_responses checkbox."""
+        # Login first
+        with client.session_transaction() as sess:
+            sess['user'] = 'admin'
+
+        response = client.get('/settings')
+        assert response.status_code == 200
+        assert b'saml_sign_responses' in response.data
+        assert b'Sign SAML Responses' in response.data
+
+    def test_settings_page_shows_current_sign_responses_value(self, client):
+        """Test that settings page shows current sign_responses value."""
+        from nanoidp.config import get_config
+
+        with client.session_transaction() as sess:
+            sess['user'] = 'admin'
+
+        config = get_config()
+        original_value = config.settings.saml_sign_responses
+
+        response = client.get('/settings')
+        assert response.status_code == 200
+
+        # If sign_responses is True, checkbox should be checked
+        if original_value:
+            assert b'checked' in response.data
+
+    def test_settings_post_updates_sign_responses_true(self, client):
+        """Test that POST to settings can enable sign_responses."""
+        from nanoidp.config import get_config
+
+        with client.session_transaction() as sess:
+            sess['user'] = 'admin'
+
+        config = get_config()
+        original_value = config.settings.saml_sign_responses
+
+        try:
+            # POST with sign_responses checked
+            response = client.post('/settings', data={
+                'issuer': config.settings.issuer,
+                'audience': config.settings.audience,
+                'token_expiry_minutes': config.settings.token_expiry_minutes,
+                'saml_entity_id': config.settings.saml_entity_id,
+                'saml_sso_url': config.settings.saml_sso_url,
+                'default_acs_url': config.settings.default_acs_url,
+                'saml_sign_responses': 'true',
+                'allowed_identity_classes': 'INTERNAL\nEXTERNAL',
+            }, follow_redirects=True)
+
+            assert response.status_code == 200
+            config.reload()
+            assert config.settings.saml_sign_responses is True
+        finally:
+            # Restore original value
+            config.settings.saml_sign_responses = original_value
+
+    def test_settings_post_updates_sign_responses_false(self, client):
+        """Test that POST to settings can disable sign_responses."""
+        from nanoidp.config import get_config
+
+        with client.session_transaction() as sess:
+            sess['user'] = 'admin'
+
+        config = get_config()
+        original_value = config.settings.saml_sign_responses
+
+        try:
+            # POST without sign_responses (unchecked checkbox)
+            response = client.post('/settings', data={
+                'issuer': config.settings.issuer,
+                'audience': config.settings.audience,
+                'token_expiry_minutes': config.settings.token_expiry_minutes,
+                'saml_entity_id': config.settings.saml_entity_id,
+                'saml_sso_url': config.settings.saml_sso_url,
+                'default_acs_url': config.settings.default_acs_url,
+                # saml_sign_responses NOT included = unchecked
+                'allowed_identity_classes': 'INTERNAL\nEXTERNAL',
+            }, follow_redirects=True)
+
+            assert response.status_code == 200
+            config.reload()
+            assert config.settings.saml_sign_responses is False
+        finally:
+            # Restore original value
+            config.settings.saml_sign_responses = original_value
+
+
 class TestSAMLStatus:
     """Tests for SAML status codes in responses."""
 

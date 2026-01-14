@@ -237,6 +237,7 @@ class YamlWriter:
         entity_id: Optional[str] = None,
         sso_url: Optional[str] = None,
         default_acs_url: Optional[str] = None,
+        sign_responses: Optional[bool] = None,
     ) -> None:
         """Update SAML settings."""
         data = self._load_settings_yaml()
@@ -248,6 +249,8 @@ class YamlWriter:
             saml["sso_url"] = sso_url
         if default_acs_url is not None:
             saml["default_acs_url"] = default_acs_url
+        if sign_responses is not None:
+            saml["sign_responses"] = sign_responses
 
         self._atomic_write(self.settings_file, data)
         get_config().reload()
