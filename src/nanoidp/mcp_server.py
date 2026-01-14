@@ -438,7 +438,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="update_settings",
-            description="Update NanoIDP settings (issuer, audience, token expiry, etc.)",
+            description="Update NanoIDP settings (issuer, audience, token expiry, SAML options, etc.)",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -453,6 +453,15 @@ async def list_tools() -> list[Tool]:
                     "token_expiry_minutes": {
                         "type": "integer",
                         "description": "Token expiration in minutes",
+                    },
+                    "saml_sign_responses": {
+                        "type": "boolean",
+                        "description": "Enable/disable SAML response signing",
+                    },
+                    "saml_c14n_algorithm": {
+                        "type": "string",
+                        "enum": ["c14n", "c14n11"],
+                        "description": "XML canonicalization algorithm: 'c14n' (1.0, pysaml2 compatible) or 'c14n11' (1.1)",
                     },
                 },
                 "required": [],
@@ -695,7 +704,12 @@ async def _execute_tool(name: str, arguments: dict[str, Any], config: ConfigMana
             "audience": settings.audience,
             "token_expiry_minutes": settings.token_expiry_minutes,
             "jwt_algorithm": settings.jwt_algorithm,
-            "saml_entity_id": settings.saml_entity_id,
+            "saml": {
+                "entity_id": settings.saml_entity_id,
+                "sso_url": settings.saml_sso_url,
+                "sign_responses": settings.saml_sign_responses,
+                "c14n_algorithm": settings.saml_c14n_algorithm,
+            },
             "authority_prefixes": settings.authority_prefixes,
             "allowed_identity_classes": settings.allowed_identity_classes,
         }
@@ -716,6 +730,12 @@ async def _execute_tool(name: str, arguments: dict[str, Any], config: ConfigMana
         if "token_expiry_minutes" in arguments:
             settings.token_expiry_minutes = arguments["token_expiry_minutes"]
             updated.append("token_expiry_minutes")
+        if "saml_sign_responses" in arguments:
+            settings.saml_sign_responses = arguments["saml_sign_responses"]
+            updated.append("saml_sign_responses")
+        if "saml_c14n_algorithm" in arguments:
+            settings.saml_c14n_algorithm = arguments["saml_c14n_algorithm"]
+            updated.append("saml_c14n_algorithm")
 
         return {
             "success": True,
@@ -724,6 +744,8 @@ async def _execute_tool(name: str, arguments: dict[str, Any], config: ConfigMana
                 "issuer": settings.issuer,
                 "audience": settings.audience,
                 "token_expiry_minutes": settings.token_expiry_minutes,
+                "saml_sign_responses": settings.saml_sign_responses,
+                "saml_c14n_algorithm": settings.saml_c14n_algorithm,
             },
         }
 
