@@ -75,6 +75,10 @@ class Settings(BaseModel):
     saml_sso_url: str = Field(default="http://localhost:8000/saml/sso", description="SAML SSO URL")
     default_acs_url: str = Field(default="http://localhost:8080/login/saml2/sso/samlIdp", description="Default ACS URL")
     saml_sign_responses: bool = Field(default=True, description="Sign SAML responses (set to false for testing unsigned flows)")
+    saml_c14n_algorithm: str = Field(
+        default="c14n",
+        description="XML canonicalization algorithm: 'c14n' (1.0, compatible with pysaml2) or 'c14n11' (1.1)"
+    )
 
     # JWT
     jwt_algorithm: str = Field(default="RS256", description="JWT signing algorithm")
@@ -214,6 +218,7 @@ class ConfigManager:
             saml_sso_url=saml.get("sso_url", "http://localhost:8000/saml/sso"),
             default_acs_url=saml.get("default_acs_url", "http://localhost:8080/login/saml2/sso/samlIdp"),
             saml_sign_responses=saml.get("sign_responses", True),
+            saml_c14n_algorithm=saml.get("c14n_algorithm", "c14n"),
             # JWT
             jwt_algorithm=jwt_config.get("algorithm", "RS256"),
             keys_dir=jwt_config.get("keys_dir", "./keys"),
@@ -415,6 +420,7 @@ class ConfigManager:
                 "sso_url": self.settings.saml_sso_url,
                 "default_acs_url": self.settings.default_acs_url,
                 "sign_responses": self.settings.saml_sign_responses,
+                "c14n_algorithm": self.settings.saml_c14n_algorithm,
             },
             "authority_prefixes": self.settings.authority_prefixes,
         }

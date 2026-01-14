@@ -16,12 +16,30 @@ from ..services import get_crypto_service, get_audit_log
 
 # Try to import signxml for SAML signing
 try:
-    from signxml import XMLSigner, methods
+    from signxml import XMLSigner, methods, CanonicalizationMethod
     SIGNXML_AVAILABLE = True
 except ImportError:
     SIGNXML_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
+
+
+def _get_c14n_algorithm(config_value: str) -> "CanonicalizationMethod":
+    """Map config string to CanonicalizationMethod enum.
+
+    Args:
+        config_value: 'c14n' for C14N 1.0 (compatible with pysaml2) or 'c14n11' for C14N 1.1
+
+    Returns:
+        CanonicalizationMethod enum value
+    """
+    if not SIGNXML_AVAILABLE:
+        return None
+
+    if config_value == "c14n11":
+        return CanonicalizationMethod.CANONICAL_XML_1_1
+    # Default to C14N 1.0 for maximum compatibility
+    return CanonicalizationMethod.CANONICAL_XML_1_0
 
 saml_bp = Blueprint("saml", __name__, url_prefix="/saml")
 
@@ -177,10 +195,12 @@ def _build_saml_response(
         with open(cert_path, "rb") as f:
             cert_pem = f.read()
 
+        c14n_algo = _get_c14n_algorithm(config.settings.saml_c14n_algorithm)
         signer = XMLSigner(
             method=methods.enveloped,
             signature_algorithm="rsa-sha256",
             digest_algorithm="sha256",
+            c14n_algorithm=c14n_algo,
         )
         signed = signer.sign(
             assertion, key=crypto.priv_pem, cert=cert_pem, reference_uri=assertion_id
@@ -448,10 +468,12 @@ def _sign_attribute_query_response(response_xml: str, sign: bool = True) -> str:
         with open(cert_path, "rb") as f:
             cert_pem = f.read()
 
+        c14n_algo = _get_c14n_algorithm(config.settings.saml_c14n_algorithm)
         signer = XMLSigner(
             method=methods.enveloped,
             signature_algorithm="rsa-sha256",
             digest_algorithm="sha256",
+            c14n_algorithm=c14n_algo,
         )
 
         signed_root = signer.sign(root, key=crypto.priv_pem, cert=cert_pem)

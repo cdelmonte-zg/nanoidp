@@ -216,6 +216,21 @@ When `sign_responses: true` (default), responses include:
 
 When `sign_responses: false`, responses are sent without any signature elements.
 
+#### XML Canonicalization Algorithm
+
+By default, NanoIDP uses **C14N 1.0** for XML canonicalization, which is compatible with pysaml2 and most SAML implementations. If you need C14N 1.1 for specific use cases, you can configure it:
+
+```yaml
+saml:
+  c14n_algorithm: c14n    # Default: C14N 1.0 (compatible with pysaml2)
+  # c14n_algorithm: c14n11  # C14N 1.1 (less compatible)
+```
+
+| Value | Algorithm | Compatibility |
+|-------|-----------|---------------|
+| `c14n` (default) | C14N 1.0 | pysaml2, ADFS, Shibboleth, most SPs |
+| `c14n11` | C14N 1.1 | Newer implementations only |
+
 ### REST API
 
 | Endpoint | Description |
