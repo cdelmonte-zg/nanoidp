@@ -1,5 +1,7 @@
 # NanoIDP
 
+[![Tests](https://github.com/cdelmonte-zg/nanoidp/actions/workflows/tests.yml/badge.svg)](https://github.com/cdelmonte-zg/nanoidp/actions/workflows/tests.yml)
+
 A lightweight, configurable Identity Provider for development and testing. Supports OAuth2/OIDC and SAML 2.0 protocols with a full-featured web UI for configuration.
 
 ## Features
