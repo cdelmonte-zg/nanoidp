@@ -130,6 +130,7 @@ def get_configuration():
             "entity_id": settings.saml_entity_id,
             "sso_url": settings.saml_sso_url,
             "sign_responses": settings.saml_sign_responses,
+            "c14n_algorithm": settings.saml_c14n_algorithm,
         },
         "authority_prefixes": settings.authority_prefixes,
         "allowed_identity_classes": settings.allowed_identity_classes,
