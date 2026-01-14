@@ -5,13 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.1] - 2026-01-14
+
+### Added
+- Configurable XML canonicalization algorithm via `saml.c14n_algorithm` setting
+
 ## [1.1.0] - 2026-01-14
 
 ### Added
 - Configurable SAML response signing via `saml.sign_responses` setting
 - UI toggle for SAML signing in Settings page (`/settings`)
 - `sign_responses` exposed in `/api/config` endpoint
-- Configurable XML canonicalization algorithm via `saml.c14n_algorithm` setting
 - Test agent (`examples/test_agent.py`) for comprehensive endpoint testing
 
 ### Changed
