@@ -541,6 +541,42 @@ For detailed usage examples with Claude Code, see [docs/MCP_WORKFLOW.md](docs/MC
 | `NANOIDP_MCP_READONLY` | Disable mutating MCP tools when set to `true` | `false` |
 | `PORT` | Server port | `8000` |
 
+## Releasing
+
+NanoIDP uses GitHub Actions with PyPI Trusted Publishing for automated releases.
+
+### Release Process
+
+```bash
+# 1. Update version in pyproject.toml
+# 2. Update CHANGELOG.md
+# 3. Commit changes
+git add -A && git commit -m "Release v1.0.1"
+
+# 4. Create and push tag
+git tag v1.0.1
+git push origin main --tags
+```
+
+The workflow automatically:
+1. Runs all tests
+2. Builds the package
+3. Publishes to TestPyPI
+4. Publishes to PyPI (only for non-prerelease tags)
+
+### Pre-release Testing
+
+For testing releases before publishing to PyPI:
+
+```bash
+# Create a pre-release tag (only publishes to TestPyPI)
+git tag v1.0.1-rc1
+git push origin v1.0.1-rc1
+
+# Install from TestPyPI to verify
+pip install -i https://test.pypi.org/simple/ nanoidp==1.0.1rc1
+```
+
 ## License
 
 MIT License - see [LICENSE](LICENSE) for details.
