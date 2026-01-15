@@ -642,3 +642,14 @@ MIT License - see [LICENSE](LICENSE) for details.
 ## Contributing
 
 Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+
+
+## ❤️ Support NanoIDP
+
+NanoIDP is maintained as an open-source project.
+
+If it helps you test OAuth2, OpenID Connect, or SAML flows,
+you can support its development here:
+
+- 💖 GitHub Sponsors: https://github.com/sponsors/cdelmonte-zg
+- ☕ Buy Me a Coffee: https://buymeacoffee.com/nanoidp
