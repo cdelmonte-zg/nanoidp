@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.1] - 2026-01-16
+
+### Fixed
+- SAML SSO now correctly handles HTTP-POST binding (uncompressed SAMLRequest)
+- Previously, `_parse_saml_request` unconditionally attempted DEFLATE decompression, causing parsing to fail for POST requests
+- Now uses HTTP method to determine binding type: GET = HTTP-Redirect (compressed), POST = HTTP-POST (uncompressed)
+
+### Changed
+- E2E test agent now verifies actual SAML parsing (InResponseTo matching) instead of just endpoint availability
+- Added separate tests for HTTP-POST and HTTP-Redirect bindings in `test_agent.py`
+
 ## [1.2.0] - 2026-01-14
 
 ### Added
@@ -62,6 +73,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Key rotation with JWKS support for multiple keys
 - External key import support
 
+[1.2.1]: https://github.com/cdelmonte-zg/nanoidp/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/cdelmonte-zg/nanoidp/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/cdelmonte-zg/nanoidp/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/cdelmonte-zg/nanoidp/compare/v1.0.0...v1.1.0
