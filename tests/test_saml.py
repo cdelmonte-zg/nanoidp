@@ -105,8 +105,15 @@ class TestSAMLCertificate:
 class TestSAMLSSO:
     """Tests for SAML SSO endpoint."""
 
-    def _create_saml_request(self, acs_url=None, request_id="_req123"):
-        """Create a minimal SAMLRequest for testing."""
+    def _create_saml_request(self, acs_url=None, request_id="_req123", compress=True):
+        """Create a minimal SAMLRequest for testing.
+
+        Args:
+            acs_url: AssertionConsumerServiceURL to include
+            request_id: ID attribute for the request
+            compress: If True, use DEFLATE compression (HTTP-Redirect binding).
+                     If False, no compression (HTTP-POST binding).
+        """
         acs_attr = f' AssertionConsumerServiceURL="{acs_url}"' if acs_url else ""
         saml_request = f"""<?xml version="1.0" encoding="UTF-8"?>
 <samlp:AuthnRequest
@@ -118,9 +125,13 @@ class TestSAMLSSO:
     <saml:Issuer>http://sp.example.com</saml:Issuer>
 </samlp:AuthnRequest>"""
 
-        # Compress and base64 encode
-        compressed = zlib.compress(saml_request.encode('utf-8'))[2:-4]  # Remove zlib header/trailer
-        return base64.b64encode(compressed).decode('ascii')
+        if compress:
+            # HTTP-Redirect binding: DEFLATE compressed then base64
+            compressed = zlib.compress(saml_request.encode('utf-8'))[2:-4]  # Remove zlib header/trailer
+            return base64.b64encode(compressed).decode('ascii')
+        else:
+            # HTTP-POST binding: only base64, no compression
+            return base64.b64encode(saml_request.encode('utf-8')).decode('ascii')
 
     def test_sso_requires_saml_request(self, client):
         """Test that SSO endpoint requires SAMLRequest."""
@@ -168,6 +179,54 @@ class TestSAMLSSO:
 
         response_text = response.data.decode('utf-8')
         assert relay_state in response_text
+
+    def test_sso_handles_http_post_binding_uncompressed(self, client):
+        """Test that SSO correctly parses uncompressed SAMLRequest (HTTP-POST binding).
+
+        HTTP-POST binding sends SAMLRequest as base64-only (no DEFLATE compression),
+        unlike HTTP-Redirect binding which requires compression.
+        """
+        with client.session_transaction() as sess:
+            sess['user'] = 'admin'
+
+        # Create uncompressed SAMLRequest (HTTP-POST binding style)
+        request_id = '_post_binding_test_123'
+        acs_url = 'http://sp.example.com/acs/post'
+        saml_request = self._create_saml_request(
+            acs_url=acs_url,
+            request_id=request_id,
+            compress=False  # HTTP-POST binding: no compression
+        )
+
+        response = client.post('/saml/sso',
+            data={'SAMLRequest': saml_request}
+        )
+
+        assert response.status_code == 200
+        response_text = response.data.decode('utf-8')
+
+        # Verify SAMLResponse is present
+        assert 'SAMLResponse' in response_text
+
+        # Extract and verify the response contains InResponseTo matching our request ID
+        import re
+        match = re.search(r'name="SAMLResponse"\s+value="([^"]+)"', response_text)
+        assert match, "SAMLResponse not found in form"
+
+        saml_response_b64 = match.group(1)
+        saml_response_xml = base64.b64decode(saml_response_b64)
+        root = etree.fromstring(saml_response_xml)
+
+        # The response should have InResponseTo set to our request ID
+        in_response_to = root.get("InResponseTo")
+        assert in_response_to == request_id, \
+            f"Expected InResponseTo='{request_id}', got '{in_response_to}'. " \
+            "This likely means _parse_saml_request failed to parse the uncompressed request."
+
+        # Verify the form action points to our ACS URL
+        assert acs_url in response_text, \
+            f"Expected ACS URL '{acs_url}' in form action. " \
+            "This likely means _parse_saml_request failed to extract ACS URL from uncompressed request."
 
 
 class TestSAMLResponse:

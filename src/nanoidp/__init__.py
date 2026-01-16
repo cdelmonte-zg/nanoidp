@@ -11,5 +11,5 @@ Features:
 - Web UI for monitoring and testing
 """
 
-__version__ = "1.0.0"
+__version__ = "1.2.1"
 __author__ = "NanoIDP Contributors"

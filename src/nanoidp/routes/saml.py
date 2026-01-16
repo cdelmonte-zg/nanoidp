@@ -66,11 +66,25 @@ def _get_request_info():
     }
 
 
-def _parse_saml_request(saml_request_b64: str):
-    """Parse a SAMLRequest to extract ID, ACS URL, and Issuer."""
+def _parse_saml_request(saml_request_b64: str, http_method: str):
+    """Parse a SAMLRequest to extract ID, ACS URL, and Issuer.
+
+    Args:
+        saml_request_b64: Base64-encoded SAMLRequest
+        http_method: HTTP method used ("GET" or "POST")
+            - GET: HTTP-Redirect binding (DEFLATE compressed)
+            - POST: HTTP-POST binding (not compressed)
+    """
     try:
-        saml_compressed = b64decode(saml_request_b64)
-        saml_xml = zlib.decompress(saml_compressed, -zlib.MAX_WBITS)
+        saml_decoded = b64decode(saml_request_b64)
+
+        if http_method == "GET":
+            # HTTP-Redirect binding: DEFLATE compressed
+            saml_xml = zlib.decompress(saml_decoded, -zlib.MAX_WBITS)
+        else:
+            # HTTP-POST binding: not compressed
+            saml_xml = saml_decoded
+
         root = secure_fromstring(saml_xml)
 
         request_id = root.get("ID")
@@ -309,7 +323,7 @@ def sso():
         return abort(401, description=f"user '{username}' not found")
 
     # Parse SAMLRequest
-    saml_info = _parse_saml_request(saml_request_b64)
+    saml_info = _parse_saml_request(saml_request_b64, request.method)
 
     # Determine ACS URL
     if saml_info and saml_info.get("acs_url"):
