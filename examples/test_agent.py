@@ -886,15 +886,23 @@ class NanoIDPTestAgent:
         except Exception as e:
             return self._add_result("SAML Metadata", TestCategory.SAML, False, str(e))
 
-    def test_saml_sso(self) -> TestResult:
-        """SAML SSO endpoint (SP-initiated simulation)."""
+    def test_saml_sso_post_binding(self) -> TestResult:
+        """SAML SSO endpoint with HTTP-POST binding (uncompressed request).
+
+        Verifies that the SAMLRequest is correctly parsed by checking
+        that InResponseTo in the SAML response matches the request ID.
+        """
         try:
-            # Create a minimal SAML AuthnRequest (base64 encoded)
-            # This is a simplified test - real SAML requires proper request signing
-            saml_request = """
+            import re
+
+            # Create a minimal SAML AuthnRequest (base64 encoded, no compression)
+            # HTTP-POST binding: SAMLRequest is only base64 encoded
+            request_id = "_test_post_binding_123"
+            acs_url = "http://localhost:8080/acs"
+            saml_request = f"""
             <samlp:AuthnRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"
-                ID="_test123" Version="2.0" IssueInstant="2024-01-01T00:00:00Z"
-                AssertionConsumerServiceURL="http://localhost:8080/acs">
+                ID="{request_id}" Version="2.0" IssueInstant="2024-01-01T00:00:00Z"
+                AssertionConsumerServiceURL="{acs_url}">
                 <saml:Issuer xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion">
                     test-sp
                 </saml:Issuer>
@@ -903,8 +911,19 @@ class NanoIDPTestAgent:
 
             encoded_request = base64.b64encode(saml_request.encode()).decode()
 
-            # POST to SSO endpoint
-            response = requests.post(
+            # First, authenticate via session
+            session = requests.Session()
+
+            # Login to get a session
+            login_response = session.post(
+                f"{self.base_url}/login",
+                data={"username": self.username, "password": self.password},
+                allow_redirects=False,
+                timeout=5
+            )
+
+            # POST to SSO endpoint (HTTP-POST binding) with authenticated session
+            response = session.post(
                 f"{self.base_url}/saml/sso",
                 data={
                     "SAMLRequest": encoded_request,
@@ -914,44 +933,164 @@ class NanoIDPTestAgent:
                 timeout=5
             )
 
-            # SSO should either show login form (200) or redirect
-            if response.status_code in [200, 302, 400]:
-                # Check if it's processing SAML
-                if response.status_code == 200:
-                    has_form = "login" in response.text.lower() or "password" in response.text.lower()
-                    return self._add_result(
-                        "SAML SSO",
-                        TestCategory.SAML,
-                        has_form,
-                        f"SSO endpoint responding, login form={has_form}",
-                        {"status": response.status_code}
-                    )
-                elif response.status_code == 302:
-                    return self._add_result(
-                        "SAML SSO",
-                        TestCategory.SAML,
-                        True,
-                        "SSO redirect received",
-                        {"status": response.status_code, "location": response.headers.get("Location", "")[:50]}
-                    )
-                else:
-                    # 400 might be expected for invalid/unsigned request
-                    return self._add_result(
-                        "SAML SSO",
-                        TestCategory.SAML,
-                        True,
-                        "SSO endpoint responding (request validation)",
-                        {"status": response.status_code}
-                    )
+            if response.status_code == 200:
+                # Should get auto-submit form with SAMLResponse
+                response_text = response.text
+
+                if "SAMLResponse" in response_text:
+                    # Extract SAMLResponse
+                    match = re.search(r'name="SAMLResponse"\s+value="([^"]+)"', response_text)
+                    if match:
+                        saml_response_b64 = match.group(1)
+                        saml_response_xml = base64.b64decode(saml_response_b64).decode('utf-8')
+
+                        # Verify InResponseTo matches our request ID
+                        in_response_to_match = re.search(r'InResponseTo="([^"]+)"', saml_response_xml)
+                        in_response_to = in_response_to_match.group(1) if in_response_to_match else None
+
+                        # Verify ACS URL in form action
+                        acs_in_response = acs_url in response_text
+
+                        parsing_ok = in_response_to == request_id
+
+                        return self._add_result(
+                            "SAML SSO (POST binding)",
+                            TestCategory.SAML,
+                            parsing_ok and acs_in_response,
+                            f"HTTP-POST binding: InResponseTo={'OK' if parsing_ok else 'FAIL'}, ACS={'OK' if acs_in_response else 'FAIL'}",
+                            {"binding": "HTTP-POST", "request_id": request_id, "in_response_to": in_response_to, "parsing_ok": parsing_ok}
+                        )
+
+                # Got login form instead of SAML response
+                return self._add_result(
+                    "SAML SSO (POST binding)",
+                    TestCategory.SAML,
+                    False,
+                    "Got login form instead of SAML response (auth failed?)",
+                    {"status": response.status_code, "binding": "HTTP-POST"}
+                )
+
+            elif response.status_code == 302:
+                return self._add_result(
+                    "SAML SSO (POST binding)",
+                    TestCategory.SAML,
+                    False,
+                    "Redirect to login (auth failed)",
+                    {"status": response.status_code, "binding": "HTTP-POST"}
+                )
 
             return self._add_result(
-                "SAML SSO",
+                "SAML SSO (POST binding)",
                 TestCategory.SAML,
                 False,
                 f"Unexpected status: {response.status_code}"
             )
         except Exception as e:
-            return self._add_result("SAML SSO", TestCategory.SAML, False, str(e))
+            return self._add_result("SAML SSO (POST binding)", TestCategory.SAML, False, str(e))
+
+    def test_saml_sso_redirect_binding(self) -> TestResult:
+        """SAML SSO endpoint with HTTP-Redirect binding (DEFLATE compressed request).
+
+        Verifies that the SAMLRequest is correctly parsed by checking
+        that InResponseTo in the SAML response matches the request ID.
+        """
+        try:
+            import re
+            import zlib
+
+            # Create a minimal SAML AuthnRequest
+            request_id = "_test_redirect_binding_456"
+            acs_url = "http://localhost:8080/acs"
+            saml_request = f"""
+            <samlp:AuthnRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"
+                ID="{request_id}" Version="2.0" IssueInstant="2024-01-01T00:00:00Z"
+                AssertionConsumerServiceURL="{acs_url}">
+                <saml:Issuer xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion">
+                    test-sp
+                </saml:Issuer>
+            </samlp:AuthnRequest>
+            """.strip()
+
+            # HTTP-Redirect binding: DEFLATE compress then base64 encode
+            compressed = zlib.compress(saml_request.encode('utf-8'))[2:-4]  # Remove zlib header/trailer
+            encoded_request = base64.b64encode(compressed).decode('ascii')
+
+            # First, authenticate via session
+            session = requests.Session()
+
+            # Login to get a session
+            login_response = session.post(
+                f"{self.base_url}/login",
+                data={"username": self.username, "password": self.password},
+                allow_redirects=False,
+                timeout=5
+            )
+
+            # GET to SSO endpoint (HTTP-Redirect binding) with authenticated session
+            response = session.get(
+                f"{self.base_url}/saml/sso",
+                params={
+                    "SAMLRequest": encoded_request,
+                    "RelayState": "test-relay-state"
+                },
+                allow_redirects=False,
+                timeout=5
+            )
+
+            if response.status_code == 200:
+                # Should get auto-submit form with SAMLResponse
+                response_text = response.text
+
+                if "SAMLResponse" in response_text:
+                    # Extract SAMLResponse
+                    match = re.search(r'name="SAMLResponse"\s+value="([^"]+)"', response_text)
+                    if match:
+                        saml_response_b64 = match.group(1)
+                        saml_response_xml = base64.b64decode(saml_response_b64).decode('utf-8')
+
+                        # Verify InResponseTo matches our request ID
+                        in_response_to_match = re.search(r'InResponseTo="([^"]+)"', saml_response_xml)
+                        in_response_to = in_response_to_match.group(1) if in_response_to_match else None
+
+                        # Verify ACS URL in form action
+                        acs_in_response = acs_url in response_text
+
+                        parsing_ok = in_response_to == request_id
+
+                        return self._add_result(
+                            "SAML SSO (Redirect binding)",
+                            TestCategory.SAML,
+                            parsing_ok and acs_in_response,
+                            f"HTTP-Redirect binding: InResponseTo={'OK' if parsing_ok else 'FAIL'}, ACS={'OK' if acs_in_response else 'FAIL'}",
+                            {"binding": "HTTP-Redirect", "request_id": request_id, "in_response_to": in_response_to, "parsing_ok": parsing_ok}
+                        )
+
+                # Got login form instead of SAML response
+                return self._add_result(
+                    "SAML SSO (Redirect binding)",
+                    TestCategory.SAML,
+                    False,
+                    "Got login form instead of SAML response (auth failed?)",
+                    {"status": response.status_code, "binding": "HTTP-Redirect"}
+                )
+
+            elif response.status_code == 302:
+                return self._add_result(
+                    "SAML SSO (Redirect binding)",
+                    TestCategory.SAML,
+                    False,
+                    "Redirect to login (auth failed)",
+                    {"status": response.status_code, "binding": "HTTP-Redirect"}
+                )
+
+            return self._add_result(
+                "SAML SSO (Redirect binding)",
+                TestCategory.SAML,
+                False,
+                f"Unexpected status: {response.status_code}"
+            )
+        except Exception as e:
+            return self._add_result("SAML SSO (Redirect binding)", TestCategory.SAML, False, str(e))
 
     def test_saml_attribute_query(self) -> TestResult:
         """SAML Attribute Query endpoint."""
@@ -1600,7 +1739,8 @@ class NanoIDPTestAgent:
             ]),
             (TestCategory.SAML, "SAML 2.0", [
                 self.test_saml_metadata,
-                self.test_saml_sso,
+                self.test_saml_sso_post_binding,
+                self.test_saml_sso_redirect_binding,
                 self.test_saml_attribute_query,
                 self.test_saml_signing_config,
                 self.test_saml_c14n_algorithm,
