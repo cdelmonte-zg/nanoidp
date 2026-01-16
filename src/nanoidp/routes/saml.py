@@ -270,11 +270,17 @@ def metadata():
     x509c = etree.SubElement(x509d, "{http://www.w3.org/2000/09/xmldsig#}X509Certificate")
     x509c.text = crypto.get_certificate_base64()
 
-    # SingleSignOnService
+    # SingleSignOnService - support both POST and Redirect bindings
     etree.SubElement(
         idpsso,
         "{urn:oasis:names:tc:SAML:2.0:metadata}SingleSignOnService",
         Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST",
+        Location=settings.saml_sso_url,
+    )
+    etree.SubElement(
+        idpsso,
+        "{urn:oasis:names:tc:SAML:2.0:metadata}SingleSignOnService",
+        Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect",
         Location=settings.saml_sso_url,
     )
 
