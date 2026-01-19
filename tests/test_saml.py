@@ -617,11 +617,11 @@ class TestSAMLSigningConfiguration:
         finally:
             config.settings.saml_sign_responses = original_value
 
-    def test_signed_response_uses_c14n_1_0(self, client):
-        """Test that signed SAML response uses C14N 1.0 by default.
+    def test_signed_response_uses_exc_c14n(self, client):
+        """Test that signed SAML response uses Exclusive C14N by default.
 
-        C14N 1.0 is the most compatible algorithm:
-        http://www.w3.org/TR/2001/REC-xml-c14n-20010315
+        Exclusive C14N is the standard for SAML signatures:
+        http://www.w3.org/2001/10/xml-exc-c14n#
         """
         from nanoidp.routes.saml import _build_saml_response
 
@@ -646,18 +646,18 @@ class TestSAMLSigningConfiguration:
         assert c14n_method is not None, "CanonicalizationMethod element not found"
 
         c14n_algo = c14n_method.get("Algorithm")
-        # C14N 1.0 (default, most compatible)
-        expected_c14n = "http://www.w3.org/TR/2001/REC-xml-c14n-20010315"
+        # Exclusive C14N (default, standard for SAML)
+        expected_c14n = "http://www.w3.org/2001/10/xml-exc-c14n#"
         # C14N 1.1 (less compatible)
         incompatible_c14n = "http://www.w3.org/2006/12/xml-c14n11"
 
         assert c14n_algo != incompatible_c14n, \
-            f"Default should be C14N 1.0, not C14N 1.1"
+            f"Default should be Exclusive C14N, not C14N 1.1"
         assert c14n_algo == expected_c14n, \
-            f"Expected C14N 1.0 algorithm, got: {c14n_algo}"
+            f"Expected Exclusive C14N algorithm, got: {c14n_algo}"
 
-    def test_signed_response_transform_uses_c14n_1_0(self, client):
-        """Test that Transform element also uses C14N 1.0."""
+    def test_signed_response_transform_uses_exc_c14n(self, client):
+        """Test that Transform element also uses Exclusive C14N."""
         from nanoidp.routes.saml import _build_saml_response
 
         try:
@@ -680,15 +680,15 @@ class TestSAMLSigningConfiguration:
         transforms = root.findall(".//ds:Transform", SAML_NS)
 
         incompatible_c14n = "http://www.w3.org/2006/12/xml-c14n11"
-        expected_c14n = "http://www.w3.org/TR/2001/REC-xml-c14n-20010315"
+        expected_c14n = "http://www.w3.org/2001/10/xml-exc-c14n#"
 
         for transform in transforms:
             algo = transform.get("Algorithm")
             if "c14n" in algo.lower():
                 assert algo != incompatible_c14n, \
-                    f"Transform should use C14N 1.0 by default, not C14N 1.1"
+                    f"Transform should use Exclusive C14N by default, not C14N 1.1"
                 assert algo == expected_c14n, \
-                    f"Expected C14N 1.0 in Transform, got: {algo}"
+                    f"Expected Exclusive C14N in Transform, got: {algo}"
 
     def test_c14n_algorithm_configurable_to_c14n11(self, client):
         """Test that c14n_algorithm can be configured to use C14N 1.1."""

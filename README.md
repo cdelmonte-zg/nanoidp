@@ -278,15 +278,15 @@ When `sign_responses: false`, responses are sent without any signature elements.
 
 #### XML Canonicalization Algorithm
 
-By default, NanoIDP uses **C14N 1.0** for XML canonicalization, which is compatible with most SAML implementations. You can configure the algorithm based on your SP requirements:
+By default, NanoIDP uses **Exclusive C14N** for XML canonicalization, which is the standard for SAML signatures and compatible with most modern SAML implementations. You can configure the algorithm based on your SP requirements:
 
 **Via configuration file (`settings.yaml`):**
 
 ```yaml
 saml:
-  c14n_algorithm: c14n      # Default: C14N 1.0 (most compatible)
+  c14n_algorithm: exc_c14n  # Default: Exclusive C14N 1.0 (standard for SAML)
+  # c14n_algorithm: c14n    # C14N 1.0
   # c14n_algorithm: c14n11  # C14N 1.1
-  # c14n_algorithm: exc_c14n # Exclusive C14N 1.0
 ```
 
 **Via Web UI:**
@@ -297,13 +297,13 @@ saml:
 
 | Value | Algorithm | Use Case |
 |-------|-----------|----------|
-| `c14n` (default) | C14N 1.0 | Most SAML implementations |
+| `exc_c14n` (default) | Exclusive C14N 1.0 | Standard for SAML, handles namespace isolation |
+| `c14n` | C14N 1.0 | Legacy SAML implementations |
 | `c14n11` | C14N 1.1 | Newer implementations |
-| `exc_c14n` | Exclusive C14N 1.0 | SPs that extract Assertions for signature verification |
 
-**When to use Exclusive C14N (`exc_c14n`):**
+**Why Exclusive C14N is the default:**
 
-Some SPs extract the `<Assertion>` element from the `<Response>` to verify the signature independently. With standard C14N, the signature includes parent namespaces that break when the Assertion is extracted. Exclusive C14N only includes namespaces actually used in the signed element, making signatures portable.
+Exclusive C14N is recommended by the SAML 2.0 specification because it only includes namespaces actually used in the signed element. This is important when SPs extract the `<Assertion>` element from the `<Response>` to verify the signature independently. With standard C14N, the signature includes parent namespaces that break when the Assertion is extracted.
 
 ### REST API
 

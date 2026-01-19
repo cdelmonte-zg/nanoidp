@@ -12,9 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - When `false` (default): lenient mode accepts GET with uncompressed data (useful for debugging)
   - When `true`: strict mode rejects non-compliant requests per SAML spec
 - Setting exposed in UI (Settings page), REST API (`/api/config`), and MCP server
-- New `exc_c14n` option for Exclusive XML Canonicalization 1.0 (for SPs that extract Assertions)
-  - Configure via `saml_c14n_algorithm: exc_c14n` in settings
-  - Available algorithms: `c14n` (C14N 1.0, default), `c14n11` (C14N 1.1), `exc_c14n` (Exclusive C14N 1.0)
+- Exclusive C14N (`exc_c14n`) is now the default XML canonicalization algorithm
+  - Standard for SAML 2.0 signatures, handles namespace isolation correctly
+  - Available algorithms: `exc_c14n` (Exclusive C14N 1.0, default), `c14n` (C14N 1.0), `c14n11` (C14N 1.1)
 - UI select dropdown for C14N algorithm in Settings page
 - `strict_saml_binding` and `verbose_logging` now persist correctly on save/reload
 - Comprehensive E2E test coverage for all SAML flows in `test_agent.py`:

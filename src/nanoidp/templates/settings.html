@@ -91,9 +91,9 @@
                     <div class="mb-3">
                         <label for="saml_c14n_algorithm" class="form-label">Canonicalization Algorithm</label>
                         <select class="form-select" id="saml_c14n_algorithm" name="saml_c14n_algorithm">
-                            <option value="c14n" {% if settings.saml_c14n_algorithm == 'c14n' %}selected{% endif %}>C14N 1.0 (default)</option>
+                            <option value="exc_c14n" {% if settings.saml_c14n_algorithm == 'exc_c14n' %}selected{% endif %}>Exclusive C14N 1.0 (default)</option>
+                            <option value="c14n" {% if settings.saml_c14n_algorithm == 'c14n' %}selected{% endif %}>C14N 1.0</option>
                             <option value="c14n11" {% if settings.saml_c14n_algorithm == 'c14n11' %}selected{% endif %}>C14N 1.1</option>
-                            <option value="exc_c14n" {% if settings.saml_c14n_algorithm == 'exc_c14n' %}selected{% endif %}>Exclusive C14N 1.0</option>
                         </select>
                         <div class="form-text">XML canonicalization algorithm for SAML signatures</div>
                     </div>

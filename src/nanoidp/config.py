@@ -76,8 +76,8 @@ class Settings(BaseModel):
     default_acs_url: str = Field(default="http://localhost:8080/login/saml2/sso/samlIdp", description="Default ACS URL")
     saml_sign_responses: bool = Field(default=True, description="Sign SAML responses (set to false for testing unsigned flows)")
     saml_c14n_algorithm: str = Field(
-        default="c14n",
-        description="XML canonicalization algorithm: 'c14n' (1.0), 'c14n11' (1.1), or 'exc_c14n' (Exclusive 1.0)"
+        default="exc_c14n",
+        description="XML canonicalization algorithm: 'exc_c14n' (Exclusive 1.0, default), 'c14n' (1.0), or 'c14n11' (1.1)"
     )
     strict_saml_binding: bool = Field(
         default=False,
@@ -223,7 +223,7 @@ class ConfigManager:
             saml_sso_url=saml.get("sso_url", "http://localhost:8000/saml/sso"),
             default_acs_url=saml.get("default_acs_url", "http://localhost:8080/login/saml2/sso/samlIdp"),
             saml_sign_responses=saml.get("sign_responses", True),
-            saml_c14n_algorithm=saml.get("c14n_algorithm", "c14n"),
+            saml_c14n_algorithm=saml.get("c14n_algorithm", "exc_c14n"),
             strict_saml_binding=saml.get("strict_binding", False),
             # JWT
             jwt_algorithm=jwt_config.get("algorithm", "RS256"),

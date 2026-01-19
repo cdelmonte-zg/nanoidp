@@ -43,9 +43,9 @@ def _get_c14n_algorithm(config_value: str) -> "CanonicalizationMethod":
 
     Args:
         config_value: Canonicalization algorithm identifier:
-            - 'c14n': C14N 1.0 (default, most compatible)
+            - 'exc_c14n': Exclusive C14N 1.0 (default, standard for SAML)
+            - 'c14n': C14N 1.0
             - 'c14n11': C14N 1.1
-            - 'exc_c14n': Exclusive C14N 1.0 (for SPs that extract Assertions)
 
     Returns:
         CanonicalizationMethod enum value
@@ -53,12 +53,12 @@ def _get_c14n_algorithm(config_value: str) -> "CanonicalizationMethod":
     if not SIGNXML_AVAILABLE:
         return None
 
+    if config_value == "c14n":
+        return CanonicalizationMethod.CANONICAL_XML_1_0
     if config_value == "c14n11":
         return CanonicalizationMethod.CANONICAL_XML_1_1
-    if config_value == "exc_c14n":
-        return CanonicalizationMethod.EXCLUSIVE_XML_CANONICALIZATION_1_0
-    # Default to C14N 1.0 for maximum compatibility
-    return CanonicalizationMethod.CANONICAL_XML_1_0
+    # Default to Exclusive C14N for SAML standard compliance
+    return CanonicalizationMethod.EXCLUSIVE_XML_CANONICALIZATION_1_0
 
 saml_bp = Blueprint("saml", __name__, url_prefix="/saml")
 
