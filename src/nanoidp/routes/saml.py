@@ -8,7 +8,7 @@ import zlib
 import logging
 from base64 import b64encode, b64decode
 from datetime import datetime, timedelta, timezone
-from flask import Blueprint, request, abort, session, redirect, url_for, Response
+from flask import Blueprint, request, abort, session, redirect, url_for, Response, render_template
 
 from lxml import etree
 
@@ -42,7 +42,10 @@ def _get_c14n_algorithm(config_value: str) -> "CanonicalizationMethod":
     """Map config string to CanonicalizationMethod enum.
 
     Args:
-        config_value: 'c14n' for C14N 1.0 (compatible with pysaml2) or 'c14n11' for C14N 1.1
+        config_value: Canonicalization algorithm identifier:
+            - 'c14n': C14N 1.0 (default, most compatible)
+            - 'c14n11': C14N 1.1
+            - 'exc_c14n': Exclusive C14N 1.0 (for SPs that extract Assertions)
 
     Returns:
         CanonicalizationMethod enum value
@@ -52,6 +55,8 @@ def _get_c14n_algorithm(config_value: str) -> "CanonicalizationMethod":
 
     if config_value == "c14n11":
         return CanonicalizationMethod.CANONICAL_XML_1_1
+    if config_value == "exc_c14n":
+        return CanonicalizationMethod.EXCLUSIVE_XML_CANONICALIZATION_1_0
     # Default to C14N 1.0 for maximum compatibility
     return CanonicalizationMethod.CANONICAL_XML_1_0
 
@@ -66,24 +71,50 @@ def _get_request_info():
     }
 
 
-def _parse_saml_request(saml_request_b64: str, http_method: str):
+def _parse_saml_request(saml_request_b64: str, http_verb: str, strict: bool = False):
     """Parse a SAMLRequest to extract ID, ACS URL, and Issuer.
 
     Args:
         saml_request_b64: Base64-encoded SAMLRequest
-        http_method: HTTP method used ("GET" or "POST")
-            - GET: HTTP-Redirect binding (DEFLATE compressed)
-            - POST: HTTP-POST binding (not compressed)
+        http_verb: HTTP verb used to receive the request ("GET" or "POST").
+            Note: This is the transport method, not the SAML binding.
+            - GET typically indicates HTTP-Redirect binding (DEFLATE compressed)
+            - POST typically indicates HTTP-POST binding (not compressed)
+            However, after inline login the verb may not match the original binding.
+        strict: If True, enforce SAML 2.0 binding compliance:
+            - GET must be DEFLATE compressed
+            - POST must NOT be compressed
+            If False (default), try decompress first then fallback to raw.
+
+    Note:
+        In lenient mode, we always try DEFLATE first then fallback to raw XML.
+        This handles the inline login case where the form POSTs but the original
+        SAMLRequest may have been from a GET (compressed) request.
     """
     try:
         saml_decoded = b64decode(saml_request_b64)
 
-        if http_method == "GET":
-            # HTTP-Redirect binding: DEFLATE compressed
-            saml_xml = zlib.decompress(saml_decoded, -zlib.MAX_WBITS)
+        if strict:
+            if http_verb == "GET":
+                # Strict GET: must be DEFLATE compressed per HTTP-Redirect binding
+                saml_xml = zlib.decompress(saml_decoded, -zlib.MAX_WBITS)
+                logger.debug("Strict mode: decompressed GET request (HTTP-Redirect binding)")
+            else:
+                # Strict POST: must NOT be compressed per HTTP-POST binding
+                saml_xml = saml_decoded
+                logger.debug("Strict mode: using raw POST request (HTTP-POST binding)")
         else:
-            # HTTP-POST binding: not compressed
-            saml_xml = saml_decoded
+            # Lenient mode: try decompress first, fallback to raw
+            # This handles:
+            # - GET compressed (HTTP-Redirect) → decompress works
+            # - POST uncompressed (HTTP-POST) → decompress fails → use raw
+            # - Inline login: original GET compressed, but form POSTs → decompress works
+            try:
+                saml_xml = zlib.decompress(saml_decoded, -zlib.MAX_WBITS)
+                logger.debug("Lenient mode: decompressed OK (likely HTTP-Redirect binding)")
+            except zlib.error:
+                saml_xml = saml_decoded
+                logger.debug("Lenient mode: fallback to raw XML (likely HTTP-POST binding)")
 
         root = secure_fromstring(saml_xml)
 
@@ -298,7 +329,15 @@ def cert():
 
 @saml_bp.route("/sso", methods=["GET", "POST"])
 def sso():
-    """SAML SSO endpoint."""
+    """SAML SSO endpoint.
+
+    Handles both SP-initiated SSO flows:
+    - HTTP-Redirect binding (GET with DEFLATE compressed SAMLRequest)
+    - HTTP-POST binding (POST with uncompressed SAMLRequest)
+
+    If user is not authenticated, shows login form inline (no redirect)
+    to preserve the original binding context.
+    """
     config = get_config()
     audit = get_audit_log()
     req_info = _get_request_info()
@@ -311,9 +350,53 @@ def sso():
 
     # Check if user is authenticated
     username = session.get("user")
+
+    # Handle inline login (no redirect to preserve binding)
     if not username:
-        # Redirect to login
-        return redirect(url_for("ui.login", SAMLRequest=saml_request_b64, RelayState=relay_state))
+        login_error = None
+
+        # Check if login form was submitted
+        form_username = request.form.get("username", "").strip()
+        form_password = request.form.get("password", "")
+
+        if form_username and form_password:
+            user = config.authenticate(form_username, form_password)
+            if user:
+                session["user"] = form_username
+                session.permanent = True
+                username = form_username
+                audit.log(
+                    event_type="login",
+                    endpoint="/saml/sso",
+                    method="POST",
+                    status="success",
+                    username=username,
+                    **req_info,
+                )
+            else:
+                login_error = "Invalid credentials"
+                audit.log(
+                    event_type="login",
+                    endpoint="/saml/sso",
+                    method="POST",
+                    status="failed",
+                    username=form_username,
+                    details={"reason": "Invalid credentials"},
+                    **req_info,
+                )
+
+        # Still not authenticated - show login form
+        if not username:
+            # Pass original HTTP verb to template for strict mode parsing after inline login
+            # (POST with compressed SAMLRequest from original GET needs to decompress)
+            return render_template(
+                "login.html",
+                error=login_error,
+                saml_request=saml_request_b64,
+                relay_state=relay_state,
+                original_verb=request.method,
+                users=list(config.users.keys()),
+            )
 
     user = config.get_user(username)
     if not user:
@@ -329,7 +412,23 @@ def sso():
         return abort(401, description=f"user '{username}' not found")
 
     # Parse SAMLRequest
-    saml_info = _parse_saml_request(saml_request_b64, request.method)
+    # NOTE: For HTTP-Redirect binding, SPs may send Signature/SigAlg query params.
+    # We do NOT verify the query string signature (dev tool - signature verification
+    # would require SP certificate which we don't have). This is acceptable for
+    # development/testing but not for production use.
+    #
+    # Use original HTTP verb from form if set (inline login case: original GET
+    # compressed SAMLRequest is POSTed back after login form submission).
+    # Normalize to uppercase and validate.
+    form_verb = request.form.get("saml_original_verb")
+    if form_verb and form_verb.upper() not in ("GET", "POST"):
+        return abort(400, description="invalid saml_original_verb")
+    original_verb = (form_verb or request.method or "POST").upper()
+    saml_info = _parse_saml_request(
+        saml_request_b64,
+        http_verb=original_verb,
+        strict=config.settings.strict_saml_binding
+    )
 
     # Determine ACS URL
     if saml_info and saml_info.get("acs_url"):

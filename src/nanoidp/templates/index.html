@@ -51,7 +51,11 @@
                 <div class="d-flex justify-content-between">
                     <div>
                         <h6 class="text-muted mb-2">SAML Requests</h6>
-                        <div class="stat-value" style="color: #6610f2;">{{ stats.saml_requests }}</div>
+                        <div class="stat-value" style="color: #6610f2;">{{ stats.saml_sso_requests + stats.saml_attribute_queries }}</div>
+                        <small class="text-muted">
+                            <span style="color: #6610f2;">{{ stats.saml_sso_requests }} SSO</span> /
+                            <span style="color: #9966ff;">{{ stats.saml_attribute_queries }} AttrQuery</span>
+                        </small>
                     </div>
                     <div class="text-purple opacity-50">
                         <i class="bi bi-file-earmark-lock" style="font-size: 2.5rem;"></i>

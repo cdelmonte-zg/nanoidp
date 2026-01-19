@@ -238,6 +238,8 @@ class YamlWriter:
         sso_url: Optional[str] = None,
         default_acs_url: Optional[str] = None,
         sign_responses: Optional[bool] = None,
+        strict_binding: Optional[bool] = None,
+        c14n_algorithm: Optional[str] = None,
     ) -> None:
         """Update SAML settings."""
         data = self._load_settings_yaml()
@@ -251,6 +253,10 @@ class YamlWriter:
             saml["default_acs_url"] = default_acs_url
         if sign_responses is not None:
             saml["sign_responses"] = sign_responses
+        if strict_binding is not None:
+            saml["strict_binding"] = strict_binding
+        if c14n_algorithm is not None:
+            saml["c14n_algorithm"] = c14n_algorithm
 
         self._atomic_write(self.settings_file, data)
         get_config().reload()

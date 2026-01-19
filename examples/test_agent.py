@@ -1265,24 +1265,32 @@ class NanoIDPTestAgent:
                 # Check which C14N algorithm is used in the signature
                 c14n_1_0 = "http://www.w3.org/TR/2001/REC-xml-c14n-20010315"
                 c14n_1_1 = "http://www.w3.org/2006/12/xml-c14n11"
+                exc_c14n = "http://www.w3.org/2001/10/xml-exc-c14n#"
 
                 uses_c14n_1_0 = c14n_1_0 in saml_response_xml
                 uses_c14n_1_1 = c14n_1_1 in saml_response_xml
+                uses_exc_c14n = exc_c14n in saml_response_xml
 
                 # Verify config matches actual usage
                 if c14n_setting == "c14n":
-                    expected_correct = uses_c14n_1_0 and not uses_c14n_1_1
+                    expected_correct = uses_c14n_1_0 and not uses_c14n_1_1 and not uses_exc_c14n
                     algo_name = "C14N 1.0"
-                else:
-                    expected_correct = uses_c14n_1_1 and not uses_c14n_1_0
+                elif c14n_setting == "c14n11":
+                    expected_correct = uses_c14n_1_1 and not uses_c14n_1_0 and not uses_exc_c14n
                     algo_name = "C14N 1.1"
+                elif c14n_setting == "exc_c14n":
+                    expected_correct = uses_exc_c14n and not uses_c14n_1_0 and not uses_c14n_1_1
+                    algo_name = "Exclusive C14N 1.0"
+                else:
+                    expected_correct = False
+                    algo_name = f"Unknown ({c14n_setting})"
 
                 return self._add_result(
                     "SAML C14N Config",
                     TestCategory.SAML,
                     expected_correct,
-                    f"config={c14n_setting}, uses {algo_name}, pysaml2_compatible={uses_c14n_1_0}",
-                    {"c14n_setting": c14n_setting, "uses_c14n_1_0": uses_c14n_1_0, "uses_c14n_1_1": uses_c14n_1_1}
+                    f"config={c14n_setting}, uses {algo_name}",
+                    {"c14n_setting": c14n_setting, "uses_c14n_1_0": uses_c14n_1_0, "uses_c14n_1_1": uses_c14n_1_1, "uses_exc_c14n": uses_exc_c14n}
                 )
 
             return self._add_result(
@@ -1293,6 +1301,490 @@ class NanoIDPTestAgent:
             )
         except Exception as e:
             return self._add_result("SAML C14N Config", TestCategory.SAML, False, str(e))
+
+    def test_saml_exclusive_c14n(self) -> TestResult:
+        """Test Exclusive C14N algorithm by temporarily changing the setting."""
+        try:
+            # Get current config to save original value
+            config_response = self.session.get(f"{self.base_url}/api/config", timeout=5)
+            if config_response.status_code != 200:
+                return self._add_result(
+                    "SAML Exclusive C14N",
+                    TestCategory.SAML,
+                    False,
+                    f"Cannot get config: {config_response.status_code}"
+                )
+
+            config = config_response.json()
+            saml_config = config.get("saml", {})
+            original_c14n = saml_config.get("c14n_algorithm", "c14n")
+            sign_responses = saml_config.get("sign_responses", True)
+
+            if not sign_responses:
+                return self._add_result(
+                    "SAML Exclusive C14N",
+                    TestCategory.SAML,
+                    True,
+                    "Skipped: signing disabled",
+                    {"skipped": True}
+                )
+
+            # Change to exc_c14n via settings form
+            settings_response = self.session.post(
+                f"{self.base_url}/settings",
+                data={
+                    "issuer": config.get("oauth", {}).get("issuer", "http://localhost:8000"),
+                    "audience": config.get("oauth", {}).get("audience", "default"),
+                    "token_expiry_minutes": config.get("oauth", {}).get("token_expiry_minutes", 60),
+                    "saml_entity_id": saml_config.get("entity_id", "http://localhost:8000/saml"),
+                    "saml_sso_url": saml_config.get("sso_url", "http://localhost:8000/saml/sso"),
+                    "default_acs_url": saml_config.get("default_acs_url", ""),
+                    "saml_sign_responses": "true" if sign_responses else "",
+                    "strict_saml_binding": "true" if saml_config.get("strict_binding", False) else "",
+                    "saml_c14n_algorithm": "exc_c14n",
+                    "allowed_identity_classes": "\n".join(config.get("allowed_identity_classes", [])),
+                },
+                allow_redirects=True,
+                timeout=10
+            )
+
+            if settings_response.status_code != 200:
+                return self._add_result(
+                    "SAML Exclusive C14N",
+                    TestCategory.SAML,
+                    False,
+                    f"Cannot update settings: {settings_response.status_code}"
+                )
+
+            # Test with exclusive c14n
+            attr_query = f"""
+            <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+                <soap:Body>
+                    <samlp:AttributeQuery xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"
+                        xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion"
+                        ID="_exc_c14n_test" Version="2.0" IssueInstant="2024-01-01T00:00:00Z">
+                        <saml:Issuer>test-sp</saml:Issuer>
+                        <saml:Subject>
+                            <saml:NameID>{self.username}</saml:NameID>
+                        </saml:Subject>
+                    </samlp:AttributeQuery>
+                </soap:Body>
+            </soap:Envelope>
+            """.strip()
+
+            response = requests.post(
+                f"{self.base_url}/saml/attribute-query",
+                data=attr_query,
+                headers={"Content-Type": "text/xml"},
+                timeout=10
+            )
+
+            exc_c14n_uri = "http://www.w3.org/2001/10/xml-exc-c14n#"
+            uses_exc_c14n = exc_c14n_uri in response.text if response.status_code == 200 else False
+
+            # Restore original setting
+            self.session.post(
+                f"{self.base_url}/settings",
+                data={
+                    "issuer": config.get("oauth", {}).get("issuer", "http://localhost:8000"),
+                    "audience": config.get("oauth", {}).get("audience", "default"),
+                    "token_expiry_minutes": config.get("oauth", {}).get("token_expiry_minutes", 60),
+                    "saml_entity_id": saml_config.get("entity_id", "http://localhost:8000/saml"),
+                    "saml_sso_url": saml_config.get("sso_url", "http://localhost:8000/saml/sso"),
+                    "default_acs_url": saml_config.get("default_acs_url", ""),
+                    "saml_sign_responses": "true" if sign_responses else "",
+                    "strict_saml_binding": "true" if saml_config.get("strict_binding", False) else "",
+                    "saml_c14n_algorithm": original_c14n,
+                    "allowed_identity_classes": "\n".join(config.get("allowed_identity_classes", [])),
+                },
+                allow_redirects=True,
+                timeout=10
+            )
+
+            return self._add_result(
+                "SAML Exclusive C14N",
+                TestCategory.SAML,
+                uses_exc_c14n,
+                f"exc_c14n={'OK' if uses_exc_c14n else 'FAIL'}, restored to {original_c14n}",
+                {"uses_exc_c14n": uses_exc_c14n, "original": original_c14n}
+            )
+        except Exception as e:
+            return self._add_result("SAML Exclusive C14N", TestCategory.SAML, False, str(e))
+
+    def test_saml_idp_initiated_not_supported(self) -> TestResult:
+        """Test that IdP-initiated SSO (unsolicited response) is not supported.
+
+        NanoIDP only supports SP-initiated flows. Accessing /saml/sso without
+        a SAMLRequest should return an error or redirect to login.
+        """
+        try:
+            # First, authenticate via session
+            session = requests.Session()
+            login_response = session.post(
+                f"{self.base_url}/login",
+                data={"username": self.username, "password": self.password},
+                allow_redirects=False,
+                timeout=5
+            )
+
+            # Try to access SSO endpoint without SAMLRequest (IdP-initiated)
+            response = session.get(
+                f"{self.base_url}/saml/sso",
+                allow_redirects=False,
+                timeout=5
+            )
+
+            # Without SAMLRequest, should get 400 Bad Request
+            if response.status_code == 400:
+                return self._add_result(
+                    "SAML IdP-Initiated (not supported)",
+                    TestCategory.SAML,
+                    True,
+                    "Correctly rejected IdP-initiated SSO (400 Bad Request)",
+                    {"status": 400, "behavior": "rejected"}
+                )
+
+            # Also acceptable: redirect to login or error page
+            if response.status_code in [302, 303]:
+                return self._add_result(
+                    "SAML IdP-Initiated (not supported)",
+                    TestCategory.SAML,
+                    True,
+                    f"IdP-initiated SSO redirected (status={response.status_code})",
+                    {"status": response.status_code, "behavior": "redirect"}
+                )
+
+            return self._add_result(
+                "SAML IdP-Initiated (not supported)",
+                TestCategory.SAML,
+                False,
+                f"Unexpected status: {response.status_code} (expected 400 or redirect)",
+                {"status": response.status_code}
+            )
+        except Exception as e:
+            return self._add_result("SAML IdP-Initiated (not supported)", TestCategory.SAML, False, str(e))
+
+    def test_saml_strict_binding_mode(self) -> TestResult:
+        """Test SAML strict binding mode behavior.
+
+        In strict mode, GET requests with uncompressed SAMLRequest should be rejected.
+        In lenient mode (default), they should be accepted.
+        """
+        try:
+            import re
+
+            # Get current strict_binding setting
+            config_response = self.session.get(f"{self.base_url}/api/config", timeout=5)
+            strict_binding = False
+            if config_response.status_code == 200:
+                config = config_response.json()
+                strict_binding = config.get("saml", {}).get("strict_binding", False)
+
+            # Create an uncompressed SAMLRequest (only base64 encoded, no DEFLATE)
+            # This is non-compliant for HTTP-Redirect binding
+            request_id = "_test_strict_binding_789"
+            acs_url = "http://localhost:8080/acs"
+            saml_request = f"""
+            <samlp:AuthnRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"
+                ID="{request_id}" Version="2.0" IssueInstant="2024-01-01T00:00:00Z"
+                AssertionConsumerServiceURL="{acs_url}">
+                <saml:Issuer xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion">
+                    test-sp
+                </saml:Issuer>
+            </samlp:AuthnRequest>
+            """.strip()
+
+            # Only base64 encode (no compression) - non-compliant for GET
+            encoded_request = base64.b64encode(saml_request.encode()).decode()
+
+            # Authenticate
+            session = requests.Session()
+            session.post(
+                f"{self.base_url}/login",
+                data={"username": self.username, "password": self.password},
+                allow_redirects=False,
+                timeout=5
+            )
+
+            # Send GET with uncompressed data (non-compliant)
+            response = session.get(
+                f"{self.base_url}/saml/sso",
+                params={
+                    "SAMLRequest": encoded_request,
+                    "RelayState": "test-relay-state"
+                },
+                allow_redirects=False,
+                timeout=5
+            )
+
+            if strict_binding:
+                # In strict mode, this should be rejected (400)
+                if response.status_code == 400:
+                    return self._add_result(
+                        "SAML Strict Binding Mode",
+                        TestCategory.SAML,
+                        True,
+                        f"strict_binding={strict_binding}: correctly rejected non-compliant GET",
+                        {"strict_binding": True, "status": 400, "behavior": "rejected"}
+                    )
+                else:
+                    return self._add_result(
+                        "SAML Strict Binding Mode",
+                        TestCategory.SAML,
+                        False,
+                        f"strict_binding={strict_binding}: expected 400, got {response.status_code}",
+                        {"strict_binding": True, "status": response.status_code}
+                    )
+            else:
+                # In lenient mode, this should be accepted
+                if response.status_code == 200:
+                    # Verify we got a SAML response
+                    has_saml_response = "SAMLResponse" in response.text
+                    if has_saml_response:
+                        # Verify InResponseTo matches
+                        match = re.search(r'name="SAMLResponse"\s+value="([^"]+)"', response.text)
+                        if match:
+                            saml_response_b64 = match.group(1)
+                            saml_response_xml = base64.b64decode(saml_response_b64).decode('utf-8')
+                            in_response_to_match = re.search(r'InResponseTo="([^"]+)"', saml_response_xml)
+                            in_response_to = in_response_to_match.group(1) if in_response_to_match else None
+                            parsing_ok = in_response_to == request_id
+
+                            return self._add_result(
+                                "SAML Strict Binding Mode",
+                                TestCategory.SAML,
+                                parsing_ok,
+                                f"strict_binding={strict_binding}: accepted non-compliant GET, parsing={'OK' if parsing_ok else 'FAIL'}",
+                                {"strict_binding": False, "status": 200, "behavior": "accepted", "parsing_ok": parsing_ok}
+                            )
+
+                    return self._add_result(
+                        "SAML Strict Binding Mode",
+                        TestCategory.SAML,
+                        True,
+                        f"strict_binding={strict_binding}: accepted non-compliant GET",
+                        {"strict_binding": False, "status": 200, "behavior": "accepted"}
+                    )
+                else:
+                    return self._add_result(
+                        "SAML Strict Binding Mode",
+                        TestCategory.SAML,
+                        False,
+                        f"strict_binding={strict_binding}: expected 200, got {response.status_code}",
+                        {"strict_binding": False, "status": response.status_code}
+                    )
+        except Exception as e:
+            return self._add_result("SAML Strict Binding Mode", TestCategory.SAML, False, str(e))
+
+    def test_saml_attribute_query_verification(self) -> TestResult:
+        """Test SAML Attribute Query with attribute verification.
+
+        Verifies that the returned SAML response contains actual user attributes
+        like email, identity_class, etc.
+        """
+        try:
+            # Create attribute query with SOAP envelope (required format)
+            attr_query = f"""
+            <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+                <soap:Body>
+                    <samlp:AttributeQuery xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"
+                        xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion"
+                        ID="_attrquery_verify_123" Version="2.0" IssueInstant="2024-01-01T00:00:00Z">
+                        <saml:Issuer>test-sp</saml:Issuer>
+                        <saml:Subject>
+                            <saml:NameID>{self.username}</saml:NameID>
+                        </saml:Subject>
+                    </samlp:AttributeQuery>
+                </soap:Body>
+            </soap:Envelope>
+            """.strip()
+
+            response = requests.post(
+                f"{self.base_url}/saml/attribute-query",
+                data=attr_query,
+                headers={"Content-Type": "text/xml"},
+                timeout=5
+            )
+
+            if response.status_code == 200:
+                saml_response = response.text
+
+                # Parse and verify attributes
+                # Check for expected attribute names (handles various namespace prefixes)
+                expected_attrs = ["email", "identity_class"]
+                found_attrs = []
+
+                for attr in expected_attrs:
+                    if f'Name="{attr}"' in saml_response:
+                        found_attrs.append(attr)
+
+                # Check for attribute values (handles saml2:AttributeValue, saml:AttributeValue, etc.)
+                has_attribute_values = "AttributeValue>" in saml_response
+
+                # Verify the subject matches
+                subject_match = f">{self.username}<" in saml_response
+
+                return self._add_result(
+                    "SAML Attribute Query (verification)",
+                    TestCategory.SAML,
+                    len(found_attrs) > 0 and has_attribute_values,
+                    f"Found attributes: {found_attrs}, has_values={has_attribute_values}, subject_match={subject_match}",
+                    {"found_attrs": found_attrs, "has_values": has_attribute_values, "subject_match": subject_match}
+                )
+
+            return self._add_result(
+                "SAML Attribute Query (verification)",
+                TestCategory.SAML,
+                False,
+                f"Status: {response.status_code}"
+            )
+        except Exception as e:
+            return self._add_result("SAML Attribute Query (verification)", TestCategory.SAML, False, str(e))
+
+    def test_saml_login_flow_preserves_binding(self) -> TestResult:
+        """Test that inline login at /saml/sso preserves SAML binding semantics.
+
+        With inline login (no redirect to /login), the binding is naturally preserved:
+        1. POST to /saml/sso with uncompressed SAMLRequest (HTTP-POST binding)
+        2. User not authenticated → show login form inline with SAMLRequest in hidden field
+        3. User submits credentials via POST to same endpoint
+        4. SSO returns SAML response with correct InResponseTo
+        """
+        try:
+            import re
+
+            # Create an uncompressed SAMLRequest (HTTP-POST binding)
+            request_id = "_test_inline_login_binding"
+            acs_url = "http://localhost:8080/acs"
+            saml_request = f"""<samlp:AuthnRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"
+                ID="{request_id}" Version="2.0" IssueInstant="2024-01-01T00:00:00Z"
+                AssertionConsumerServiceURL="{acs_url}">
+                <saml:Issuer xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion">
+                    test-sp
+                </saml:Issuer>
+            </samlp:AuthnRequest>""".strip()
+
+            encoded_request = base64.b64encode(saml_request.encode()).decode()
+
+            # Use a fresh session (not authenticated)
+            session = requests.Session()
+
+            # Step 1: POST to /saml/sso without credentials → should show login form
+            response = session.post(
+                f"{self.base_url}/saml/sso",
+                data={
+                    "SAMLRequest": encoded_request,
+                    "RelayState": "test-relay-state"
+                },
+                allow_redirects=False,
+                timeout=5
+            )
+
+            if response.status_code != 200:
+                return self._add_result(
+                    "SAML Login Flow (binding preservation)",
+                    TestCategory.SAML,
+                    False,
+                    f"Step 1 failed: expected 200, got {response.status_code}"
+                )
+
+            # Verify login form is shown with SAMLRequest preserved
+            if "username" not in response.text.lower() or "SAMLRequest" not in response.text:
+                return self._add_result(
+                    "SAML Login Flow (binding preservation)",
+                    TestCategory.SAML,
+                    False,
+                    "Step 1 failed: login form not shown or SAMLRequest not preserved"
+                )
+
+            # Step 2: POST credentials + SAMLRequest to same endpoint
+            response = session.post(
+                f"{self.base_url}/saml/sso",
+                data={
+                    "SAMLRequest": encoded_request,
+                    "RelayState": "test-relay-state",
+                    "saml_original_verb": "POST",
+                    "username": self.username,
+                    "password": self.password
+                },
+                allow_redirects=False,
+                timeout=5
+            )
+
+            if response.status_code == 200:
+                response_text = response.text
+
+                # Should get SAMLResponse directly (inline login completes SSO)
+                if "SAMLResponse" in response_text:
+                    match = re.search(r'name="SAMLResponse"\s+value="([^"]+)"', response_text)
+                    if match:
+                        saml_response_b64 = match.group(1)
+                        saml_response_xml = base64.b64decode(saml_response_b64).decode('utf-8')
+                        in_response_to_match = re.search(r'InResponseTo="([^"]+)"', saml_response_xml)
+                        in_response_to = in_response_to_match.group(1) if in_response_to_match else None
+
+                        return self._add_result(
+                            "SAML Login Flow (binding preservation)",
+                            TestCategory.SAML,
+                            in_response_to == request_id,
+                            f"Inline login preserves binding, InResponseTo={'OK' if in_response_to == request_id else 'FAIL'}",
+                            {"inline_login": True, "in_response_to": in_response_to, "expected": request_id}
+                        )
+
+                return self._add_result(
+                    "SAML Login Flow (binding preservation)",
+                    TestCategory.SAML,
+                    False,
+                    "Step 2 failed: no SAMLResponse in response"
+                )
+
+            return self._add_result(
+                "SAML Login Flow (binding preservation)",
+                TestCategory.SAML,
+                False,
+                f"Step 2 failed: unexpected status {response.status_code}"
+            )
+        except Exception as e:
+            return self._add_result("SAML Login Flow (binding preservation)", TestCategory.SAML, False, str(e))
+
+    def test_saml_metadata_bindings(self) -> TestResult:
+        """Test that SAML metadata advertises both HTTP-POST and HTTP-Redirect bindings."""
+        try:
+            response = requests.get(
+                f"{self.base_url}/saml/metadata",
+                timeout=5
+            )
+
+            if response.status_code == 200:
+                metadata = response.text
+
+                # Check for both bindings in SingleSignOnService
+                http_post_binding = "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST" in metadata
+                http_redirect_binding = "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect" in metadata
+
+                # Check for SingleSignOnService element
+                has_sso_service = "SingleSignOnService" in metadata
+
+                return self._add_result(
+                    "SAML Metadata Bindings",
+                    TestCategory.SAML,
+                    http_post_binding and http_redirect_binding and has_sso_service,
+                    f"HTTP-POST={http_post_binding}, HTTP-Redirect={http_redirect_binding}",
+                    {
+                        "http_post": http_post_binding,
+                        "http_redirect": http_redirect_binding,
+                        "has_sso_service": has_sso_service
+                    }
+                )
+
+            return self._add_result(
+                "SAML Metadata Bindings",
+                TestCategory.SAML,
+                False,
+                f"Status: {response.status_code}"
+            )
+        except Exception as e:
+            return self._add_result("SAML Metadata Bindings", TestCategory.SAML, False, str(e))
 
     # =========================================================================
     # KEY MANAGEMENT TESTS
@@ -1739,11 +2231,17 @@ class NanoIDPTestAgent:
             ]),
             (TestCategory.SAML, "SAML 2.0", [
                 self.test_saml_metadata,
+                self.test_saml_metadata_bindings,
                 self.test_saml_sso_post_binding,
                 self.test_saml_sso_redirect_binding,
+                self.test_saml_idp_initiated_not_supported,
+                self.test_saml_strict_binding_mode,
+                self.test_saml_login_flow_preserves_binding,
                 self.test_saml_attribute_query,
+                self.test_saml_attribute_query_verification,
                 self.test_saml_signing_config,
                 self.test_saml_c14n_algorithm,
+                self.test_saml_exclusive_c14n,
             ]),
             (TestCategory.KEYS, "Key Management", [
                 self.test_key_info,

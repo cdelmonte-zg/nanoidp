@@ -138,15 +138,24 @@ class TestSAMLSSO:
         response = client.post('/saml/sso')
         assert response.status_code == 400
 
-    def test_sso_redirects_to_login_when_not_authenticated(self, client):
-        """Test that SSO redirects to login for unauthenticated users."""
+    def test_sso_shows_login_form_when_not_authenticated(self, client):
+        """Test that SSO shows login form inline for unauthenticated users.
+
+        Instead of redirecting to /login, the SSO endpoint now shows the
+        login form directly to preserve SAML binding context.
+        """
         saml_request = self._create_saml_request()
         response = client.post('/saml/sso',
             data={'SAMLRequest': saml_request},
             follow_redirects=False
         )
-        assert response.status_code == 302
-        assert '/login' in response.headers.get('Location', '')
+        # Now shows login form inline (200), not redirect (302)
+        assert response.status_code == 200
+        # Verify login form is shown
+        assert b'username' in response.data.lower()
+        assert b'password' in response.data.lower()
+        # SAMLRequest should be preserved in hidden field
+        assert saml_request.encode() in response.data
 
     def test_sso_returns_saml_response_when_authenticated(self, client):
         """Test that SSO returns SAML response for authenticated users."""
@@ -609,13 +618,10 @@ class TestSAMLSigningConfiguration:
             config.settings.saml_sign_responses = original_value
 
     def test_signed_response_uses_c14n_1_0(self, client):
-        """Test that signed SAML response uses C14N 1.0 for pysaml2 compatibility.
+        """Test that signed SAML response uses C14N 1.0 by default.
 
-        pysaml2 and many other SAML libraries expect C14N 1.0:
+        C14N 1.0 is the most compatible algorithm:
         http://www.w3.org/TR/2001/REC-xml-c14n-20010315
-
-        Not C14N 1.1:
-        http://www.w3.org/2006/12/xml-c14n11
         """
         from nanoidp.routes.saml import _build_saml_response
 
@@ -640,13 +646,13 @@ class TestSAMLSigningConfiguration:
         assert c14n_method is not None, "CanonicalizationMethod element not found"
 
         c14n_algo = c14n_method.get("Algorithm")
-        # C14N 1.0 (compatible with pysaml2)
+        # C14N 1.0 (default, most compatible)
         expected_c14n = "http://www.w3.org/TR/2001/REC-xml-c14n-20010315"
-        # C14N 1.1 (NOT compatible with pysaml2)
+        # C14N 1.1 (less compatible)
         incompatible_c14n = "http://www.w3.org/2006/12/xml-c14n11"
 
         assert c14n_algo != incompatible_c14n, \
-            f"C14N 1.1 is not compatible with pysaml2. Use C14N 1.0 instead."
+            f"Default should be C14N 1.0, not C14N 1.1"
         assert c14n_algo == expected_c14n, \
             f"Expected C14N 1.0 algorithm, got: {c14n_algo}"
 
@@ -680,7 +686,7 @@ class TestSAMLSigningConfiguration:
             algo = transform.get("Algorithm")
             if "c14n" in algo.lower():
                 assert algo != incompatible_c14n, \
-                    f"Transform uses C14N 1.1 which is not compatible with pysaml2"
+                    f"Transform should use C14N 1.0 by default, not C14N 1.1"
                 assert algo == expected_c14n, \
                     f"Expected C14N 1.0 in Transform, got: {algo}"
 
@@ -717,6 +723,45 @@ class TestSAMLSigningConfiguration:
 
             assert c14n_algo == expected_c14n11, \
                 f"Expected C14N 1.1 when configured, got: {c14n_algo}"
+        finally:
+            config.settings.saml_c14n_algorithm = original_value
+
+    def test_c14n_algorithm_configurable_to_exclusive(self, client):
+        """Test that c14n_algorithm can be configured to use Exclusive C14N 1.0.
+
+        Exclusive C14N is useful for SPs that extract Assertions for signature verification.
+        """
+        from nanoidp.config import get_config
+        from nanoidp.routes.saml import _build_saml_response
+
+        try:
+            from signxml import XMLSigner
+        except ImportError:
+            pytest.skip("signxml not available")
+
+        config = get_config()
+        original_value = config.settings.saml_c14n_algorithm
+        config.settings.saml_c14n_algorithm = "exc_c14n"
+
+        try:
+            xml = _build_saml_response(
+                acs_url='http://sp.example.com/acs',
+                issuer='http://localhost:8000/saml',
+                audience='http://sp.example.com',
+                name_id='admin',
+                attributes={'email': 'admin@example.com'},
+                sign=True
+            )
+
+            root = etree.fromstring(xml)
+            c14n_method = root.find(".//ds:CanonicalizationMethod", SAML_NS)
+            assert c14n_method is not None
+
+            c14n_algo = c14n_method.get("Algorithm")
+            expected_exc_c14n = "http://www.w3.org/2001/10/xml-exc-c14n#"
+
+            assert c14n_algo == expected_exc_c14n, \
+                f"Expected Exclusive C14N 1.0 when configured, got: {c14n_algo}"
         finally:
             config.settings.saml_c14n_algorithm = original_value
 
@@ -833,3 +878,623 @@ class TestSAMLStatus:
         status_code = root.find(".//saml2p:StatusCode", SAML_NS)
         assert status_code is not None
         assert 'Success' in status_code.get("Value", "")
+
+
+class TestSAMLFlowsComprehensive:
+    """Comprehensive tests documenting all supported SAML flows.
+
+    NanoIDP currently supports:
+    - SP-initiated SSO (HTTP-POST binding)
+    - SP-initiated SSO (HTTP-Redirect binding)
+    - Attribute Query
+
+    NOT supported:
+    - IdP-initiated SSO (unsolicited response)
+    """
+
+    def _create_authn_request(self, request_id="_test_req", acs_url="http://sp.example.com/acs",
+                               issuer="http://sp.example.com", compress=True):
+        """Create a SAMLRequest for testing."""
+        saml_request = f"""<?xml version="1.0" encoding="UTF-8"?>
+<samlp:AuthnRequest
+    xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"
+    xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion"
+    ID="{request_id}"
+    Version="2.0"
+    IssueInstant="2025-01-01T00:00:00Z"
+    AssertionConsumerServiceURL="{acs_url}">
+    <saml:Issuer>{issuer}</saml:Issuer>
+</samlp:AuthnRequest>"""
+
+        if compress:
+            compressed = zlib.compress(saml_request.encode('utf-8'))[2:-4]
+            return base64.b64encode(compressed).decode('ascii')
+        else:
+            return base64.b64encode(saml_request.encode('utf-8')).decode('ascii')
+
+    # =========================================================================
+    # SP-INITIATED SSO FLOWS
+    # =========================================================================
+
+    def test_sp_initiated_sso_post_binding_full_flow(self, client):
+        """Test complete SP-initiated SSO flow with HTTP-POST binding.
+
+        Flow:
+        1. SP sends AuthnRequest (POST, base64, no compression)
+        2. User authenticates
+        3. IdP returns SAMLResponse with InResponseTo
+        4. Verify all response attributes
+        """
+        with client.session_transaction() as sess:
+            sess['user'] = 'admin'
+
+        request_id = '_sp_post_flow_001'
+        acs_url = 'http://sp.example.com/acs/post'
+
+        # HTTP-POST binding: no compression
+        saml_request = self._create_authn_request(
+            request_id=request_id,
+            acs_url=acs_url,
+            compress=False
+        )
+
+        response = client.post('/saml/sso', data={
+            'SAMLRequest': saml_request,
+            'RelayState': 'test-state-post'
+        })
+
+        assert response.status_code == 200
+        response_text = response.data.decode('utf-8')
+
+        # Verify auto-submit form
+        assert 'SAMLResponse' in response_text
+        assert acs_url in response_text
+        assert 'test-state-post' in response_text
+
+        # Extract and verify SAMLResponse
+        import re
+        match = re.search(r'name="SAMLResponse"\s+value="([^"]+)"', response_text)
+        assert match, "SAMLResponse not found in form"
+
+        saml_response_xml = base64.b64decode(match.group(1))
+        root = etree.fromstring(saml_response_xml)
+
+        # Verify InResponseTo matches request ID
+        assert root.get("InResponseTo") == request_id, \
+            "InResponseTo must match original AuthnRequest ID for SP-initiated flow"
+
+        # Verify response structure
+        assert root.find(".//saml2:Assertion", SAML_NS) is not None
+        assert root.find(".//saml2:NameID", SAML_NS) is not None
+
+        status_code = root.find(".//saml2p:StatusCode", SAML_NS)
+        assert 'Success' in status_code.get("Value", "")
+
+    def test_sp_initiated_sso_redirect_binding_full_flow(self, client):
+        """Test complete SP-initiated SSO flow with HTTP-Redirect binding.
+
+        Flow:
+        1. SP sends AuthnRequest (GET, DEFLATE compressed, base64)
+        2. User authenticates
+        3. IdP returns SAMLResponse with InResponseTo
+        """
+        with client.session_transaction() as sess:
+            sess['user'] = 'admin'
+
+        request_id = '_sp_redirect_flow_002'
+        acs_url = 'http://sp.example.com/acs/redirect'
+
+        # HTTP-Redirect binding: DEFLATE compressed
+        saml_request = self._create_authn_request(
+            request_id=request_id,
+            acs_url=acs_url,
+            compress=True
+        )
+
+        response = client.get('/saml/sso', query_string={
+            'SAMLRequest': saml_request,
+            'RelayState': 'test-state-redirect'
+        })
+
+        assert response.status_code == 200
+        response_text = response.data.decode('utf-8')
+
+        # Extract and verify SAMLResponse
+        import re
+        match = re.search(r'name="SAMLResponse"\s+value="([^"]+)"', response_text)
+        assert match, "SAMLResponse not found"
+
+        saml_response_xml = base64.b64decode(match.group(1))
+        root = etree.fromstring(saml_response_xml)
+
+        # Verify InResponseTo matches
+        assert root.get("InResponseTo") == request_id
+
+    # =========================================================================
+    # IDP-INITIATED SSO (NOT SUPPORTED)
+    # =========================================================================
+
+    def test_strict_mode_rejects_uncompressed_get(self, client):
+        """Test that strict SAML binding mode rejects GET with uncompressed data."""
+        from nanoidp.config import get_config
+        config = get_config()
+        original_strict = config.settings.strict_saml_binding
+
+        try:
+            # Enable strict mode
+            config.settings.strict_saml_binding = True
+
+            with client.session_transaction() as sess:
+                sess['user'] = 'admin'
+
+            # Create uncompressed SAMLRequest (violates SAML spec for GET)
+            saml_request = self._create_authn_request(
+                request_id='_strict_test',
+                compress=False  # Not compressed - invalid for GET!
+            )
+
+            response = client.get('/saml/sso', query_string={
+                'SAMLRequest': saml_request,
+            })
+
+            # Strict mode should reject this (parsing fails, returns None, falls back to default ACS)
+            # The response might still be 200 but with incorrect InResponseTo
+            # Or it might fail to parse entirely
+            response_text = response.data.decode('utf-8')
+
+            # If we get a SAMLResponse, check that parsing failed (no InResponseTo or wrong one)
+            if response.status_code == 200 and 'SAMLResponse' in response_text:
+                import re
+                match = re.search(r'name="SAMLResponse"\s+value="([^"]+)"', response_text)
+                if match:
+                    saml_response_xml = base64.b64decode(match.group(1))
+                    root = etree.fromstring(saml_response_xml)
+                    # In strict mode, parsing should fail, so InResponseTo should be None
+                    in_response_to = root.get("InResponseTo")
+                    assert in_response_to is None, \
+                        "Strict mode should fail to parse uncompressed GET request"
+
+        finally:
+            # Restore original setting
+            config.settings.strict_saml_binding = original_strict
+
+    def test_lenient_mode_accepts_uncompressed_get(self, client):
+        """Test that lenient mode (default) accepts GET with uncompressed data."""
+        from nanoidp.config import get_config
+        config = get_config()
+        original_strict = config.settings.strict_saml_binding
+
+        try:
+            # Ensure lenient mode (default)
+            config.settings.strict_saml_binding = False
+
+            with client.session_transaction() as sess:
+                sess['user'] = 'admin'
+
+            request_id = '_lenient_test'
+            saml_request = self._create_authn_request(
+                request_id=request_id,
+                compress=False  # Not compressed - accepted in lenient mode
+            )
+
+            response = client.get('/saml/sso', query_string={
+                'SAMLRequest': saml_request,
+            })
+
+            assert response.status_code == 200
+            response_text = response.data.decode('utf-8')
+
+            import re
+            match = re.search(r'name="SAMLResponse"\s+value="([^"]+)"', response_text)
+            assert match, "SAMLResponse not found"
+
+            saml_response_xml = base64.b64decode(match.group(1))
+            root = etree.fromstring(saml_response_xml)
+
+            # Lenient mode should parse successfully
+            assert root.get("InResponseTo") == request_id, \
+                "Lenient mode should parse uncompressed GET request"
+
+        finally:
+            config.settings.strict_saml_binding = original_strict
+
+    def test_strict_mode_post_rejects_compressed(self, client):
+        """Test that strict mode POST rejects compressed SAMLRequest.
+
+        Per SAML 2.0 spec, HTTP-POST binding should NOT use DEFLATE compression.
+        In strict mode, POST with compressed data should fail parsing.
+        """
+        from nanoidp.config import get_config
+        config = get_config()
+        original_strict = config.settings.strict_saml_binding
+
+        try:
+            config.settings.strict_saml_binding = True
+
+            with client.session_transaction() as sess:
+                sess['user'] = 'admin'
+
+            request_id = '_strict_post_compressed'
+            # Create COMPRESSED SAMLRequest - wrong for POST binding
+            saml_request = self._create_authn_request(
+                request_id=request_id,
+                compress=True  # Compressed - should fail in strict POST
+            )
+
+            response = client.post('/saml/sso', data={
+                'SAMLRequest': saml_request,
+            })
+
+            # In strict mode, POST with compressed data should fail
+            # The response may be 200 with default ACS or may show error
+            # The key is InResponseTo should NOT match (parsing failed)
+            if response.status_code == 200:
+                response_text = response.data.decode('utf-8')
+                import re
+                match = re.search(r'name="SAMLResponse"\s+value="([^"]+)"', response_text)
+                if match:
+                    saml_response_xml = base64.b64decode(match.group(1))
+                    root = etree.fromstring(saml_response_xml)
+                    # InResponseTo should be None because parsing failed
+                    assert root.get("InResponseTo") != request_id, \
+                        "Strict POST should not parse compressed SAMLRequest"
+
+        finally:
+            config.settings.strict_saml_binding = original_strict
+
+    def test_inline_login_flow_preserves_post_binding(self, client):
+        """Test that inline login at /saml/sso preserves HTTP-POST binding.
+
+        With inline login (no redirect to /login), the binding is naturally preserved:
+        1. SP sends POST to /saml/sso with uncompressed SAMLRequest
+        2. User not authenticated → show login form inline
+        3. User submits credentials via POST to same endpoint
+        4. SSO processes with same HTTP method → binding preserved
+        """
+        request_id = '_inline_login_post_binding'
+        acs_url = 'http://sp.example.com/acs/inline'
+
+        # Create UNCOMPRESSED SAMLRequest (HTTP-POST binding)
+        saml_request = self._create_authn_request(
+            request_id=request_id,
+            acs_url=acs_url,
+            compress=False
+        )
+
+        # Step 1: POST to /saml/sso without session - should show login form
+        response = client.post('/saml/sso', data={
+            'SAMLRequest': saml_request,
+            'RelayState': 'test-inline'
+        })
+
+        assert response.status_code == 200
+        assert b'username' in response.data.lower()
+
+        # Step 2: POST credentials + SAMLRequest to same endpoint
+        response = client.post('/saml/sso', data={
+            'SAMLRequest': saml_request,
+            'RelayState': 'test-inline',
+            'username': 'admin',
+            'password': 'admin'
+        })
+
+        assert response.status_code == 200
+        response_text = response.data.decode('utf-8')
+
+        # Should get SAML response with correct InResponseTo
+        import re
+        match = re.search(r'name="SAMLResponse"\s+value="([^"]+)"', response_text)
+        assert match, "SAMLResponse not found after inline login"
+
+        saml_response_xml = base64.b64decode(match.group(1))
+        root = etree.fromstring(saml_response_xml)
+
+        assert root.get("InResponseTo") == request_id, \
+            "InResponseTo mismatch - inline login did not preserve binding"
+
+    def test_inline_login_flow_preserves_redirect_binding(self, client):
+        """Test that inline login at /saml/sso handles HTTP-Redirect binding.
+
+        The inline login handles the case where:
+        1. SP sends GET to /saml/sso with compressed SAMLRequest
+        2. User not authenticated → show login form inline
+        3. User submits credentials via POST (form posts to same URL)
+        4. Parser uses try/except to handle compressed data via POST
+
+        This works because the parser always tries DEFLATE first in lenient mode.
+        """
+        request_id = '_inline_login_redirect_binding'
+        acs_url = 'http://sp.example.com/acs/inline-redirect'
+
+        # Create COMPRESSED SAMLRequest (HTTP-Redirect binding)
+        saml_request = self._create_authn_request(
+            request_id=request_id,
+            acs_url=acs_url,
+            compress=True
+        )
+
+        # Step 1: GET to /saml/sso - should show login form
+        response = client.get('/saml/sso', query_string={
+            'SAMLRequest': saml_request,
+            'RelayState': 'test-inline-redirect'
+        })
+
+        assert response.status_code == 200
+        assert b'username' in response.data.lower()
+        # Verify SAMLRequest is preserved in form
+        assert saml_request.encode() in response.data
+
+        # Step 2: POST credentials to same endpoint
+        # Note: form posts with SAMLRequest that was originally from GET (compressed)
+        response = client.post('/saml/sso', data={
+            'SAMLRequest': saml_request,  # Still compressed from original GET
+            'RelayState': 'test-inline-redirect',
+            'username': 'admin',
+            'password': 'admin'
+        })
+
+        # Should work because parser tries DEFLATE first
+        assert response.status_code == 200
+        response_text = response.data.decode('utf-8')
+
+        import re
+        match = re.search(r'name="SAMLResponse"\s+value="([^"]+)"', response_text)
+        assert match, "SAMLResponse not found after inline login with redirect binding"
+
+        saml_response_xml = base64.b64decode(match.group(1))
+        root = etree.fromstring(saml_response_xml)
+
+        assert root.get("InResponseTo") == request_id, \
+            "InResponseTo mismatch - inline login did not handle redirect binding"
+
+    def test_strict_mode_inline_login_preserves_redirect_binding(self, client):
+        """Test that strict mode + inline login works with HTTP-Redirect binding.
+
+        This tests the critical edge case:
+        1. SP sends GET to /saml/sso with compressed SAMLRequest (HTTP-Redirect binding)
+        2. User not authenticated → show login form inline (saves original verb in session)
+        3. User submits credentials via POST
+        4. Parser uses saved original verb (GET) to know it should decompress
+
+        Without the session-saved verb, strict mode would fail because:
+        - POST expects raw data (HTTP-POST binding)
+        - But the SAMLRequest is compressed (from original GET)
+        """
+        from nanoidp.config import get_config
+        config = get_config()
+        original_strict = config.settings.strict_saml_binding
+
+        try:
+            config.settings.strict_saml_binding = True
+
+            request_id = '_strict_inline_redirect'
+            acs_url = 'http://sp.example.com/acs/strict-inline'
+
+            # Create COMPRESSED SAMLRequest (HTTP-Redirect binding)
+            saml_request = self._create_authn_request(
+                request_id=request_id,
+                acs_url=acs_url,
+                compress=True
+            )
+
+            # Step 1: GET to /saml/sso - should show login form with original_verb hidden field
+            response = client.get('/saml/sso', query_string={
+                'SAMLRequest': saml_request,
+                'RelayState': 'test-strict-inline'
+            })
+
+            assert response.status_code == 200
+            assert b'username' in response.data.lower()
+            # Verify the original verb is saved in hidden field
+            assert b'name="saml_original_verb"' in response.data
+            assert b'value="GET"' in response.data
+
+            # Step 2: POST credentials - strict mode should use saved GET verb
+            # The form includes saml_original_verb hidden field from step 1
+            response = client.post('/saml/sso', data={
+                'SAMLRequest': saml_request,  # Still compressed from original GET
+                'RelayState': 'test-strict-inline',
+                'saml_original_verb': 'GET',  # Simulates hidden field from login form
+                'username': 'admin',
+                'password': 'admin'
+            })
+
+            assert response.status_code == 200
+            response_text = response.data.decode('utf-8')
+
+            import re
+            match = re.search(r'name="SAMLResponse"\s+value="([^"]+)"', response_text)
+            assert match, "SAMLResponse not found - strict mode failed inline login"
+
+            saml_response_xml = base64.b64decode(match.group(1))
+            root = etree.fromstring(saml_response_xml)
+
+            # InResponseTo should match because parsing succeeded with saved verb
+            assert root.get("InResponseTo") == request_id, \
+                "Strict mode inline login should preserve redirect binding via saved verb"
+
+        finally:
+            config.settings.strict_saml_binding = original_strict
+
+    def test_idp_initiated_sso_not_supported(self, client):
+        """Test that IdP-initiated SSO (no SAMLRequest) is NOT supported.
+
+        NanoIDP requires a SAMLRequest - unsolicited responses are not supported.
+        This is intentional for a testing/dev tool where SP-initiated flow is typical.
+        """
+        with client.session_transaction() as sess:
+            sess['user'] = 'admin'
+
+        # Try SSO without SAMLRequest (IdP-initiated)
+        response = client.post('/saml/sso', data={})
+
+        # Should return 400 - missing SAMLRequest
+        assert response.status_code == 400
+        assert b'SAMLRequest' in response.data or b'missing' in response.data.lower()
+
+    def test_idp_initiated_sso_get_not_supported(self, client):
+        """Test that IdP-initiated via GET is also not supported."""
+        with client.session_transaction() as sess:
+            sess['user'] = 'admin'
+
+        response = client.get('/saml/sso')
+        assert response.status_code == 400
+
+    # =========================================================================
+    # ATTRIBUTE QUERY FLOW
+    # =========================================================================
+
+    def test_attribute_query_full_flow(self, client):
+        """Test complete Attribute Query flow.
+
+        Flow:
+        1. Backend service sends AttributeQuery with Subject
+        2. IdP returns AttributeStatement with user's attributes
+        """
+        query = """<?xml version="1.0" encoding="UTF-8"?>
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+    <soap:Body>
+        <samlp:AttributeQuery
+            xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"
+            xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion"
+            ID="_attrquery_001"
+            Version="2.0"
+            IssueInstant="2025-01-01T00:00:00Z">
+            <saml:Issuer>http://sp.example.com</saml:Issuer>
+            <saml:Subject>
+                <saml:NameID>admin</saml:NameID>
+            </saml:Subject>
+        </samlp:AttributeQuery>
+    </soap:Body>
+</soap:Envelope>"""
+
+        response = client.post('/saml/attribute-query',
+            data=query,
+            content_type='text/xml'
+        )
+
+        assert response.status_code == 200
+
+        # Parse SOAP response
+        root = etree.fromstring(response.data)
+
+        # Find AttributeStatement
+        attr_statement = root.find(".//{urn:oasis:names:tc:SAML:2.0:assertion}AttributeStatement")
+        assert attr_statement is not None, "AttributeStatement not found in response"
+
+        # Verify attributes are returned
+        attributes = attr_statement.findall("{urn:oasis:names:tc:SAML:2.0:assertion}Attribute")
+        assert len(attributes) > 0, "No attributes returned"
+
+        # Verify expected attributes exist
+        attr_names = [a.get("Name") for a in attributes]
+        assert "email" in attr_names, "email attribute should be present"
+        assert "identity_class" in attr_names, "identity_class attribute should be present"
+
+    def test_attribute_query_returns_correct_user_attributes(self, client):
+        """Test that Attribute Query returns correct attributes for the specified user."""
+        query = """<?xml version="1.0" encoding="UTF-8"?>
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+    <soap:Body>
+        <samlp:AttributeQuery
+            xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"
+            xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion"
+            ID="_attrquery_002"
+            Version="2.0"
+            IssueInstant="2025-01-01T00:00:00Z">
+            <saml:Issuer>http://sp.example.com</saml:Issuer>
+            <saml:Subject>
+                <saml:NameID>admin</saml:NameID>
+            </saml:Subject>
+        </samlp:AttributeQuery>
+    </soap:Body>
+</soap:Envelope>"""
+
+        response = client.post('/saml/attribute-query',
+            data=query,
+            content_type='text/xml'
+        )
+
+        root = etree.fromstring(response.data)
+
+        # Find email attribute value
+        email_attr = root.find(
+            ".//{urn:oasis:names:tc:SAML:2.0:assertion}Attribute[@Name='email']"
+        )
+        assert email_attr is not None
+
+        email_value = email_attr.find("{urn:oasis:names:tc:SAML:2.0:assertion}AttributeValue")
+        assert email_value is not None
+        assert email_value.text == "admin@example.org"
+
+    def test_attribute_query_unknown_user(self, client):
+        """Test Attribute Query for unknown user returns default/empty attributes."""
+        query = """<?xml version="1.0" encoding="UTF-8"?>
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+    <soap:Body>
+        <samlp:AttributeQuery
+            xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"
+            xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion"
+            ID="_attrquery_003"
+            Version="2.0"
+            IssueInstant="2025-01-01T00:00:00Z">
+            <saml:Issuer>http://sp.example.com</saml:Issuer>
+            <saml:Subject>
+                <saml:NameID>nonexistent_user</saml:NameID>
+            </saml:Subject>
+        </samlp:AttributeQuery>
+    </soap:Body>
+</soap:Envelope>"""
+
+        response = client.post('/saml/attribute-query',
+            data=query,
+            content_type='text/xml'
+        )
+
+        # Should still return 200 with default attributes
+        assert response.status_code == 200
+
+    def test_attribute_query_requires_subject(self, client):
+        """Test that Attribute Query without Subject returns error."""
+        query = """<?xml version="1.0" encoding="UTF-8"?>
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+    <soap:Body>
+        <samlp:AttributeQuery
+            xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"
+            xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion"
+            ID="_attrquery_004"
+            Version="2.0"
+            IssueInstant="2025-01-01T00:00:00Z">
+            <saml:Issuer>http://sp.example.com</saml:Issuer>
+        </samlp:AttributeQuery>
+    </soap:Body>
+</soap:Envelope>"""
+
+        response = client.post('/saml/attribute-query',
+            data=query,
+            content_type='text/xml'
+        )
+
+        assert response.status_code == 400
+
+    # =========================================================================
+    # METADATA
+    # =========================================================================
+
+    def test_metadata_advertises_both_bindings(self, client):
+        """Test that metadata advertises both HTTP-POST and HTTP-Redirect bindings."""
+        response = client.get('/saml/metadata')
+
+        assert response.status_code == 200
+        root = etree.fromstring(response.data)
+
+        sso_services = root.findall(
+            ".//{urn:oasis:names:tc:SAML:2.0:metadata}SingleSignOnService"
+        )
+
+        bindings = [s.get("Binding") for s in sso_services]
+
+        assert "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST" in bindings, \
+            "Metadata should advertise HTTP-POST binding"
+        assert "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect" in bindings, \
+            "Metadata should advertise HTTP-Redirect binding"

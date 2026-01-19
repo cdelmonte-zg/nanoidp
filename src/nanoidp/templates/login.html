@@ -64,12 +64,13 @@
             </div>
             {% endif %}
 
-            <form method="POST" action="{{ url_for('ui.login') }}">
+            <form method="POST">
                 {% if saml_request %}
-                <input type="hidden" name="SAMLRequest" value="{{ saml_request }}">
+                <input type="hidden" name="SAMLRequest" value="{{ saml_request|e }}">
+                <input type="hidden" name="saml_original_verb" value="{{ original_verb|e }}">
                 {% endif %}
                 {% if relay_state %}
-                <input type="hidden" name="RelayState" value="{{ relay_state }}">
+                <input type="hidden" name="RelayState" value="{{ relay_state|e }}">
                 {% endif %}
 
                 <div class="form-floating mb-3">
@@ -93,7 +94,7 @@
                 <div class="d-flex flex-wrap gap-2">
                     {% for user in users[:6] %}
                     <button type="button" class="btn btn-outline-secondary quick-login-btn"
-                            onclick="fillUsername('{{ user }}')" title="Fill username, enter password manually">
+                            onclick='fillUsername({{ user|tojson }})' title="Fill username, enter password manually">
                         {{ user }}
                     </button>
                     {% endfor %}

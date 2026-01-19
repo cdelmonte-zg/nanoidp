@@ -39,20 +39,19 @@ def index():
 
 @ui_bp.route("/login", methods=["GET", "POST"])
 def login():
-    """Login page."""
+    """Login page for web UI.
+
+    Note: SAML SSO uses inline login at /saml/sso to preserve binding context.
+    This endpoint is for direct web UI access only.
+    """
     config = get_config()
     audit = get_audit_log()
 
     if request.method == "GET":
         error = request.args.get("error")
-        saml_request = request.args.get("SAMLRequest")
-        relay_state = request.args.get("RelayState")
-
         return render_template(
             "login.html",
             error=error,
-            saml_request=saml_request,
-            relay_state=relay_state,
             users=list(config.users.keys()),
         )
 
@@ -93,13 +92,6 @@ def login():
         username=username,
         **req_info,
     )
-
-    # Handle SAML redirect
-    saml_request = request.form.get("SAMLRequest")
-    relay_state = request.form.get("RelayState")
-
-    if saml_request:
-        return redirect(url_for("saml.sso", SAMLRequest=saml_request, RelayState=relay_state or ""))
 
     return redirect(url_for("ui.index"))
 
@@ -504,6 +496,8 @@ def settings():
             sso_url=request.form.get("saml_sso_url"),
             default_acs_url=request.form.get("default_acs_url"),
             sign_responses=request.form.get("saml_sign_responses") == "true",
+            strict_binding=request.form.get("strict_saml_binding") == "true",
+            c14n_algorithm=request.form.get("saml_c14n_algorithm"),
         )
 
         # Identity classes

@@ -131,6 +131,7 @@ def get_configuration():
             "sso_url": settings.saml_sso_url,
             "sign_responses": settings.saml_sign_responses,
             "c14n_algorithm": settings.saml_c14n_algorithm,
+            "strict_binding": settings.strict_saml_binding,
         },
         "logging": {
             "verbose_logging": settings.verbose_logging,

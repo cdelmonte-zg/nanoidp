@@ -77,6 +77,26 @@
                         </div>
                         <div class="form-text">Enable XML signature on SAML responses. Disable for testing unsigned flows.</div>
                     </div>
+
+                    <div class="mb-3">
+                        <div class="form-check form-switch">
+                            <input class="form-check-input" type="checkbox" role="switch"
+                                   id="strict_saml_binding" name="strict_saml_binding" value="true"
+                                   {% if settings.strict_saml_binding %}checked{% endif %}>
+                            <label class="form-check-label" for="strict_saml_binding">Strict SAML Binding</label>
+                        </div>
+                        <div class="form-text">Enforce SAML 2.0 binding compliance. When enabled, rejects GET requests with uncompressed data.</div>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="saml_c14n_algorithm" class="form-label">Canonicalization Algorithm</label>
+                        <select class="form-select" id="saml_c14n_algorithm" name="saml_c14n_algorithm">
+                            <option value="c14n" {% if settings.saml_c14n_algorithm == 'c14n' %}selected{% endif %}>C14N 1.0 (default)</option>
+                            <option value="c14n11" {% if settings.saml_c14n_algorithm == 'c14n11' %}selected{% endif %}>C14N 1.1</option>
+                            <option value="exc_c14n" {% if settings.saml_c14n_algorithm == 'exc_c14n' %}selected{% endif %}>Exclusive C14N 1.0</option>
+                        </select>
+                        <div class="form-text">XML canonicalization algorithm for SAML signatures</div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -168,7 +188,9 @@ function updatePreview() {
             entity_id: document.getElementById('saml_entity_id').value,
             sso_url: document.getElementById('saml_sso_url').value,
             default_acs_url: document.getElementById('default_acs_url').value,
-            sign_responses: document.getElementById('saml_sign_responses').checked
+            sign_responses: document.getElementById('saml_sign_responses').checked,
+            strict_binding: document.getElementById('strict_saml_binding').checked,
+            c14n_algorithm: document.getElementById('saml_c14n_algorithm').value
         },
         allowed_identity_classes: document.getElementById('allowed_identity_classes').value
             .split('\n')
@@ -180,8 +202,9 @@ function updatePreview() {
 }
 
 // Auto-update preview on input change
-document.querySelectorAll('input, textarea').forEach(el => {
+document.querySelectorAll('input, textarea, select').forEach(el => {
     el.addEventListener('input', updatePreview);
+    el.addEventListener('change', updatePreview);
 });
 
 // Initial preview

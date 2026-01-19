@@ -52,7 +52,8 @@ class AuditLog:
         self._stats = {
             "total_requests": 0,
             "token_requests": 0,
-            "saml_requests": 0,
+            "saml_sso_requests": 0,
+            "saml_attribute_queries": 0,
             "login_attempts": 0,
             "successful_logins": 0,
             "failed_logins": 0,
@@ -115,7 +116,9 @@ class AuditLog:
         if event_type == "token_request":
             self._stats["token_requests"] += 1
         elif event_type == "saml_request":
-            self._stats["saml_requests"] += 1
+            self._stats["saml_sso_requests"] += 1
+        elif event_type == "saml_attribute_query":
+            self._stats["saml_attribute_queries"] += 1
         elif event_type == "login":
             self._stats["login_attempts"] += 1
             if status == "success":
@@ -168,7 +171,8 @@ class AuditLog:
             self._stats = {
                 "total_requests": 0,
                 "token_requests": 0,
-                "saml_requests": 0,
+                "saml_sso_requests": 0,
+                "saml_attribute_queries": 0,
                 "login_attempts": 0,
                 "successful_logins": 0,
                 "failed_logins": 0,

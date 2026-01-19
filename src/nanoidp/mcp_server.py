@@ -460,8 +460,12 @@ async def list_tools() -> list[Tool]:
                     },
                     "saml_c14n_algorithm": {
                         "type": "string",
-                        "enum": ["c14n", "c14n11"],
-                        "description": "XML canonicalization algorithm: 'c14n' (1.0, pysaml2 compatible) or 'c14n11' (1.1)",
+                        "enum": ["c14n", "c14n11", "exc_c14n"],
+                        "description": "XML canonicalization algorithm: 'c14n' (1.0), 'c14n11' (1.1), or 'exc_c14n' (Exclusive 1.0)",
+                    },
+                    "strict_saml_binding": {
+                        "type": "boolean",
+                        "description": "Enforce strict SAML binding compliance (reject GET with uncompressed data)",
                     },
                     "verbose_logging": {
                         "type": "boolean",
@@ -713,6 +717,7 @@ async def _execute_tool(name: str, arguments: dict[str, Any], config: ConfigMana
                 "sso_url": settings.saml_sso_url,
                 "sign_responses": settings.saml_sign_responses,
                 "c14n_algorithm": settings.saml_c14n_algorithm,
+                "strict_binding": settings.strict_saml_binding,
             },
             "logging": {
                 "verbose_logging": settings.verbose_logging,
@@ -743,6 +748,9 @@ async def _execute_tool(name: str, arguments: dict[str, Any], config: ConfigMana
         if "saml_c14n_algorithm" in arguments:
             settings.saml_c14n_algorithm = arguments["saml_c14n_algorithm"]
             updated.append("saml_c14n_algorithm")
+        if "strict_saml_binding" in arguments:
+            settings.strict_saml_binding = arguments["strict_saml_binding"]
+            updated.append("strict_saml_binding")
         if "verbose_logging" in arguments:
             settings.verbose_logging = arguments["verbose_logging"]
             updated.append("verbose_logging")
@@ -756,6 +764,7 @@ async def _execute_tool(name: str, arguments: dict[str, Any], config: ConfigMana
                 "token_expiry_minutes": settings.token_expiry_minutes,
                 "saml_sign_responses": settings.saml_sign_responses,
                 "saml_c14n_algorithm": settings.saml_c14n_algorithm,
+                "strict_saml_binding": settings.strict_saml_binding,
                 "verbose_logging": settings.verbose_logging,
             },
         }

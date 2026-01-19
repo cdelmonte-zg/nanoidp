@@ -17,10 +17,9 @@ saml:
   entity_id: http://localhost:8000/saml
   sso_url: http://localhost:8000/saml/sso
   default_acs_url: http://localhost:8080/login/saml2/sso/nanoidp
-  # Set to false to disable SAML response signing (useful for testing unsigned flows)
   sign_responses: true
-  # XML canonicalization algorithm: 'c14n' (1.0, pysaml2 compatible) or 'c14n11' (1.1)
-  c14n_algorithm: c14n
+  c14n_algorithm: exc_c14n
+  strict_binding: false
 jwt:
   algorithm: RS256
   keys_dir: ./keys
@@ -31,8 +30,6 @@ authority_prefixes:
 allowed_identity_classes:
 - INTERNAL
 - EXTERNAL
-- PARTNER
-- SERVICE
 session:
   secret_key: dev-secret-key-change-in-production
   permanent: true

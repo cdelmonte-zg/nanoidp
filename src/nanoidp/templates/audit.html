@@ -36,8 +36,8 @@
     <div class="col-md-2">
         <div class="card text-center">
             <div class="card-body py-2">
-                <div class="fs-4 fw-bold text-info">{{ stats.saml_requests }}</div>
-                <small class="text-muted">SAML</small>
+                <div class="fs-4 fw-bold text-info">{{ stats.saml_sso_requests + stats.saml_attribute_queries }}</div>
+                <small class="text-muted">SAML ({{ stats.saml_sso_requests }} SSO)</small>
             </div>
         </div>
     </div>

@@ -215,12 +215,47 @@ Set `verbose_logging: false` if you're concerned about PII in log files, though 
 | Endpoint | Description |
 |----------|-------------|
 | `GET /saml/metadata` | IdP Metadata |
-| `POST /saml/sso` | Single Sign-On |
+| `GET/POST /saml/sso` | Single Sign-On (supports both HTTP-POST and HTTP-Redirect bindings) |
 | `POST /saml/attribute-query` | Attribute Query |
+
+#### SAML Bindings
+
+NanoIDP supports both standard SAML 2.0 bindings for the SSO endpoint:
+
+| Binding | HTTP Method | SAMLRequest Encoding |
+|---------|-------------|---------------------|
+| HTTP-POST | POST | Base64 only (uncompressed) |
+| HTTP-Redirect | GET | DEFLATE compressed + Base64 |
+
+Both bindings are advertised in the SAML metadata (`/saml/metadata`).
+
+#### Strict Binding Mode
+
+By default, NanoIDP operates in **lenient mode** for developer convenience, accepting GET requests with uncompressed SAMLRequest data (non-compliant but useful for debugging).
+
+To enforce strict SAML 2.0 binding compliance:
+
+**Via configuration file (`settings.yaml`):**
+
+```yaml
+saml:
+  strict_binding: true  # Reject GET with uncompressed data
+```
+
+**Via Web UI:**
+
+1. Go to `http://localhost:8000/settings`
+2. In the SAML Settings section, toggle **"Strict SAML Binding"**
+3. Click **Save Settings**
+
+| Mode | GET with uncompressed data | GET with DEFLATE | POST uncompressed |
+|------|---------------------------|------------------|-------------------|
+| Lenient (default) | Accepted | Accepted | Accepted |
+| Strict | **Rejected (400)** | Accepted | Accepted |
 
 #### SAML Response Signing
 
-By default, NanoIDP signs all SAML responses with an XML digital signature. You can disable signing for testing scenarios that require unsigned SAML flows (e.g., testing with Mujina IdP replacement):
+By default, NanoIDP signs all SAML responses with an XML digital signature. You can disable signing for testing scenarios that require unsigned SAML flows:
 
 **Via configuration file (`settings.yaml`):**
 
@@ -243,18 +278,32 @@ When `sign_responses: false`, responses are sent without any signature elements.
 
 #### XML Canonicalization Algorithm
 
-By default, NanoIDP uses **C14N 1.0** for XML canonicalization, which is compatible with pysaml2 and most SAML implementations. If you need C14N 1.1 for specific use cases, you can configure it:
+By default, NanoIDP uses **C14N 1.0** for XML canonicalization, which is compatible with most SAML implementations. You can configure the algorithm based on your SP requirements:
+
+**Via configuration file (`settings.yaml`):**
 
 ```yaml
 saml:
-  c14n_algorithm: c14n    # Default: C14N 1.0 (compatible with pysaml2)
-  # c14n_algorithm: c14n11  # C14N 1.1 (less compatible)
+  c14n_algorithm: c14n      # Default: C14N 1.0 (most compatible)
+  # c14n_algorithm: c14n11  # C14N 1.1
+  # c14n_algorithm: exc_c14n # Exclusive C14N 1.0
 ```
 
-| Value | Algorithm | Compatibility |
-|-------|-----------|---------------|
-| `c14n` (default) | C14N 1.0 | pysaml2, ADFS, Shibboleth, most SPs |
-| `c14n11` | C14N 1.1 | Newer implementations only |
+**Via Web UI:**
+
+1. Go to `http://localhost:8000/settings`
+2. In the SAML Settings section, select the **Canonicalization Algorithm** from the dropdown
+3. Click **Save Settings**
+
+| Value | Algorithm | Use Case |
+|-------|-----------|----------|
+| `c14n` (default) | C14N 1.0 | Most SAML implementations |
+| `c14n11` | C14N 1.1 | Newer implementations |
+| `exc_c14n` | Exclusive C14N 1.0 | SPs that extract Assertions for signature verification |
+
+**When to use Exclusive C14N (`exc_c14n`):**
+
+Some SPs extract the `<Assertion>` element from the `<Response>` to verify the signature independently. With standard C14N, the signature includes parent namespaces that break when the Assertion is extracted. Exclusive C14N only includes namespaces actually used in the signed element, making signatures portable.
 
 ### REST API
 
@@ -372,6 +421,31 @@ pytest
 # Run in development mode
 python -m nanoidp --debug
 ```
+
+### End-to-End Test Agent
+
+NanoIDP includes a comprehensive test agent that validates all functionality:
+
+```bash
+# Run against local server (default: http://localhost:8000)
+python examples/test_agent.py
+
+# Run against custom URL
+python examples/test_agent.py --url http://localhost:9000
+
+# Verbose output
+python examples/test_agent.py --verbose
+
+# JSON output
+python examples/test_agent.py --json
+```
+
+The test agent covers:
+- **Core**: Health check, OIDC discovery
+- **OAuth2/OIDC**: All grant types, token introspection, revocation, logout
+- **SAML 2.0**: Metadata, SSO (POST/Redirect bindings), Attribute Query, signing config
+- **Key Management**: Key info, rotation, post-rotation token validation
+- **REST API**: Users, config, audit log
 
 ## MCP Server (Model Context Protocol)
 

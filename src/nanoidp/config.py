@@ -77,7 +77,11 @@ class Settings(BaseModel):
     saml_sign_responses: bool = Field(default=True, description="Sign SAML responses (set to false for testing unsigned flows)")
     saml_c14n_algorithm: str = Field(
         default="c14n",
-        description="XML canonicalization algorithm: 'c14n' (1.0, compatible with pysaml2) or 'c14n11' (1.1)"
+        description="XML canonicalization algorithm: 'c14n' (1.0), 'c14n11' (1.1), or 'exc_c14n' (Exclusive 1.0)"
+    )
+    strict_saml_binding: bool = Field(
+        default=False,
+        description="Enforce strict SAML binding compliance (reject GET with uncompressed data)"
     )
 
     # JWT
@@ -220,6 +224,7 @@ class ConfigManager:
             default_acs_url=saml.get("default_acs_url", "http://localhost:8080/login/saml2/sso/samlIdp"),
             saml_sign_responses=saml.get("sign_responses", True),
             saml_c14n_algorithm=saml.get("c14n_algorithm", "c14n"),
+            strict_saml_binding=saml.get("strict_binding", False),
             # JWT
             jwt_algorithm=jwt_config.get("algorithm", "RS256"),
             keys_dir=jwt_config.get("keys_dir", "./keys"),
@@ -423,6 +428,10 @@ class ConfigManager:
                 "default_acs_url": self.settings.default_acs_url,
                 "sign_responses": self.settings.saml_sign_responses,
                 "c14n_algorithm": self.settings.saml_c14n_algorithm,
+                "strict_binding": self.settings.strict_saml_binding,
+            },
+            "logging": {
+                "verbose_logging": self.settings.verbose_logging,
             },
             "authority_prefixes": self.settings.authority_prefixes,
         }
