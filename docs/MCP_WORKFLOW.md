@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="images/Gnome%20guardian%20of%20digital%20identity.png" alt="NanoIDP" width="150">
+</p>
+
 # NanoIDP MCP Workflow Guide
 
 This guide shows how to use NanoIDP's MCP server with Claude Code for day-to-day development tasks.

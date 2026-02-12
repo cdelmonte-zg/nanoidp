@@ -1,8 +1,17 @@
-# NanoIDP
+<p align="center">
+  <img src="docs/images/Gnome%20guardian%20of%20digital%20identity.png" alt="NanoIDP" width="200">
+</p>
 
-[![Tests](https://github.com/cdelmonte-zg/nanoidp/actions/workflows/tests.yml/badge.svg)](https://github.com/cdelmonte-zg/nanoidp/actions/workflows/tests.yml)
+<h1 align="center">NanoIDP</h1>
 
-A lightweight, configurable Identity Provider for development and testing. Supports OAuth2/OIDC and SAML 2.0 protocols with a full-featured web UI for configuration.
+<p align="center">
+  <a href="https://github.com/cdelmonte-zg/nanoidp/actions/workflows/tests.yml"><img src="https://github.com/cdelmonte-zg/nanoidp/actions/workflows/tests.yml/badge.svg" alt="Tests"></a>
+</p>
+
+<p align="center">
+  A lightweight, configurable Identity Provider for development and testing.<br>
+  Supports OAuth2/OIDC and SAML 2.0 protocols with a full-featured web UI for configuration.
+</p>
 
 ## Features
 

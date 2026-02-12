@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="images/Gnome%20guardian%20of%20digital%20identity.png" alt="NanoIDP" width="150">
+</p>
+
 # NanoIDP Security Guide
 
 ## Overview
