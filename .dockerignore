@@ -25,6 +25,7 @@ htmlcov
 
 # Docs
 *.md
+!README.md
 docs/
 
 # Keys (will be generated)
