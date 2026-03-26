@@ -221,6 +221,33 @@ class TestAuthorizationCodeFlowWithPKCE:
 
         assert response.status_code == 200
 
+    def test_pkce_plain_flow_no_auth_header(self, client, pkce_verifier):
+        """Test complete flow with PKCE plain method."""
+        # Get authorization code with plain challenge
+        client.get(
+            f'/authorize?response_type=code&client_id=demo-client'
+            f'&redirect_uri=http://localhost:3000/callback&scope=openid'
+            f'&code_challenge={pkce_verifier}&code_challenge_method=plain'
+        )
+        response = client.post('/authorize', data={
+            'username': 'admin',
+            'password': 'admin'
+        }, follow_redirects=False)
+
+        location = response.headers.get('Location')
+        code = location.split('code=')[1].split('&')[0]
+
+        # Exchange with code_verifier and client_id in body (public client, no auth header)
+        response = client.post('/token', data={
+            'grant_type': 'authorization_code',
+            'code': code,
+            'client_id': 'demo-client',
+            'redirect_uri': 'http://localhost:3000/callback',
+            'code_verifier': pkce_verifier
+        })
+
+        assert response.status_code == 200
+
     def test_pkce_missing_verifier_fails(self, client, auth_header, pkce_challenge_s256):
         """Test that missing code_verifier fails when challenge was provided."""
         # Get authorization code with code_challenge

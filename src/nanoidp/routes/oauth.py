@@ -262,9 +262,25 @@ def token():
     audit = get_audit_log()
     req_info = _get_request_info()
 
-    # Check client authentication
     auth = request.authorization
-    if not auth or not config.check_client(auth.username, auth.password):
+    grant_type = request.form.get("grant_type", "client_credentials")
+    client_id = request.form.get("client_id") or (auth.username if auth else None)
+
+    # For grant types that require client authentication, enforce it
+    if not auth and grant_type != "authorization_code":
+        audit.log(
+            event_type="token_request",
+            endpoint="/token",
+            method="POST",
+            status="failed",
+            client_id=client_id,
+            details={"reason": "Client authentication required", "grant_type": grant_type},
+            **req_info,
+        )
+        return abort(401, description="Client authentication required")
+
+    # Check client authentication
+    if auth and not config.check_client(auth.username, auth.password):
         audit.log(
             event_type="token_request",
             endpoint="/token",
@@ -275,9 +291,6 @@ def token():
             **req_info,
         )
         return abort(401, description="Invalid client credentials")
-
-    client_id = auth.username
-    grant_type = request.form.get("grant_type", "client_credentials")
 
     # Refresh token grant
     if grant_type == "refresh_token":
