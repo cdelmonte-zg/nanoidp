@@ -264,7 +264,34 @@ def token():
 
     auth = request.authorization
     grant_type = request.form.get("grant_type", "client_credentials")
-    client_id = request.form.get("client_id") or (auth.username if auth else None)
+    body_client_id = request.form.get("client_id")
+    auth_client_id = auth.username if auth else None
+    client_id = body_client_id or auth_client_id
+
+    # Reject if client identity cannot be determined at all
+    if not client_id:
+        audit.log(
+            event_type="token_request",
+            endpoint="/token",
+            method="POST",
+            status="failed",
+            details={"reason": "Client authentication required", "grant_type": grant_type},
+            **req_info,
+        )
+        return abort(401, description="Client authentication required")
+
+    # Reject if body client_id conflicts with the authenticated client in the header
+    if auth and body_client_id and auth.username != body_client_id:
+        audit.log(
+            event_type="token_request",
+            endpoint="/token",
+            method="POST",
+            status="failed",
+            client_id=auth.username,
+            details={"reason": "client_id mismatch", "body_client_id": body_client_id},
+            **req_info,
+        )
+        return abort(401, description="client_id in request body does not match authenticated client")
 
     # For grant types that require client authentication, enforce it
     if not auth and grant_type != "authorization_code":

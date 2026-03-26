@@ -248,6 +248,57 @@ class TestAuthorizationCodeFlowWithPKCE:
 
         assert response.status_code == 200
 
+    def test_pkce_body_client_id_mismatch_with_auth_header(self, client, auth_header, pkce_verifier):
+        """Test that client_id in body mismatching the auth header client is rejected."""
+        client.get(
+            f'/authorize?response_type=code&client_id=demo-client'
+            f'&redirect_uri=http://localhost:3000/callback&scope=openid'
+            f'&code_challenge={pkce_verifier}&code_challenge_method=plain'
+        )
+        response = client.post('/authorize', data={
+            'username': 'admin',
+            'password': 'admin'
+        }, follow_redirects=False)
+
+        location = response.headers.get('Location')
+        code = location.split('code=')[1].split('&')[0]
+
+        # Auth header is demo-client, but body client_id is a different client
+        response = client.post('/token', data={
+            'grant_type': 'authorization_code',
+            'code': code,
+            'client_id': 'other-client',
+            'redirect_uri': 'http://localhost:3000/callback',
+            'code_verifier': pkce_verifier
+        }, headers=auth_header)
+
+        assert response.status_code == 401
+
+    def test_pkce_no_client_id_fails(self, client, pkce_verifier):
+        """Test that token exchange with no client_id anywhere is rejected."""
+        client.get(
+            f'/authorize?response_type=code&client_id=demo-client'
+            f'&redirect_uri=http://localhost:3000/callback&scope=openid'
+            f'&code_challenge={pkce_verifier}&code_challenge_method=plain'
+        )
+        response = client.post('/authorize', data={
+            'username': 'admin',
+            'password': 'admin'
+        }, follow_redirects=False)
+
+        location = response.headers.get('Location')
+        code = location.split('code=')[1].split('&')[0]
+
+        # No auth header, no client_id in body
+        response = client.post('/token', data={
+            'grant_type': 'authorization_code',
+            'code': code,
+            'redirect_uri': 'http://localhost:3000/callback',
+            'code_verifier': pkce_verifier
+        })
+
+        assert response.status_code == 401
+
     def test_pkce_missing_verifier_fails(self, client, auth_header, pkce_challenge_s256):
         """Test that missing code_verifier fails when challenge was provided."""
         # Get authorization code with code_challenge
