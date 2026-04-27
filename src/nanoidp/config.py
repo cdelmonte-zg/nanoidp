@@ -5,6 +5,7 @@ Uses Pydantic for validation and schema enforcement.
 """
 
 import os
+import re
 import yaml
 import logging
 from typing import Dict, List, Optional, Any
@@ -12,6 +13,31 @@ from pathlib import Path
 from pydantic import BaseModel, Field, field_validator, ConfigDict
 
 logger = logging.getLogger(__name__)
+
+
+_ENV_VAR_RE = re.compile(r'\$\{([A-Za-z_][A-Za-z0-9_]*)(?::([^}]*))?\}')
+
+
+def _expand_env_vars(value: Any) -> Any:
+    """Recursively expand ${NAME} / ${NAME:default} placeholders in YAML values.
+
+    - ${NAME}          → os.environ[NAME] (empty string if not set)
+    - ${NAME:default}  → os.environ.get(NAME, 'default')
+
+    Only string leaf values are processed; dicts/lists are traversed recursively.
+    """
+    if isinstance(value, str):
+        def _replace(m: re.Match) -> str:
+            var_name, default = m.group(1), m.group(2)
+            if default is None:
+                return os.environ.get(var_name, "")
+            return os.environ.get(var_name, default)
+        return _ENV_VAR_RE.sub(_replace, value)
+    if isinstance(value, dict):
+        return {k: _expand_env_vars(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_expand_env_vars(item) for item in value]
+    return value
 
 
 class User(BaseModel):
@@ -191,6 +217,8 @@ class ConfigManager:
 
         with open(settings_file, "r") as f:
             data = yaml.safe_load(f) or {}
+
+        data = _expand_env_vars(data)
 
         server = data.get("server", {})
         oauth = data.get("oauth", {})

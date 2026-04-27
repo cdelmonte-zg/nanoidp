@@ -35,13 +35,14 @@ RUN mkdir -p /app/keys
 # Environment variables
 ENV PYTHONUNBUFFERED=1
 ENV NANOIDP_CONFIG_DIR=/app/config
+ENV PORT=8000
 
-# Expose port
-EXPOSE 8000
+# Expose port (default 8000; override PORT env var for non-standard ports)
+EXPOSE ${PORT}
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD curl -fsSL http://localhost:8000/api/health || exit 1
+    CMD curl -fsSL http://localhost:${PORT}/api/health || exit 1
 
-# Run the application
-CMD ["nanoidp", "--host", "0.0.0.0", "--port", "8000"]
+# Run the application (PORT env var is passed to nanoidp; defaults to 8000)
+CMD ["sh", "-c", "exec nanoidp --host 0.0.0.0 --port ${PORT}"]
