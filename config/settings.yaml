@@ -1,9 +1,9 @@
 server:
   host: 0.0.0.0
-  port: 8000
+  port: ${PORT:8000}
   debug: false
 oauth:
-  issuer: http://localhost:8000
+  issuer: http://localhost:${PORT:8000}
   audience: my-app
   token_expiry_minutes: 60
   clients:
@@ -14,8 +14,8 @@ oauth:
     client_secret: test-secret
     description: Test client for integration tests
 saml:
-  entity_id: http://localhost:8000/saml
-  sso_url: http://localhost:8000/saml/sso
+  entity_id: http://localhost:${PORT:8000}/saml
+  sso_url: http://localhost:${PORT:8000}/saml/sso
   default_acs_url: http://localhost:8080/login/saml2/sso/nanoidp
   sign_responses: true
   c14n_algorithm: exc_c14n
