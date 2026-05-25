@@ -10,6 +10,7 @@ from nanoidp.app import create_app
 from nanoidp.config import ConfigManager, User, OAuthClient, Settings
 import nanoidp.services.crypto as crypto_module
 import nanoidp.config as config_module
+import nanoidp.services.token as token_module
 
 
 @pytest.fixture(autouse=True)
@@ -17,14 +18,37 @@ def reset_singletons():
     """Reset service singletons before and after each test.
 
     This ensures test isolation by preventing state leakage between tests.
+    The token service is reset too so it never holds a reference to a stale
+    config singleton (relevant when a test mutates the active configuration).
     """
     # Reset before test
     crypto_module._crypto_service = None
     config_module._config = None
+    token_module._token_service = None
     yield
     # Reset after test
     crypto_module._crypto_service = None
     config_module._config = None
+    token_module._token_service = None
+
+
+@pytest.fixture
+def preserve_config_files():
+    """Snapshot ``config/*.yaml`` and restore them verbatim after the test.
+
+    A few tests exercise code paths that persist settings to the real config
+    directory (e.g. POST ``/settings`` goes through the YAML writer). Without
+    this, those tests leave the repo's ``config/settings.yaml`` modified — with
+    env-var placeholders resolved and unrelated values flipped. Restoring the
+    exact bytes keeps the working tree clean.
+    """
+    import pathlib
+
+    config_dir = pathlib.Path(__file__).resolve().parent.parent / "config"
+    backups = {f: f.read_bytes() for f in config_dir.glob("*.yaml")}
+    yield
+    for path, content in backups.items():
+        path.write_bytes(content)
 
 
 @pytest.fixture

@@ -634,6 +634,7 @@ def token():
         extra_claims=extra_claims,
         nonce=nonce,
         scope=scope,
+        client_id=client_id,
     )
 
     # Audit log

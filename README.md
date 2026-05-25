@@ -172,12 +172,18 @@ server:
 
 oauth:
   issuer: "http://localhost:8000"
-  audience: "my-app"
+  audience: "my-app"            # access token "aud" (resource audience, RFC 9068)
   token_expiry_minutes: 60
   clients:
     - client_id: "demo-client"
       client_secret: "demo-secret"
       description: "Default demo client"
+    - client_id: "multi-aud-client"
+      client_secret: "secret"
+      description: "Client whose ID Token carries extra audiences"
+      additional_audiences:     # optional; makes the ID Token "aud" an array
+        - "https://api.example.com"
+        - "urn:service:billing"
 
 saml:
   entity_id: "http://localhost:8000/saml"
@@ -193,6 +199,18 @@ authority_prefixes:
 logging:
   verbose_logging: true  # Include usernames/client_ids in logs (default: true)
 ```
+
+#### Audiences and the `aud` claim
+
+NanoIDP follows the OpenID Connect / OAuth specs for the `aud` claim:
+
+- **ID Token** — `aud` is the requesting client's `client_id` (OpenID Connect Core 1.0 §2).
+  This lets you test multiple clients independently. Configure `additional_audiences` on a
+  client to append extra audiences; if this produces more than one distinct audience value,
+  `aud` is emitted as an array and nanoidp also emits an `azp` claim equal to the `client_id`
+  so you can exercise authorized-party validation.
+- **Access Token** — `aud` is the resource audience from `oauth.audience` (RFC 9068 §2.2),
+  independent of the client.
 
 ### Logging Configuration
 
@@ -409,6 +427,10 @@ curl -X POST 'http://localhost:8000/revoke' \
 
 ## JWT Token Structure
 
+### Access Token
+
+The access token `aud` is the resource audience (`oauth.audience`):
+
 ```json
 {
   "iss": "http://localhost:8000",
@@ -429,6 +451,34 @@ curl -X POST 'http://localhost:8000/revoke' \
     "ACL_READ",
     "ACL_WRITE"
   ]
+}
+```
+
+### ID Token
+
+Issued when the `openid` scope is requested. Its `aud` is the client's `client_id`:
+
+```json
+{
+  "iss": "http://localhost:8000",
+  "sub": "admin",
+  "aud": "demo-client",
+  "iat": 1704100000,
+  "exp": 1704103600,
+  "nonce": "..."
+}
+```
+
+If `additional_audiences` produces more than one distinct audience value, `aud` becomes an array and `azp` is added:
+
+```json
+{
+  "iss": "http://localhost:8000",
+  "sub": "admin",
+  "aud": ["multi-aud-client", "https://api.example.com", "urn:service:billing"],
+  "azp": "multi-aud-client",
+  "iat": 1704100000,
+  "exp": 1704103600
 }
 ```
 

@@ -81,6 +81,10 @@ class OAuthClient(BaseModel):
     client_id: str = Field(..., min_length=1, description="OAuth client ID")
     client_secret: str = Field(..., min_length=1, description="OAuth client secret")
     description: str = Field(default="", description="Client description")
+    additional_audiences: List[str] = Field(
+        default_factory=list,
+        description="Extra audiences added to the ID Token 'aud' alongside the client_id",
+    )
 
 
 class Settings(BaseModel):
@@ -234,6 +238,7 @@ class ConfigManager:
                 client_id=client_data.get("client_id", ""),
                 client_secret=client_data.get("client_secret", ""),
                 description=client_data.get("description", ""),
+                additional_audiences=client_data.get("additional_audiences", []),
             ))
 
         self.settings = Settings(
@@ -433,11 +438,14 @@ class ConfigManager:
 
         clients_data = []
         for client in self.settings.clients:
-            clients_data.append({
+            client_entry = {
                 "client_id": client.client_id,
                 "client_secret": client.client_secret,
                 "description": client.description,
-            })
+            }
+            if client.additional_audiences:
+                client_entry["additional_audiences"] = client.additional_audiences
+            clients_data.append(client_entry)
 
         data = {
             "server": {

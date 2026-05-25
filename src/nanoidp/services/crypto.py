@@ -15,7 +15,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Union
 
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives import serialization, hashes
@@ -293,7 +293,7 @@ class CryptoService:
         self,
         sub: str,
         issuer: str,
-        audience: str,
+        audience: Union[str, List[str]],
         roles: list = None,
         tenant: str = None,
         extra: dict = None,
