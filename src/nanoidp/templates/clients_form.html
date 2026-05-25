@@ -58,6 +58,16 @@
                                value="{{ client.description if client else '' }}"
                                placeholder="e.g., Frontend application client">
                     </div>
+
+                    <div class="mb-3">
+                        <label for="additional_audiences" class="form-label">Additional Audiences</label>
+                        <textarea class="form-control" id="additional_audiences" name="additional_audiences"
+                                  rows="3" placeholder="One audience per line, e.g.&#10;https://api.example.com&#10;urn:service:billing">{{ client.additional_audiences | join('\n') if client else '' }}</textarea>
+                        <div class="form-text">
+                            Extra audiences added to the ID Token <code>aud</code> alongside the client_id.
+                            When more than one distinct audience results, <code>aud</code> becomes an array and an <code>azp</code> claim is emitted.
+                        </div>
+                    </div>
                 </div>
             </div>
 

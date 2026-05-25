@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- **ID Token `aud`** now contains the requesting client's `client_id`, as required by
+  OpenID Connect Core 1.0 §2 (was previously the static `oauth.audience`). This makes
+  it possible to test multiple clients and brings nanoidp in line with the OIDC spec.
+  - **Breaking:** relying parties that validated the ID Token `aud` against the old
+    static `oauth.audience` value must now expect their own `client_id`.
+  - The **access token** `aud` is unchanged and still reflects `oauth.audience`
+    (the resource audience, per RFC 9068 §2.2).
+
+### Added
+- `additional_audiences` per-client setting: extra audiences appended to the ID Token
+  `aud`. If this produces more than one distinct audience value, `aud` is emitted as an
+  array and nanoidp also emits `azp` equal to the `client_id`, so clients can test
+  authorized-party handling.
+
 ## [1.4.0] - 2026-04-28
 
 ### Added

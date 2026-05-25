@@ -142,7 +142,22 @@ def _client_to_dict(client: OAuthClient) -> dict[str, Any]:
     return {
         "client_id": client.client_id,
         "description": client.description,
+        "additional_audiences": client.additional_audiences,
     }
+
+
+def _normalize_audiences(value: Any) -> list[str]:
+    """Coerce a raw audiences argument into a list of non-empty strings.
+
+    ``update_client`` assigns directly to the model (which is not configured with
+    ``validate_assignment``), so the input is validated here for parity with the
+    Pydantic validation that ``create_client`` gets for free.
+    """
+    if not value:
+        return []
+    if not isinstance(value, list) or not all(isinstance(a, str) for a in value):
+        raise ValueError("additional_audiences must be a list of strings")
+    return [a for a in value if a]
 
 
 # =============================================================================
@@ -376,6 +391,11 @@ async def list_tools() -> list[Tool]:
                         "type": "string",
                         "description": "Human-readable description (optional)",
                     },
+                    "additional_audiences": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Extra audiences added to the ID Token 'aud' alongside the client_id (optional)",
+                    },
                 },
                 "required": ["client_id", "client_secret"],
             },
@@ -397,6 +417,11 @@ async def list_tools() -> list[Tool]:
                     "description": {
                         "type": "string",
                         "description": "New description (optional)",
+                    },
+                    "additional_audiences": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Replace the client's extra ID Token audiences (optional)",
                     },
                 },
                 "required": ["client_id"],
@@ -678,6 +703,7 @@ async def _execute_tool(name: str, arguments: dict[str, Any], config: ConfigMana
             client_id=client_id,
             client_secret=arguments["client_secret"],
             description=arguments.get("description", ""),
+            additional_audiences=_normalize_audiences(arguments.get("additional_audiences")),
         )
         config.settings.clients.append(new_client)
         return {"success": True, "client": _client_to_dict(new_client)}
@@ -692,6 +718,8 @@ async def _execute_tool(name: str, arguments: dict[str, Any], config: ConfigMana
             client.client_secret = arguments["client_secret"]
         if "description" in arguments:
             client.description = arguments["description"]
+        if "additional_audiences" in arguments:
+            client.additional_audiences = _normalize_audiences(arguments["additional_audiences"])
 
         return {"success": True, "client": _client_to_dict(client)}
 

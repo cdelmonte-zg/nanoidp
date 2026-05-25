@@ -302,3 +302,176 @@ default_user: admin
         # Change to true
         config.settings.verbose_logging = True
         assert config.settings.verbose_logging is True
+
+
+class TestMCPClientAdditionalAudiences:
+    """create_client / update_client expose `additional_audiences` (issue #32)."""
+
+    def _config(self, tmp_path):
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        (config_dir / "settings.yaml").write_text(
+            'oauth:\n'
+            '  issuer: "http://localhost:8000"\n'
+            '  clients:\n'
+            '    - client_id: "test"\n'
+            '      client_secret: "test"\n'
+        )
+        (config_dir / "users.yaml").write_text(
+            'users:\n  admin:\n    password: "admin"\ndefault_user: admin\n'
+        )
+        from nanoidp.config import ConfigManager
+        return ConfigManager(str(config_dir))
+
+    @pytest.mark.asyncio
+    async def test_create_client_with_additional_audiences(self, tmp_path):
+        from nanoidp.mcp_server import _execute_tool
+        config = self._config(tmp_path)
+
+        result = await _execute_tool(
+            "create_client",
+            {
+                "client_id": "multi",
+                "client_secret": "s",
+                "additional_audiences": ["https://api.example.com", "urn:svc"],
+            },
+            config,
+        )
+
+        assert result["success"] is True
+        assert result["client"]["additional_audiences"] == [
+            "https://api.example.com",
+            "urn:svc",
+        ]
+        # persisted on the model
+        assert config.get_client("multi").additional_audiences == [
+            "https://api.example.com",
+            "urn:svc",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_create_client_defaults_to_empty_audiences(self, tmp_path):
+        from nanoidp.mcp_server import _execute_tool
+        config = self._config(tmp_path)
+
+        result = await _execute_tool(
+            "create_client", {"client_id": "plain", "client_secret": "s"}, config
+        )
+
+        assert result["success"] is True
+        assert result["client"]["additional_audiences"] == []
+
+    @pytest.mark.asyncio
+    async def test_update_client_sets_additional_audiences(self, tmp_path):
+        from nanoidp.mcp_server import _execute_tool
+        config = self._config(tmp_path)
+        await _execute_tool("create_client", {"client_id": "c", "client_secret": "s"}, config)
+
+        result = await _execute_tool(
+            "update_client", {"client_id": "c", "additional_audiences": ["aud://x"]}, config
+        )
+
+        assert result["success"] is True
+        assert config.get_client("c").additional_audiences == ["aud://x"]
+
+    @pytest.mark.asyncio
+    async def test_get_client_reports_additional_audiences(self, tmp_path):
+        from nanoidp.mcp_server import _execute_tool
+        config = self._config(tmp_path)
+        await _execute_tool(
+            "create_client",
+            {"client_id": "c", "client_secret": "s", "additional_audiences": ["a"]},
+            config,
+        )
+
+        result = await _execute_tool("get_client", {"client_id": "c"}, config)
+
+        assert result["found"] is True
+        assert result["client"]["additional_audiences"] == ["a"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("tool_name", ["create_client", "update_client"])
+    async def test_schema_exposes_additional_audiences(self, tool_name):
+        from nanoidp import mcp_server
+
+        tools = await mcp_server.list_tools()
+        tool = next(t for t in tools if t.name == tool_name)
+        props = tool.inputSchema["properties"]
+        assert "additional_audiences" in props
+        assert props["additional_audiences"]["type"] == "array"
+        assert props["additional_audiences"]["items"]["type"] == "string"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "raw,expected",
+        [
+            (None, []),
+            ([], []),
+            (["", "valid", ""], ["valid"]),
+            (["a", "b"], ["a", "b"]),
+        ],
+        ids=["none", "empty", "drops-blanks", "kept"],
+    )
+    async def test_create_client_normalizes_audiences(self, tmp_path, raw, expected):
+        """Blank/None audiences are filtered (defensive normalization, parity with update)."""
+        from nanoidp.mcp_server import _execute_tool
+        config = self._config(tmp_path)
+        args = {"client_id": "c", "client_secret": "s"}
+        if raw is not None:
+            args["additional_audiences"] = raw
+
+        result = await _execute_tool("create_client", args, config)
+
+        assert result["success"] is True
+        assert config.get_client("c").additional_audiences == expected
+
+    @pytest.mark.asyncio
+    async def test_update_client_normalizes_audiences(self, tmp_path):
+        """update_client filters blanks too (it bypasses Pydantic on assignment)."""
+        from nanoidp.mcp_server import _execute_tool
+        config = self._config(tmp_path)
+        await _execute_tool("create_client", {"client_id": "c", "client_secret": "s"}, config)
+
+        result = await _execute_tool(
+            "update_client", {"client_id": "c", "additional_audiences": ["", "x", ""]}, config
+        )
+
+        assert result["success"] is True
+        assert config.get_client("c").additional_audiences == ["x"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "bad",
+        [["a", 123], "not-a-list", [None]],
+        ids=["int", "str", "none-item"],
+    )
+    async def test_create_client_rejects_non_string_audiences(self, tmp_path, bad):
+        """Strict semantics: non-string audiences are rejected, not silently dropped."""
+        from nanoidp.mcp_server import _execute_tool
+        config = self._config(tmp_path)
+        with pytest.raises(ValueError):
+            await _execute_tool(
+                "create_client",
+                {"client_id": "c", "client_secret": "s", "additional_audiences": bad},
+                config,
+            )
+
+    @pytest.mark.asyncio
+    async def test_call_tool_returns_clean_error_for_bad_audiences(self, tmp_path, monkeypatch):
+        """The public call_tool handler turns the ValueError into a readable error
+        response (not a crash) — closing the raise/handle loop end to end."""
+        import nanoidp.mcp_server as mcp
+
+        monkeypatch.setattr(mcp, "_config", self._config(tmp_path))
+        monkeypatch.setattr(mcp, "_readonly_mode", False)
+        monkeypatch.delenv("NANOIDP_MCP_ADMIN_SECRET", raising=False)
+
+        result = await mcp.call_tool(
+            "create_client",
+            {"client_id": "c", "client_secret": "s", "additional_audiences": ["a", 123]},
+        )
+
+        assert len(result) == 1
+        payload = json.loads(result[0].text)
+        assert payload["tool"] == "create_client"
+        assert "additional_audiences" in payload["error"]

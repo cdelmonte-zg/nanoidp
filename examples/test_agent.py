@@ -465,6 +465,139 @@ class NanoIDPTestAgent:
         except Exception as e:
             return self._add_result("Auth Code + PKCE", TestCategory.OAUTH, False, str(e))
 
+    def _run_auth_code_flow(
+        self,
+        client_id: str,
+        client_secret: str,
+        scope: str = "openid",
+    ) -> Optional[Dict[str, Any]]:
+        """Run a full authorization_code flow and return the token response JSON.
+
+        Used by the ID Token audience tests to exercise a specific client.
+        Returns None if any step fails.
+        """
+        redirect_uri = "http://localhost:3000/callback"
+        auth_params = {
+            "response_type": "code",
+            "client_id": client_id,
+            "redirect_uri": redirect_uri,
+            "scope": scope,
+            "state": secrets.token_urlsafe(16),
+            "nonce": secrets.token_urlsafe(16),
+        }
+        # A fresh session so cookies/auth don't leak from the default client.
+        sess = requests.Session()
+        sess.get(f"{self.base_url}/authorize", params=auth_params,
+                 allow_redirects=False, timeout=5)
+        resp = sess.post(
+            f"{self.base_url}/authorize",
+            data={**auth_params, "username": self.username, "password": self.password},
+            allow_redirects=False,
+            timeout=5,
+        )
+        if resp.status_code != 302:
+            return None
+        params = parse_qs(urlparse(resp.headers.get("Location", "")).query)
+        if "code" not in params:
+            return None
+        token_resp = sess.post(
+            f"{self.base_url}/token",
+            data={
+                "grant_type": "authorization_code",
+                "code": params["code"][0],
+                "redirect_uri": redirect_uri,
+            },
+            auth=(client_id, client_secret),
+            timeout=5,
+        )
+        if token_resp.status_code != 200:
+            return None
+        return token_resp.json()
+
+    def test_id_token_audience(self) -> TestResult:
+        """ID Token `aud` is the client_id; access token `aud` is the resource (issue #32)."""
+        try:
+            if not jwt:
+                return self._add_result(
+                    "ID Token Audience", TestCategory.OAUTH, False,
+                    "PyJWT not installed; cannot decode tokens"
+                )
+
+            data = self._run_auth_code_flow(self.client_id, self.client_secret)
+            if not data or "id_token" not in data:
+                return self._add_result(
+                    "ID Token Audience", TestCategory.OAUTH, False,
+                    "Could not obtain id_token via authorization_code flow"
+                )
+
+            id_claims = jwt.decode(data["id_token"], options={"verify_signature": False})
+            access_claims = jwt.decode(data["access_token"], options={"verify_signature": False})
+
+            # The access token must keep the configured resource audience (RFC 9068),
+            # not the client_id. Read the expected value from the running server.
+            cfg = requests.get(f"{self.base_url}/api/config", timeout=5).json()
+            expected_resource_aud = cfg.get("oauth", {}).get("audience")
+
+            aud_is_client = id_claims.get("aud") == self.client_id
+            azp_absent = "azp" not in id_claims  # single audience → no azp
+            access_aud_is_resource = access_claims.get("aud") == expected_resource_aud
+
+            ok = aud_is_client and azp_absent and access_aud_is_resource
+            return self._add_result(
+                "ID Token Audience",
+                TestCategory.OAUTH,
+                ok,
+                "id_token aud == client_id, azp omitted, access token aud == resource audience",
+                {
+                    "id_token_aud": id_claims.get("aud"),
+                    "azp_absent": azp_absent,
+                    "access_token_aud": access_claims.get("aud"),
+                    "expected_resource_aud": expected_resource_aud,
+                },
+            )
+        except Exception as e:
+            return self._add_result("ID Token Audience", TestCategory.OAUTH, False, str(e))
+
+    def test_id_token_audience_array(self) -> TestResult:
+        """A client with additional_audiences gets an array `aud` plus `azp` (issue #32).
+
+        Requires a 'multi-aud-client' configured with additional_audiences on the
+        running server. Skips (as a pass) if that client is not present.
+        """
+        try:
+            if not jwt:
+                return self._add_result(
+                    "ID Token Audience (array)", TestCategory.OAUTH, False,
+                    "PyJWT not installed; cannot decode tokens"
+                )
+
+            client_id, client_secret = "multi-aud-client", "multi-aud-secret"
+            data = self._run_auth_code_flow(client_id, client_secret)
+            if not data or "id_token" not in data:
+                return self._add_result(
+                    "ID Token Audience (array)", TestCategory.OAUTH, True,
+                    "Skipped: 'multi-aud-client' not configured on this server"
+                )
+
+            claims = jwt.decode(data["id_token"], options={"verify_signature": False})
+            aud = claims.get("aud")
+
+            is_array = isinstance(aud, list)
+            has_client = is_array and aud[0] == client_id
+            has_extras = is_array and len(aud) > 1
+            azp_ok = claims.get("azp") == client_id
+
+            ok = is_array and has_client and has_extras and azp_ok
+            return self._add_result(
+                "ID Token Audience (array)",
+                TestCategory.OAUTH,
+                ok,
+                "aud is an array led by client_id and azp == client_id",
+                {"id_token_aud": aud, "azp": claims.get("azp")},
+            )
+        except Exception as e:
+            return self._add_result("ID Token Audience (array)", TestCategory.OAUTH, False, str(e))
+
     def test_device_flow(self) -> TestResult:
         """Device Authorization Flow (RFC 8628)."""
         try:
@@ -2232,6 +2365,8 @@ class NanoIDPTestAgent:
                 self.test_password_grant,
                 self.test_client_credentials,
                 self.test_authorization_code_pkce,
+                self.test_id_token_audience,
+                self.test_id_token_audience_array,
                 self.test_device_flow,
                 self.test_token_decode,
                 self.test_introspection,

@@ -314,6 +314,11 @@ def clients():
     )
 
 
+def _parse_audiences(form_value: str) -> list:
+    """Parse a newline-separated additional_audiences form field into a clean list."""
+    return [a.strip() for a in (form_value or "").splitlines() if a.strip()]
+
+
 @ui_bp.route("/clients/create", methods=["GET", "POST"])
 def client_create():
     """Create new OAuth client."""
@@ -343,6 +348,7 @@ def client_create():
             client_id=client_id,
             client_secret=client_secret,
             description=request.form.get("description", ""),
+            additional_audiences=_parse_audiences(request.form.get("additional_audiences", "")),
         )
 
         yaml_writer = get_yaml_writer()
@@ -395,6 +401,7 @@ def client_edit(client_id: str):
             client_id=client_id,
             client_secret=client_secret,
             description=request.form.get("description", ""),
+            additional_audiences=_parse_audiences(request.form.get("additional_audiences", "")),
         )
 
         yaml_writer = get_yaml_writer()
@@ -451,6 +458,7 @@ def client_regenerate_secret(client_id: str):
             client_id=client_id,
             client_secret=new_secret,
             description=client.description,
+            additional_audiences=client.additional_audiences,
         )
 
         yaml_writer = get_yaml_writer()

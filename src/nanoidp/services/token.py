@@ -53,6 +53,40 @@ class TokenService:
 
         return authorities
 
+    def _resolve_id_token_audience(
+        self, client_id: Optional[str]
+    ) -> tuple[Any, Optional[str]]:
+        """Resolve the (aud, azp) pair for an ID Token.
+
+        Per OpenID Connect Core 1.0 §2, the ID Token ``aud`` MUST contain the
+        Relying Party's ``client_id``. Any ``additional_audiences`` configured
+        on the client are appended, turning ``aud`` into an array. With a single
+        audience, ``aud`` is a plain string and ``azp`` is omitted.
+
+        When multiple audiences are present, nanoidp emits ``azp`` with the
+        requesting ``client_id`` to support testing clients that implement
+        authorized-party validation. OIDC Core defines ``azp`` as optional, but
+        if present it must contain the OAuth 2.0 Client ID of the party to which
+        the ID Token was issued.
+
+        When no client is known we fall back to the configured resource audience
+        (a safety fallback — a real OIDC token endpoint always has a client).
+        """
+        if not client_id:
+            return self.config.settings.audience, None
+
+        client = self.config.get_client(client_id)
+        extras = client.additional_audiences if client else []
+
+        aud = [client_id]
+        for extra in extras:
+            if extra and extra not in aud:
+                aud.append(extra)
+
+        if len(aud) == 1:
+            return aud[0], None
+        return aud, client_id
+
     def create_token(
         self,
         user: User,
@@ -60,6 +94,7 @@ class TokenService:
         extra_claims: Optional[Dict[str, Any]] = None,
         nonce: Optional[str] = None,
         scope: Optional[str] = None,
+        client_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Create a JWT token for a user."""
         settings = self.config.settings
@@ -102,13 +137,17 @@ class TokenService:
             exp_minutes=exp_minutes,
         )
         
-        id_token = self.crypto.create_jwt(
-            sub=user.username,
-            issuer=settings.issuer,
-            audience=settings.audience,
-            exp_minutes=exp_minutes,
-            nonce = nonce
-        ) if scope and "openid" in scope.split() else None
+        id_token = None
+        if scope and "openid" in scope.split():
+            id_aud, azp = self._resolve_id_token_audience(client_id)
+            id_token = self.crypto.create_jwt(
+                sub=user.username,
+                issuer=settings.issuer,
+                audience=id_aud,
+                exp_minutes=exp_minutes,
+                nonce=nonce,
+                extra={"azp": azp} if azp else None,
+            )
 
 
         # Create refresh token (valid for 7 days)

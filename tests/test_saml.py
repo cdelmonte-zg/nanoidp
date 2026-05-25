@@ -797,7 +797,7 @@ class TestSAMLSigningUI:
         if original_value:
             assert b'checked' in response.data
 
-    def test_settings_post_updates_sign_responses_true(self, client):
+    def test_settings_post_updates_sign_responses_true(self, client, preserve_config_files):
         """Test that POST to settings can enable sign_responses."""
         from nanoidp.config import get_config
 
@@ -827,7 +827,7 @@ class TestSAMLSigningUI:
             # Restore original value
             config.settings.saml_sign_responses = original_value
 
-    def test_settings_post_updates_sign_responses_false(self, client):
+    def test_settings_post_updates_sign_responses_false(self, client, preserve_config_files):
         """Test that POST to settings can disable sign_responses."""
         from nanoidp.config import get_config
 

@@ -13,6 +13,12 @@ oauth:
   - client_id: test-client
     client_secret: test-secret
     description: Test client for integration tests
+  - client_id: multi-aud-client
+    client_secret: multi-aud-secret
+    description: Client whose ID Token carries extra audiences (array aud + azp)
+    additional_audiences:
+    - https://api.example.com
+    - urn:service:billing
 saml:
   entity_id: http://localhost:${PORT:8000}/saml
   sso_url: http://localhost:${PORT:8000}/saml/sso
