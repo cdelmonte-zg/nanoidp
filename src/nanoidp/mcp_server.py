@@ -149,11 +149,11 @@ def _client_to_dict(client: OAuthClient) -> dict[str, Any]:
 def _normalize_audiences(value: Any) -> list[str]:
     """Coerce a raw audiences argument into a list of non-empty strings.
 
-    ``update_client`` assigns directly to the model (which is not configured with
-    ``validate_assignment``), so the input is validated here for parity with the
-    Pydantic validation that ``create_client`` gets for free.
+    Only ``None`` (argument omitted) and an empty list mean "no audiences"; any
+    other non-list (``""``, ``0``, ``False``) is a type error and is rejected,
+    rather than silently coerced to ``[]`` (#37).
     """
-    if not value:
+    if value is None:
         return []
     if not isinstance(value, list) or not all(isinstance(a, str) for a in value):
         raise ValueError("additional_audiences must be a list of strings")

@@ -225,12 +225,14 @@ class NanoIDPTestAgent:
                 ]
                 found = [ep for ep in required if ep in data]
                 grants = data.get("grant_types_supported", [])
+                # azp is emitted for multi-audience ID Tokens, so it must be advertised (#37).
+                azp_advertised = "azp" in data.get("claims_supported", [])
                 return self._add_result(
                     "OIDC Discovery",
                     TestCategory.CORE,
-                    len(found) == len(required),
-                    f"{len(found)}/{len(required)} endpoints, grants: {len(grants)}",
-                    {"endpoints": found, "grants": grants}
+                    len(found) == len(required) and azp_advertised,
+                    f"{len(found)}/{len(required)} endpoints, grants: {len(grants)}, azp advertised: {azp_advertised}",
+                    {"endpoints": found, "grants": grants, "azp_advertised": azp_advertised}
                 )
             return self._add_result(
                 "OIDC Discovery",

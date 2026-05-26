@@ -18,6 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a scalar value (`additional_audiences: api://x`) is coerced to a one-element list,
   and an unsupported shape (e.g. a non-string item) now fails with a clear,
   client-scoped error instead of an opaque Pydantic `ValidationError` at startup.
+- Minor hardening/polish from the #32 review (#37): `OAuthClient` now validates on
+  direct attribute assignment (`validate_assignment`), discovery advertises `azp` in
+  `claims_supported`, and the MCP `_normalize_audiences` rejects falsy non-list inputs
+  instead of silently returning an empty list.
 
 ### Security
 - Harden the ID Token vs access-token boundary (#34). The resource audience

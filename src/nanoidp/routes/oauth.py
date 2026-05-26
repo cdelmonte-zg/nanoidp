@@ -49,7 +49,7 @@ def oidc_config():
             "id_token_signing_alg_values_supported": ["RS256"],
             "scopes_supported": ["openid", "profile", "email", "offline_access"],
             "claims_supported": [
-                "sub", "iss", "aud", "exp", "iat", "nbf",
+                "sub", "iss", "aud", "azp", "exp", "iat", "nbf",
                 "email", "email_verified", "preferred_username",
                 "roles", "tenant", "identity_class", "entitlements",
                 "source_acl", "attributes", "authorities"

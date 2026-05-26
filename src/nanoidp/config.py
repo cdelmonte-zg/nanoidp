@@ -105,6 +105,10 @@ class User(BaseModel):
 
 class OAuthClient(BaseModel):
     """Represents an OAuth client."""
+    # Validate on direct attribute assignment too (e.g. MCP update_client), so the
+    # field constraints below are enforced beyond construction time (#37).
+    model_config = ConfigDict(validate_assignment=True)
+
     client_id: str = Field(..., min_length=1, description="OAuth client ID")
     client_secret: str = Field(..., min_length=1, description="OAuth client secret")
     description: str = Field(default="", description="Client description")
