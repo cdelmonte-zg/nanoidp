@@ -362,9 +362,9 @@ class TestTokenTypeValidation:
     def test_refresh_token_rejected_at_userinfo(self, client, auth_header):
         """Refresh tokens must NOT be accepted at /userinfo (issue #34).
 
-        UserInfo requires an access token (OIDC Core §5.3.1). Tokens are marked
-        with ``token_use`` and the endpoint rejects anything that is not an access
-        token, even though the signature is valid.
+        UserInfo requires an access token (OIDC Core §5.3.1). NanoIDP marks
+        issued tokens with ``token_use`` and rejects tokens explicitly marked as
+        ID or refresh tokens, even though their signature is valid.
         """
         # Get tokens including refresh token
         response = client.post('/token',

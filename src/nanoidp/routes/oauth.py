@@ -425,9 +425,10 @@ def token():
 
         # An authenticated end-user is present, so honour an openid scope and
         # emit an ID Token (issue #36). nonce is non-standard for this grant but
-        # accepted as a dev convenience.
+        # accepted as a dev convenience; normalize an empty field to None so we
+        # don't emit an empty nonce claim (matches the authorization_code path).
         scope = request.form.get("scope")
-        nonce = request.form.get("nonce")
+        nonce = request.form.get("nonce") or None
 
     # Authorization code grant
     elif grant_type == "authorization_code":
@@ -713,6 +714,12 @@ def userinfo():
 
     # UserInfo requires an *access* token (OIDC Core §5.3.1). Reject ID/refresh
     # tokens even if they verify against the resource audience (issue #34).
+    #
+    # Deliberate compat (not strict) choice: we reject tokens *marked* as id/refresh
+    # rather than requiring token_use == "access". A validly-signed token without the
+    # marker (legacy, or hand-crafted with the IdP key — a first-class workflow for a
+    # dev IdP) is still accepted. The security goal still holds: the IdP marks every
+    # ID/refresh token it issues, so an ID Token can never be spent as an access token.
     if payload.get("token_use") in ("id", "refresh"):
         audit.log(
             event_type="userinfo_request",

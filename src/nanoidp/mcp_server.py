@@ -714,12 +714,21 @@ async def _execute_tool(name: str, arguments: dict[str, Any], config: ConfigMana
         if not client:
             return {"success": False, "error": f"Client '{client_id}' not found"}
 
+        # Validate/normalize every input up front so a bad value cannot leave the
+        # client half-updated: with validate_assignment=True, assigning each field
+        # can raise, and OAuthClient is mutated in place.
+        new_audiences = (
+            _normalize_audiences(arguments["additional_audiences"])
+            if "additional_audiences" in arguments
+            else None
+        )
+
         if "client_secret" in arguments:
             client.client_secret = arguments["client_secret"]
         if "description" in arguments:
             client.description = arguments["description"]
-        if "additional_audiences" in arguments:
-            client.additional_audiences = _normalize_audiences(arguments["additional_audiences"])
+        if new_audiences is not None:
+            client.additional_audiences = new_audiences
 
         return {"success": True, "client": _client_to_dict(client)}
 

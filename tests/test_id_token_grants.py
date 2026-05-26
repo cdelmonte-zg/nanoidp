@@ -73,6 +73,39 @@ class TestPasswordGrantIdToken:
         assert resp.status_code == 200
         assert "id_token" not in json.loads(resp.data)
 
+    def test_password_grant_empty_nonce_omits_nonce_claim(self, client, auth_header):
+        """An empty nonce form field must not produce an empty `nonce` claim."""
+        resp = client.post(
+            "/token",
+            data={
+                "grant_type": "password",
+                "username": "admin",
+                "password": "admin",
+                "scope": "openid",
+                "nonce": "",
+            },
+            headers=auth_header,
+        )
+        assert resp.status_code == 200
+        claims = _decode(json.loads(resp.data)["id_token"])
+        assert "nonce" not in claims
+
+    def test_password_grant_passes_nonce_when_provided(self, client, auth_header):
+        resp = client.post(
+            "/token",
+            data={
+                "grant_type": "password",
+                "username": "admin",
+                "password": "admin",
+                "scope": "openid",
+                "nonce": "n-xyz",
+            },
+            headers=auth_header,
+        )
+        assert resp.status_code == 200
+        claims = _decode(json.loads(resp.data)["id_token"])
+        assert claims["nonce"] == "n-xyz"
+
 
 class TestDeviceFlowIdToken:
     """The device flow authenticates an end-user → emits an ID Token."""

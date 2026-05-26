@@ -27,9 +27,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Harden the ID Token vs access-token boundary (#34). The resource audience
   (`oauth.audience`) is now filtered out of the ID Token `aud` even if a client
   lists it in `additional_audiences`, and every token carries a `token_use`
-  marker (`access` / `id` / `refresh`). `/userinfo` rejects non-access tokens and
-  `/introspect` reports ID Tokens as inactive, so an ID Token can no longer be
-  spent as an access token.
+  marker (`access` / `id` / `refresh`). `/userinfo` rejects tokens marked as ID or
+  refresh tokens and `/introspect` reports ID Tokens as inactive, so an ID Token can
+  no longer be spent as an access token. (Refresh tokens stay introspectable per
+  RFC 7662.)
 
 ## [2.0.0] - 2026-05-25
 
