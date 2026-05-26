@@ -293,11 +293,12 @@ class NanoIDPTestAgent:
                 self.refresh_token = data.get("refresh_token")
                 self.id_token = data.get("id_token")
                 expires = data.get("expires_in", "?")
+                # openid scope was requested → an ID Token must be returned (issue #36).
                 has_id = "id_token" in data
                 return self._add_result(
                     "Password Grant",
                     TestCategory.OAUTH,
-                    True,
+                    has_id,
                     f"Token OK, expires={expires}s, id_token={has_id}",
                     {"expires_in": expires, "has_id_token": has_id}
                 )
@@ -699,12 +700,14 @@ class NanoIDPTestAgent:
 
                 if token_response.status_code == 200:
                     token_data = token_response.json()
+                    # openid scope was requested → expect an ID Token too (issue #36).
+                    has_id = "id_token" in token_data
                     return self._add_result(
                         "Device Flow",
                         TestCategory.OAUTH,
-                        True,
-                        f"Flow completo: device_auth -> verify -> token",
-                        {"user_code": user_code, "has_token": "access_token" in token_data}
+                        "access_token" in token_data and has_id,
+                        f"Flow completo: device_auth -> verify -> token, id_token={has_id}",
+                        {"user_code": user_code, "has_token": "access_token" in token_data, "has_id_token": has_id}
                     )
 
                 # Check if still pending (which is also valid behavior)

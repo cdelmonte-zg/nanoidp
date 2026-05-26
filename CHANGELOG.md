@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- ID Tokens are now issued for the **password** and **device** (RFC 8628) grants
+  when `openid` scope is requested, not just `authorization_code` (#36). These
+  grants authenticate an end-user, so an ID Token is meaningful; `client_credentials`
+  still never emits one (no end-user).
+
 ### Security
 - Harden the ID Token vs access-token boundary (#34). The resource audience
   (`oauth.audience`) is now filtered out of the ID Token `aud` even if a client

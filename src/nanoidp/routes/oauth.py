@@ -423,6 +423,12 @@ def token():
             )
             return abort(401, description="Invalid credentials")
 
+        # An authenticated end-user is present, so honour an openid scope and
+        # emit an ID Token (issue #36). nonce is non-standard for this grant but
+        # accepted as a dev convenience.
+        scope = request.form.get("scope")
+        nonce = request.form.get("nonce")
+
     # Authorization code grant
     elif grant_type == "authorization_code":
         code = request.form.get("code", "")
@@ -590,6 +596,10 @@ def token():
                     "error": "server_error",
                     "error_description": "User not found"
                 }), 500
+
+            # The device flow authenticates an end-user, so honour the requested
+            # scope and emit an ID Token when 'openid' was asked for (issue #36).
+            scope = device_info.get("scope")
 
             # Clean up the device code (one-time use)
             user_code = device_info["user_code"]
