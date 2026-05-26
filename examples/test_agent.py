@@ -598,6 +598,52 @@ class NanoIDPTestAgent:
         except Exception as e:
             return self._add_result("ID Token Audience (array)", TestCategory.OAUTH, False, str(e))
 
+    def test_id_token_not_accepted_as_access_token(self) -> TestResult:
+        """An ID Token must be rejected at /userinfo and /introspect (issue #34).
+
+        ID Tokens are marked ``token_use: "id"``; access-token endpoints reject
+        them so an ID Token can never be spent as an access token.
+        """
+        try:
+            data = self._run_auth_code_flow(self.client_id, self.client_secret)
+            if not data or "id_token" not in data:
+                return self._add_result(
+                    "ID Token Not Access Token", TestCategory.OAUTH, False,
+                    "Could not obtain id_token via authorization_code flow"
+                )
+
+            id_token = data["id_token"]
+
+            # /userinfo must reject the ID Token (expects an access token).
+            userinfo = requests.get(
+                f"{self.base_url}/userinfo",
+                headers={"Authorization": f"Bearer {id_token}"},
+                timeout=5,
+            )
+            userinfo_rejected = userinfo.status_code == 401
+
+            # /introspect must report the ID Token as not active.
+            introspect = self.session.post(
+                f"{self.base_url}/introspect",
+                data={"token": id_token},
+                timeout=5,
+            )
+            introspect_inactive = (
+                introspect.status_code == 200
+                and introspect.json().get("active") is False
+            )
+
+            ok = userinfo_rejected and introspect_inactive
+            return self._add_result(
+                "ID Token Not Access Token",
+                TestCategory.OAUTH,
+                ok,
+                f"userinfo 401={userinfo_rejected}, introspect inactive={introspect_inactive}",
+                {"userinfo_status": userinfo.status_code, "introspect_active": introspect.json().get("active") if introspect.status_code == 200 else None},
+            )
+        except Exception as e:
+            return self._add_result("ID Token Not Access Token", TestCategory.OAUTH, False, str(e))
+
     def test_device_flow(self) -> TestResult:
         """Device Authorization Flow (RFC 8628)."""
         try:
@@ -2367,6 +2413,7 @@ class NanoIDPTestAgent:
                 self.test_authorization_code_pkce,
                 self.test_id_token_audience,
                 self.test_id_token_audience_array,
+                self.test_id_token_not_accepted_as_access_token,
                 self.test_device_flow,
                 self.test_token_decode,
                 self.test_introspection,

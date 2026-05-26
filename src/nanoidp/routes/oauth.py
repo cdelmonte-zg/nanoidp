@@ -701,6 +701,19 @@ def userinfo():
         )
         return jsonify({"error": "invalid_token", "error_description": "Token validation failed"}), 401
 
+    # UserInfo requires an *access* token (OIDC Core §5.3.1). Reject ID/refresh
+    # tokens even if they verify against the resource audience (issue #34).
+    if payload.get("token_use") in ("id", "refresh"):
+        audit.log(
+            event_type="userinfo_request",
+            endpoint="/userinfo",
+            method=request.method,
+            status="failed",
+            details={"reason": "Not an access token", "token_use": payload.get("token_use")},
+            **req_info,
+        )
+        return jsonify({"error": "invalid_token", "error_description": "An access token is required"}), 401
+
     # Check if token is revoked
     jti = payload.get("jti")
     if jti and jti in _revoked_tokens:
@@ -785,6 +798,20 @@ def introspect():
             status="success",
             client_id=client_id,
             details={"active": False, "reason": "Invalid or expired token"},
+            **req_info,
+        )
+        return jsonify({"active": False})
+
+    # ID Tokens are OIDC artifacts, not OAuth access/refresh tokens. They must not
+    # be reported as active here (or be usable as access tokens) (issue #34).
+    if payload.get("token_use") == "id":
+        audit.log(
+            event_type="introspection_request",
+            endpoint="/introspect",
+            method="POST",
+            status="success",
+            client_id=client_id,
+            details={"active": False, "reason": "ID Token is not introspectable"},
             **req_info,
         )
         return jsonify({"active": False})
