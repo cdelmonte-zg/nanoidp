@@ -49,7 +49,7 @@ def oidc_config():
             "id_token_signing_alg_values_supported": ["RS256"],
             "scopes_supported": ["openid", "profile", "email", "offline_access"],
             "claims_supported": [
-                "sub", "iss", "aud", "exp", "iat", "nbf",
+                "sub", "iss", "aud", "azp", "exp", "iat", "nbf",
                 "email", "email_verified", "preferred_username",
                 "roles", "tenant", "identity_class", "entitlements",
                 "source_acl", "attributes", "authorities"
@@ -423,6 +423,13 @@ def token():
             )
             return abort(401, description="Invalid credentials")
 
+        # An authenticated end-user is present, so honour an openid scope and
+        # emit an ID Token (issue #36). nonce is non-standard for this grant but
+        # accepted as a dev convenience; normalize an empty field to None so we
+        # don't emit an empty nonce claim (matches the authorization_code path).
+        scope = request.form.get("scope")
+        nonce = request.form.get("nonce") or None
+
     # Authorization code grant
     elif grant_type == "authorization_code":
         code = request.form.get("code", "")
@@ -591,6 +598,10 @@ def token():
                     "error_description": "User not found"
                 }), 500
 
+            # The device flow authenticates an end-user, so honour the requested
+            # scope and emit an ID Token when 'openid' was asked for (issue #36).
+            scope = device_info.get("scope")
+
             # Clean up the device code (one-time use)
             user_code = device_info["user_code"]
             del _device_codes[device_code]
@@ -701,6 +712,25 @@ def userinfo():
         )
         return jsonify({"error": "invalid_token", "error_description": "Token validation failed"}), 401
 
+    # UserInfo requires an *access* token (OIDC Core §5.3.1). Reject ID/refresh
+    # tokens even if they verify against the resource audience (issue #34).
+    #
+    # Deliberate compat (not strict) choice: we reject tokens *marked* as id/refresh
+    # rather than requiring token_use == "access". A validly-signed token without the
+    # marker (legacy, or hand-crafted with the IdP key — a first-class workflow for a
+    # dev IdP) is still accepted. The security goal still holds: the IdP marks every
+    # ID/refresh token it issues, so an ID Token can never be spent as an access token.
+    if payload.get("token_use") in ("id", "refresh"):
+        audit.log(
+            event_type="userinfo_request",
+            endpoint="/userinfo",
+            method=request.method,
+            status="failed",
+            details={"reason": "Not an access token", "token_use": payload.get("token_use")},
+            **req_info,
+        )
+        return jsonify({"error": "invalid_token", "error_description": "An access token is required"}), 401
+
     # Check if token is revoked
     jti = payload.get("jti")
     if jti and jti in _revoked_tokens:
@@ -785,6 +815,20 @@ def introspect():
             status="success",
             client_id=client_id,
             details={"active": False, "reason": "Invalid or expired token"},
+            **req_info,
+        )
+        return jsonify({"active": False})
+
+    # ID Tokens are OIDC artifacts, not OAuth access/refresh tokens. They must not
+    # be reported as active here (or be usable as access tokens) (issue #34).
+    if payload.get("token_use") == "id":
+        audit.log(
+            event_type="introspection_request",
+            endpoint="/introspect",
+            method="POST",
+            status="success",
+            client_id=client_id,
+            details={"active": False, "reason": "ID Token is not introspectable"},
             **req_info,
         )
         return jsonify({"active": False})

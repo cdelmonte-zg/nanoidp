@@ -225,12 +225,14 @@ class NanoIDPTestAgent:
                 ]
                 found = [ep for ep in required if ep in data]
                 grants = data.get("grant_types_supported", [])
+                # azp is emitted for multi-audience ID Tokens, so it must be advertised (#37).
+                azp_advertised = "azp" in data.get("claims_supported", [])
                 return self._add_result(
                     "OIDC Discovery",
                     TestCategory.CORE,
-                    len(found) == len(required),
-                    f"{len(found)}/{len(required)} endpoints, grants: {len(grants)}",
-                    {"endpoints": found, "grants": grants}
+                    len(found) == len(required) and azp_advertised,
+                    f"{len(found)}/{len(required)} endpoints, grants: {len(grants)}, azp advertised: {azp_advertised}",
+                    {"endpoints": found, "grants": grants, "azp_advertised": azp_advertised}
                 )
             return self._add_result(
                 "OIDC Discovery",
@@ -293,11 +295,12 @@ class NanoIDPTestAgent:
                 self.refresh_token = data.get("refresh_token")
                 self.id_token = data.get("id_token")
                 expires = data.get("expires_in", "?")
+                # openid scope was requested → an ID Token must be returned (issue #36).
                 has_id = "id_token" in data
                 return self._add_result(
                     "Password Grant",
                     TestCategory.OAUTH,
-                    True,
+                    has_id,
                     f"Token OK, expires={expires}s, id_token={has_id}",
                     {"expires_in": expires, "has_id_token": has_id}
                 )
@@ -598,6 +601,52 @@ class NanoIDPTestAgent:
         except Exception as e:
             return self._add_result("ID Token Audience (array)", TestCategory.OAUTH, False, str(e))
 
+    def test_id_token_not_accepted_as_access_token(self) -> TestResult:
+        """An ID Token must be rejected at /userinfo and /introspect (issue #34).
+
+        ID Tokens are marked ``token_use: "id"``; access-token endpoints reject
+        them so an ID Token can never be spent as an access token.
+        """
+        try:
+            data = self._run_auth_code_flow(self.client_id, self.client_secret)
+            if not data or "id_token" not in data:
+                return self._add_result(
+                    "ID Token Not Access Token", TestCategory.OAUTH, False,
+                    "Could not obtain id_token via authorization_code flow"
+                )
+
+            id_token = data["id_token"]
+
+            # /userinfo must reject the ID Token (expects an access token).
+            userinfo = requests.get(
+                f"{self.base_url}/userinfo",
+                headers={"Authorization": f"Bearer {id_token}"},
+                timeout=5,
+            )
+            userinfo_rejected = userinfo.status_code == 401
+
+            # /introspect must report the ID Token as not active.
+            introspect = self.session.post(
+                f"{self.base_url}/introspect",
+                data={"token": id_token},
+                timeout=5,
+            )
+            introspect_inactive = (
+                introspect.status_code == 200
+                and introspect.json().get("active") is False
+            )
+
+            ok = userinfo_rejected and introspect_inactive
+            return self._add_result(
+                "ID Token Not Access Token",
+                TestCategory.OAUTH,
+                ok,
+                f"userinfo 401={userinfo_rejected}, introspect inactive={introspect_inactive}",
+                {"userinfo_status": userinfo.status_code, "introspect_active": introspect.json().get("active") if introspect.status_code == 200 else None},
+            )
+        except Exception as e:
+            return self._add_result("ID Token Not Access Token", TestCategory.OAUTH, False, str(e))
+
     def test_device_flow(self) -> TestResult:
         """Device Authorization Flow (RFC 8628)."""
         try:
@@ -653,12 +702,14 @@ class NanoIDPTestAgent:
 
                 if token_response.status_code == 200:
                     token_data = token_response.json()
+                    # openid scope was requested → expect an ID Token too (issue #36).
+                    has_id = "id_token" in token_data
                     return self._add_result(
                         "Device Flow",
                         TestCategory.OAUTH,
-                        True,
-                        f"Flow completo: device_auth -> verify -> token",
-                        {"user_code": user_code, "has_token": "access_token" in token_data}
+                        "access_token" in token_data and has_id,
+                        f"Flow completo: device_auth -> verify -> token, id_token={has_id}",
+                        {"user_code": user_code, "has_token": "access_token" in token_data, "has_id_token": has_id}
                     )
 
                 # Check if still pending (which is also valid behavior)
@@ -2367,6 +2418,7 @@ class NanoIDPTestAgent:
                 self.test_authorization_code_pkce,
                 self.test_id_token_audience,
                 self.test_id_token_audience_array,
+                self.test_id_token_not_accepted_as_access_token,
                 self.test_device_flow,
                 self.test_token_decode,
                 self.test_introspection,

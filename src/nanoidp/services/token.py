@@ -71,15 +71,30 @@ class TokenService:
 
         When no client is known we fall back to the configured resource audience
         (a safety fallback — a real OIDC token endpoint always has a client).
+
+        The resource audience (``settings.audience``, used by access/refresh
+        tokens) is never allowed into the ID Token ``aud``: otherwise
+        ``verify_jwt(token, settings.audience)`` would accept an ID Token at the
+        access-token endpoints, letting it be spent as an access token (issue #34).
         """
         if not client_id:
             return self.config.settings.audience, None
 
+        resource_audience = self.config.settings.audience
         client = self.config.get_client(client_id)
         extras = client.additional_audiences if client else []
 
         aud = [client_id]
         for extra in extras:
+            if extra == resource_audience and extra != client_id:
+                logger.warning(
+                    "Ignoring additional_audience %r for client %r: it matches the "
+                    "resource audience (oauth.audience) and must not appear in an "
+                    "ID Token aud.",
+                    extra,
+                    client_id,
+                )
+                continue
             if extra and extra not in aud:
                 aud.append(extra)
 
@@ -126,6 +141,11 @@ class TokenService:
         if extra_claims:
             extra.update(extra_claims)
 
+        # Mark the token type so access-token endpoints can reject ID/refresh
+        # tokens presented as access tokens (issue #34). Set last so it cannot be
+        # overridden by caller-supplied extra_claims.
+        extra["token_use"] = "access"
+
         # Create access token JWT
         token = self.crypto.create_jwt(
             sub=user.username,
@@ -140,18 +160,21 @@ class TokenService:
         id_token = None
         if scope and "openid" in scope.split():
             id_aud, azp = self._resolve_id_token_audience(client_id)
+            id_extra = {"token_use": "id"}
+            if azp:
+                id_extra["azp"] = azp
             id_token = self.crypto.create_jwt(
                 sub=user.username,
                 issuer=settings.issuer,
                 audience=id_aud,
                 exp_minutes=exp_minutes,
                 nonce=nonce,
-                extra={"azp": azp} if azp else None,
+                extra=id_extra,
             )
 
 
         # Create refresh token (valid for 7 days)
-        refresh_extra = {"token_type": "refresh"}
+        refresh_extra = {"token_type": "refresh", "token_use": "refresh"}
         refresh_token = self.crypto.create_jwt(
             sub=user.username,
             issuer=settings.issuer,

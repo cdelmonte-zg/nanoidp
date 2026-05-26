@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- ID Tokens are now issued for the **password** and **device** (RFC 8628) grants
+  when `openid` scope is requested, not just `authorization_code` (#36). These
+  grants authenticate an end-user, so an ID Token is meaningful; `client_credentials`
+  still never emits one (no end-user).
+
+### Fixed
+- Friendlier loading of client `additional_audiences` from `settings.yaml` (#35):
+  a scalar value (`additional_audiences: api://x`) is coerced to a one-element list,
+  and an unsupported shape (e.g. a non-string item) now fails with a clear,
+  client-scoped error instead of an opaque Pydantic `ValidationError` at startup.
+- Minor hardening/polish from the #32 review (#37): `OAuthClient` now validates on
+  direct attribute assignment (`validate_assignment`), discovery advertises `azp` in
+  `claims_supported`, and the MCP `_normalize_audiences` rejects falsy non-list inputs
+  instead of silently returning an empty list.
+
+### Security
+- Harden the ID Token vs access-token boundary (#34). The resource audience
+  (`oauth.audience`) is now filtered out of the ID Token `aud` even if a client
+  lists it in `additional_audiences`, and every token carries a `token_use`
+  marker (`access` / `id` / `refresh`). `/userinfo` rejects tokens marked as ID or
+  refresh tokens and `/introspect` reports ID Tokens as inactive, so an ID Token can
+  no longer be spent as an access token. (Refresh tokens stay introspectable per
+  RFC 7662.)
+
 ## [2.0.0] - 2026-05-25
 
 ### Changed

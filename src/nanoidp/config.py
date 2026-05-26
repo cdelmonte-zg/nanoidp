@@ -40,6 +40,33 @@ def _expand_env_vars(value: Any) -> Any:
     return value
 
 
+def _coerce_additional_audiences(raw: Any, client_id: str) -> List[str]:
+    """Coerce a client's ``additional_audiences`` YAML value into a clean list.
+
+    The field is a ``List[str]`` on the model, but a single value is an easy
+    footgun in YAML (``additional_audiences: api://x``). Rather than let a raw
+    Pydantic ``ValidationError`` abort startup, accept a scalar string by wrapping
+    it, and raise a clear, client-scoped error for unsupported shapes (#35).
+    """
+    label = client_id or "<missing client_id>"
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        return [raw] if raw else []
+    if isinstance(raw, (list, tuple)):
+        non_strings = [a for a in raw if not isinstance(a, str)]
+        if non_strings:
+            raise ValueError(
+                f"Client '{label}': additional_audiences must be a list of strings, "
+                f"got non-string item(s): {non_strings!r}"
+            )
+        return [a for a in raw if a]
+    raise ValueError(
+        f"Client '{label}': additional_audiences must be a string or a list of "
+        f"strings, got {type(raw).__name__}"
+    )
+
+
 class User(BaseModel):
     """Represents a user in the system."""
     model_config = ConfigDict(extra="allow")
@@ -78,6 +105,10 @@ class User(BaseModel):
 
 class OAuthClient(BaseModel):
     """Represents an OAuth client."""
+    # Validate on direct attribute assignment too (e.g. MCP update_client), so the
+    # field constraints below are enforced beyond construction time (#37).
+    model_config = ConfigDict(validate_assignment=True)
+
     client_id: str = Field(..., min_length=1, description="OAuth client ID")
     client_secret: str = Field(..., min_length=1, description="OAuth client secret")
     description: str = Field(default="", description="Client description")
@@ -234,11 +265,14 @@ class ConfigManager:
         # Parse OAuth clients
         clients = []
         for client_data in oauth.get("clients", []):
+            client_id = client_data.get("client_id", "")
             clients.append(OAuthClient(
-                client_id=client_data.get("client_id", ""),
+                client_id=client_id,
                 client_secret=client_data.get("client_secret", ""),
                 description=client_data.get("description", ""),
-                additional_audiences=client_data.get("additional_audiences", []),
+                additional_audiences=_coerce_additional_audiences(
+                    client_data.get("additional_audiences", []), client_id
+                ),
             ))
 
         self.settings = Settings(

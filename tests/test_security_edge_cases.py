@@ -359,12 +359,12 @@ class TestTokenTypeValidation:
     'token_type' claim in the JWT payload.
     """
 
-    def test_refresh_token_can_access_userinfo(self, client, auth_header):
-        """Test that refresh tokens CAN access userinfo in NanoIDP.
+    def test_refresh_token_rejected_at_userinfo(self, client, auth_header):
+        """Refresh tokens must NOT be accepted at /userinfo (issue #34).
 
-        Note: NanoIDP does not validate token_type on userinfo endpoint.
-        This is acceptable for a dev tool - the token has a valid signature.
-        Production IdPs typically check token_type='access' here.
+        UserInfo requires an access token (OIDC Core §5.3.1). NanoIDP marks
+        issued tokens with ``token_use`` and rejects tokens explicitly marked as
+        ID or refresh tokens, even though their signature is valid.
         """
         # Get tokens including refresh token
         response = client.post('/token',
@@ -378,13 +378,11 @@ class TestTokenTypeValidation:
         data = json.loads(response.data)
         refresh_token = data.get('refresh_token')
 
-        if refresh_token:
-            # Refresh token CAN access userinfo in NanoIDP
-            response = client.get('/userinfo',
-                headers={'Authorization': f'Bearer {refresh_token}'}
-            )
-            # NanoIDP accepts any valid signed token
-            assert response.status_code == 200
+        assert refresh_token
+        response = client.get('/userinfo',
+            headers={'Authorization': f'Bearer {refresh_token}'}
+        )
+        assert response.status_code == 401
 
     def test_access_token_cannot_be_used_for_refresh(self, client, auth_header):
         """Test that access tokens cannot be used for refresh grant.

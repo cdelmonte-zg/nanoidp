@@ -375,6 +375,35 @@ class TestMCPClientAdditionalAudiences:
         assert config.get_client("c").additional_audiences == ["aud://x"]
 
     @pytest.mark.asyncio
+    async def test_update_client_invalid_audiences_does_not_partially_mutate(self, tmp_path):
+        """A bad additional_audiences must not leave client_secret/description changed (#37)."""
+        from nanoidp.mcp_server import _execute_tool
+        config = self._config(tmp_path)
+        await _execute_tool(
+            "create_client",
+            {"client_id": "c", "client_secret": "orig", "description": "orig-desc"},
+            config,
+        )
+
+        with pytest.raises(ValueError):
+            await _execute_tool(
+                "update_client",
+                {
+                    "client_id": "c",
+                    "client_secret": "newsecret",
+                    "description": "newdesc",
+                    "additional_audiences": "not-a-list",  # invalid → must raise
+                },
+                config,
+            )
+
+        # The failed update must not have applied the other fields.
+        client = config.get_client("c")
+        assert client.client_secret == "orig"
+        assert client.description == "orig-desc"
+        assert client.additional_audiences == []
+
+    @pytest.mark.asyncio
     async def test_get_client_reports_additional_audiences(self, tmp_path):
         from nanoidp.mcp_server import _execute_tool
         config = self._config(tmp_path)

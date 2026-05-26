@@ -235,3 +235,131 @@ class TestIdTokenAudienceIntegration:
         claims = _decode(data["id_token"])
         assert claims["aud"] == "demo-client"
         assert "azp" not in claims
+
+
+class TestResourceAudienceNeverInIdToken:
+    """Issue #34: the resource audience must never leak into the ID Token ``aud``."""
+
+    def test_settings_audience_filtered_from_extras(self, token_service, basic_user, app):
+        """A client listing ``oauth.audience`` in extras does NOT get it in the ID Token aud."""
+        with app.app_context():
+            resource_aud = token_service.config.settings.audience
+            _register_client(token_service, "demo-client", [resource_aud])
+            result = token_service.create_token(
+                basic_user, scope="openid", client_id="demo-client"
+            )
+        claims = _decode(result["id_token"])
+        # Only the client_id remains → plain string, no azp, no resource audience.
+        assert claims["aud"] == "demo-client"
+        assert "azp" not in claims
+
+    def test_settings_audience_filtered_but_other_extras_kept(self, token_service, basic_user, app):
+        """The resource audience is dropped while genuine extra audiences survive."""
+        with app.app_context():
+            resource_aud = token_service.config.settings.audience
+            _register_client(
+                token_service, "demo-client", [resource_aud, "https://api.example.com"]
+            )
+            result = token_service.create_token(
+                basic_user, scope="openid", client_id="demo-client"
+            )
+        aud = _decode(result["id_token"])["aud"]
+        assert aud == ["demo-client", "https://api.example.com"]
+        assert resource_aud not in aud
+
+
+class TestTokenUseMarker:
+    """Issue #34: every token carries a ``token_use`` marker for type disambiguation."""
+
+    def test_access_token_marked_access(self, token_service, basic_user, app):
+        with app.app_context():
+            result = token_service.create_token(basic_user, client_id="demo-client")
+        assert _decode(result["access_token"])["token_use"] == "access"
+
+    def test_refresh_token_marked_refresh(self, token_service, basic_user, app):
+        with app.app_context():
+            result = token_service.create_token(basic_user, client_id="demo-client")
+        assert _decode(result["refresh_token"])["token_use"] == "refresh"
+
+    def test_id_token_marked_id(self, token_service, basic_user, app):
+        with app.app_context():
+            result = token_service.create_token(
+                basic_user, scope="openid", client_id="demo-client"
+            )
+        assert _decode(result["id_token"])["token_use"] == "id"
+
+    def test_token_use_not_overridable_via_extra_claims(self, token_service, basic_user, app):
+        """A caller cannot downgrade an access token's marker through extra_claims."""
+        with app.app_context():
+            result = token_service.create_token(
+                basic_user, client_id="demo-client", extra_claims={"token_use": "id"}
+            )
+        assert _decode(result["access_token"])["token_use"] == "access"
+
+
+class TestIdTokenRejectedAtAccessEndpoints:
+    """Issue #34: an ID Token must not be accepted at access-token endpoints."""
+
+    def _id_token_for_resource_aud_client(self, client, app):
+        """Obtain an ID Token from a client that (mis)configures the resource audience.
+
+        Even with the misconfiguration the resource audience is filtered out, so the
+        defense relies on the ``token_use`` marker, exercised end-to-end here.
+        """
+        import base64
+
+        with app.app_context():
+            config = get_config()
+            resource_aud = config.settings.audience
+            config.settings.clients = [
+                c for c in config.settings.clients if c.client_id != "leak-client"
+            ]
+            config.settings.clients.append(
+                OAuthClient(
+                    client_id="leak-client",
+                    client_secret="leak-secret",
+                    additional_audiences=[resource_aud],
+                )
+            )
+        creds = base64.b64encode(b"leak-client:leak-secret").decode()
+        header = {"Authorization": f"Basic {creds}"}
+        client.get(
+            "/authorize?response_type=code&client_id=leak-client"
+            "&redirect_uri=http://localhost:3000/callback&scope=openid"
+        )
+        resp = client.post(
+            "/authorize",
+            data={"username": "admin", "password": "admin"},
+            follow_redirects=False,
+        )
+        code = resp.headers["Location"].split("code=")[1].split("&")[0]
+        resp = client.post(
+            "/token",
+            data={
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": "http://localhost:3000/callback",
+            },
+            headers=header,
+        )
+        import json
+
+        return json.loads(resp.data)["id_token"], header
+
+    def test_id_token_rejected_at_userinfo(self, client, app):
+        id_token, _ = self._id_token_for_resource_aud_client(client, app)
+        resp = client.get("/userinfo", headers={"Authorization": f"Bearer {id_token}"})
+        assert resp.status_code == 401
+
+    def test_id_token_inactive_at_introspect(self, client, app):
+        id_token, header = self._id_token_for_resource_aud_client(client, app)
+        resp = client.post("/introspect", data={"token": id_token}, headers=header)
+        import json
+
+        assert resp.status_code == 200
+        assert json.loads(resp.data)["active"] is False
+
+    def test_access_token_still_works_at_userinfo(self, client, bearer_header):
+        """Regression: a real access token is still accepted at /userinfo."""
+        resp = client.get("/userinfo", headers=bearer_header)
+        assert resp.status_code == 200
