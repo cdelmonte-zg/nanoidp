@@ -13,6 +13,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   grants authenticate an end-user, so an ID Token is meaningful; `client_credentials`
   still never emits one (no end-user).
 
+### Fixed
+- Friendlier loading of client `additional_audiences` from `settings.yaml` (#35):
+  a scalar value (`additional_audiences: api://x`) is coerced to a one-element list,
+  and an unsupported shape (e.g. a non-string item) now fails with a clear,
+  client-scoped error instead of an opaque Pydantic `ValidationError` at startup.
+
 ### Security
 - Harden the ID Token vs access-token boundary (#34). The resource audience
   (`oauth.audience`) is now filtered out of the ID Token `aud` even if a client
