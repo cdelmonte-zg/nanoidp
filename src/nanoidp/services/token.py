@@ -6,6 +6,7 @@ import base64
 import hashlib
 import logging
 import threading
+import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -125,6 +126,7 @@ class TokenService:
         scope: Optional[str] = None,
         client_id: Optional[str] = None,
         auth_time: Optional[int] = None,
+        refresh_family: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Create a JWT token for a user.
 
@@ -210,15 +212,23 @@ class TokenService:
             )
 
 
-        # Create refresh token (valid for 7 days). The granted scope and the
-        # original authentication time are persisted in its claims so the
-        # refresh_token grant can re-issue an ID Token with the same auth_time
-        # (OIDC Core §12.2, issues #39/#42).
-        refresh_extra = {"token_type": "refresh", "token_use": "refresh"}
+        # Create refresh token (valid for 7 days). Its claims persist the
+        # context needed at refresh time:
+        # - scope and auth_time, so the grant re-issues an ID Token with the
+        #   same authentication context (OIDC Core §12.2, #39/#42);
+        # - client_id, binding the token to the client it was issued to so no
+        #   other client can spend it (RFC 9700 §4.14, #56) — which also keeps
+        #   the refreshed ID Token aud identical to the original;
+        # - rt_family, a stable id across rotations: reuse of a consumed token
+        #   revokes the whole family (RFC 9700 §4.14.2, #56).
+        refresh_extra: Dict[str, Any] = {"token_type": "refresh", "token_use": "refresh"}
         if scope:
             refresh_extra["scope"] = scope
         if effective_auth_time is not None:
             refresh_extra["auth_time"] = effective_auth_time
+        if client_id:
+            refresh_extra["client_id"] = client_id
+        refresh_extra["rt_family"] = refresh_family or str(uuid.uuid4())
         refresh_token = self.crypto.create_jwt(
             sub=user.username,
             issuer=settings.issuer,
@@ -234,8 +244,12 @@ class TokenService:
             "token_type": "Bearer",
             "expires_in": exp_minutes * 60,
             "refresh_token": refresh_token,
-            "scope": "openid",
         }
+        # RFC 6749 §5.1: report the scope actually granted — it may have been
+        # narrowed on refresh (§6) and was previously hardcoded to "openid"
+        # regardless of the grant (#56). Omitted when no scope was involved.
+        if scope:
+            response["scope"] = scope
 
         if id_token is not None:
             response["id_token"] = id_token
