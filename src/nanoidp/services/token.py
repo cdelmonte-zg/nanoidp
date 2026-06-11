@@ -3,6 +3,7 @@ Token service for generating JWT tokens with authorities.
 """
 
 import logging
+import threading
 from typing import Dict, List, Any, Optional
 
 from ..config import User, Settings, get_config
@@ -206,11 +207,14 @@ class TokenService:
 
 # Global token service instance
 _token_service: Optional[TokenService] = None
+_token_service_lock = threading.Lock()
 
 
 def get_token_service() -> TokenService:
-    """Get or create the global token service."""
+    """Get or create the global token service (thread-safe lazy init, #43)."""
     global _token_service
     if _token_service is None:
-        _token_service = TokenService()
+        with _token_service_lock:
+            if _token_service is None:
+                _token_service = TokenService()
     return _token_service

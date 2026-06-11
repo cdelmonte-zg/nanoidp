@@ -9,6 +9,7 @@ Supports:
 
 import json
 import shutil
+import threading
 import uuid
 import base64
 import logging
@@ -449,13 +450,16 @@ class CryptoService:
 
 # Global crypto service instance
 _crypto_service: Optional[CryptoService] = None
+_crypto_service_lock = threading.Lock()
 
 
 def get_crypto_service(keys_dir: str = "./keys") -> CryptoService:
-    """Get or create the global crypto service."""
+    """Get or create the global crypto service (thread-safe lazy init, #43)."""
     global _crypto_service
     if _crypto_service is None:
-        _crypto_service = CryptoService(keys_dir)
+        with _crypto_service_lock:
+            if _crypto_service is None:
+                _crypto_service = CryptoService(keys_dir)
     return _crypto_service
 
 

@@ -4,6 +4,7 @@ OAuth2/OIDC routes for token endpoint and discovery.
 
 import json
 import logging
+import threading
 from urllib.parse import urlencode, urlparse
 from flask import Blueprint, request, jsonify, abort, redirect, render_template, session, url_for
 
@@ -543,81 +544,85 @@ def token():
                 "error_description": "device_code is required"
             }), 400
 
-        # Look up device code
-        device_info = _device_codes.get(device_code)
-        if not device_info:
-            audit.log(
-                event_type="token_request",
-                endpoint="/token",
-                method="POST",
-                status="failed",
-                client_id=client_id,
-                details={"reason": "Invalid device_code", "grant_type": grant_type},
-                **req_info,
-            )
-            return jsonify({
-                "error": "invalid_grant",
-                "error_description": "Invalid device code"
-            }), 400
+        # The whole lookup-check-claim sequence runs under the device codes
+        # lock so two concurrent polls can't both claim the same authorized
+        # code (one-time use, issue #43).
+        with _device_codes_lock:
+            # Look up device code
+            device_info = _device_codes.get(device_code)
+            if not device_info:
+                audit.log(
+                    event_type="token_request",
+                    endpoint="/token",
+                    method="POST",
+                    status="failed",
+                    client_id=client_id,
+                    details={"reason": "Invalid device_code", "grant_type": grant_type},
+                    **req_info,
+                )
+                return jsonify({
+                    "error": "invalid_grant",
+                    "error_description": "Invalid device code"
+                }), 400
 
-        # Check client_id matches
-        if device_info["client_id"] != client_id:
-            return jsonify({
-                "error": "invalid_grant",
-                "error_description": "Device code was not issued to this client"
-            }), 400
+            # Check client_id matches
+            if device_info["client_id"] != client_id:
+                return jsonify({
+                    "error": "invalid_grant",
+                    "error_description": "Device code was not issued to this client"
+                }), 400
 
-        # Check expiration
-        import time as time_module
-        if time_module.time() > device_info["expires_at"]:
-            device_info["status"] = "expired"
-            return jsonify({
-                "error": "expired_token",
-                "error_description": "Device code has expired"
-            }), 400
+            # Check expiration
+            import time as time_module
+            if time_module.time() > device_info["expires_at"]:
+                device_info["status"] = "expired"
+                return jsonify({
+                    "error": "expired_token",
+                    "error_description": "Device code has expired"
+                }), 400
 
-        # Check status
-        status = device_info["status"]
-        if status == "pending":
-            # User hasn't authorized yet - tell client to slow down/retry
-            return jsonify({
-                "error": "authorization_pending",
-                "error_description": "User has not yet authorized the device"
-            }), 400
-        elif status == "denied":
-            # User denied the request
-            return jsonify({
-                "error": "access_denied",
-                "error_description": "User denied the authorization request"
-            }), 400
-        elif status == "expired":
-            return jsonify({
-                "error": "expired_token",
-                "error_description": "Device code has expired"
-            }), 400
-        elif status == "authorized":
-            # Success! Get the user and issue tokens
-            username = device_info["username"]
-            user = config.get_user(username)
-            if not user:
+            # Check status
+            status = device_info["status"]
+            if status == "pending":
+                # User hasn't authorized yet - tell client to slow down/retry
+                return jsonify({
+                    "error": "authorization_pending",
+                    "error_description": "User has not yet authorized the device"
+                }), 400
+            elif status == "denied":
+                # User denied the request
+                return jsonify({
+                    "error": "access_denied",
+                    "error_description": "User denied the authorization request"
+                }), 400
+            elif status == "expired":
+                return jsonify({
+                    "error": "expired_token",
+                    "error_description": "Device code has expired"
+                }), 400
+            elif status == "authorized":
+                # Success! Get the user and issue tokens
+                username = device_info["username"]
+                user = config.get_user(username)
+                if not user:
+                    return jsonify({
+                        "error": "server_error",
+                        "error_description": "User not found"
+                    }), 500
+
+                # The device flow authenticates an end-user, so honour the requested
+                # scope and emit an ID Token when 'openid' was asked for (issue #36).
+                scope = device_info.get("scope")
+
+                # Clean up the device code (one-time use)
+                user_code = device_info["user_code"]
+                del _device_codes[device_code]
+                del _device_codes[f"user:{user_code}"]
+            else:
                 return jsonify({
                     "error": "server_error",
-                    "error_description": "User not found"
+                    "error_description": "Unknown device code status"
                 }), 500
-
-            # The device flow authenticates an end-user, so honour the requested
-            # scope and emit an ID Token when 'openid' was asked for (issue #36).
-            scope = device_info.get("scope")
-
-            # Clean up the device code (one-time use)
-            user_code = device_info["user_code"]
-            del _device_codes[device_code]
-            del _device_codes[f"user:{user_code}"]
-        else:
-            return jsonify({
-                "error": "server_error",
-                "error_description": "Unknown device code status"
-            }), 500
 
     # Unknown grant type
     else:
@@ -676,7 +681,9 @@ def token():
     return jsonify(token_response)
 
 
-# Token blacklist for revocation (in-memory)
+# Token blacklist for revocation (in-memory). No lock needed: only single
+# `add`/`in` operations, atomic under the GIL — there is no compound
+# check-then-act sequence to protect (unlike _device_codes above, see #43).
 _revoked_tokens: set = set()
 
 
@@ -1033,8 +1040,33 @@ import secrets
 import time
 from datetime import datetime, timedelta
 
-# In-memory storage for device codes
+# In-memory storage for device codes. All compound accesses (lookup + status
+# mutation / deletion) must hold the lock: Flask serves requests on multiple
+# threads and the polling client races against the user's verification and
+# against its own retries (issue #43).
 _device_codes: dict = {}
+_device_codes_lock = threading.RLock()
+
+
+def _prune_expired_device_codes() -> None:
+    """Drop expired device codes so they don't pile up on long-running servers.
+
+    Called on each new device authorization; entries past ``expires_at`` are
+    removed together with their ``user:<code>`` index.
+    """
+    now = time.time()
+    with _device_codes_lock:
+        expired = [
+            code
+            for code, info in _device_codes.items()
+            if not code.startswith("user:") and now > info["expires_at"]
+        ]
+        for code in expired:
+            user_code = _device_codes[code].get("user_code")
+            del _device_codes[code]
+            _device_codes.pop(f"user:{user_code}", None)
+    if expired:
+        logger.debug(f"Pruned {len(expired)} expired device codes")
 
 
 def _generate_user_code() -> str:
@@ -1092,19 +1124,21 @@ def device_authorization():
     expires_in = 600
     interval = 5  # Polling interval in seconds
 
-    # Store device code info
-    _device_codes[device_code] = {
-        "user_code": user_code,
-        "client_id": client_id,
-        "scope": scope,
-        "expires_at": time.time() + expires_in,
-        "interval": interval,
-        "status": "pending",  # pending, authorized, denied, expired
-        "username": None,
-    }
+    # Store device code info (and drop stale entries while we're at it)
+    _prune_expired_device_codes()
+    with _device_codes_lock:
+        _device_codes[device_code] = {
+            "user_code": user_code,
+            "client_id": client_id,
+            "scope": scope,
+            "expires_at": time.time() + expires_in,
+            "interval": interval,
+            "status": "pending",  # pending, authorized, denied, expired
+            "username": None,
+        }
 
-    # Also index by user_code for easy lookup during verification
-    _device_codes[f"user:{user_code}"] = device_code
+        # Also index by user_code for easy lookup during verification
+        _device_codes[f"user:{user_code}"] = device_code
 
     audit.log(
         event_type="device_authorization_request",
@@ -1162,59 +1196,62 @@ def device_verify():
         if not device_code:
             error_msg = "Invalid or expired user code"
         else:
-            device_info = _device_codes.get(device_code)
-            if not device_info:
-                error_msg = "Invalid or expired user code"
-            elif device_info["status"] != "pending":
-                error_msg = "This code has already been used"
-            elif time.time() > device_info["expires_at"]:
-                device_info["status"] = "expired"
-                error_msg = "This code has expired"
-            elif action == "deny":
-                device_info["status"] = "denied"
-                success_msg = "Device authorization denied"
-                audit.log(
-                    event_type="device_verification",
-                    endpoint="/device",
-                    method="POST",
-                    status="denied",
-                    username=username,
-                    details={"user_code": user_code},
-                    **req_info,
-                )
-            else:
-                # Validate user credentials
-                if not username or not password:
-                    error_msg = "Username and password are required"
+            # check-status + transition must be atomic so two concurrent
+            # verifications can't both claim the same pending code (issue #43)
+            with _device_codes_lock:
+                device_info = _device_codes.get(device_code)
+                if not device_info:
+                    error_msg = "Invalid or expired user code"
+                elif device_info["status"] != "pending":
+                    error_msg = "This code has already been used"
+                elif time.time() > device_info["expires_at"]:
+                    device_info["status"] = "expired"
+                    error_msg = "This code has expired"
+                elif action == "deny":
+                    device_info["status"] = "denied"
+                    success_msg = "Device authorization denied"
+                    audit.log(
+                        event_type="device_verification",
+                        endpoint="/device",
+                        method="POST",
+                        status="denied",
+                        username=username,
+                        details={"user_code": user_code},
+                        **req_info,
+                    )
                 else:
-                    user = config.authenticate(username, password)
-                    if not user:
-                        error_msg = "Invalid username or password"
-                        audit.log(
-                            event_type="device_verification",
-                            endpoint="/device",
-                            method="POST",
-                            status="failed",
-                            username=username,
-                            details={"user_code": user_code, "reason": "Invalid credentials"},
-                            **req_info,
-                        )
+                    # Validate user credentials
+                    if not username or not password:
+                        error_msg = "Username and password are required"
                     else:
-                        # Authorization successful
-                        device_info["status"] = "authorized"
-                        device_info["username"] = user.username
-                        success_msg = "Device authorized successfully! You can close this window."
+                        user = config.authenticate(username, password)
+                        if not user:
+                            error_msg = "Invalid username or password"
+                            audit.log(
+                                event_type="device_verification",
+                                endpoint="/device",
+                                method="POST",
+                                status="failed",
+                                username=username,
+                                details={"user_code": user_code, "reason": "Invalid credentials"},
+                                **req_info,
+                            )
+                        else:
+                            # Authorization successful
+                            device_info["status"] = "authorized"
+                            device_info["username"] = user.username
+                            success_msg = "Device authorized successfully! You can close this window."
 
-                        audit.log(
-                            event_type="device_verification",
-                            endpoint="/device",
-                            method="POST",
-                            status="success",
-                            username=user.username,
-                            details={"user_code": user_code},
-                            **req_info,
-                        )
-                        logger.info(f"Device authorized for user '{user.username}', user_code: {user_code}")
+                            audit.log(
+                                event_type="device_verification",
+                                endpoint="/device",
+                                method="POST",
+                                status="success",
+                                username=user.username,
+                                details={"user_code": user_code},
+                                **req_info,
+                            )
+                            logger.info(f"Device authorized for user '{user.username}', user_code: {user_code}")
 
     return render_template(
         "device.html",
