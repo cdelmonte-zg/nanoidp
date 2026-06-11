@@ -500,8 +500,11 @@ def token():
         # revokes the whole family — attacker's copy and legitimate descendant
         # alike (RFC 9700 §4.14.2). This block sits after every validation
         # that may legitimately fail (binding, user, scope narrowing), so a
-        # rejected request does not consume the token; from here on, issuance
-        # is local signing and cannot fail.
+        # rejected request does not consume the token. Known edge: malformed
+        # 'exp'/'extra' form params are parsed in the grant-common code below,
+        # i.e. AFTER the claim — a client sending garbage there does lose the
+        # token; accepted tradeoff, since claiming any later would reopen the
+        # double-rotation race.
         jti = payload.get("jti")
         with _revocation_lock:
             family_revoked = bool(refresh_family) and refresh_family in _revoked_token_families
