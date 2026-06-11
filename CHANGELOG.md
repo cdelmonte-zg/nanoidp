@@ -7,7 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- ID Tokens now carry `auth_time` and `at_hash` (#42). `auth_time` reflects
+  when the end-user actually authenticated: the login page for the
+  authorization code flow, the `/device` verification for the device flow,
+  the request itself for the password grant — and it is preserved unchanged
+  across refreshes (OIDC Core §12.2), carried in the refresh token claims
+  like the scope (#39). `at_hash` binds the ID Token to the access token
+  issued alongside it (left half of SHA-256, base64url — §3.1.3.6).
+  Discovery `claims_supported` now also advertises `auth_time`, `nonce` and
+  `at_hash`.
+
 ### Fixed
+- Thread-safety hardening for shared in-memory state (#43): the
+  authorization code store now performs its check-then-mark sequence under a
+  lock (one-time use can no longer be defeated by concurrent redemptions),
+  device codes are claimed/transitioned atomically and pruned when expired,
+  and the lazily-created service singletons (config, token, crypto, audit,
+  auth codes) use double-checked locking so concurrent first access creates
+  exactly one instance.
 - The MCP `get_oidc_discovery` tool now returns the exact same document as the
   HTTP `/.well-known/openid-configuration` endpoint (#40). Both build it via a
   new shared helper (`services.discovery.build_discovery_document`), so the

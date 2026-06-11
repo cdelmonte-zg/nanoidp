@@ -242,6 +242,7 @@ def token():
     client_id = body_client_id or auth_client_id
     nonce = None
     scope = None
+    auth_time = None
 
     # Reject if client identity cannot be determined at all
     if not client_id:
@@ -395,6 +396,10 @@ def token():
         else:
             scope = original_scope or None
 
+        # A refreshed ID Token must carry the ORIGINAL authentication time
+        # (OIDC Core §12.2), persisted in the refresh token claims (#42).
+        auth_time = payload.get("auth_time")
+
     # Password grant
     elif grant_type == "password":
         username = request.form.get("username", "").strip()
@@ -505,11 +510,15 @@ def token():
             )
             return abort(401, description="User not found")
 
-        if auth_code.nonce is not None: 
+        if auth_code.nonce is not None:
             nonce = auth_code.nonce
-        
+
         if auth_code.scope is not None:
             scope = auth_code.scope
+
+        # The user authenticated at the login page when the code was created,
+        # not at this token exchange — use that moment as auth_time (#42).
+        auth_time = int(auth_code.created_at.timestamp())
 
     # Client credentials grant
     elif grant_type == "client_credentials":
@@ -613,6 +622,8 @@ def token():
                 # The device flow authenticates an end-user, so honour the requested
                 # scope and emit an ID Token when 'openid' was asked for (issue #36).
                 scope = device_info.get("scope")
+                # The user authenticated at /device, not at this poll (#42).
+                auth_time = device_info.get("auth_time")
 
                 # Clean up the device code (one-time use)
                 user_code = device_info["user_code"]
@@ -658,6 +669,7 @@ def token():
         nonce=nonce,
         scope=scope,
         client_id=client_id,
+        auth_time=auth_time,
     )
 
     # Audit log
@@ -1240,6 +1252,7 @@ def device_verify():
                             # Authorization successful
                             device_info["status"] = "authorized"
                             device_info["username"] = user.username
+                            device_info["auth_time"] = int(time.time())
                             success_msg = "Device authorized successfully! You can close this window."
 
                             audit.log(
