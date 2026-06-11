@@ -3,6 +3,8 @@ Typed exceptions for NanoIDP.
 Provides clear, specific error handling across the application.
 """
 
+from typing import Optional
+
 
 class NanoIDPError(Exception):
     """Base exception for all NanoIDP errors."""
@@ -143,7 +145,7 @@ class ConfigFileNotFoundError(ConfigurationError):
 class InvalidConfigurationError(ConfigurationError):
     """Raised when configuration is invalid."""
 
-    def __init__(self, message: str, field: str = None):
+    def __init__(self, message: str, field: Optional[str] = None):
         super().__init__(message, "INVALID_CONFIGURATION")
         self.field = field
 
