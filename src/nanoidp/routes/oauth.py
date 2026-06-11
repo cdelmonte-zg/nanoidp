@@ -365,6 +365,42 @@ def token():
         )
         return abort(401, description="Invalid client credentials")
 
+    # Validate the grant-independent 'exp' and 'extra' params BEFORE the grant
+    # dispatch: the rotation branch atomically consumes the refresh token at
+    # the end of its validations, so nothing after it may reject the request
+    # (#56 review follow-up). This also turns a non-numeric 'exp' into a
+    # proper 400 instead of an unhandled ValueError (500).
+    try:
+        exp_minutes = int(request.form.get("exp", config.settings.token_expiry_minutes))
+    except (TypeError, ValueError):
+        audit.log(
+            event_type="token_request",
+            endpoint="/token",
+            method="POST",
+            status="failed",
+            client_id=client_id,
+            details={"reason": "Invalid 'exp' parameter", "grant_type": grant_type},
+            **req_info,
+        )
+        return abort(400, description="'exp' must be an integer number of minutes")
+
+    extra_claims = None
+    extra_raw = request.form.get("extra")
+    if extra_raw:
+        try:
+            extra_claims = json.loads(extra_raw)
+        except json.JSONDecodeError:
+            audit.log(
+                event_type="token_request",
+                endpoint="/token",
+                method="POST",
+                status="failed",
+                client_id=client_id,
+                details={"reason": "Invalid JSON in 'extra'", "grant_type": grant_type},
+                **req_info,
+            )
+            return abort(400, description="Invalid JSON in 'extra'")
+
     # Refresh token grant
     if grant_type == "refresh_token":
         refresh_token = request.form.get("refresh_token", "")
@@ -499,12 +535,10 @@ def token():
         # (#56). Reuse of an already-consumed token is treated as leakage and
         # revokes the whole family — attacker's copy and legitimate descendant
         # alike (RFC 9700 §4.14.2). This block sits after every validation
-        # that may legitimately fail (binding, user, scope narrowing), so a
-        # rejected request does not consume the token. Known edge: malformed
-        # 'exp'/'extra' form params are parsed in the grant-common code below,
-        # i.e. AFTER the claim — a client sending garbage there does lose the
-        # token; accepted tradeoff, since claiming any later would reopen the
-        # double-rotation race.
+        # that may reject the request (binding, user, scope narrowing — and
+        # the grant-independent 'exp'/'extra' params, validated before the
+        # grant dispatch), so a rejected request never consumes the token:
+        # from here on, issuance is local signing and cannot fail.
         jti = payload.get("jti")
         with _revocation_lock:
             family_revoked = bool(refresh_family) and refresh_family in _revoked_token_families
@@ -785,19 +819,8 @@ def token():
         )
         return abort(400, description=f"Unsupported grant_type: {grant_type}")
 
-    # Get expiration from request or use default
-    exp_minutes = int(request.form.get("exp", config.settings.token_expiry_minutes))
-
-    # Parse extra claims if provided
-    extra_claims = None
-    extra_raw = request.form.get("extra")
-    if extra_raw:
-        try:
-            extra_claims = json.loads(extra_raw)
-        except json.JSONDecodeError:
-            return abort(400, description="Invalid JSON in 'extra'")
-
-    # Create token
+    # Create token ('exp' and 'extra' were validated before the grant dispatch
+    # so the rotation claim above is the last thing that can reject)
     token_service = get_token_service()
     token_response = token_service.create_token(
         user=user,

@@ -46,6 +46,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   expected"): `stdio_server()` is an async context manager yielding the
   message streams, not a coroutine. Found by the mypy baseline being
   prepared for #55; verified with a JSON-RPC initialize handshake.
+- The token endpoint validates `exp` and `extra` before the grant dispatch:
+  with rotation enabled, a malformed value can no longer consume the refresh
+  token without delivering its replacement (the last tradeoff noted in the
+  #56 review), and a non-numeric `exp` now returns a proper 400 instead of
+  an unhandled `ValueError` (500).
 
 ### Added
 - Optional **refresh token rotation** (#46): with `oauth.refresh_token_rotation: true`
