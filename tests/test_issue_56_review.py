@@ -94,6 +94,43 @@ class TestAtomicRotationAndFamilies:
             get_config().settings.refresh_token_rotation = True
         yield
 
+    def test_malformed_extra_does_not_consume_the_token(self, client, auth_header):
+        """'exp'/'extra' are validated before the grant dispatch, so a 400
+        there never burns the refresh token (post-#56 review note)."""
+        tokens = _password_grant(client, auth_header)
+
+        bad = client.post(
+            "/token",
+            data={
+                "grant_type": "refresh_token",
+                "refresh_token": tokens["refresh_token"],
+                "extra": "{not-json",
+            },
+            headers=auth_header,
+        )
+        assert bad.status_code == 400
+
+        retry = _refresh(client, auth_header, tokens["refresh_token"])
+        assert retry.status_code == 200
+
+    def test_non_numeric_exp_is_a_400_and_does_not_consume(self, client, auth_header):
+        """A non-numeric 'exp' used to raise an unhandled ValueError (500)."""
+        tokens = _password_grant(client, auth_header)
+
+        bad = client.post(
+            "/token",
+            data={
+                "grant_type": "refresh_token",
+                "refresh_token": tokens["refresh_token"],
+                "exp": "abc",
+            },
+            headers=auth_header,
+        )
+        assert bad.status_code == 400
+
+        retry = _refresh(client, auth_header, tokens["refresh_token"])
+        assert retry.status_code == 200
+
     def test_concurrent_double_refresh_succeeds_exactly_once(self, app, auth_header):
         tokens = _password_grant(app.test_client(), auth_header)
         refresh_token = tokens["refresh_token"]
