@@ -3,16 +3,16 @@ YAML configuration writer service.
 Provides atomic write operations for YAML configuration files.
 """
 
-import os
-import yaml
-import shutil
 import logging
+import os
+import shutil
 import tempfile
 from pathlib import Path
-from typing import Dict, List, Any, Optional
-from datetime import datetime
+from typing import Any, Dict, List, Optional
 
-from ..config import User, OAuthClient, get_config
+import yaml
+
+from ..config import OAuthClient, User, get_config
 
 logger = logging.getLogger(__name__)
 

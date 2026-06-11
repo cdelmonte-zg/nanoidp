@@ -7,9 +7,9 @@ import hashlib
 import logging
 import threading
 from datetime import datetime, timezone
-from typing import Dict, List, Any, Optional
+from typing import Any, Dict, List, Optional
 
-from ..config import User, Settings, get_config
+from ..config import User, get_config
 from .crypto import get_crypto_service
 
 logger = logging.getLogger(__name__)
@@ -178,7 +178,7 @@ class TokenService:
             extra=extra,
             exp_minutes=exp_minutes,
         )
-        
+
         id_token = None
         effective_auth_time = None
         if scope and "openid" in scope.split():

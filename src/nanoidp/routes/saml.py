@@ -3,14 +3,17 @@ SAML routes for SSO and metadata.
 """
 
 import html
+import logging
 import uuid
 import zlib
-import logging
-from base64 import b64encode, b64decode
+from base64 import b64decode, b64encode
 from datetime import datetime, timedelta, timezone
-from flask import Blueprint, request, abort, session, redirect, url_for, Response, render_template
 
+from flask import Blueprint, Response, abort, render_template, request, session
 from lxml import etree
+
+from ..config import get_config
+from ..services import get_audit_log, get_crypto_service
 
 # Create secure XML parser (XXE protection without deprecated defusedxml.lxml)
 _secure_parser = etree.XMLParser(
@@ -25,12 +28,9 @@ def secure_fromstring(xml_bytes: bytes) -> etree._Element:
     """Parse XML securely, preventing XXE attacks."""
     return etree.fromstring(xml_bytes, parser=_secure_parser)
 
-from ..config import get_config
-from ..services import get_crypto_service, get_audit_log
-
 # Try to import signxml for SAML signing
 try:
-    from signxml import XMLSigner, methods, CanonicalizationMethod
+    from signxml import CanonicalizationMethod, XMLSigner, methods
     SIGNXML_AVAILABLE = True
 except ImportError:
     SIGNXML_AVAILABLE = False

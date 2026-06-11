@@ -46,17 +46,17 @@ Uso:
     python test_agent.py --verbose
 """
 
-import sys
-import json
-import time
 import base64
 import hashlib
+import json
 import secrets
+import sys
+import time
 import xml.etree.ElementTree as ET
-from typing import Optional, Dict, Any, List, Tuple
 from dataclasses import dataclass, field
-from urllib.parse import urlencode, parse_qs, urlparse
 from enum import Enum
+from typing import Any, Dict, List, Optional
+from urllib.parse import parse_qs, urlparse
 
 try:
     import requests
@@ -719,7 +719,6 @@ class NanoIDPTestAgent:
                 device_code = data.get("device_code")
                 user_code = data.get("user_code")
                 verification_uri = data.get("verification_uri")
-                interval = data.get("interval", 5)
 
                 self._log(f"Device code: {device_code[:20]}...")
                 self._log(f"User code: {user_code}")
@@ -906,7 +905,6 @@ class NanoIDPTestAgent:
                 data = response.json()
                 sub = data.get("sub", "?")
                 email = data.get("email", "?")
-                roles = data.get("roles", [])
                 tenant = data.get("tenant", "?")
                 return self._add_result(
                     "UserInfo",
@@ -1173,7 +1171,7 @@ class NanoIDPTestAgent:
             session = requests.Session()
 
             # Login to get a session
-            login_response = session.post(
+            session.post(
                 f"{self.base_url}/login",
                 data={"username": self.username, "password": self.password},
                 allow_redirects=False,
@@ -1277,7 +1275,7 @@ class NanoIDPTestAgent:
             session = requests.Session()
 
             # Login to get a session
-            login_response = session.post(
+            session.post(
                 f"{self.base_url}/login",
                 data={"username": self.username, "password": self.password},
                 allow_redirects=False,
@@ -1678,7 +1676,7 @@ class NanoIDPTestAgent:
         try:
             # First, authenticate via session
             session = requests.Session()
-            login_response = session.post(
+            session.post(
                 f"{self.base_url}/login",
                 data={"username": self.username, "password": self.password},
                 allow_redirects=False,
@@ -2091,7 +2089,6 @@ class NanoIDPTestAgent:
 
             before_data = before.json()
             old_kid = before_data.get("active_kid", before_data.get("current_kid"))
-            old_previous = before_data.get("previous_kids", [])
 
             # Perform rotation
             response = self.session.post(
@@ -2100,9 +2097,6 @@ class NanoIDPTestAgent:
             )
 
             if response.status_code == 200:
-                data = response.json()
-                new_kid = data.get("new_kid", data.get("active_kid"))
-
                 # Verify key actually changed
                 after = self.session.get(f"{self.base_url}/api/keys/info", timeout=5)
                 if after.status_code == 200:
@@ -2118,7 +2112,6 @@ class NanoIDPTestAgent:
                     jwks = self.session.get(f"{self.base_url}/.well-known/jwks.json", timeout=5)
                     jwks_kids = [k.get("kid") for k in jwks.json().get("keys", [])] if jwks.status_code == 200 else []
                     new_in_jwks = current_kid in jwks_kids
-                    old_in_jwks = old_kid in jwks_kids
 
                     return self._add_result(
                         "Key Rotation",
@@ -2523,7 +2516,7 @@ class NanoIDPTestAgent:
         ]
 
         # Run tests by group
-        for category, title, tests in test_groups:
+        for _category, title, tests in test_groups:
             print(f"\n{'─' * 70}")
             print(f"  {title}")
             print(f"{'─' * 70}\n")
@@ -2557,7 +2550,7 @@ class NanoIDPTestAgent:
             print("\n  [SUCCESS] All tests passed!")
         else:
             failed = [r.name for r in self.suite.results if not r.success]
-            print(f"\n  [WARNING] Failed tests:")
+            print("\n  [WARNING] Failed tests:")
             for name in failed:
                 print(f"    - {name}")
 

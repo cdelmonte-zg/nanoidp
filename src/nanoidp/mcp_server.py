@@ -18,20 +18,20 @@ import asyncio
 import json
 import logging
 import os
-from datetime import datetime, timezone
 from typing import Any, Tuple
 
+import jwt as pyjwt
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
-from mcp.types import Tool, TextContent
+from mcp.types import TextContent, Tool
 
-from .config import ConfigManager, User, OAuthClient, init_config, get_config
+from .config import ConfigManager, OAuthClient, User, init_config
 from .services import (
-    init_crypto_service,
+    build_discovery_document,
+    get_audit_log,
     get_crypto_service,
     get_token_service,
-    get_audit_log,
-    build_discovery_document,
+    init_crypto_service,
 )
 
 logger = logging.getLogger(__name__)
@@ -683,7 +683,6 @@ async def _execute_tool(name: str, arguments: dict[str, Any], config: ConfigMana
         return result
 
     elif name == "decode_token":
-        import jwt as pyjwt
         token = arguments["token"]
         try:
             payload = pyjwt.decode(token, options={"verify_signature": False})

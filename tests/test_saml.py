@@ -11,9 +11,9 @@ Tests cover:
 
 import base64
 import zlib
+
 import pytest
 from lxml import etree
-from unittest.mock import patch
 
 SAML_NS = {
     "md": "urn:oasis:names:tc:SAML:2.0:metadata",
@@ -520,7 +520,7 @@ class TestSAMLSigningConfiguration:
         root = etree.fromstring(xml)
         # If signxml is available, signature should be present
         try:
-            from signxml import XMLSigner
+            from signxml import XMLSigner  # noqa: F401 -- availability probe
             signature = root.find(".//ds:Signature", SAML_NS)
             assert signature is not None, "Signed response should contain Signature element"
         except ImportError:
@@ -626,7 +626,7 @@ class TestSAMLSigningConfiguration:
         from nanoidp.routes.saml import _build_saml_response
 
         try:
-            from signxml import XMLSigner
+            from signxml import XMLSigner  # noqa: F401 -- availability probe
         except ImportError:
             pytest.skip("signxml not available")
 
@@ -652,7 +652,7 @@ class TestSAMLSigningConfiguration:
         incompatible_c14n = "http://www.w3.org/2006/12/xml-c14n11"
 
         assert c14n_algo != incompatible_c14n, \
-            f"Default should be Exclusive C14N, not C14N 1.1"
+            "Default should be Exclusive C14N, not C14N 1.1"
         assert c14n_algo == expected_c14n, \
             f"Expected Exclusive C14N algorithm, got: {c14n_algo}"
 
@@ -661,7 +661,7 @@ class TestSAMLSigningConfiguration:
         from nanoidp.routes.saml import _build_saml_response
 
         try:
-            from signxml import XMLSigner
+            from signxml import XMLSigner  # noqa: F401 -- availability probe
         except ImportError:
             pytest.skip("signxml not available")
 
@@ -686,7 +686,7 @@ class TestSAMLSigningConfiguration:
             algo = transform.get("Algorithm")
             if "c14n" in algo.lower():
                 assert algo != incompatible_c14n, \
-                    f"Transform should use Exclusive C14N by default, not C14N 1.1"
+                    "Transform should use Exclusive C14N by default, not C14N 1.1"
                 assert algo == expected_c14n, \
                     f"Expected Exclusive C14N in Transform, got: {algo}"
 
@@ -696,7 +696,7 @@ class TestSAMLSigningConfiguration:
         from nanoidp.routes.saml import _build_saml_response
 
         try:
-            from signxml import XMLSigner
+            from signxml import XMLSigner  # noqa: F401 -- availability probe
         except ImportError:
             pytest.skip("signxml not available")
 
@@ -735,7 +735,7 @@ class TestSAMLSigningConfiguration:
         from nanoidp.routes.saml import _build_saml_response
 
         try:
-            from signxml import XMLSigner
+            from signxml import XMLSigner  # noqa: F401 -- availability probe
         except ImportError:
             pytest.skip("signxml not available")
 

@@ -3,9 +3,7 @@ Integration tests for OIDC endpoints.
 Tests discovery, JWKS, userinfo, introspection, and revocation.
 """
 
-import pytest
 import json
-import jwt as pyjwt
 
 
 class TestOIDCDiscovery:

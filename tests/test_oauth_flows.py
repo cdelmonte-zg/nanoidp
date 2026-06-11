@@ -3,11 +3,8 @@ Integration tests for OAuth2 flows.
 Tests complete authorization code flow, password grant, client credentials, and refresh token.
 """
 
-import pytest
-import json
-import hashlib
 import base64
-import secrets
+import json
 
 
 class TestAuthorizationCodeFlow:

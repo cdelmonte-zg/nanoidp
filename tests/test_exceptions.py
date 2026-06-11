@@ -5,38 +5,38 @@ Unit tests for NanoIDP typed exceptions.
 import pytest
 
 from nanoidp.exceptions import (
-    # Base
-    NanoIDPError,
+    # Auth Code
+    AuthCodeError,
     # Authentication
     AuthenticationError,
-    InvalidCredentialsError,
-    UserNotFoundError,
     # Client
     ClientError,
     ClientNotFoundError,
-    InvalidClientCredentialsError,
-    # Token
-    TokenError,
-    InvalidTokenError,
-    ExpiredTokenError,
-    RevokedTokenError,
-    # Auth Code
-    AuthCodeError,
-    InvalidAuthCodeError,
-    ExpiredAuthCodeError,
-    PKCEValidationError,
+    ConfigFileNotFoundError,
     # Configuration
     ConfigurationError,
-    ConfigFileNotFoundError,
-    InvalidConfigurationError,
+    ExpiredAuthCodeError,
+    ExpiredTokenError,
     # Grant
     GrantError,
-    UnsupportedGrantTypeError,
+    InvalidAuthCodeError,
+    InvalidClientCredentialsError,
+    InvalidConfigurationError,
+    InvalidCredentialsError,
     InvalidGrantError,
+    InvalidSAMLRequestError,
+    InvalidTokenError,
+    # Base
+    NanoIDPError,
+    PKCEValidationError,
+    RevokedTokenError,
     # SAML
     SAMLError,
-    InvalidSAMLRequestError,
     SAMLSignatureError,
+    # Token
+    TokenError,
+    UnsupportedGrantTypeError,
+    UserNotFoundError,
 )
 
 

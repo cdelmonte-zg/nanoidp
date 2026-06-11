@@ -3,10 +3,10 @@ Integration tests for complete token lifecycle.
 Tests end-to-end journeys including token issuance, usage, refresh, and revocation.
 """
 
-import pytest
 import json
-import jwt as pyjwt
 import time
+
+import jwt as pyjwt
 
 
 class TestCompleteAuthorizationCodeJourney:
@@ -45,7 +45,6 @@ class TestCompleteAuthorizationCodeJourney:
         assert response.status_code == 200
         tokens = json.loads(response.data)
         access_token = tokens['access_token']
-        refresh_token = tokens['refresh_token']
 
         # 5. Use access token to get userinfo
         response = client.get('/userinfo', headers={
@@ -274,7 +273,6 @@ class TestTokenValidation:
 
     def test_token_timestamps_are_valid(self, client, auth_header):
         """Test that token timestamps are properly set."""
-        import time
 
         before = int(time.time())
 

@@ -6,7 +6,7 @@ according to README documentation and user configuration.
 """
 
 import json
-import pytest
+
 import jwt as pyjwt
 
 
@@ -211,8 +211,8 @@ class TestAuthorityPrefixConfiguration:
 
     def test_build_authorities_with_default_prefixes(self):
         """Test authority building with default prefix configuration."""
-        from nanoidp.services.token import TokenService
         from nanoidp.config import User
+        from nanoidp.services.token import TokenService
 
         user = User(
             username="testuser",
@@ -267,8 +267,8 @@ class TestEmptyAndMissingFields:
 
     def test_user_with_empty_roles_generates_valid_token(self):
         """Test that users with empty roles still generate valid tokens."""
-        from nanoidp.services.token import TokenService
         from nanoidp.config import User
+        from nanoidp.services.token import TokenService
 
         user = User(
             username="minimaluser",
@@ -287,8 +287,8 @@ class TestEmptyAndMissingFields:
 
     def test_user_with_none_identity_class(self):
         """Test that users with None identity_class don't add spurious authorities."""
-        from nanoidp.services.token import TokenService
         from nanoidp.config import User
+        from nanoidp.services.token import TokenService
 
         user = User(
             username="noidentity",

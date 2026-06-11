@@ -3,9 +3,7 @@ Integration tests for new endpoints: OIDC Logout and Device Authorization Grant.
 Tests end session endpoint and RFC 8628 device flow.
 """
 
-import pytest
 import json
-import time
 
 
 class TestOIDCLogout:

@@ -3,11 +3,11 @@ Audit logging service for tracking IDP operations.
 """
 
 import logging
-from datetime import datetime, timezone
-from typing import Optional, List, Dict, Any
-from dataclasses import dataclass, field
 from collections import deque
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from threading import Lock
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 

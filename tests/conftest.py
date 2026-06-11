@@ -3,14 +3,14 @@ Pytest configuration and shared fixtures for NanoIDP tests.
 """
 
 import base64
-import pytest
-from typing import Generator
 
-from nanoidp.app import create_app
-from nanoidp.config import ConfigManager, User, OAuthClient, Settings
-import nanoidp.services.crypto as crypto_module
+import pytest
+
 import nanoidp.config as config_module
+import nanoidp.services.crypto as crypto_module
 import nanoidp.services.token as token_module
+from nanoidp.app import create_app
+from nanoidp.config import OAuthClient, User
 
 
 @pytest.fixture(autouse=True)
@@ -138,8 +138,8 @@ def pkce_verifier():
 @pytest.fixture
 def pkce_challenge_s256(pkce_verifier):
     """Generate a PKCE code challenge using S256 method."""
-    import hashlib
     import base64
+    import hashlib
     digest = hashlib.sha256(pkce_verifier.encode('ascii')).digest()
     return base64.urlsafe_b64encode(digest).rstrip(b'=').decode('ascii')
 

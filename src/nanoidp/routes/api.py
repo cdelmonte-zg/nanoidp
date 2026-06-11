@@ -3,6 +3,7 @@ REST API routes for management and monitoring.
 """
 
 import logging
+
 from flask import Blueprint, jsonify, request
 
 from ..config import get_config

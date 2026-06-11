@@ -11,8 +11,8 @@ Tests cover:
 
 import json
 import time
+
 import pytest
-from unittest.mock import patch
 
 
 @pytest.fixture(autouse=True)

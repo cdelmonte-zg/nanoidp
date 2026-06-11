@@ -10,14 +10,11 @@ Tests cover:
 """
 
 import json
-import time
-import pytest
-import jwt as pyjwt
 from datetime import datetime, timedelta, timezone
-from unittest.mock import patch
 
-from cryptography.hazmat.primitives.asymmetric import rsa
+import jwt as pyjwt
 from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 
 
 class TestTokenExpiration:
@@ -37,12 +34,12 @@ class TestTokenExpiration:
         data = json.loads(response.data)
         token = data['access_token']
 
-        # Decode and verify it's valid first
-        payload = pyjwt.decode(token, options={"verify_signature": False})
+        # Decode to verify it's well-formed first (raises if not)
+        pyjwt.decode(token, options={"verify_signature": False})
 
         # Create a token that's already expired by manipulating the payload
-        from nanoidp.services import get_crypto_service
         from nanoidp.config import get_config
+        from nanoidp.services import get_crypto_service
 
         config = get_config()
         crypto = get_crypto_service(config.settings.keys_dir)
@@ -71,8 +68,8 @@ class TestTokenExpiration:
 
     def test_expired_token_inactive_in_introspection(self, client, auth_header):
         """Test that expired tokens show as inactive in introspection."""
-        from nanoidp.services import get_crypto_service
         from nanoidp.config import get_config
+        from nanoidp.services import get_crypto_service
 
         config = get_config()
         crypto = get_crypto_service(config.settings.keys_dir)
@@ -105,8 +102,8 @@ class TestTokenExpiration:
 
     def test_token_near_expiration_still_valid(self, client, auth_header):
         """Test that tokens near expiration are still valid."""
-        from nanoidp.services import get_crypto_service
         from nanoidp.config import get_config
+        from nanoidp.services import get_crypto_service
 
         config = get_config()
         crypto = get_crypto_service(config.settings.keys_dir)
@@ -140,8 +137,8 @@ class TestAudienceMismatch:
 
     def test_token_with_wrong_audience_rejected(self, client, auth_header):
         """Test that tokens with wrong audience are rejected."""
-        from nanoidp.services import get_crypto_service
         from nanoidp.config import get_config
+        from nanoidp.services import get_crypto_service
 
         config = get_config()
         crypto = get_crypto_service(config.settings.keys_dir)
@@ -209,8 +206,8 @@ class TestIssuerMismatch:
         NanoIDP does not validate the issuer claim - it trusts any token
         signed with its key. This test documents this behavior.
         """
-        from nanoidp.services import get_crypto_service
         from nanoidp.config import get_config
+        from nanoidp.services import get_crypto_service
 
         config = get_config()
         crypto = get_crypto_service(config.settings.keys_dir)

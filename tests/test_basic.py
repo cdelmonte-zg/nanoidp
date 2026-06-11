@@ -1,6 +1,5 @@
 """Basic tests for NanoIDP."""
 
-import pytest
 
 
 def test_import():
