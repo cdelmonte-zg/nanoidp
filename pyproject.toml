@@ -111,11 +111,22 @@ ignore = [
 # disallow_untyped_defs per module) as annotations improve.
 python_version = "3.10"
 files = ["src"]
-ignore_missing_imports = true  # lxml, signxml, mcp, flask_limiter lack stubs
 check_untyped_defs = true
 warn_redundant_casts = true
 warn_unused_ignores = true
 no_implicit_optional = true
+
+[[tool.mypy.overrides]]
+# Only these dependencies ship no type stubs; keeping the list explicit (vs a
+# global ignore_missing_imports) means a new untyped import gets flagged
+# instead of silently ignored.
+module = [
+    "lxml.*",
+    "signxml.*",
+    "flask_cors.*",
+    "flask_limiter.*",
+]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

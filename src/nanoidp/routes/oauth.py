@@ -368,8 +368,10 @@ def token():
     # Validate the grant-independent 'exp' and 'extra' params BEFORE the grant
     # dispatch: the rotation branch atomically consumes the refresh token at
     # the end of its validations, so nothing after it may reject the request
-    # (#56 review follow-up). This also turns a non-numeric 'exp' into a
-    # proper 400 instead of an unhandled ValueError (500).
+    # (#56 review follow-up). Validation is semantic, not just syntactic:
+    # json.loads("42") succeeds but extra.update(42) raises later, and a huge
+    # 'exp' passes int() but overflows the timedelta arithmetic — both would
+    # be 500s after the token was consumed.
     try:
         exp_minutes = int(request.form.get("exp", config.settings.token_expiry_minutes))
     except (TypeError, ValueError):
@@ -383,12 +385,24 @@ def token():
             **req_info,
         )
         return abort(400, description="'exp' must be an integer number of minutes")
+    # Same bounds the Settings model enforces for token_expiry_minutes
+    if not 1 <= exp_minutes <= 1440:
+        audit.log(
+            event_type="token_request",
+            endpoint="/token",
+            method="POST",
+            status="failed",
+            client_id=client_id,
+            details={"reason": "'exp' out of range", "grant_type": grant_type},
+            **req_info,
+        )
+        return abort(400, description="'exp' must be between 1 and 1440 minutes")
 
     extra_claims = None
     extra_raw = request.form.get("extra")
     if extra_raw:
         try:
-            extra_claims = json.loads(extra_raw)
+            parsed_extra = json.loads(extra_raw)
         except json.JSONDecodeError:
             audit.log(
                 event_type="token_request",
@@ -400,6 +414,19 @@ def token():
                 **req_info,
             )
             return abort(400, description="Invalid JSON in 'extra'")
+        # Any JSON scalar/array parses fine but is not a claims mapping
+        if not isinstance(parsed_extra, dict):
+            audit.log(
+                event_type="token_request",
+                endpoint="/token",
+                method="POST",
+                status="failed",
+                client_id=client_id,
+                details={"reason": "'extra' is not a JSON object", "grant_type": grant_type},
+                **req_info,
+            )
+            return abort(400, description="'extra' must be a JSON object")
+        extra_claims = parsed_extra
 
     # Refresh token grant
     if grant_type == "refresh_token":
