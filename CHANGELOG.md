@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Review follow-ups of the 2026-06-11 merge block (#56):
+  - **Refresh tokens are bound to their client**: the issuing `client_id` is
+    persisted in the refresh token claims and the refresh grant rejects any
+    other client (RFC 9700 §4.14) — which also guarantees the refreshed ID
+    Token keeps the original `aud` (OIDC Core §12.2). Tokens minted before
+    the claim existed keep working.
+  - **Rotation is atomic and revokes families on reuse**: the revocation
+    check and the claim of the consumed token now happen in one critical
+    section, so two concurrent refreshes of the same token can no longer
+    both succeed. Each grant starts a refresh-token family (`rt_family`
+    claim, stable across rotations); reusing an already-consumed token
+    revokes the whole family, including the live descendant (RFC 9700
+    §4.14.2).
+  - **PKCE `plain` can no longer slip through stricter-dev by omitting the
+    method**: per RFC 7636 §4.3 an absent `code_challenge_method` defaults
+    to `plain`; the method is now normalized before validation, and unknown
+    methods are rejected at the authorization endpoint (§4.4.1).
+  - **`require_pkce` is persisted**: it is now read from and written to
+    `settings.yaml` (oauth section), so `update_settings` → `save_config` →
+    `reload_config` no longer silently reverts it.
+  - **The token response reports the scope actually granted** (RFC 6749
+    §5.1) instead of a hardcoded `"openid"`; when no scope was involved the
+    parameter is omitted, and a narrowed refresh reports the narrowed scope.
+- The `nanoidp-mcp` stdio entrypoint crashed at startup ("a coroutine was
+  expected"): `stdio_server()` is an async context manager yielding the
+  message streams, not a coroutine. Found by the mypy baseline being
+  prepared for #55; verified with a JSON-RPC initialize handshake.
+
 ### Added
 - Optional **refresh token rotation** (#46): with `oauth.refresh_token_rotation: true`
   (default off), each refresh invalidates the consumed refresh token, so its

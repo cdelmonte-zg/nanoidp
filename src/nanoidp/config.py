@@ -297,6 +297,7 @@ class ConfigManager:
             audience=oauth.get("audience", "default"),
             token_expiry_minutes=oauth.get("token_expiry_minutes", 60),
             refresh_token_rotation=oauth.get("refresh_token_rotation", False),
+            require_pkce=oauth.get("require_pkce", False),
             clients=clients,
             # SAML
             saml_entity_id=saml.get("entity_id", "http://localhost:8000/saml"),
@@ -504,6 +505,7 @@ class ConfigManager:
                 "audience": self.settings.audience,
                 "token_expiry_minutes": self.settings.token_expiry_minutes,
                 "refresh_token_rotation": self.settings.refresh_token_rotation,
+                "require_pkce": self.settings.require_pkce,
                 "clients": clients_data,
             },
             "saml": {

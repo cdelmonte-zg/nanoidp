@@ -172,26 +172,51 @@ def authorize():
             "error_description": "PKCE code_challenge is required (require_pkce is enabled)"
         }), 400
 
-    # The 'plain' method is only acceptable when S256 is unavailable (RFC 7636
-    # §4.2); the stricter-dev profile rejects it outright (#47).
-    if (
-        code_challenge_method == "plain"
-        and config.settings.security_profile == "stricter-dev"
-    ):
-        audit.log(
-            event_type="authorization_request",
-            endpoint="/authorize",
-            method=request.method,
-            status="failed",
-            client_id=client_id,
-            details={"reason": "PKCE method 'plain' rejected by stricter-dev profile"},
-            **req_info,
-        )
-        return jsonify({
-            "error": "invalid_request",
-            "error_description": "code_challenge_method 'plain' is not allowed by the "
-                                 "stricter-dev profile; use S256"
-        }), 400
+    if code_challenge:
+        # RFC 7636 §4.3: an omitted code_challenge_method defaults to 'plain',
+        # and the verifier honors that — so the method must be normalized
+        # BEFORE validation or the stricter-dev rejection could be bypassed by
+        # simply omitting the parameter (#56). Unsupported methods are
+        # rejected at the authorization endpoint per §4.4.1.
+        effective_method = code_challenge_method or "plain"
+        if effective_method not in ("plain", "S256"):
+            audit.log(
+                event_type="authorization_request",
+                endpoint="/authorize",
+                method=request.method,
+                status="failed",
+                client_id=client_id,
+                details={"reason": f"Unsupported code_challenge_method: {effective_method}"},
+                **req_info,
+            )
+            return jsonify({
+                "error": "invalid_request",
+                "error_description": f"Unsupported code_challenge_method "
+                                     f"'{effective_method}'; use S256 or plain"
+            }), 400
+
+        # The 'plain' method is only acceptable when S256 is unavailable
+        # (RFC 7636 §4.2); the stricter-dev profile rejects it outright (#47),
+        # whether requested explicitly or via the implicit default.
+        if (
+            effective_method == "plain"
+            and config.settings.security_profile == "stricter-dev"
+        ):
+            audit.log(
+                event_type="authorization_request",
+                endpoint="/authorize",
+                method=request.method,
+                status="failed",
+                client_id=client_id,
+                details={"reason": "PKCE method 'plain' rejected by stricter-dev profile"},
+                **req_info,
+            )
+            return jsonify({
+                "error": "invalid_request",
+                "error_description": "code_challenge_method 'plain' (including the "
+                                     "implicit default when the parameter is omitted) "
+                                     "is not allowed by the stricter-dev profile; use S256"
+            }), 400
 
     error_msg = None
 
@@ -287,7 +312,7 @@ def token():
     nonce = None
     scope = None
     auth_time = None
-    rotated_refresh_jti = None
+    refresh_family = None
 
     # Reject if client identity cannot be determined at all
     if not client_id:
@@ -387,27 +412,25 @@ def token():
             )
             return abort(400, description="Invalid token type")
 
-        # Reject revoked refresh tokens — covers explicit /revoke calls and
-        # tokens consumed by rotation (issue #46)
-        if payload.get("jti") in _revoked_tokens:
+        # A refresh token may only be spent by the client it was issued to
+        # (RFC 9700 §4.14, #56). The binding claim was added in #56; tokens
+        # minted before it carry no client_id and stay usable (legacy compat).
+        bound_client = payload.get("client_id")
+        if bound_client and bound_client != client_id:
             audit.log(
                 event_type="token_request",
                 endpoint="/token",
                 method="POST",
                 status="failed",
                 client_id=client_id,
-                details={"reason": "Refresh token revoked (rotated or explicitly revoked)",
-                         "grant_type": grant_type},
+                details={
+                    "reason": "Refresh token was issued to a different client",
+                    "grant_type": grant_type,
+                    "bound_client": bound_client,
+                },
                 **req_info,
             )
-            return abort(401, description="Refresh token has been revoked")
-
-        # With rotation enabled, consuming this refresh token invalidates it:
-        # the response carries a new one, and reusing the old one must fail
-        # (OAuth 2.0 Security BCP §4.14.2, issue #46). Revocation happens after
-        # token issuance below, so a failed request leaves the token valid.
-        if config.settings.refresh_token_rotation:
-            rotated_refresh_jti = payload.get("jti")
+            return abort(401, description="Refresh token was not issued to this client")
 
         # Extract username and get user data
         username = payload.get("sub")
@@ -466,6 +489,53 @@ def token():
         # A refreshed ID Token must carry the ORIGINAL authentication time
         # (OIDC Core §12.2), persisted in the refresh token claims (#42).
         auth_time = payload.get("auth_time")
+
+        # The family id survives rotation so descendants share it (#56).
+        refresh_family = payload.get("rt_family")
+
+        # Revocation check and (with rotation) consumption of this token, as a
+        # single check-and-claim under the lock: two concurrent refreshes of
+        # the same token can no longer both pass the check and both rotate
+        # (#56). Reuse of an already-consumed token is treated as leakage and
+        # revokes the whole family — attacker's copy and legitimate descendant
+        # alike (RFC 9700 §4.14.2). This block sits after every validation
+        # that may legitimately fail (binding, user, scope narrowing), so a
+        # rejected request does not consume the token. Known edge: malformed
+        # 'exp'/'extra' form params are parsed in the grant-common code below,
+        # i.e. AFTER the claim — a client sending garbage there does lose the
+        # token; accepted tradeoff, since claiming any later would reopen the
+        # double-rotation race.
+        jti = payload.get("jti")
+        with _revocation_lock:
+            family_revoked = bool(refresh_family) and refresh_family in _revoked_token_families
+            token_revoked = jti in _revoked_tokens
+            if token_revoked or family_revoked:
+                if (
+                    config.settings.refresh_token_rotation
+                    and refresh_family
+                    and not family_revoked
+                ):
+                    _revoked_token_families.add(refresh_family)
+                reuse_detected = True
+            else:
+                reuse_detected = False
+                if config.settings.refresh_token_rotation and jti:
+                    _revoked_tokens.add(jti)
+        if reuse_detected:
+            audit.log(
+                event_type="token_request",
+                endpoint="/token",
+                method="POST",
+                status="failed",
+                username=username,
+                client_id=client_id,
+                details={
+                    "reason": "Refresh token revoked (rotated, reused, or family revoked)",
+                    "grant_type": grant_type,
+                },
+                **req_info,
+            )
+            return abort(401, description="Refresh token has been revoked")
 
     # Password grant
     elif grant_type == "password":
@@ -737,12 +807,8 @@ def token():
         scope=scope,
         client_id=client_id,
         auth_time=auth_time,
+        refresh_family=refresh_family,
     )
-
-    # Rotation: the consumed refresh token is invalidated only now that its
-    # replacement has been issued (issue #46)
-    if rotated_refresh_jti:
-        _revoked_tokens.add(rotated_refresh_jti)
 
     # Audit log
     audit.log(
@@ -765,10 +831,16 @@ def token():
     return jsonify(token_response)
 
 
-# Token blacklist for revocation (in-memory). No lock needed: only single
-# `add`/`in` operations, atomic under the GIL — there is no compound
-# check-then-act sequence to protect (unlike _device_codes above, see #43).
+# Token blacklists for revocation (in-memory). Refresh token rotation (#46)
+# introduced a check-then-claim sequence on _revoked_tokens, so compound
+# accesses in the refresh grant go through _revocation_lock (#56); the plain
+# membership tests in /userinfo,/introspect stay lock-free (single set ops,
+# atomic under the GIL). _revoked_token_families holds rt_family ids whose
+# entire rotation chain was revoked after a reuse was detected (RFC 9700
+# §4.14.2).
 _revoked_tokens: set = set()
+_revoked_token_families: set = set()
+_revocation_lock = threading.Lock()
 
 
 def _extract_bearer_token() -> str | None:

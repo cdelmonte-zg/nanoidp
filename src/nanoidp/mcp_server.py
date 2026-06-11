@@ -1014,8 +1014,19 @@ Examples:
     # Initialize config
     _ensure_config()
 
-    # Run the server
-    asyncio.run(stdio_server(server))
+    # Run the server. stdio_server() is an async context manager yielding the
+    # (read, write) streams the Server pumps messages through — the previous
+    # `asyncio.run(stdio_server(server))` crashed at startup (found by mypy,
+    # #55: "a coroutine was expected").
+    async def _serve() -> None:
+        async with stdio_server() as (read_stream, write_stream):
+            await server.run(
+                read_stream,
+                write_stream,
+                server.create_initialization_options(),
+            )
+
+    asyncio.run(_serve())
 
 
 if __name__ == "__main__":

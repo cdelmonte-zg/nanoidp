@@ -47,7 +47,16 @@ class TestTokenCreation:
         assert "token_type" in result
         assert "expires_in" in result
         assert "refresh_token" in result
-        assert "scope" in result
+        # scope reports what was actually granted (RFC 6749 §5.1, #56):
+        # no scope requested → omitted (it used to be hardcoded to "openid")
+        assert "scope" not in result
+
+    def test_create_token_reports_granted_scope(self, token_service, basic_user, app):
+        """The response scope is the granted one, not a hardcoded value (#56)."""
+        with app.app_context():
+            result = token_service.create_token(basic_user, scope="openid profile")
+
+        assert result["scope"] == "openid profile"
 
     def test_create_token_type_is_bearer(self, token_service, basic_user, app):
         """Test that token_type is Bearer."""
