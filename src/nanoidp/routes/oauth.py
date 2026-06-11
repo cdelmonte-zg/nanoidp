@@ -387,6 +387,41 @@ def token():
             )
             return abort(401, description="User not found")
 
+        # Recover the originally granted scope persisted in the refresh token
+        # so an ID Token is re-issued when 'openid' was granted (OIDC Core
+        # §12.2, issue #39). A 'scope' form parameter may narrow, but never
+        # broaden, the original grant (RFC 6749 §6). Refresh tokens minted
+        # before scope was persisted carry no scope claim and keep the old
+        # behavior: tokens are refreshed without an ID Token. The refreshed
+        # ID Token intentionally carries no nonce — that claim binds the
+        # original authentication request, not later refreshes.
+        original_scope = payload.get("scope") or ""
+        requested_scope = request.form.get("scope")
+        if requested_scope:
+            granted = set(original_scope.split())
+            rejected = [s for s in requested_scope.split() if s not in granted]
+            if rejected:
+                audit.log(
+                    event_type="token_request",
+                    endpoint="/token",
+                    method="POST",
+                    status="failed",
+                    username=username,
+                    client_id=client_id,
+                    details={
+                        "reason": "Requested scope exceeds originally granted scope",
+                        "grant_type": grant_type,
+                        "rejected_scopes": rejected,
+                    },
+                    **req_info,
+                )
+                return abort(
+                    400, description="Requested scope exceeds originally granted scope"
+                )
+            scope = requested_scope
+        else:
+            scope = original_scope or None
+
     # Password grant
     elif grant_type == "password":
         username = request.form.get("username", "").strip()

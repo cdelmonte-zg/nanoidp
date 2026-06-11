@@ -316,6 +316,15 @@ async def list_tools() -> list[Tool]:
                         "type": "object",
                         "description": "Additional claims to include in the token",
                     },
+                    "scope": {
+                        "type": "string",
+                        "description": (
+                            "Space-separated OAuth scopes (optional). Include "
+                            "'openid' to also receive an ID Token; the scope is "
+                            "persisted in the refresh token so refreshing "
+                            "re-issues an ID Token (OIDC Core §12.2)"
+                        ),
+                    },
                 },
                 "required": ["username"],
             },
@@ -654,14 +663,18 @@ async def _execute_tool(name: str, arguments: dict[str, Any], config: ConfigMana
             user=user,
             exp_minutes=arguments.get("expires_in_minutes", config.settings.token_expiry_minutes),
             extra_claims=arguments.get("extra_claims"),
+            scope=arguments.get("scope"),
         )
-        return {
+        result = {
             "success": True,
             "access_token": token_response["access_token"],
             "refresh_token": token_response["refresh_token"],
             "token_type": token_response["token_type"],
             "expires_in": token_response["expires_in"],
         }
+        if "id_token" in token_response:
+            result["id_token"] = token_response["id_token"]
+        return result
 
     elif name == "decode_token":
         import jwt as pyjwt

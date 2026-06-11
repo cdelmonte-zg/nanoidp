@@ -896,6 +896,11 @@ class NanoIDPTestAgent:
                 # Verify new token is different
                 token_changed = new_access != old_token
 
+                # The refresh token came from a grant that included 'openid',
+                # so the refresh must re-issue an ID Token (OIDC Core §12.2,
+                # issue #39).
+                has_id_token = "id_token" in data
+
                 if new_access:
                     self.access_token = new_access
                 if new_refresh:
@@ -904,9 +909,10 @@ class NanoIDPTestAgent:
                 return self._add_result(
                     "Refresh Token",
                     TestCategory.OAUTH,
-                    True,
-                    f"New token obtained, changed={token_changed}",
-                    {"token_changed": token_changed}
+                    has_id_token,
+                    f"New token obtained, changed={token_changed}, "
+                    f"id_token re-issued={has_id_token}",
+                    {"token_changed": token_changed, "has_id_token": has_id_token}
                 )
             error = response.json().get("error", "unknown")
             return self._add_result(

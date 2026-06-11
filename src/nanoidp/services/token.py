@@ -173,8 +173,13 @@ class TokenService:
             )
 
 
-        # Create refresh token (valid for 7 days)
+        # Create refresh token (valid for 7 days). The granted scope is
+        # persisted in its claims so the refresh_token grant can re-issue an
+        # ID Token when 'openid' was originally granted (OIDC Core §12.2,
+        # issue #39).
         refresh_extra = {"token_type": "refresh", "token_use": "refresh"}
+        if scope:
+            refresh_extra["scope"] = scope
         refresh_token = self.crypto.create_jwt(
             sub=user.username,
             issuer=settings.issuer,
