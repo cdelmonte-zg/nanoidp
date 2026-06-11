@@ -32,6 +32,8 @@ def create_app(config_dir: str = None, profile: str = None) -> Flask:
         settings.security_profile = "stricter-dev"
         settings.rate_limit_enabled = True
         settings.password_hashing = True
+        # PKCE required and 'plain' rejected in stricter-dev (#47)
+        settings.require_pkce = True
         # Block debug mode in stricter-dev
         settings.debug = False
 

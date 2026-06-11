@@ -131,6 +131,11 @@ class Settings(BaseModel):
     issuer: str = Field(default="http://localhost:8000", description="OAuth issuer URL")
     audience: str = Field(default="default", min_length=1, description="OAuth audience")
     token_expiry_minutes: int = Field(default=60, gt=0, le=1440, description="Token expiry in minutes")
+    refresh_token_rotation: bool = Field(
+        default=False,
+        description="Rotate refresh tokens: each refresh invalidates the consumed "
+        "refresh token, so its reuse fails (lets clients test rotation handling, #46)",
+    )
     clients: List[OAuthClient] = Field(default_factory=list, description="OAuth clients")
 
     # SAML
@@ -172,6 +177,11 @@ class Settings(BaseModel):
     rate_limit_enabled: bool = Field(default=False, description="Enable rate limiting")
     rate_limit_token_endpoint: str = Field(default="10/minute", description="Rate limit for /token endpoint")
     password_hashing: bool = Field(default=False, description="Use bcrypt for password hashing")
+    require_pkce: bool = Field(
+        default=False,
+        description="Reject /authorize requests without a PKCE code_challenge "
+        "(enabled by the stricter-dev profile, #47)",
+    )
 
     # Key management
     external_private_key: Optional[str] = Field(default=None, description="Path to external private PEM key")
@@ -286,6 +296,7 @@ class ConfigManager:
             issuer=oauth.get("issuer", "http://localhost:8000"),
             audience=oauth.get("audience", "default"),
             token_expiry_minutes=oauth.get("token_expiry_minutes", 60),
+            refresh_token_rotation=oauth.get("refresh_token_rotation", False),
             clients=clients,
             # SAML
             saml_entity_id=saml.get("entity_id", "http://localhost:8000/saml"),
@@ -492,6 +503,7 @@ class ConfigManager:
                 "issuer": self.settings.issuer,
                 "audience": self.settings.audience,
                 "token_expiry_minutes": self.settings.token_expiry_minutes,
+                "refresh_token_rotation": self.settings.refresh_token_rotation,
                 "clients": clients_data,
             },
             "saml": {

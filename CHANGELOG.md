@@ -8,6 +8,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Optional **refresh token rotation** (#46): with `oauth.refresh_token_rotation: true`
+  (default off), each refresh invalidates the consumed refresh token, so its
+  reuse fails with 401 — lets clients test rotation and reuse-detection
+  handling (OAuth 2.0 Security BCP §4.14.2). Revocation happens only after the
+  replacement is issued, and explicitly revoked refresh tokens are now also
+  rejected by the refresh grant.
+- **PKCE enforcement** (#47): new `require_pkce` setting (enabled by the
+  `stricter-dev` profile) rejects `/authorize` requests without a
+  `code_challenge`; `stricter-dev` also rejects `code_challenge_method=plain`
+  and discovery only advertises `S256` there. Default profile unchanged.
+- **MCP audit & key tools** (#48): `get_audit_log`, `get_audit_stats`,
+  `clear_audit_log`, `get_keys_info` and `rotate_keys` mirror the HTTP API,
+  so agent workflows can inspect what the IdP recorded and exercise JWKS
+  refresh handling. `clear_audit_log`/`rotate_keys` count as mutating tools
+  (admin secret / readonly rules apply). MCP `get_settings`/`update_settings`
+  now expose `refresh_token_rotation` and `require_pkce`.
+
+### Changed
+- CI now runs `ruff check .` before the tests (#45), and the codebase is
+  lint-clean: 153 findings fixed (#49) — deprecated `datetime.utcnow()`
+  replaced (removes 80 DeprecationWarnings), unused imports/variables
+  dropped, imports sorted and moved to module level, `Optional[...]` type
+  hints in the crypto service, `verify_jwt` accepts an array audience,
+  exceptions re-raised with `from e`.
 - ID Tokens now carry `auth_time` and `at_hash` (#42). `auth_time` reflects
   when the end-user actually authenticated: the login page for the
   authorization code flow, the `/device` verification for the device flow,

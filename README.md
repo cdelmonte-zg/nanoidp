@@ -174,6 +174,7 @@ oauth:
   issuer: "http://localhost:8000"
   audience: "my-app"            # access token "aud" (resource audience, RFC 9068)
   token_expiry_minutes: 60
+  refresh_token_rotation: false # true: each refresh invalidates the used refresh token
   clients:
     - client_id: "demo-client"
       client_secret: "demo-secret"
@@ -547,6 +548,11 @@ NanoIDP includes an MCP server for integration with Claude Code and other MCP-co
 | `reload_config` | Reload configuration from files |
 | `get_oidc_discovery` | Get OIDC discovery document (same document as `/.well-known/openid-configuration`) |
 | `get_jwks` | Get JSON Web Key Set |
+| `get_audit_log` | Get audit log entries (filter by limit, event type, username) |
+| `get_audit_stats` | Get audit statistics |
+| `clear_audit_log` | Clear the audit log |
+| `get_keys_info` | Get signing key info (active kid, previous keys) |
+| `rotate_keys` | Rotate signing keys (old key stays valid for verification) |
 
 ### Claude Code CLI Configuration
 

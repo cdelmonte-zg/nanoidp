@@ -183,6 +183,9 @@ Prompt: "I need to test role-based access. Create a user 'role-test' with
 | `reload_config` | Reload from files | "Reload nanoidp config" |
 | `get_oidc_discovery` | Get OIDC discovery | "Get OIDC discovery" |
 | `get_jwks` | Get JWKS | "Get the JWKS from nanoidp" |
+| `get_audit_log` | Get audit entries | "Show the last 20 audit entries" |
+| `get_audit_stats` | Get audit statistics | "Show audit stats" |
+| `get_keys_info` | Get signing key info | "Which signing key is active?" |
 
 ### Mutating Tools (disabled in `--readonly` mode)
 
@@ -197,6 +200,8 @@ Prompt: "I need to test role-based access. Create a user 'role-test' with
 | `generate_token` | Generate JWT | "Generate token for 'admin'" |
 | `update_settings` | Update settings | "Set token expiry to 30 minutes" |
 | `save_config` | Save to YAML | "Save nanoidp config to files" |
+| `clear_audit_log` | Clear the audit log | "Clear the nanoidp audit log" |
+| `rotate_keys` | Rotate signing keys | "Rotate the signing keys" |
 
 ---
 

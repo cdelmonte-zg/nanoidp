@@ -54,5 +54,11 @@ def build_discovery_document(settings: Settings) -> Dict[str, Any]:
             "refresh_token",
             "urn:ietf:params:oauth:grant-type:device_code",
         ],
-        "code_challenge_methods_supported": ["plain", "S256"],
+        # stricter-dev rejects 'plain' at /authorize, so don't advertise it
+        # there (#47)
+        "code_challenge_methods_supported": (
+            ["S256"]
+            if settings.security_profile == "stricter-dev"
+            else ["plain", "S256"]
+        ),
     }
