@@ -181,11 +181,14 @@ class AuditLog:
 
 # Global audit log instance
 _audit_log: Optional[AuditLog] = None
+_audit_log_lock = Lock()
 
 
 def get_audit_log() -> AuditLog:
-    """Get or create the global audit log."""
+    """Get or create the global audit log (thread-safe lazy init, #43)."""
     global _audit_log
     if _audit_log is None:
-        _audit_log = AuditLog()
+        with _audit_log_lock:
+            if _audit_log is None:
+                _audit_log = AuditLog()
     return _audit_log

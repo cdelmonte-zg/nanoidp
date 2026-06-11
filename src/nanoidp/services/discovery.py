@@ -42,6 +42,7 @@ def build_discovery_document(settings: Settings) -> Dict[str, Any]:
         "scopes_supported": ["openid", "profile", "email", "offline_access"],
         "claims_supported": [
             "sub", "iss", "aud", "azp", "exp", "iat", "nbf",
+            "auth_time", "nonce", "at_hash",
             "email", "email_verified", "preferred_username",
             "roles", "tenant", "identity_class", "entitlements",
             "source_acl", "attributes", "authorities"

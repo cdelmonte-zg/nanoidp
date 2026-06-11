@@ -561,6 +561,63 @@ class NanoIDPTestAgent:
         except Exception as e:
             return self._add_result("ID Token Audience", TestCategory.OAUTH, False, str(e))
 
+    def test_id_token_time_claims(self) -> TestResult:
+        """ID Token carries auth_time and a valid at_hash (issue #42)."""
+        try:
+            if not jwt:
+                return self._add_result(
+                    "ID Token Time Claims", TestCategory.OAUTH, False,
+                    "PyJWT not installed; cannot decode tokens"
+                )
+
+            import base64 as b64
+            import hashlib
+            import time as time_mod
+
+            before = int(time_mod.time())
+            response = self.session.post(
+                f"{self.base_url}/token",
+                data={
+                    "grant_type": "password",
+                    "username": self.username,
+                    "password": self.password,
+                    "scope": "openid",
+                },
+                timeout=5,
+            )
+            after = int(time_mod.time())
+            if response.status_code != 200:
+                return self._add_result(
+                    "ID Token Time Claims", TestCategory.OAUTH, False,
+                    f"Status: {response.status_code}"
+                )
+
+            data = response.json()
+            claims = jwt.decode(data["id_token"], options={"verify_signature": False})
+
+            auth_time = claims.get("auth_time")
+            auth_time_ok = auth_time is not None and before <= auth_time <= after
+
+            # at_hash = base64url(left half of SHA-256(access_token)), §3.1.3.6
+            digest = hashlib.sha256(data["access_token"].encode("ascii")).digest()
+            expected_at_hash = b64.urlsafe_b64encode(digest[:16]).rstrip(b"=").decode("ascii")
+            at_hash_ok = claims.get("at_hash") == expected_at_hash
+
+            ok = auth_time_ok and at_hash_ok
+            return self._add_result(
+                "ID Token Time Claims",
+                TestCategory.OAUTH,
+                ok,
+                f"auth_time valid={auth_time_ok}, at_hash valid={at_hash_ok}",
+                {
+                    "auth_time": auth_time,
+                    "at_hash": claims.get("at_hash"),
+                    "expected_at_hash": expected_at_hash,
+                },
+            )
+        except Exception as e:
+            return self._add_result("ID Token Time Claims", TestCategory.OAUTH, False, str(e))
+
     def test_id_token_audience_array(self) -> TestResult:
         """A client with additional_audiences gets an array `aud` plus `azp` (issue #32).
 
@@ -2423,6 +2480,7 @@ class NanoIDPTestAgent:
                 self.test_client_credentials,
                 self.test_authorization_code_pkce,
                 self.test_id_token_audience,
+                self.test_id_token_time_claims,
                 self.test_id_token_audience_array,
                 self.test_id_token_not_accepted_as_access_token,
                 self.test_device_flow,

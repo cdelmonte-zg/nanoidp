@@ -2,7 +2,11 @@
 Token service for generating JWT tokens with authorities.
 """
 
+import base64
+import hashlib
 import logging
+import threading
+from datetime import datetime, timezone
 from typing import Dict, List, Any, Optional
 
 from ..config import User, Settings, get_config
@@ -102,6 +106,16 @@ class TokenService:
             return aud[0], None
         return aud, client_id
 
+    @staticmethod
+    def _compute_at_hash(access_token: str) -> str:
+        """Compute the OIDC ``at_hash`` claim for an access token.
+
+        Per OIDC Core §3.1.3.6 (with RS256): base64url of the left half of
+        the SHA-256 hash of the ASCII access token, without padding.
+        """
+        digest = hashlib.sha256(access_token.encode("ascii")).digest()
+        return base64.urlsafe_b64encode(digest[: len(digest) // 2]).rstrip(b"=").decode("ascii")
+
     def create_token(
         self,
         user: User,
@@ -110,8 +124,16 @@ class TokenService:
         nonce: Optional[str] = None,
         scope: Optional[str] = None,
         client_id: Optional[str] = None,
+        auth_time: Optional[int] = None,
     ) -> Dict[str, Any]:
-        """Create a JWT token for a user."""
+        """Create a JWT token for a user.
+
+        ``auth_time`` is the Unix timestamp of the original end-user
+        authentication (issue #42): callers pass it when they know it (auth
+        code creation time, device authorization time, value preserved from a
+        refresh token); when omitted it defaults to "now", which is correct
+        for grants that authenticate the user in the same request (password).
+        """
         settings = self.config.settings
 
         if exp_minutes is None:
@@ -158,9 +180,24 @@ class TokenService:
         )
         
         id_token = None
+        effective_auth_time = None
         if scope and "openid" in scope.split():
+            # auth_time is REQUIRED on re-authentication checks (OIDC Core
+            # §2): when the caller didn't supply the original authentication
+            # time, the user authenticated within this very request.
+            effective_auth_time = (
+                auth_time
+                if auth_time is not None
+                else int(datetime.now(timezone.utc).timestamp())
+            )
             id_aud, azp = self._resolve_id_token_audience(client_id)
-            id_extra = {"token_use": "id"}
+            id_extra = {
+                "token_use": "id",
+                "auth_time": effective_auth_time,
+                # at_hash lets clients that validate it bind this ID Token to
+                # the access token issued alongside (OIDC Core §3.1.3.6).
+                "at_hash": self._compute_at_hash(token),
+            }
             if azp:
                 id_extra["azp"] = azp
             id_token = self.crypto.create_jwt(
@@ -173,13 +210,15 @@ class TokenService:
             )
 
 
-        # Create refresh token (valid for 7 days). The granted scope is
-        # persisted in its claims so the refresh_token grant can re-issue an
-        # ID Token when 'openid' was originally granted (OIDC Core §12.2,
-        # issue #39).
+        # Create refresh token (valid for 7 days). The granted scope and the
+        # original authentication time are persisted in its claims so the
+        # refresh_token grant can re-issue an ID Token with the same auth_time
+        # (OIDC Core §12.2, issues #39/#42).
         refresh_extra = {"token_type": "refresh", "token_use": "refresh"}
         if scope:
             refresh_extra["scope"] = scope
+        if effective_auth_time is not None:
+            refresh_extra["auth_time"] = effective_auth_time
         refresh_token = self.crypto.create_jwt(
             sub=user.username,
             issuer=settings.issuer,
@@ -206,11 +245,14 @@ class TokenService:
 
 # Global token service instance
 _token_service: Optional[TokenService] = None
+_token_service_lock = threading.Lock()
 
 
 def get_token_service() -> TokenService:
-    """Get or create the global token service."""
+    """Get or create the global token service (thread-safe lazy init, #43)."""
     global _token_service
     if _token_service is None:
-        _token_service = TokenService()
+        with _token_service_lock:
+            if _token_service is None:
+                _token_service = TokenService()
     return _token_service

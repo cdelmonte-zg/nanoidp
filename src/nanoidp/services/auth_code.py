@@ -7,6 +7,7 @@ import hashlib
 import base64
 import secrets
 import logging
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional
@@ -39,6 +40,11 @@ class AuthCodeStore:
 
     def __init__(self):
         self._codes: Dict[str, AuthorizationCode] = {}
+        # Flask serves requests on multiple threads; every access to the shared
+        # dict goes through this lock so consume_code stays atomic and one-time
+        # use can't be defeated by two concurrent redemptions (issue #43).
+        # RLock because create_code calls _cleanup_expired while holding it.
+        self._lock = threading.RLock()
 
     def create_code(
         self,
@@ -67,9 +73,6 @@ class AuthCodeStore:
         Returns:
             The generated authorization code
         """
-        # Clean up expired codes
-        self._cleanup_expired()
-
         # Generate a secure random code
         code = secrets.token_urlsafe(32)
 
@@ -85,7 +88,10 @@ class AuthCodeStore:
             state=state,
         )
 
-        self._codes[code] = auth_code
+        with self._lock:
+            # Clean up expired codes
+            self._cleanup_expired()
+            self._codes[code] = auth_code
 
         # Verbose logging controlled by settings (late import to avoid circular dependency)
         try:
@@ -120,47 +126,51 @@ class AuthCodeStore:
         Returns:
             The AuthorizationCode if valid, None otherwise
         """
-        auth_code = self._codes.get(code)
+        # The whole check-then-mark sequence runs under the lock so two
+        # concurrent redemptions of the same code can't both pass the
+        # one-time-use check (issue #43).
+        with self._lock:
+            auth_code = self._codes.get(code)
 
-        if not auth_code:
-            logger.warning(f"Authorization code not found: {code[:8]}...")
-            return None
-
-        # Check if code is expired
-        if datetime.now(timezone.utc) > auth_code.expires_at:
-            logger.warning(f"Authorization code expired: {code[:8]}...")
-            del self._codes[code]
-            return None
-
-        # Check if code was already used (one-time use per RFC 6749)
-        if auth_code.used:
-            logger.warning(f"Authorization code already used: {code[:8]}...")
-            # Revoke all tokens issued with this code (security measure)
-            del self._codes[code]
-            return None
-
-        # Validate client_id
-        if auth_code.client_id != client_id:
-            logger.warning(f"Client ID mismatch for code {code[:8]}...")
-            return None
-
-        # Validate redirect_uri
-        if auth_code.redirect_uri != redirect_uri:
-            logger.warning(f"Redirect URI mismatch for code {code[:8]}...")
-            return None
-
-        # Validate PKCE if code_challenge was provided during authorization
-        if auth_code.code_challenge:
-            if not code_verifier:
-                logger.warning(f"PKCE code_verifier required but not provided for code {code[:8]}...")
+            if not auth_code:
+                logger.warning(f"Authorization code not found: {code[:8]}...")
                 return None
 
-            if not self._verify_pkce(code_verifier, auth_code.code_challenge, auth_code.code_challenge_method):
-                logger.warning(f"PKCE verification failed for code {code[:8]}...")
+            # Check if code is expired
+            if datetime.now(timezone.utc) > auth_code.expires_at:
+                logger.warning(f"Authorization code expired: {code[:8]}...")
+                del self._codes[code]
                 return None
 
-        # Mark as used
-        auth_code.used = True
+            # Check if code was already used (one-time use per RFC 6749)
+            if auth_code.used:
+                logger.warning(f"Authorization code already used: {code[:8]}...")
+                # Revoke all tokens issued with this code (security measure)
+                del self._codes[code]
+                return None
+
+            # Validate client_id
+            if auth_code.client_id != client_id:
+                logger.warning(f"Client ID mismatch for code {code[:8]}...")
+                return None
+
+            # Validate redirect_uri
+            if auth_code.redirect_uri != redirect_uri:
+                logger.warning(f"Redirect URI mismatch for code {code[:8]}...")
+                return None
+
+            # Validate PKCE if code_challenge was provided during authorization
+            if auth_code.code_challenge:
+                if not code_verifier:
+                    logger.warning(f"PKCE code_verifier required but not provided for code {code[:8]}...")
+                    return None
+
+                if not self._verify_pkce(code_verifier, auth_code.code_challenge, auth_code.code_challenge_method):
+                    logger.warning(f"PKCE verification failed for code {code[:8]}...")
+                    return None
+
+            # Mark as used
+            auth_code.used = True
 
         logger.debug(f"Authorization code consumed for user '{auth_code.username}'")
         return auth_code
@@ -189,26 +199,31 @@ class AuthCodeStore:
             return False
 
     def _cleanup_expired(self):
-        """Remove expired authorization codes."""
-        now = datetime.now(timezone.utc)
-        expired = [code for code, auth in self._codes.items() if now > auth.expires_at]
-        for code in expired:
-            del self._codes[code]
+        """Remove expired authorization codes. Callers must hold ``self._lock``."""
+        with self._lock:
+            now = datetime.now(timezone.utc)
+            expired = [code for code, auth in self._codes.items() if now > auth.expires_at]
+            for code in expired:
+                del self._codes[code]
         if expired:
             logger.debug(f"Cleaned up {len(expired)} expired authorization codes")
 
     def get_code_info(self, code: str) -> Optional[AuthorizationCode]:
         """Get info about a code without consuming it (for debugging)."""
-        return self._codes.get(code)
+        with self._lock:
+            return self._codes.get(code)
 
 
 # Global instance
 _auth_code_store: Optional[AuthCodeStore] = None
+_auth_code_store_lock = threading.Lock()
 
 
 def get_auth_code_store() -> AuthCodeStore:
-    """Get or create the global authorization code store."""
+    """Get or create the global authorization code store (thread-safe, #43)."""
     global _auth_code_store
     if _auth_code_store is None:
-        _auth_code_store = AuthCodeStore()
+        with _auth_code_store_lock:
+            if _auth_code_store is None:
+                _auth_code_store = AuthCodeStore()
     return _auth_code_store

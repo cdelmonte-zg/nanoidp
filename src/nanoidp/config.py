@@ -6,6 +6,7 @@ Uses Pydantic for validation and schema enforcement.
 
 import os
 import re
+import threading
 import yaml
 import logging
 from typing import Dict, List, Optional, Any
@@ -515,13 +516,16 @@ class ConfigManager:
 
 # Global config instance
 _config: Optional[ConfigManager] = None
+_config_lock = threading.Lock()
 
 
 def get_config() -> ConfigManager:
-    """Get the global config instance."""
+    """Get the global config instance (thread-safe lazy init, issue #43)."""
     global _config
     if _config is None:
-        _config = ConfigManager()
+        with _config_lock:
+            if _config is None:
+                _config = ConfigManager()
     return _config
 
 
