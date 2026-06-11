@@ -425,8 +425,14 @@ class ConfigManager:
         import bcrypt
         return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
 
-    def check_client(self, client_id: str, client_secret: str) -> bool:
-        """Check client credentials."""
+    def check_client(self, client_id: Optional[str], client_secret: Optional[str]) -> bool:
+        """Check client credentials.
+
+        Accepts ``None`` (Flask's ``request.authorization`` fields are
+        Optional) and fails closed: missing credentials never match.
+        """
+        if client_id is None or client_secret is None:
+            return False
         for client in self.settings.clients:
             if client.client_id == client_id and client.client_secret == client_secret:
                 return True
@@ -456,7 +462,7 @@ class ConfigManager:
 
         users_data = {}
         for username, user in self.users.items():
-            user_dict = {
+            user_dict: Dict[str, Any] = {
                 "password": user.password,
                 "email": user.email,
                 "roles": user.roles,
@@ -486,7 +492,7 @@ class ConfigManager:
 
         clients_data = []
         for client in self.settings.clients:
-            client_entry = {
+            client_entry: Dict[str, Any] = {
                 "client_id": client.client_id,
                 "client_secret": client.client_secret,
                 "description": client.description,

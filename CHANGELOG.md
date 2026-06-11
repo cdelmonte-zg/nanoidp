@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- CI now type-checks `src/` with **mypy** (#55), with a documented
+  gradual-adoption baseline in `pyproject.toml` (`check_untyped_defs`,
+  `no_implicit_optional`, missing-stub imports ignored). All 40 baseline
+  errors were fixed: implicit-`Optional` parameter defaults, heterogeneous
+  dicts annotated `Dict[str, Any]`, `check_client` accepts `Optional`
+  credentials and fails closed, RSA key narrowing in cert generation,
+  signxml certificate passed as PEM string, and `_get_c14n_algorithm`
+  raises instead of returning `None` when signxml is missing. The baseline
+  also surfaced the broken `nanoidp-mcp` entrypoint fixed in #57.
+
 ### Fixed
 - Review follow-ups of the 2026-06-11 merge block (#56):
   - **Refresh tokens are bound to their client**: the issuing `client_id` is

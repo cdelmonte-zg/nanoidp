@@ -4,6 +4,7 @@ Flask application factory for NanoIDP.
 
 import logging
 import os
+from typing import Optional
 
 from flask import Flask, jsonify
 from flask_cors import CORS
@@ -16,10 +17,10 @@ from .routes import api_bp, oauth_bp, saml_bp, ui_bp
 from .services import init_crypto_service
 
 # Global limiter instance (initialized in create_app)
-limiter = None
+limiter: Optional[Limiter] = None
 
 
-def create_app(config_dir: str = None, profile: str = None) -> Flask:
+def create_app(config_dir: Optional[str] = None, profile: Optional[str] = None) -> Flask:
     """Create and configure the Flask application."""
     global limiter
 
@@ -119,17 +120,17 @@ def create_app(config_dir: str = None, profile: str = None) -> Flask:
     return app
 
 
-def get_limiter() -> Limiter:
-    """Get the global limiter instance."""
+def get_limiter() -> Optional[Limiter]:
+    """Get the global limiter instance (None before create_app runs)."""
     return limiter
 
 
 def run_app(
-    host: str = None,
-    port: int = None,
-    debug: bool = None,
-    config_dir: str = None,
-    profile: str = None,
+    host: Optional[str] = None,
+    port: Optional[int] = None,
+    debug: Optional[bool] = None,
+    config_dir: Optional[str] = None,
+    profile: Optional[str] = None,
 ):
     """Run the Flask application."""
     app = create_app(config_dir, profile=profile)

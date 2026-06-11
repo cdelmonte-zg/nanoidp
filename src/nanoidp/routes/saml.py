@@ -8,6 +8,7 @@ import uuid
 import zlib
 from base64 import b64decode, b64encode
 from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, Optional
 
 from flask import Blueprint, Response, abort, render_template, request, session
 from lxml import etree
@@ -51,7 +52,9 @@ def _get_c14n_algorithm(config_value: str) -> "CanonicalizationMethod":
         CanonicalizationMethod enum value
     """
     if not SIGNXML_AVAILABLE:
-        return None
+        # All callers are inside `if ... SIGNXML_AVAILABLE` guards; raising
+        # here (instead of returning None) keeps the return type honest.
+        raise RuntimeError("signxml is not available; cannot sign SAML XML")
 
     if config_value == "c14n":
         return CanonicalizationMethod.CANONICAL_XML_1_0
@@ -142,7 +145,7 @@ def _build_saml_response(
     audience: str,
     name_id: str,
     attributes: dict,
-    in_response_to: str = None,
+    in_response_to: Optional[str] = None,
     sign: bool = True,
 ):
     """Build a SAML Response XML."""
@@ -262,7 +265,9 @@ def _build_saml_response(
             c14n_algorithm=c14n_algo,
         )
         signed = signer.sign(
-            assertion, key=crypto.priv_pem, cert=cert_pem, reference_uri=assertion_id
+            # signxml's typed API takes the certificate as a PEM string
+            assertion, key=crypto.priv_pem, cert=cert_pem.decode("ascii"),
+            reference_uri=assertion_id
         )
         resp.remove(assertion)
         resp.append(signed)
@@ -611,7 +616,7 @@ def _sign_attribute_query_response(response_xml: str, sign: bool = True) -> str:
             c14n_algorithm=c14n_algo,
         )
 
-        signed_root = signer.sign(root, key=crypto.priv_pem, cert=cert_pem)
+        signed_root = signer.sign(root, key=crypto.priv_pem, cert=cert_pem.decode("ascii"))
         return etree.tostring(signed_root, encoding="unicode", pretty_print=True)
 
     except Exception as e:
@@ -672,7 +677,7 @@ def attribute_query():
 
         if user:
             # Build attributes from user config
-            attributes = {
+            attributes: Dict[str, Any] = {
                 "email": user.email or f"{user_id}@example.com",
             }
 

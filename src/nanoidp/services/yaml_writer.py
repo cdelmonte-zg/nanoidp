@@ -94,7 +94,7 @@ class YamlWriter:
         if is_new and user.username in data.get("users", {}):
             raise ValueError(f"User '{user.username}' already exists")
 
-        user_data = {
+        user_data: Dict[str, Any] = {
             "password": user.password,
             "email": user.email,
         }
@@ -181,7 +181,7 @@ class YamlWriter:
         if is_new and existing_idx is not None:
             raise ValueError(f"Client '{client.client_id}' already exists")
 
-        client_data = {
+        client_data: Dict[str, Any] = {
             "client_id": client.client_id,
             "client_secret": client.client_secret,
             "description": client.description,

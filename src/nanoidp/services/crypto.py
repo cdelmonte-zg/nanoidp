@@ -142,6 +142,8 @@ class CryptoService:
 
     def _load_external_keys(self):
         """Load external PEM keys instead of generating new ones."""
+        if self._external_private_key is None or self._external_public_key is None:
+            raise ValueError("External key paths not configured")
         logger.info(f"Loading external keys from {self._external_private_key}")
 
         priv_path = Path(self._external_private_key)
@@ -218,6 +220,13 @@ class CryptoService:
 
         private_key = serialization.load_pem_private_key(self.priv_pem, password=None)
         public_key = serialization.load_pem_public_key(self.pub_pem)
+        # The loaders return a union over every supported key algorithm, but
+        # nanoidp keys are always RSA — and CertificateBuilder rejects e.g. DH
+        # keys, so narrow before use.
+        if not isinstance(private_key, rsa.RSAPrivateKey) or not isinstance(
+            public_key, rsa.RSAPublicKey
+        ):
+            raise ValueError("Certificate generation requires RSA keys")
 
         subject = issuer = x509.Name(
             [

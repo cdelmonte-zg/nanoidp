@@ -142,7 +142,7 @@ class TokenService:
             exp_minutes = settings.token_expiry_minutes
 
         # Build extra claims
-        extra = {}
+        extra: Dict[str, Any] = {}
 
         # Add core user attributes
         if user.identity_class:

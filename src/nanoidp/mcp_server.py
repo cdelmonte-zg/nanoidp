@@ -18,7 +18,7 @@ import asyncio
 import json
 import logging
 import os
-from typing import Any, Tuple
+from typing import Any, Optional, Tuple
 
 import jwt as pyjwt
 from mcp.server import Server
@@ -106,7 +106,7 @@ def _check_readonly_mode(tool_name: str) -> Tuple[bool, str]:
     return True, ""
 
 
-def _log_mcp_tool(tool_name: str, success: bool, details: dict = None):
+def _log_mcp_tool(tool_name: str, success: bool, details: Optional[dict] = None):
     """Log MCP tool call to audit log."""
     try:
         audit = get_audit_log()

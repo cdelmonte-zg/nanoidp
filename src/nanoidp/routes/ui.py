@@ -91,7 +91,8 @@ def login():
         method="POST",
         status="success",
         username=username,
-        **req_info,
+        ip_address=req_info["ip_address"],
+        user_agent=req_info["user_agent"],
     )
 
     return redirect(url_for("ui.index"))
