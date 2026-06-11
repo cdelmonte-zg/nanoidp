@@ -3,12 +3,12 @@ Unit tests for the Token Service.
 Tests JWT token creation, authorities building, and token validation.
 """
 
-import pytest
-import jwt as pyjwt
-from datetime import datetime, timezone
 
-from nanoidp.services.token import TokenService, get_token_service
+import jwt as pyjwt
+import pytest
+
 from nanoidp.config import User
+from nanoidp.services.token import TokenService, get_token_service
 
 
 class TestTokenCreation:

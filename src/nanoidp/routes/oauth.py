@@ -4,17 +4,21 @@ OAuth2/OIDC routes for token endpoint and discovery.
 
 import json
 import logging
+import secrets
 import threading
+import time
 from urllib.parse import urlencode, urlparse
-from flask import Blueprint, request, jsonify, abort, redirect, render_template, session, url_for
 
-from ..config import get_config, User
+import jwt as pyjwt
+from flask import Blueprint, abort, jsonify, redirect, render_template, request, session
+
+from ..config import User, get_config
 from ..services import (
-    get_token_service,
-    get_crypto_service,
+    build_discovery_document,
     get_audit_log,
     get_auth_code_store,
-    build_discovery_document,
+    get_crypto_service,
+    get_token_service,
 )
 
 logger = logging.getLogger(__name__)
@@ -826,9 +830,8 @@ def introspect():
     if not token:
         return jsonify({"active": False})
 
-    token_type_hint = request.form.get("token_type_hint", "access_token")
-
-    # Try to verify the token
+    # Try to verify the token (token_type_hint is intentionally ignored: with a
+    # single signing key there is nothing to disambiguate, per RFC 7662 §2.1)
     crypto = get_crypto_service(config.settings.keys_dir)
     try:
         payload = crypto.verify_jwt(token, config.settings.audience)
@@ -932,10 +935,8 @@ def revoke():
         return "", 200
 
     # Try to decode the token to get its JTI
-    crypto = get_crypto_service(config.settings.keys_dir)
     try:
         # Decode without verification to get the JTI
-        import jwt as pyjwt
         payload = pyjwt.decode(token, options={"verify_signature": False})
         jti = payload.get("jti")
 
@@ -984,7 +985,6 @@ def end_session():
     - state: CSRF protection state (optional)
     - client_id: Client identifier (optional, required if no id_token_hint)
     """
-    config = get_config()
     audit = get_audit_log()
     req_info = _get_request_info()
 
@@ -1000,9 +1000,7 @@ def end_session():
 
     # If id_token_hint is provided, extract user info
     if id_token_hint:
-        crypto = get_crypto_service(config.settings.keys_dir)
         try:
-            import jwt as pyjwt
             payload = pyjwt.decode(id_token_hint, options={"verify_signature": False})
             username = payload.get("sub")
 
@@ -1047,10 +1045,6 @@ def end_session():
 # ============================================================================
 # Device Authorization Grant (RFC 8628)
 # ============================================================================
-
-import secrets
-import time
-from datetime import datetime, timedelta
 
 # In-memory storage for device codes. All compound accesses (lookup + status
 # mutation / deletion) must hold the lock: Flask serves requests on multiple

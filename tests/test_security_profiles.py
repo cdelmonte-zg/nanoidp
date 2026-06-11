@@ -8,8 +8,8 @@ Tests cover:
 - Security profile switching
 """
 
-import pytest
 import bcrypt
+import pytest
 
 from nanoidp.config import ConfigManager, Settings, User
 
@@ -195,14 +195,14 @@ class TestRateLimiting:
     def test_rate_limiter_exists_in_app(self):
         """Test that rate limiter is configured in app."""
         from nanoidp.app import create_app, get_limiter
-        app = create_app(profile="stricter-dev")
+        create_app(profile="stricter-dev")
         limiter = get_limiter()
         assert limiter is not None
 
     def test_rate_limiter_disabled_in_dev(self):
         """Test that rate limiter is effectively disabled in dev profile."""
         from nanoidp.app import create_app, get_limiter
-        app = create_app(profile="dev")
+        create_app(profile="dev")
         limiter = get_limiter()
         # Limiter exists but is disabled
         assert limiter is not None
@@ -216,7 +216,7 @@ class TestProfileOverrides:
         from nanoidp.app import create_app
         from nanoidp.config import get_config
 
-        app = create_app(profile="stricter-dev")
+        create_app(profile="stricter-dev")
         config = get_config()
 
         assert config.settings.password_hashing is True
@@ -226,7 +226,7 @@ class TestProfileOverrides:
         from nanoidp.app import create_app
         from nanoidp.config import get_config
 
-        app = create_app(profile="stricter-dev")
+        create_app(profile="stricter-dev")
         config = get_config()
 
         assert config.settings.rate_limit_enabled is True
@@ -236,7 +236,7 @@ class TestProfileOverrides:
         from nanoidp.app import create_app
         from nanoidp.config import get_config
 
-        app = create_app(profile="stricter-dev")
+        create_app(profile="stricter-dev")
         config = get_config()
 
         assert config.settings.debug is False

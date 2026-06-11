@@ -4,14 +4,15 @@ Loads settings and users from YAML files.
 Uses Pydantic for validation and schema enforcement.
 """
 
+import logging
 import os
 import re
 import threading
-import yaml
-import logging
-from typing import Dict, List, Optional, Any
 from pathlib import Path
-from pydantic import BaseModel, Field, field_validator, ConfigDict
+from typing import Any, Dict, List, Optional
+
+import yaml
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 logger = logging.getLogger(__name__)
 

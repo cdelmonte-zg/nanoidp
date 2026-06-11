@@ -8,8 +8,8 @@ Tests cover:
 """
 
 import json
+
 import pytest
-from unittest.mock import patch, MagicMock, AsyncMock
 
 
 class TestMCPGetSettings:
@@ -161,13 +161,6 @@ class TestMCPToolSchema:
         # Read the MCP server module to verify schema
         from nanoidp import mcp_server
 
-        # Get the list_tools function and check schema
-        # The schema should include verbose_logging
-        expected_schema_property = {
-            "type": "boolean",
-            "description": "Include usernames/client_ids in log messages (dev convenience)",
-        }
-
         # Verify the module has the expected structure
         assert hasattr(mcp_server, 'server')
         assert hasattr(mcp_server, 'MUTATING_TOOLS')
@@ -179,10 +172,9 @@ class TestMCPReadonlyMode:
 
     def test_readonly_mode_blocks_update_settings(self):
         """Test that readonly mode blocks update_settings calls."""
-        from nanoidp.mcp_server import _check_readonly_mode, MUTATING_TOOLS
-
         # Simulate readonly mode enabled
         import nanoidp.mcp_server as mcp_module
+        from nanoidp.mcp_server import _check_readonly_mode
         original_readonly = mcp_module._readonly_mode
 
         try:
@@ -207,6 +199,7 @@ class TestMCPAdminSecret:
     def test_update_settings_requires_admin_secret_when_configured(self):
         """Test that update_settings requires admin_secret when env var is set."""
         import os
+
         from nanoidp.mcp_server import _check_admin_secret
 
         original_secret = os.environ.get("NANOIDP_MCP_ADMIN_SECRET")
@@ -241,6 +234,7 @@ class TestMCPAdminSecret:
     def test_get_settings_does_not_require_admin_secret(self):
         """Test that get_settings works without admin_secret."""
         import os
+
         from nanoidp.mcp_server import _check_admin_secret
 
         original_secret = os.environ.get("NANOIDP_MCP_ADMIN_SECRET")

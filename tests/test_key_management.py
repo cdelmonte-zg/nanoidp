@@ -7,23 +7,21 @@ Tests cover:
 - Key rotation
 """
 
-import os
 import tempfile
-import pytest
 from pathlib import Path
 
+import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
-from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.serialization import (
     Encoding,
-    PrivateFormat,
     NoEncryption,
+    PrivateFormat,
     PublicFormat,
 )
 
-from nanoidp.services.crypto import CryptoService, init_crypto_service, get_crypto_service
-import nanoidp.services.crypto as crypto_module
 import nanoidp.config as config_module
+import nanoidp.services.crypto as crypto_module
+from nanoidp.services.crypto import CryptoService
 
 
 @pytest.fixture(autouse=True, scope="module")
@@ -416,11 +414,6 @@ class TestKeyRotationAPI:
 
     def test_jwks_endpoint_returns_multiple_keys_after_rotation(self, client):
         """Test that JWKS includes previous keys after rotation."""
-        # Get initial JWKS and the active key
-        response1 = client.get("/.well-known/jwks.json")
-        initial_jwks = response1.get_json()
-        initial_kids = {key["kid"] for key in initial_jwks["keys"]}
-
         # Rotate keys
         rotate_response = client.post("/api/keys/rotate")
         rotate_data = rotate_response.get_json()

@@ -10,11 +10,8 @@ Covers:
   - Integration: ConfigManager picks up substitutions from the environment
 """
 
-import os
-import pytest
 
 from nanoidp.config import _expand_env_vars
-
 
 # ---------------------------------------------------------------------------
 # Basic string substitution

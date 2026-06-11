@@ -3,15 +3,13 @@ Unit tests for the Authorization Code service.
 Tests PKCE verification, code creation, and code consumption.
 """
 
-import pytest
-import hashlib
 import base64
+import hashlib
 import secrets
 from datetime import datetime, timedelta, timezone
 
 from nanoidp.services.auth_code import (
     AuthCodeStore,
-    AuthorizationCode,
     get_auth_code_store,
 )
 

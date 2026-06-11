@@ -7,9 +7,8 @@ Verifies that error responses follow RFC 6749 format:
 - error_uri: Optional URI with more information
 """
 
-import json
 import base64
-import pytest
+import json
 
 
 class TestInvalidGrantError:

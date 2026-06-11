@@ -7,9 +7,9 @@ import pytest
 
 from nanoidp.config import (
     ConfigManager,
-    User,
     OAuthClient,
     Settings,
+    User,
     get_config,
 )
 

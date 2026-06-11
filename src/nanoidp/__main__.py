@@ -9,8 +9,8 @@ Usage:
 """
 
 import argparse
-import sys
 import os
+import sys
 
 from nanoidp import __version__
 

@@ -3,9 +3,8 @@ Interactive text-based configuration wizard.
 No external dependencies required.
 """
 
-import os
-import sys
 import getpass
+import os
 
 
 def _prompt(message: str, default: str = "") -> str:
@@ -26,8 +25,11 @@ def _prompt_password(message: str, default: str = "") -> str:
             return result if result else default
         else:
             return getpass.getpass(f"  {message}: ")
-    except Exception:
-        # Fallback to regular input if getpass fails
+    except Exception as e:
+        # getpass can fail on terminals without echo control (e.g. some IDE
+        # consoles or non-tty stdin); fall back to visible input rather than
+        # aborting the wizard.
+        print(f"  (hidden input unavailable: {e}; falling back to visible input)")
         return _prompt(message, default)
 
 

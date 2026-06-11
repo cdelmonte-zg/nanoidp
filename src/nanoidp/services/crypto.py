@@ -7,30 +7,28 @@ Supports:
 - Key rotation with multiple keys in JWKS
 """
 
+import base64
 import json
-import shutil
+import logging
 import threading
 import uuid
-import base64
-import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional, Dict, Any, List, Union
-
-from cryptography.hazmat.primitives.asymmetric import rsa
-from cryptography.hazmat.primitives import serialization, hashes
-from cryptography.hazmat.primitives.serialization import (
-    Encoding,
-    PrivateFormat,
-    NoEncryption,
-    PublicFormat,
-)
-from cryptography.hazmat.backends import default_backend
-from cryptography import x509
-from cryptography.x509.oid import NameOID
+from typing import Any, Dict, List, Optional, Union
 
 import jwt
+from cryptography import x509
+from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.primitives.serialization import (
+    Encoding,
+    NoEncryption,
+    PrivateFormat,
+    PublicFormat,
+)
+from cryptography.x509.oid import NameOID
 
 logger = logging.getLogger(__name__)
 
@@ -164,7 +162,7 @@ class CryptoService:
             serialization.load_pem_private_key(self.priv_pem, password=None)
             serialization.load_pem_public_key(self.pub_pem)
         except Exception as e:
-            raise ValueError(f"Invalid PEM key format: {e}")
+            raise ValueError(f"Invalid PEM key format: {e}") from e
 
         self.kid = self._external_key_id or uuid.uuid4().hex
         logger.info(f"Loaded external keys with KID: {self.kid}")
@@ -235,8 +233,8 @@ class CryptoService:
             .issuer_name(issuer)
             .public_key(public_key)
             .serial_number(x509.random_serial_number())
-            .not_valid_before(datetime.utcnow() - timedelta(days=1))
-            .not_valid_after(datetime.utcnow() + timedelta(days=3650))
+            .not_valid_before(datetime.now(timezone.utc) - timedelta(days=1))
+            .not_valid_after(datetime.now(timezone.utc) + timedelta(days=3650))
             .add_extension(
                 x509.BasicConstraints(ca=True, path_length=None),
                 critical=True,
@@ -295,9 +293,9 @@ class CryptoService:
         sub: str,
         issuer: str,
         audience: Union[str, List[str]],
-        roles: list = None,
-        tenant: str = None,
-        extra: dict = None,
+        roles: Optional[List[str]] = None,
+        tenant: Optional[str] = None,
+        extra: Optional[Dict[str, Any]] = None,
         exp_minutes: int = 60,
         nonce: Optional[str] = None
     ) -> str:
@@ -321,13 +319,18 @@ class CryptoService:
             payload.update(extra)
         if nonce is not None:
             payload["nonce"] = nonce
-            
+
         headers = {"kid": self.kid, "alg": "RS256", "typ": "JWT"}
         token = jwt.encode(payload, self.priv_pem, algorithm="RS256", headers=headers)
         return token
 
-    def verify_jwt(self, token: str, audience: str) -> Dict[str, Any]:
-        """Verify and decode a JWT token."""
+    def verify_jwt(self, token: str, audience: Union[str, List[str]]) -> Dict[str, Any]:
+        """Verify and decode a JWT token.
+
+        ``audience`` accepts a list as well as a string (PyJWT semantics:
+        the token is valid if its ``aud`` matches any of the values), so ID
+        Tokens carrying an array ``aud`` can be verified too.
+        """
         try:
             # Use public key for verification
             payload = jwt.decode(
@@ -338,10 +341,10 @@ class CryptoService:
                 options={"verify_signature": True},
             )
             return payload
-        except jwt.ExpiredSignatureError:
-            raise ValueError("Token has expired")
+        except jwt.ExpiredSignatureError as e:
+            raise ValueError("Token has expired") from e
         except jwt.InvalidTokenError as e:
-            raise ValueError(f"Invalid token: {str(e)}")
+            raise ValueError(f"Invalid token: {str(e)}") from e
 
     def get_certificate_base64(self) -> str:
         """Get the certificate in base64 format (without headers)."""

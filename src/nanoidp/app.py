@@ -4,15 +4,16 @@ Flask application factory for NanoIDP.
 
 import logging
 import os
-from flask import Flask
+
+from flask import Flask, jsonify
 from flask_cors import CORS
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 
 from . import __version__
-from .config import init_config, get_config
+from .config import get_config, init_config
+from .routes import api_bp, oauth_bp, saml_bp, ui_bp
 from .services import init_crypto_service
-from .routes import oauth_bp, saml_bp, ui_bp, api_bp
 
 # Global limiter instance (initialized in create_app)
 limiter = None
@@ -104,10 +105,9 @@ def create_app(config_dir: str = None, profile: str = None) -> Flask:
     # Health check at root for backward compatibility
     @app.route("/health")
     def health():
-        from flask import jsonify
         return jsonify({"status": "ok"})
 
-    logger.info(f"NanoIDP initialized")
+    logger.info("NanoIDP initialized")
     logger.info(f"  - Security profile: {settings.security_profile}")
     logger.info(f"  - Password hashing: {'bcrypt' if settings.password_hashing else 'plaintext'}")
     logger.info(f"  - Issuer: {settings.issuer}")

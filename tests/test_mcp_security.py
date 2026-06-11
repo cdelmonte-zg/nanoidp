@@ -9,14 +9,15 @@ Tests cover:
 
 import json
 import os
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import patch, MagicMock
 
 # Import MCP security functions
 from nanoidp.mcp_server import (
+    MUTATING_TOOLS,
     _check_admin_secret,
     _log_mcp_tool,
-    MUTATING_TOOLS,
 )
 
 
@@ -228,8 +229,8 @@ class TestMCPReadonlyMode:
 
     def test_check_readonly_mode_disabled_allows_all(self):
         """Test that readonly mode disabled allows all tools."""
-        from nanoidp.mcp_server import _check_readonly_mode
         import nanoidp.mcp_server as mcp
+        from nanoidp.mcp_server import _check_readonly_mode
 
         # Ensure readonly mode is off
         original_value = mcp._readonly_mode
@@ -247,8 +248,8 @@ class TestMCPReadonlyMode:
 
     def test_check_readonly_mode_blocks_mutating_tools(self):
         """Test that readonly mode blocks mutating tools."""
-        from nanoidp.mcp_server import _check_readonly_mode
         import nanoidp.mcp_server as mcp
+        from nanoidp.mcp_server import _check_readonly_mode
 
         original_value = mcp._readonly_mode
         mcp._readonly_mode = True
@@ -263,8 +264,8 @@ class TestMCPReadonlyMode:
 
     def test_check_readonly_mode_allows_read_only_tools(self):
         """Test that readonly mode allows read-only tools."""
-        from nanoidp.mcp_server import _check_readonly_mode
         import nanoidp.mcp_server as mcp
+        from nanoidp.mcp_server import _check_readonly_mode
 
         original_value = mcp._readonly_mode
         mcp._readonly_mode = True
@@ -285,8 +286,8 @@ class TestMCPReadonlyMode:
     @pytest.mark.parametrize("tool_name", list(MUTATING_TOOLS))
     def test_all_mutating_tools_blocked_in_readonly(self, tool_name):
         """Test that all mutating tools are blocked in readonly mode."""
-        from nanoidp.mcp_server import _check_readonly_mode
         import nanoidp.mcp_server as mcp
+        from nanoidp.mcp_server import _check_readonly_mode
 
         original_value = mcp._readonly_mode
         mcp._readonly_mode = True

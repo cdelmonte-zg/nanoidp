@@ -9,10 +9,8 @@ Tests cover:
 - Verbose logging setting
 """
 
-import json
 import base64
-import pytest
-from unittest.mock import patch, MagicMock
+import json
 
 
 class TestXXEProtection:
@@ -222,7 +220,6 @@ class TestSecureXMLParser:
 
     def test_secure_parser_configured(self):
         """Test that secure XML parser has correct settings."""
-        from nanoidp.routes.saml import _secure_parser
 
         # Verify parser is configured to block XXE attacks
         # resolve_entities=False prevents entity expansion
@@ -230,8 +227,9 @@ class TestSecureXMLParser:
 
     def test_secure_parser_blocks_entities(self):
         """Test that secure parser blocks external entity expansion."""
-        from nanoidp.routes.saml import secure_fromstring
         from lxml.etree import XMLSyntaxError
+
+        from nanoidp.routes.saml import secure_fromstring
 
         xxe_xml = b"""<?xml version="1.0"?>
 <!DOCTYPE foo [

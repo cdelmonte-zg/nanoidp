@@ -2,15 +2,16 @@
 Web UI routes for the NanoIDP dashboard.
 """
 
+import csv
+import json
 import logging
 import secrets
-from flask import Blueprint, render_template, request, session, redirect, url_for, flash, Response
-import json
-import csv
 from io import StringIO
 
-from ..config import get_config, User, OAuthClient
-from ..services import get_audit_log, get_yaml_writer, get_token_service
+from flask import Blueprint, Response, flash, redirect, render_template, request, session, url_for
+
+from ..config import OAuthClient, User, get_config
+from ..services import get_audit_log, get_token_service, get_yaml_writer
 
 logger = logging.getLogger(__name__)
 
@@ -164,7 +165,7 @@ def user_create():
         attr_keys = request.form.getlist("attr_key[]")
         attr_values = request.form.getlist("attr_value[]")
         attributes = {}
-        for key, value in zip(attr_keys, attr_values):
+        for key, value in zip(attr_keys, attr_values, strict=False):
             key = key.strip()
             value = value.strip()
             if key and value:
@@ -252,7 +253,7 @@ def user_edit(username: str):
         attr_keys = request.form.getlist("attr_key[]")
         attr_values = request.form.getlist("attr_value[]")
         attributes = {}
-        for key, value in zip(attr_keys, attr_values):
+        for key, value in zip(attr_keys, attr_values, strict=False):
             key = key.strip()
             value = value.strip()
             if key and value:
@@ -528,8 +529,8 @@ def settings():
 def keys():
     """Keys and certificates management page."""
     import os
-    from pathlib import Path
     from datetime import datetime
+    from pathlib import Path
     config = get_config()
     from ..services import get_crypto_service
 
@@ -637,7 +638,7 @@ def claims():
         # Custom attribute prefixes
         custom_keys = request.form.getlist("custom_prefix_key[]")
         custom_values = request.form.getlist("custom_prefix_value[]")
-        for key, value in zip(custom_keys, custom_values):
+        for key, value in zip(custom_keys, custom_values, strict=False):
             key = key.strip()
             value = value.strip()
             if key and value:
