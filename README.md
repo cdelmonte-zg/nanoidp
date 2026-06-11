@@ -13,6 +13,8 @@
   Supports OAuth2/OIDC and SAML 2.0 protocols with a full-featured web UI for configuration.
 </p>
 
+> Design principles, non-goals and medium-term direction live in [VISION.md](VISION.md).
+
 ## Features
 
 - **OAuth2 / OIDC** - Full OAuth2 implementation with Authorization Code, Password, Client Credentials, Refresh Token, and Device Authorization grants
