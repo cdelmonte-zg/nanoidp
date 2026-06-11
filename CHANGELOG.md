@@ -5,20 +5,58 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.2.0] - 2026-06-11
 
 ### Added
-- CI now type-checks `src/` with **mypy** (#55), with a documented
-  gradual-adoption baseline in `pyproject.toml` (`check_untyped_defs`,
-  `no_implicit_optional`, missing-stub imports ignored). All 40 baseline
-  errors were fixed: implicit-`Optional` parameter defaults, heterogeneous
-  dicts annotated `Dict[str, Any]`, `check_client` accepts `Optional`
-  credentials and fails closed, RSA key narrowing in cert generation,
-  signxml certificate passed as PEM string, and `_get_c14n_algorithm`
-  raises instead of returning `None` when signxml is missing. The baseline
-  also surfaced the broken `nanoidp-mcp` entrypoint fixed in #57.
+- The **refresh_token** grant now re-issues an ID Token when the original grant
+  included the `openid` scope (OIDC Core §12.2, #39). The granted scope is
+  persisted in the refresh token claims and recovered on refresh; a `scope`
+  form parameter may narrow, but never broaden, the original grant (RFC 6749
+  §6 — broadening is rejected with `400`). The refreshed ID Token carries no
+  `nonce` (it binds the original authentication request). Refresh tokens minted
+  before this change have no persisted scope and keep the old behavior.
+- ID Tokens now carry `auth_time` and `at_hash` (#42). `auth_time` reflects
+  when the end-user actually authenticated: the login page for the
+  authorization code flow, the `/device` verification for the device flow,
+  the request itself for the password grant — and it is preserved unchanged
+  across refreshes (OIDC Core §12.2), carried in the refresh token claims
+  like the scope. `at_hash` binds the ID Token to the access token issued
+  alongside it (left half of SHA-256, base64url — §3.1.3.6). Discovery
+  `claims_supported` now also advertises `auth_time`, `nonce` and `at_hash`.
+- Optional **refresh token rotation** (#46): with `oauth.refresh_token_rotation: true`
+  (default off), each refresh atomically invalidates the consumed refresh
+  token, so its reuse fails with 401; reuse of a consumed token revokes its
+  whole rotation family, including the live descendant (RFC 9700 §4.14.2).
+- **PKCE enforcement** (#47): new `require_pkce` setting (enabled by the
+  `stricter-dev` profile, persisted in `settings.yaml`) rejects `/authorize`
+  requests without a `code_challenge`; `stricter-dev` also rejects
+  `code_challenge_method=plain` — explicit or implicit via the RFC 7636 §4.3
+  omitted-parameter default — and discovery only advertises `S256` there.
+  Unsupported methods are rejected at the authorization endpoint (§4.4.1).
+  Default profile unchanged.
+- **MCP audit & key tools** (#48): `get_audit_log`, `get_audit_stats`,
+  `clear_audit_log`, `get_keys_info` and `rotate_keys` mirror the HTTP API,
+  so agent workflows can inspect what the IdP recorded and exercise JWKS
+  refresh handling. `clear_audit_log`/`rotate_keys` count as mutating tools
+  (admin secret / readonly rules apply). MCP `get_settings`/`update_settings`
+  expose the new `refresh_token_rotation` and `require_pkce` settings, and
+  `generate_token` accepts an optional `scope` argument and returns an
+  `id_token` when `openid` is included, matching the HTTP token endpoint.
+- CI now lints with **ruff** (#45) and type-checks `src/` with **mypy**
+  (#55, documented gradual-adoption baseline in `pyproject.toml`). The
+  codebase is lint-clean — 153 findings fixed (#49): deprecated
+  `datetime.utcnow()` replaced (removes 80 DeprecationWarnings), unused
+  imports/variables dropped, imports sorted and moved to module level,
+  `Optional[...]` type hints in the crypto service, `verify_jwt` accepts an
+  array audience, exceptions re-raised with `from e` — and mypy-clean (40
+  baseline errors fixed; the baseline also surfaced the broken `nanoidp-mcp`
+  entrypoint below).
 
 ### Fixed
+- **The `nanoidp-mcp` stdio entrypoint crashed at startup** ("a coroutine
+  was expected"): `stdio_server()` is an async context manager yielding the
+  message streams, not a coroutine. Verified with a JSON-RPC initialize
+  handshake.
 - Review follow-ups of the 2026-06-11 merge block (#56):
   - **Refresh tokens are bound to their client**: the issuing `client_id` is
     persisted in the refresh token claims and the refresh grant rejects any
@@ -42,52 +80,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **The token response reports the scope actually granted** (RFC 6749
     §5.1) instead of a hardcoded `"openid"`; when no scope was involved the
     parameter is omitted, and a narrowed refresh reports the narrowed scope.
-- The `nanoidp-mcp` stdio entrypoint crashed at startup ("a coroutine was
-  expected"): `stdio_server()` is an async context manager yielding the
-  message streams, not a coroutine. Found by the mypy baseline being
-  prepared for #55; verified with a JSON-RPC initialize handshake.
 - The token endpoint validates `exp` and `extra` before the grant dispatch:
   with rotation enabled, a malformed value can no longer consume the refresh
   token without delivering its replacement (the last tradeoff noted in the
-  #56 review), and a non-numeric `exp` now returns a proper 400 instead of
-  an unhandled `ValueError` (500).
-
-### Added
-- Optional **refresh token rotation** (#46): with `oauth.refresh_token_rotation: true`
-  (default off), each refresh invalidates the consumed refresh token, so its
-  reuse fails with 401 — lets clients test rotation and reuse-detection
-  handling (OAuth 2.0 Security BCP §4.14.2). Revocation happens only after the
-  replacement is issued, and explicitly revoked refresh tokens are now also
-  rejected by the refresh grant.
-- **PKCE enforcement** (#47): new `require_pkce` setting (enabled by the
-  `stricter-dev` profile) rejects `/authorize` requests without a
-  `code_challenge`; `stricter-dev` also rejects `code_challenge_method=plain`
-  and discovery only advertises `S256` there. Default profile unchanged.
-- **MCP audit & key tools** (#48): `get_audit_log`, `get_audit_stats`,
-  `clear_audit_log`, `get_keys_info` and `rotate_keys` mirror the HTTP API,
-  so agent workflows can inspect what the IdP recorded and exercise JWKS
-  refresh handling. `clear_audit_log`/`rotate_keys` count as mutating tools
-  (admin secret / readonly rules apply). MCP `get_settings`/`update_settings`
-  now expose `refresh_token_rotation` and `require_pkce`.
-
-### Changed
-- CI now runs `ruff check .` before the tests (#45), and the codebase is
-  lint-clean: 153 findings fixed (#49) — deprecated `datetime.utcnow()`
-  replaced (removes 80 DeprecationWarnings), unused imports/variables
-  dropped, imports sorted and moved to module level, `Optional[...]` type
-  hints in the crypto service, `verify_jwt` accepts an array audience,
-  exceptions re-raised with `from e`.
-- ID Tokens now carry `auth_time` and `at_hash` (#42). `auth_time` reflects
-  when the end-user actually authenticated: the login page for the
-  authorization code flow, the `/device` verification for the device flow,
-  the request itself for the password grant — and it is preserved unchanged
-  across refreshes (OIDC Core §12.2), carried in the refresh token claims
-  like the scope (#39). `at_hash` binds the ID Token to the access token
-  issued alongside it (left half of SHA-256, base64url — §3.1.3.6).
-  Discovery `claims_supported` now also advertises `auth_time`, `nonce` and
-  `at_hash`.
-
-### Fixed
+  #56 review). Validation is semantic, not just syntactic: `extra` must be a
+  JSON object (a scalar/array used to raise a `TypeError` 500 later) and
+  `exp` must be an integer within the same `1..1440` bounds the Settings
+  model enforces (non-numeric values used to be an unhandled `ValueError`
+  500; astronomical ones an `OverflowError` 500).
 - Thread-safety hardening for shared in-memory state (#43): the
   authorization code store now performs its check-then-mark sequence under a
   lock (one-time use can no longer be defeated by concurrent redemptions),
@@ -108,22 +108,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   clients. `response_types_supported` is now `["code"]`.
 
 ### Documentation
-- The MCP tools table in the README now lists all 19 tools (#44): it was
-  missing `create_client`, `update_client`, `delete_client`, `update_user`,
-  `update_settings` and `save_config`. (`docs/MCP_WORKFLOW.md` was already
-  complete.)
-
-### Added
-- The **refresh_token** grant now re-issues an ID Token when the original grant
-  included the `openid` scope (OIDC Core §12.2, #39). The granted scope is
-  persisted in the refresh token claims and recovered on refresh; a `scope`
-  form parameter may narrow, but never broaden, the original grant (RFC 6749
-  §6 — broadening is rejected with `400`). The refreshed ID Token carries no
-  `nonce` (it binds the original authentication request). Refresh tokens minted
-  before this change have no persisted scope and keep the old behavior.
-- The MCP `generate_token` tool accepts an optional `scope` argument and
-  returns an `id_token` when `openid` is included, matching the HTTP token
-  endpoint.
+- The MCP tools tables in the README and `docs/MCP_WORKFLOW.md` now list all
+  24 tools (#44, #48); the README was missing `create_client`,
+  `update_client`, `delete_client`, `update_user`, `update_settings` and
+  `save_config`.
 
 ## [2.1.0] - 2026-05-26
 
