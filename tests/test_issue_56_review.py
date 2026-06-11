@@ -131,6 +131,49 @@ class TestAtomicRotationAndFamilies:
         retry = _refresh(client, auth_header, tokens["refresh_token"])
         assert retry.status_code == 200
 
+    def test_non_object_extra_is_a_400_and_does_not_consume(self, client, auth_header):
+        """json.loads('42') succeeds, but extra.update(42) would be a 500
+        AFTER the claim — 'extra' must be a JSON object (second review)."""
+        tokens = _password_grant(client, auth_header)
+
+        for bad_extra in ("42", '"hello"', "[1, 2]"):
+            resp = client.post(
+                "/token",
+                data={
+                    "grant_type": "refresh_token",
+                    "refresh_token": tokens["refresh_token"],
+                    "extra": bad_extra,
+                },
+                headers=auth_header,
+            )
+            assert resp.status_code == 400, f"extra={bad_extra!r}"
+            assert b"JSON object" in resp.data
+
+        retry = _refresh(client, auth_header, tokens["refresh_token"])
+        assert retry.status_code == 200
+
+    def test_out_of_range_exp_is_a_400_and_does_not_consume(self, client, auth_header):
+        """A huge 'exp' passes int() but overflows the timedelta arithmetic
+        after the claim; the HTTP param now enforces the same 1..1440 bounds
+        as the Settings model (second review)."""
+        tokens = _password_grant(client, auth_header)
+
+        for bad_exp in ("0", "-5", "2000", "9" * 30):
+            resp = client.post(
+                "/token",
+                data={
+                    "grant_type": "refresh_token",
+                    "refresh_token": tokens["refresh_token"],
+                    "exp": bad_exp,
+                },
+                headers=auth_header,
+            )
+            assert resp.status_code == 400, f"exp={bad_exp!r}"
+            assert b"between 1 and 1440" in resp.data
+
+        retry = _refresh(client, auth_header, tokens["refresh_token"])
+        assert retry.status_code == 200
+
     def test_concurrent_double_refresh_succeeds_exactly_once(self, app, auth_header):
         tokens = _password_grant(app.test_client(), auth_header)
         refresh_token = tokens["refresh_token"]
