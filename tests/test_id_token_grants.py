@@ -158,3 +158,86 @@ class TestClientCredentialsNoIdToken:
         )
         assert resp.status_code == 200
         assert "id_token" not in json.loads(resp.data)
+
+
+class TestRefreshGrantIdToken:
+    """The refresh_token grant re-issues an ID Token when the original scope
+    included ``openid`` (OIDC Core §12.2, issue #39).
+
+    The granted scope is persisted in the refresh token claims at issuance and
+    recovered on refresh; a ``scope`` form parameter may narrow, but never
+    broaden, the original grant (RFC 6749 §6).
+    """
+
+    def _password_grant(self, client, auth_header, scope=None):
+        data = {
+            "grant_type": "password",
+            "username": "admin",
+            "password": "admin",
+        }
+        if scope is not None:
+            data["scope"] = scope
+        resp = client.post("/token", data=data, headers=auth_header)
+        assert resp.status_code == 200
+        return json.loads(resp.data)
+
+    def _refresh(self, client, auth_header, refresh_token, scope=None):
+        data = {"grant_type": "refresh_token", "refresh_token": refresh_token}
+        if scope is not None:
+            data["scope"] = scope
+        return client.post("/token", data=data, headers=auth_header)
+
+    def test_refresh_reissues_id_token_when_openid_granted(self, client, auth_header):
+        tokens = self._password_grant(client, auth_header, "openid profile")
+        resp = self._refresh(client, auth_header, tokens["refresh_token"])
+        assert resp.status_code == 200
+        data = json.loads(resp.data)
+        assert "id_token" in data
+        claims = _decode(data["id_token"])
+        # Same contract as the original ID Token (issue #32): aud = client_id.
+        assert claims["aud"] == "demo-client"
+        assert claims["token_use"] == "id"
+        # The nonce binds the original authentication request, not refreshes.
+        assert "nonce" not in claims
+
+    def test_refresh_without_openid_has_no_id_token(self, client, auth_header):
+        tokens = self._password_grant(client, auth_header, "profile email")
+        resp = self._refresh(client, auth_header, tokens["refresh_token"])
+        assert resp.status_code == 200
+        assert "id_token" not in json.loads(resp.data)
+
+    def test_refresh_of_scopeless_grant_has_no_id_token(self, client, auth_header):
+        """Refresh tokens without a persisted scope (e.g. minted before #39)
+        keep the old behavior: tokens refresh fine, no ID Token."""
+        tokens = self._password_grant(client, auth_header)
+        resp = self._refresh(client, auth_header, tokens["refresh_token"])
+        assert resp.status_code == 200
+        assert "id_token" not in json.loads(resp.data)
+
+    def test_refresh_can_narrow_scope_dropping_openid(self, client, auth_header):
+        tokens = self._password_grant(client, auth_header, "openid profile")
+        resp = self._refresh(client, auth_header, tokens["refresh_token"], "profile")
+        assert resp.status_code == 200
+        assert "id_token" not in json.loads(resp.data)
+
+    def test_refresh_can_narrow_scope_keeping_openid(self, client, auth_header):
+        tokens = self._password_grant(client, auth_header, "openid profile")
+        resp = self._refresh(client, auth_header, tokens["refresh_token"], "openid")
+        assert resp.status_code == 200
+        assert "id_token" in json.loads(resp.data)
+
+    def test_refresh_cannot_broaden_scope(self, client, auth_header):
+        tokens = self._password_grant(client, auth_header, "profile")
+        resp = self._refresh(client, auth_header, tokens["refresh_token"], "openid profile")
+        assert resp.status_code == 400
+
+    def test_scope_survives_refresh_chains(self, client, auth_header):
+        """The refresh token returned by a refresh carries the scope forward,
+        so ID Tokens keep being re-issued across consecutive refreshes."""
+        tokens = self._password_grant(client, auth_header, "openid")
+        first = self._refresh(client, auth_header, tokens["refresh_token"])
+        assert first.status_code == 200
+        rotated = json.loads(first.data)["refresh_token"]
+        second = self._refresh(client, auth_header, rotated)
+        assert second.status_code == 200
+        assert "id_token" in json.loads(second.data)

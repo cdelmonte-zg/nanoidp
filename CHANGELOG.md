@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- The **refresh_token** grant now re-issues an ID Token when the original grant
+  included the `openid` scope (OIDC Core §12.2, #39). The granted scope is
+  persisted in the refresh token claims and recovered on refresh; a `scope`
+  form parameter may narrow, but never broaden, the original grant (RFC 6749
+  §6 — broadening is rejected with `400`). The refreshed ID Token carries no
+  `nonce` (it binds the original authentication request). Refresh tokens minted
+  before this change have no persisted scope and keep the old behavior.
+- The MCP `generate_token` tool accepts an optional `scope` argument and
+  returns an `id_token` when `openid` is included, matching the HTTP token
+  endpoint.
+
 ## [2.1.0] - 2026-05-26
 
 ### Added
