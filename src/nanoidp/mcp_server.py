@@ -26,7 +26,13 @@ from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent
 
 from .config import ConfigManager, User, OAuthClient, init_config, get_config
-from .services import init_crypto_service, get_crypto_service, get_token_service, get_audit_log
+from .services import (
+    init_crypto_service,
+    get_crypto_service,
+    get_token_service,
+    get_audit_log,
+    build_discovery_document,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -828,26 +834,9 @@ async def _execute_tool(name: str, arguments: dict[str, Any], config: ConfigMana
 
     # Discovery
     elif name == "get_oidc_discovery":
-        settings = config.settings
-        return {
-            "issuer": settings.issuer,
-            "authorization_endpoint": f"{settings.issuer}/authorize",
-            "token_endpoint": f"{settings.issuer}/token",
-            "userinfo_endpoint": f"{settings.issuer}/userinfo",
-            "introspection_endpoint": f"{settings.issuer}/introspect",
-            "revocation_endpoint": f"{settings.issuer}/revoke",
-            "end_session_endpoint": f"{settings.issuer}/logout",
-            "device_authorization_endpoint": f"{settings.issuer}/device_authorization",
-            "jwks_uri": f"{settings.issuer}/.well-known/jwks.json",
-            "grant_types_supported": [
-                "authorization_code",
-                "client_credentials",
-                "password",
-                "refresh_token",
-                "urn:ietf:params:oauth:grant-type:device_code",
-            ],
-            "scopes_supported": ["openid", "profile", "email", "offline_access"],
-        }
+        # Shared with the HTTP /.well-known/openid-configuration endpoint so
+        # the two documents can never drift apart (issue #40).
+        return build_discovery_document(config.settings)
 
     elif name == "get_jwks":
         crypto = get_crypto_service(config.settings.keys_dir)
