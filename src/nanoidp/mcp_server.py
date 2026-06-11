@@ -56,6 +56,8 @@ MUTATING_TOOLS = {
     "generate_token",
     "update_settings",
     "save_config",
+    "clear_audit_log",
+    "rotate_keys",
 }
 
 
@@ -511,6 +513,14 @@ async def list_tools() -> list[Tool]:
                         "type": "boolean",
                         "description": "Include usernames/client_ids in log messages (dev convenience)",
                     },
+                    "refresh_token_rotation": {
+                        "type": "boolean",
+                        "description": "Rotate refresh tokens: each refresh invalidates the consumed refresh token (#46)",
+                    },
+                    "require_pkce": {
+                        "type": "boolean",
+                        "description": "Reject /authorize requests without a PKCE code_challenge (#47)",
+                    },
                 },
                 "required": [],
             },
@@ -538,6 +548,68 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="get_jwks",
             description="Get JSON Web Key Set for token verification",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        ),
+
+        # Audit log (mirrors /api/audit*, issue #48)
+        Tool(
+            name="get_audit_log",
+            description="Get audit log entries (what the IdP recorded: token requests, logins, SAML flows)",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum entries to return (default: 100)",
+                    },
+                    "event_type": {
+                        "type": "string",
+                        "description": "Filter by event type (e.g. token_request, authorization_request)",
+                    },
+                    "username": {
+                        "type": "string",
+                        "description": "Filter by username",
+                    },
+                },
+                "required": [],
+            },
+        ),
+        Tool(
+            name="get_audit_stats",
+            description="Get audit log statistics (event counts by type/status)",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        ),
+        Tool(
+            name="clear_audit_log",
+            description="Clear the audit log",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        ),
+
+        # Key management (mirrors /api/keys*, issue #48)
+        Tool(
+            name="get_keys_info",
+            description="Get information about the signing keys (active kid, previous keys)",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        ),
+        Tool(
+            name="rotate_keys",
+            description="Rotate the signing keys: the active key moves to 'previous' (still valid for verification) and a new active key is generated — useful to test clients' JWKS refresh handling",
             inputSchema={
                 "type": "object",
                 "properties": {},
@@ -766,6 +838,8 @@ async def _execute_tool(name: str, arguments: dict[str, Any], config: ConfigMana
             "issuer": settings.issuer,
             "audience": settings.audience,
             "token_expiry_minutes": settings.token_expiry_minutes,
+            "refresh_token_rotation": settings.refresh_token_rotation,
+            "require_pkce": settings.require_pkce,
             "jwt_algorithm": settings.jwt_algorithm,
             "saml": {
                 "entity_id": settings.saml_entity_id,
@@ -809,6 +883,12 @@ async def _execute_tool(name: str, arguments: dict[str, Any], config: ConfigMana
         if "verbose_logging" in arguments:
             settings.verbose_logging = arguments["verbose_logging"]
             updated.append("verbose_logging")
+        if "refresh_token_rotation" in arguments:
+            settings.refresh_token_rotation = arguments["refresh_token_rotation"]
+            updated.append("refresh_token_rotation")
+        if "require_pkce" in arguments:
+            settings.require_pkce = arguments["require_pkce"]
+            updated.append("require_pkce")
 
         return {
             "success": True,
@@ -817,6 +897,8 @@ async def _execute_tool(name: str, arguments: dict[str, Any], config: ConfigMana
                 "issuer": settings.issuer,
                 "audience": settings.audience,
                 "token_expiry_minutes": settings.token_expiry_minutes,
+                "refresh_token_rotation": settings.refresh_token_rotation,
+                "require_pkce": settings.require_pkce,
                 "saml_sign_responses": settings.saml_sign_responses,
                 "saml_c14n_algorithm": settings.saml_c14n_algorithm,
                 "strict_saml_binding": settings.strict_saml_binding,
@@ -840,6 +922,46 @@ async def _execute_tool(name: str, arguments: dict[str, Any], config: ConfigMana
     elif name == "get_jwks":
         crypto = get_crypto_service(config.settings.keys_dir)
         return crypto.get_jwks()
+
+    # Audit log (mirrors /api/audit*, issue #48)
+    elif name == "get_audit_log":
+        audit = get_audit_log()
+        entries = audit.get_entries(
+            limit=arguments.get("limit", 100),
+            event_type=arguments.get("event_type"),
+            username=arguments.get("username"),
+        )
+        return {"entries": entries, "count": len(entries)}
+
+    elif name == "get_audit_stats":
+        return get_audit_log().get_stats()
+
+    elif name == "clear_audit_log":
+        get_audit_log().clear()
+        return {"success": True, "message": "Audit log cleared"}
+
+    # Key management (mirrors /api/keys*, issue #48)
+    elif name == "get_keys_info":
+        crypto = get_crypto_service(config.settings.keys_dir)
+        return {
+            "active_kid": crypto.kid,
+            "previous_keys_count": len(crypto.previous_keys),
+            "previous_kids": [k.kid for k in crypto.previous_keys],
+            "max_previous_keys": crypto.max_previous_keys,
+        }
+
+    elif name == "rotate_keys":
+        crypto = get_crypto_service(config.settings.keys_dir)
+        result = crypto.rotate_keys()
+        get_audit_log().log(
+            event_type="key_rotation",
+            endpoint="mcp:rotate_keys",
+            method="MCP",
+            username="mcp",
+            status="success",
+            details={"old_kid": result["old_kid"], "new_kid": result["new_kid"]},
+        )
+        return {"success": True, **result}
 
     else:
         return {"error": f"Unknown tool: {name}"}

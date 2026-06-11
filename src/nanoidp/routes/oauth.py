@@ -153,6 +153,46 @@ def authorize():
             "error_description": "Invalid redirect_uri"
         }), 400
 
+    # PKCE enforcement (issue #47). With require_pkce enabled (on by default in
+    # the stricter-dev profile) an authorization request without a
+    # code_challenge is rejected, so developers can verify their client
+    # actually sends PKCE (mandatory in OAuth 2.1).
+    if config.settings.require_pkce and not code_challenge:
+        audit.log(
+            event_type="authorization_request",
+            endpoint="/authorize",
+            method=request.method,
+            status="failed",
+            client_id=client_id,
+            details={"reason": "PKCE code_challenge required (require_pkce enabled)"},
+            **req_info,
+        )
+        return jsonify({
+            "error": "invalid_request",
+            "error_description": "PKCE code_challenge is required (require_pkce is enabled)"
+        }), 400
+
+    # The 'plain' method is only acceptable when S256 is unavailable (RFC 7636
+    # §4.2); the stricter-dev profile rejects it outright (#47).
+    if (
+        code_challenge_method == "plain"
+        and config.settings.security_profile == "stricter-dev"
+    ):
+        audit.log(
+            event_type="authorization_request",
+            endpoint="/authorize",
+            method=request.method,
+            status="failed",
+            client_id=client_id,
+            details={"reason": "PKCE method 'plain' rejected by stricter-dev profile"},
+            **req_info,
+        )
+        return jsonify({
+            "error": "invalid_request",
+            "error_description": "code_challenge_method 'plain' is not allowed by the "
+                                 "stricter-dev profile; use S256"
+        }), 400
+
     error_msg = None
 
     # Handle POST (login form submission)
@@ -247,6 +287,7 @@ def token():
     nonce = None
     scope = None
     auth_time = None
+    rotated_refresh_jti = None
 
     # Reject if client identity cannot be determined at all
     if not client_id:
@@ -345,6 +386,28 @@ def token():
                 **req_info,
             )
             return abort(400, description="Invalid token type")
+
+        # Reject revoked refresh tokens — covers explicit /revoke calls and
+        # tokens consumed by rotation (issue #46)
+        if payload.get("jti") in _revoked_tokens:
+            audit.log(
+                event_type="token_request",
+                endpoint="/token",
+                method="POST",
+                status="failed",
+                client_id=client_id,
+                details={"reason": "Refresh token revoked (rotated or explicitly revoked)",
+                         "grant_type": grant_type},
+                **req_info,
+            )
+            return abort(401, description="Refresh token has been revoked")
+
+        # With rotation enabled, consuming this refresh token invalidates it:
+        # the response carries a new one, and reusing the old one must fail
+        # (OAuth 2.0 Security BCP §4.14.2, issue #46). Revocation happens after
+        # token issuance below, so a failed request leaves the token valid.
+        if config.settings.refresh_token_rotation:
+            rotated_refresh_jti = payload.get("jti")
 
         # Extract username and get user data
         username = payload.get("sub")
@@ -675,6 +738,11 @@ def token():
         client_id=client_id,
         auth_time=auth_time,
     )
+
+    # Rotation: the consumed refresh token is invalidated only now that its
+    # replacement has been issued (issue #46)
+    if rotated_refresh_jti:
+        _revoked_tokens.add(rotated_refresh_jti)
 
     # Audit log
     audit.log(
