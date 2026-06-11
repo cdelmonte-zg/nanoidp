@@ -17,7 +17,7 @@
 
 ## Features
 
-- **OAuth2 / OIDC** - Full OAuth2 implementation with Authorization Code, Password, Client Credentials, Refresh Token, and Device Authorization grants
+- **OAuth2 / OIDC** - OAuth2/OIDC support for development and integration testing: Authorization Code, Password, Client Credentials, Refresh Token, and Device Authorization grants
 - **PKCE Support** - Proof Key for Code Exchange (RFC 7636) with S256 and plain methods
 - **Token Management** - Introspection (RFC 7662) and Revocation (RFC 7009) endpoints
 - **OIDC Logout** - End Session endpoint for RP-initiated logout
