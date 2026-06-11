@@ -531,15 +531,21 @@ NanoIDP includes an MCP server for integration with Claude Code and other MCP-co
 | `list_users` | List all configured users |
 | `get_user` | Get details of a specific user |
 | `create_user` | Create a new user |
+| `update_user` | Update an existing user (password, email, roles, …) |
 | `delete_user` | Delete a user |
-| `generate_token` | Generate OAuth2 access token for a user |
+| `generate_token` | Generate OAuth2 tokens for a user (pass `scope` with `openid` to also get an ID Token) |
 | `decode_token` | Decode JWT token (without verification) |
 | `verify_token` | Verify JWT token signature and expiration |
 | `list_clients` | List OAuth clients |
 | `get_client` | Get client details |
+| `create_client` | Create a new OAuth client |
+| `update_client` | Update an existing OAuth client |
+| `delete_client` | Delete an OAuth client |
 | `get_settings` | Get current IdP settings |
+| `update_settings` | Update IdP settings |
+| `save_config` | Persist the current configuration to the YAML files |
 | `reload_config` | Reload configuration from files |
-| `get_oidc_discovery` | Get OIDC discovery document |
+| `get_oidc_discovery` | Get OIDC discovery document (same document as `/.well-known/openid-configuration`) |
 | `get_jwks` | Get JSON Web Key Set |
 
 ### Claude Code CLI Configuration

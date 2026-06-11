@@ -8,7 +8,13 @@ from urllib.parse import urlencode, urlparse
 from flask import Blueprint, request, jsonify, abort, redirect, render_template, session, url_for
 
 from ..config import get_config, User
-from ..services import get_token_service, get_crypto_service, get_audit_log, get_auth_code_store
+from ..services import (
+    get_token_service,
+    get_crypto_service,
+    get_audit_log,
+    get_auth_code_store,
+    build_discovery_document,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -29,41 +35,7 @@ def _get_request_info():
 def oidc_config():
     """OIDC Discovery endpoint."""
     config = get_config()
-    settings = config.settings
-
-    return jsonify(
-        {
-            "issuer": settings.issuer,
-            "authorization_endpoint": f"{settings.issuer}/authorize",
-            "token_endpoint": f"{settings.issuer}/token",
-            "userinfo_endpoint": f"{settings.issuer}/userinfo",
-            "introspection_endpoint": f"{settings.issuer}/introspect",
-            "revocation_endpoint": f"{settings.issuer}/revoke",
-            "end_session_endpoint": f"{settings.issuer}/logout",
-            "device_authorization_endpoint": f"{settings.issuer}/device_authorization",
-            "jwks_uri": f"{settings.issuer}/.well-known/jwks.json",
-            "token_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post"],
-            "introspection_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post"],
-            "revocation_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post"],
-            "response_types_supported": ["code", "token"],
-            "id_token_signing_alg_values_supported": ["RS256"],
-            "scopes_supported": ["openid", "profile", "email", "offline_access"],
-            "claims_supported": [
-                "sub", "iss", "aud", "azp", "exp", "iat", "nbf",
-                "email", "email_verified", "preferred_username",
-                "roles", "tenant", "identity_class", "entitlements",
-                "source_acl", "attributes", "authorities"
-            ],
-            "grant_types_supported": [
-                "authorization_code",
-                "client_credentials",
-                "password",
-                "refresh_token",
-                "urn:ietf:params:oauth:grant-type:device_code",
-            ],
-            "code_challenge_methods_supported": ["plain", "S256"],
-        }
-    )
+    return jsonify(build_discovery_document(config.settings))
 
 
 @oauth_bp.route("/.well-known/jwks.json")

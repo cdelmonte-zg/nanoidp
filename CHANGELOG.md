@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- The MCP `get_oidc_discovery` tool now returns the exact same document as the
+  HTTP `/.well-known/openid-configuration` endpoint (#40). Both build it via a
+  new shared helper (`services.discovery.build_discovery_document`), so the
+  MCP tool now advertises `claims_supported` (including `azp`),
+  `response_types_supported`, `id_token_signing_alg_values_supported`,
+  `code_challenge_methods_supported` and the endpoint auth methods — and the
+  two documents can no longer drift apart.
+- Discovery no longer advertises the `token` response type (#41): the implicit
+  flow was never implemented (`/authorize` only accepts `response_type=code`)
+  and is deprecated by the OAuth 2.0 Security BCP, so advertising it misled
+  clients. `response_types_supported` is now `["code"]`.
+
+### Documentation
+- The MCP tools table in the README now lists all 19 tools (#44): it was
+  missing `create_client`, `update_client`, `delete_client`, `update_user`,
+  `update_settings` and `save_config`. (`docs/MCP_WORKFLOW.md` was already
+  complete.)
+
 ### Added
 - The **refresh_token** grant now re-issues an ID Token when the original grant
   included the `openid` scope (OIDC Core §12.2, #39). The granted scope is
