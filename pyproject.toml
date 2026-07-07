@@ -61,6 +61,7 @@ dev = [
     "ruff>=0.1.0",
     "mypy>=1.8.0",
     "types-PyYAML",
+    "requests>=2.31.0",  # examples/test_agent.py (e2e)
 ]
 
 [project.scripts]
