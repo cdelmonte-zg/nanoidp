@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 class TokenService:
     """Service for generating JWT tokens."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.config = get_config()
         self.crypto = get_crypto_service(self.config.settings.keys_dir)
 

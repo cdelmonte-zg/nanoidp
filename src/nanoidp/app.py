@@ -6,7 +6,7 @@ import logging
 import os
 from typing import Optional
 
-from flask import Flask, jsonify
+from flask import Flask, Response, jsonify
 from flask_cors import CORS
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
@@ -102,12 +102,12 @@ def create_app(config_dir: Optional[str] = None, profile: Optional[str] = None) 
 
     # Context processor to inject version into all templates
     @app.context_processor
-    def inject_version():
+    def inject_version() -> dict[str, str]:
         return {"app_version": __version__}
 
     # Health check at root for backward compatibility
     @app.route("/health")
-    def health():
+    def health() -> Response:
         return jsonify({"status": "ok"})
 
     logger.info("NanoIDP initialized")
@@ -131,7 +131,7 @@ def run_app(
     debug: Optional[bool] = None,
     config_dir: Optional[str] = None,
     profile: Optional[str] = None,
-):
+) -> None:
     """Run the Flask application."""
     app = create_app(config_dir, profile=profile)
     config = get_config()

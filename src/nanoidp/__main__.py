@@ -122,7 +122,7 @@ Default credentials:
 """)
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(
         description="NanoIDP - Lightweight Identity Provider for testing OAuth2/OIDC and SAML integrations"
     )

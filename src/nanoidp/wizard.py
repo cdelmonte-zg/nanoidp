@@ -43,7 +43,7 @@ def _confirm(message: str) -> bool:
             return False
 
 
-def _print_header(title: str):
+def _print_header(title: str) -> None:
     """Print a section header."""
     print()
     print(f"{'─' * 50}")
@@ -51,7 +51,7 @@ def _print_header(title: str):
     print(f"{'─' * 50}")
 
 
-def _print_box(lines: list[str], title: str = ""):
+def _print_box(lines: list[str], title: str = "") -> None:
     """Print text in a box."""
     width = max(len(line) for line in lines) + 4
     width = max(width, len(title) + 4)
