@@ -19,12 +19,8 @@ import pytest
 def cleanup_device_codes():
     """Clean up device codes after each test to prevent state leakage."""
     yield
-    # Clean up any device codes that might be left over
-    try:
-        from nanoidp.routes.oauth import _device_codes
-        _device_codes.clear()
-    except (ImportError, AttributeError):
-        pass
+    from nanoidp.services.device_code import get_device_code_store
+    get_device_code_store().clear()
 
 
 class TestDeviceFlowHappyPath:
@@ -140,9 +136,10 @@ class TestDeviceFlowExpiration:
         device_code = data['device_code']
 
         # Directly modify the device code's expiration time
-        from nanoidp.routes.oauth import _device_codes
-        if device_code in _device_codes:
-            _device_codes[device_code]['expires_at'] = time.time() - 100  # Already expired
+        from nanoidp.services.device_code import get_device_code_store
+        grant = get_device_code_store()._codes.get(device_code)
+        if grant:
+            grant.expires_at = time.time() - 100  # Already expired
 
         response = client.post('/token', data={
             'grant_type': 'urn:ietf:params:oauth:grant-type:device_code',
@@ -161,9 +158,10 @@ class TestDeviceFlowExpiration:
         device_code = data['device_code']
 
         # Directly modify the device code's expiration time
-        from nanoidp.routes.oauth import _device_codes
-        if device_code in _device_codes:
-            _device_codes[device_code]['expires_at'] = time.time() - 100  # Already expired
+        from nanoidp.services.device_code import get_device_code_store
+        grant = get_device_code_store()._codes.get(device_code)
+        if grant:
+            grant.expires_at = time.time() - 100  # Already expired
 
         response = client.post('/device', data={
             'user_code': user_code,

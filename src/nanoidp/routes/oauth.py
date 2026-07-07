@@ -4,24 +4,28 @@ OAuth2/OIDC routes for token endpoint and discovery.
 
 import json
 import logging
-import secrets
-import threading
-import time
-from typing import Any, TypedDict
+from dataclasses import dataclass
+from typing import Callable, Dict, Optional, TypedDict, Union
 from urllib.parse import urlencode, urlparse
 
 import jwt as pyjwt
 from flask import Blueprint, abort, jsonify, redirect, render_template, request, session
 from flask.typing import ResponseReturnValue
 
-from ..config import User, get_config
+from ..config import ConfigManager, User, get_config
 from ..services import (
+    AuditLog,
+    DevicePollOutcome,
+    DeviceVerifyOutcome,
     build_discovery_document,
     get_audit_log,
     get_auth_code_store,
     get_crypto_service,
+    get_device_code_store,
+    get_revocation_store,
     get_token_service,
 )
+from ..services.device_code import DEVICE_CODE_EXPIRES_IN, DEVICE_POLL_INTERVAL
 
 logger = logging.getLogger(__name__)
 
@@ -353,9 +357,464 @@ def authorize() -> ResponseReturnValue:
     )
 
 
+# ============================================================================
+# Token endpoint: shared validation in token(), one handler per grant (#84)
+# ============================================================================
+
+
+@dataclass
+class _GrantOutcome:
+    """Issuance parameters a grant handler hands back to token()."""
+
+    user: User
+    username: str
+    nonce: Optional[str] = None
+    scope: Optional[str] = None
+    auth_time: Optional[int] = None
+    refresh_family: Optional[str] = None
+
+
+@dataclass
+class _GrantContext:
+    """Request-scoped facts shared by every grant handler."""
+
+    config: ConfigManager
+    audit: AuditLog
+    req_info: _RequestInfo
+    # token() rejects requests without a client identity before dispatching,
+    # so handlers always see a concrete id.
+    client_id: str
+    grant_type: str
+
+
+# A handler returns either issuance parameters or a finished error response.
+GrantResult = Union[_GrantOutcome, ResponseReturnValue]
+
+
+def _grant_refresh_token(ctx: _GrantContext) -> GrantResult:
+    """refresh_token grant (RFC 6749 §6; rotation per RFC 9700 §4.14)."""
+    refresh_token = request.form.get("refresh_token", "")
+    if not refresh_token:
+        ctx.audit.log(
+            event_type="token_request",
+            endpoint="/token",
+            method="POST",
+            status="failed",
+            client_id=ctx.client_id,
+            details={"reason": "Missing refresh_token", "grant_type": ctx.grant_type},
+            **ctx.req_info,
+        )
+        return abort(400, description="refresh_token is required")
+
+    # Verify and decode refresh token
+    crypto = get_crypto_service(ctx.config.settings.keys_dir)
+    try:
+        payload = crypto.verify_jwt(refresh_token, ctx.config.settings.audience)
+    except Exception as e:
+        ctx.audit.log(
+            event_type="token_request",
+            endpoint="/token",
+            method="POST",
+            status="failed",
+            client_id=ctx.client_id,
+            details={
+                "reason": f"Invalid refresh token: {str(e)}",
+                "grant_type": ctx.grant_type,
+            },
+            **ctx.req_info,
+        )
+        return abort(401, description=f"Invalid refresh token: {str(e)}")
+
+    # Check if it's actually a refresh token
+    if payload.get("token_type") != "refresh":
+        ctx.audit.log(
+            event_type="token_request",
+            endpoint="/token",
+            method="POST",
+            status="failed",
+            client_id=ctx.client_id,
+            details={"reason": "Not a refresh token", "grant_type": ctx.grant_type},
+            **ctx.req_info,
+        )
+        return abort(400, description="Invalid token type")
+
+    # A refresh token may only be spent by the client it was issued to
+    # (RFC 9700 §4.14, #56). The binding claim was added in #56; tokens
+    # minted before it carry no client_id and stay usable (legacy compat).
+    bound_client = payload.get("client_id")
+    if bound_client and bound_client != ctx.client_id:
+        ctx.audit.log(
+            event_type="token_request",
+            endpoint="/token",
+            method="POST",
+            status="failed",
+            client_id=ctx.client_id,
+            details={
+                "reason": "Refresh token was issued to a different client",
+                "grant_type": ctx.grant_type,
+                "bound_client": bound_client,
+            },
+            **ctx.req_info,
+        )
+        return abort(401, description="Refresh token was not issued to this client")
+
+    # Extract username and get user data
+    username = payload.get("sub")
+    if not username:
+        return abort(400, description="Invalid token: missing subject")
+
+    user = ctx.config.get_user(username)
+    if not user:
+        ctx.audit.log(
+            event_type="token_request",
+            endpoint="/token",
+            method="POST",
+            status="failed",
+            username=username,
+            client_id=ctx.client_id,
+            details={"reason": "User not found", "grant_type": ctx.grant_type},
+            **ctx.req_info,
+        )
+        return abort(401, description="User not found")
+
+    # Recover the originally granted scope persisted in the refresh token
+    # so an ID Token is re-issued when 'openid' was granted (OIDC Core
+    # §12.2, issue #39). A 'scope' form parameter may narrow, but never
+    # broaden, the original grant (RFC 6749 §6). Refresh tokens minted
+    # before scope was persisted carry no scope claim and keep the old
+    # behavior: tokens are refreshed without an ID Token. The refreshed
+    # ID Token intentionally carries no nonce — that claim binds the
+    # original authentication request, not later refreshes.
+    original_scope = payload.get("scope") or ""
+    requested_scope = request.form.get("scope")
+    scope: Optional[str]
+    if requested_scope:
+        granted = set(original_scope.split())
+        rejected = [s for s in requested_scope.split() if s not in granted]
+        if rejected:
+            ctx.audit.log(
+                event_type="token_request",
+                endpoint="/token",
+                method="POST",
+                status="failed",
+                username=username,
+                client_id=ctx.client_id,
+                details={
+                    "reason": "Requested scope exceeds originally granted scope",
+                    "grant_type": ctx.grant_type,
+                    "rejected_scopes": rejected,
+                },
+                **ctx.req_info,
+            )
+            return abort(
+                400, description="Requested scope exceeds originally granted scope"
+            )
+        scope = requested_scope
+    else:
+        scope = original_scope or None
+
+    # A refreshed ID Token must carry the ORIGINAL authentication time
+    # (OIDC Core §12.2), persisted in the refresh token claims (#42).
+    auth_time = payload.get("auth_time")
+
+    # The family id survives rotation so descendants share it (#56).
+    refresh_family = payload.get("rt_family")
+
+    # Revocation check and (with rotation) consumption of this token, as a
+    # single check-and-claim under the store's lock: two concurrent refreshes
+    # of the same token can no longer both pass the check and both rotate
+    # (#56). Reuse of an already-consumed token is treated as leakage and
+    # revokes the whole family — attacker's copy and legitimate descendant
+    # alike (RFC 9700 §4.14.2). This call sits after every validation that
+    # may reject the request (binding, user, scope narrowing — and the
+    # grant-independent 'exp'/'extra' params, validated before the grant
+    # dispatch), so a rejected request never consumes the token: from here
+    # on, issuance is local signing and cannot fail.
+    jti = payload.get("jti")
+    reuse_detected = get_revocation_store().check_and_claim_refresh(
+        jti, refresh_family, ctx.config.settings.rotation_enabled
+    )
+    if reuse_detected:
+        ctx.audit.log(
+            event_type="token_request",
+            endpoint="/token",
+            method="POST",
+            status="failed",
+            username=username,
+            client_id=ctx.client_id,
+            details={
+                "reason": "Refresh token revoked (rotated, reused, or family revoked)",
+                "grant_type": ctx.grant_type,
+            },
+            **ctx.req_info,
+        )
+        return abort(401, description="Refresh token has been revoked")
+
+    return _GrantOutcome(
+        user=user,
+        username=username,
+        scope=scope,
+        auth_time=auth_time,
+        refresh_family=refresh_family,
+    )
+
+
+def _grant_password(ctx: _GrantContext) -> GrantResult:
+    """password grant (RFC 6749 §4.3; removed by OAuth 2.1)."""
+    # OAuth 2.1 removes the resource-owner password grant entirely; under
+    # the oauth21 profile it is rejected (RFC 6749 §5.2) and absent from
+    # the discovery document's grant_types_supported (#68).
+    if not ctx.config.settings.password_grant_enabled:
+        ctx.audit.log(
+            event_type="token_request",
+            endpoint="/token",
+            method="POST",
+            status="failed",
+            client_id=ctx.client_id,
+            details={
+                "reason": "password grant disabled by the oauth21 profile",
+                "grant_type": ctx.grant_type,
+            },
+            **ctx.req_info,
+        )
+        return abort(
+            400,
+            description="Unsupported grant_type: the password grant is "
+            "disabled by the oauth21 profile",
+        )
+
+    username = request.form.get("username", "").strip()
+    password = request.form.get("password", "")
+
+    if not username or not password:
+        ctx.audit.log(
+            event_type="token_request",
+            endpoint="/token",
+            method="POST",
+            status="failed",
+            client_id=ctx.client_id,
+            details={
+                "reason": "Missing username or password",
+                "grant_type": ctx.grant_type,
+            },
+            **ctx.req_info,
+        )
+        return abort(
+            400, description="username and password required for password grant"
+        )
+
+    user = ctx.config.authenticate(username, password)
+    if not user:
+        ctx.audit.log(
+            event_type="token_request",
+            endpoint="/token",
+            method="POST",
+            status="failed",
+            username=username,
+            client_id=ctx.client_id,
+            details={"reason": "Invalid credentials", "grant_type": ctx.grant_type},
+            **ctx.req_info,
+        )
+        return abort(401, description="Invalid credentials")
+
+    # An authenticated end-user is present, so honour an openid scope and
+    # emit an ID Token (issue #36). nonce is non-standard for this grant but
+    # accepted as a dev convenience; normalize an empty field to None so we
+    # don't emit an empty nonce claim (matches the authorization_code path).
+    return _GrantOutcome(
+        user=user,
+        username=username,
+        nonce=request.form.get("nonce") or None,
+        scope=request.form.get("scope"),
+    )
+
+
+def _grant_authorization_code(ctx: _GrantContext) -> GrantResult:
+    """authorization_code grant (RFC 6749 §4.1, PKCE per RFC 7636)."""
+    code = request.form.get("code", "")
+    redirect_uri = request.form.get("redirect_uri", "")
+    code_verifier = request.form.get("code_verifier")  # PKCE
+
+    if not code:
+        ctx.audit.log(
+            event_type="token_request",
+            endpoint="/token",
+            method="POST",
+            status="failed",
+            client_id=ctx.client_id,
+            details={"reason": "Missing authorization code", "grant_type": ctx.grant_type},
+            **ctx.req_info,
+        )
+        return abort(400, description="code is required")
+
+    if not redirect_uri:
+        ctx.audit.log(
+            event_type="token_request",
+            endpoint="/token",
+            method="POST",
+            status="failed",
+            client_id=ctx.client_id,
+            details={"reason": "Missing redirect_uri", "grant_type": ctx.grant_type},
+            **ctx.req_info,
+        )
+        return abort(400, description="redirect_uri is required")
+
+    # Consume the authorization code
+    auth_code_store = get_auth_code_store()
+    auth_code = auth_code_store.consume_code(
+        code=code,
+        client_id=ctx.client_id,
+        redirect_uri=redirect_uri,
+        code_verifier=code_verifier,
+    )
+
+    if not auth_code:
+        ctx.audit.log(
+            event_type="token_request",
+            endpoint="/token",
+            method="POST",
+            status="failed",
+            client_id=ctx.client_id,
+            details={"reason": "Invalid or expired authorization code", "grant_type": ctx.grant_type},
+            **ctx.req_info,
+        )
+        return abort(400, description="Invalid or expired authorization code")
+
+    # Get the user from the authorization code
+    username = auth_code.username
+    user = ctx.config.get_user(username)
+    if not user:
+        ctx.audit.log(
+            event_type="token_request",
+            endpoint="/token",
+            method="POST",
+            status="failed",
+            username=username,
+            client_id=ctx.client_id,
+            details={"reason": "User not found", "grant_type": ctx.grant_type},
+            **ctx.req_info,
+        )
+        return abort(401, description="User not found")
+
+    return _GrantOutcome(
+        user=user,
+        username=username,
+        nonce=auth_code.nonce if auth_code.nonce is not None else None,
+        scope=auth_code.scope if auth_code.scope is not None else None,
+        # The user authenticated at the login page when the code was created,
+        # not at this token exchange — use that moment as auth_time (#42).
+        auth_time=int(auth_code.created_at.timestamp()),
+    )
+
+
+def _grant_client_credentials(ctx: _GrantContext) -> GrantResult:
+    """client_credentials grant (RFC 6749 §4.4)."""
+    # Use default user for client credentials
+    default_username = ctx.config.default_user
+    user = ctx.config.get_user(default_username)
+    if not user:
+        # Create a minimal service account user
+        user = User(
+            username="service-account",
+            password="",
+            roles=["user"],
+            tenant="default",
+        )
+    return _GrantOutcome(user=user, username=user.username)
+
+
+def _grant_device_code(ctx: _GrantContext) -> GrantResult:
+    """device_code grant (RFC 8628 §3.4/§3.5)."""
+    device_code = request.form.get("device_code", "")
+    if not device_code:
+        ctx.audit.log(
+            event_type="token_request",
+            endpoint="/token",
+            method="POST",
+            status="failed",
+            client_id=ctx.client_id,
+            details={"reason": "Missing device_code", "grant_type": ctx.grant_type},
+            **ctx.req_info,
+        )
+        return jsonify({
+            "error": "invalid_request",
+            "error_description": "device_code is required"
+        }), 400
+
+    # The store runs the whole lookup-check-claim sequence under its lock so
+    # two concurrent polls can't both claim the same authorized code
+    # (one-time use, issue #43).
+    outcome, user, grant = get_device_code_store().poll(
+        device_code, ctx.client_id, ctx.config.get_user
+    )
+
+    if outcome is DevicePollOutcome.NOT_FOUND:
+        ctx.audit.log(
+            event_type="token_request",
+            endpoint="/token",
+            method="POST",
+            status="failed",
+            client_id=ctx.client_id,
+            details={"reason": "Invalid device_code", "grant_type": ctx.grant_type},
+            **ctx.req_info,
+        )
+        return jsonify({
+            "error": "invalid_grant",
+            "error_description": "Invalid device code"
+        }), 400
+    if outcome is DevicePollOutcome.WRONG_CLIENT:
+        return jsonify({
+            "error": "invalid_grant",
+            "error_description": "Device code was not issued to this client"
+        }), 400
+    if outcome is DevicePollOutcome.EXPIRED:
+        return jsonify({
+            "error": "expired_token",
+            "error_description": "Device code has expired"
+        }), 400
+    if outcome is DevicePollOutcome.PENDING:
+        return jsonify({
+            "error": "authorization_pending",
+            "error_description": "User has not yet authorized the device"
+        }), 400
+    if outcome is DevicePollOutcome.DENIED:
+        return jsonify({
+            "error": "access_denied",
+            "error_description": "User denied the authorization request"
+        }), 400
+    if outcome is DevicePollOutcome.USER_NOT_FOUND:
+        return jsonify({
+            "error": "server_error",
+            "error_description": "User not found"
+        }), 500
+    if outcome is DevicePollOutcome.AUTHORIZED and user and grant:
+        # The device flow authenticates an end-user, so honour the requested
+        # scope and emit an ID Token when 'openid' was asked for (issue #36).
+        # The user authenticated at /device, not at this poll (#42).
+        return _GrantOutcome(
+            user=user,
+            username=user.username,
+            scope=grant.scope,
+            auth_time=grant.auth_time,
+        )
+    return jsonify({
+        "error": "server_error",
+        "error_description": "Unknown device code status"
+    }), 500
+
+
+_GRANT_HANDLERS: Dict[str, Callable[[_GrantContext], GrantResult]] = {
+    "refresh_token": _grant_refresh_token,
+    "password": _grant_password,
+    "authorization_code": _grant_authorization_code,
+    "client_credentials": _grant_client_credentials,
+    "urn:ietf:params:oauth:grant-type:device_code": _grant_device_code,
+}
+
+
 @oauth_bp.route("/token", methods=["POST"])
 def token() -> ResponseReturnValue:
-    """OAuth2 token endpoint."""
+    """OAuth2 token endpoint: shared validation, then per-grant dispatch."""
     config = get_config()
     audit = get_audit_log()
     req_info = _get_request_info()
@@ -365,10 +824,6 @@ def token() -> ResponseReturnValue:
     body_client_id = request.form.get("client_id")
     auth_client_id = auth.username if auth else None
     client_id = body_client_id or auth_client_id
-    nonce = None
-    scope = None
-    auth_time = None
-    refresh_family = None
 
     # Reject if client identity cannot be determined at all
     if not client_id:
@@ -484,435 +939,9 @@ def token() -> ResponseReturnValue:
             return abort(400, description="'extra' must be a JSON object")
         extra_claims = parsed_extra
 
-    # Refresh token grant
-    if grant_type == "refresh_token":
-        refresh_token = request.form.get("refresh_token", "")
-        if not refresh_token:
-            audit.log(
-                event_type="token_request",
-                endpoint="/token",
-                method="POST",
-                status="failed",
-                client_id=client_id,
-                details={"reason": "Missing refresh_token", "grant_type": grant_type},
-                **req_info,
-            )
-            return abort(400, description="refresh_token is required")
-
-        # Verify and decode refresh token
-        crypto = get_crypto_service(config.settings.keys_dir)
-        try:
-            payload = crypto.verify_jwt(refresh_token, config.settings.audience)
-        except Exception as e:
-            audit.log(
-                event_type="token_request",
-                endpoint="/token",
-                method="POST",
-                status="failed",
-                client_id=client_id,
-                details={
-                    "reason": f"Invalid refresh token: {str(e)}",
-                    "grant_type": grant_type,
-                },
-                **req_info,
-            )
-            return abort(401, description=f"Invalid refresh token: {str(e)}")
-
-        # Check if it's actually a refresh token
-        if payload.get("token_type") != "refresh":
-            audit.log(
-                event_type="token_request",
-                endpoint="/token",
-                method="POST",
-                status="failed",
-                client_id=client_id,
-                details={"reason": "Not a refresh token", "grant_type": grant_type},
-                **req_info,
-            )
-            return abort(400, description="Invalid token type")
-
-        # A refresh token may only be spent by the client it was issued to
-        # (RFC 9700 §4.14, #56). The binding claim was added in #56; tokens
-        # minted before it carry no client_id and stay usable (legacy compat).
-        bound_client = payload.get("client_id")
-        if bound_client and bound_client != client_id:
-            audit.log(
-                event_type="token_request",
-                endpoint="/token",
-                method="POST",
-                status="failed",
-                client_id=client_id,
-                details={
-                    "reason": "Refresh token was issued to a different client",
-                    "grant_type": grant_type,
-                    "bound_client": bound_client,
-                },
-                **req_info,
-            )
-            return abort(401, description="Refresh token was not issued to this client")
-
-        # Extract username and get user data
-        username = payload.get("sub")
-        if not username:
-            return abort(400, description="Invalid token: missing subject")
-
-        user = config.get_user(username)
-        if not user:
-            audit.log(
-                event_type="token_request",
-                endpoint="/token",
-                method="POST",
-                status="failed",
-                username=username,
-                client_id=client_id,
-                details={"reason": "User not found", "grant_type": grant_type},
-                **req_info,
-            )
-            return abort(401, description="User not found")
-
-        # Recover the originally granted scope persisted in the refresh token
-        # so an ID Token is re-issued when 'openid' was granted (OIDC Core
-        # §12.2, issue #39). A 'scope' form parameter may narrow, but never
-        # broaden, the original grant (RFC 6749 §6). Refresh tokens minted
-        # before scope was persisted carry no scope claim and keep the old
-        # behavior: tokens are refreshed without an ID Token. The refreshed
-        # ID Token intentionally carries no nonce — that claim binds the
-        # original authentication request, not later refreshes.
-        original_scope = payload.get("scope") or ""
-        requested_scope = request.form.get("scope")
-        if requested_scope:
-            granted = set(original_scope.split())
-            rejected = [s for s in requested_scope.split() if s not in granted]
-            if rejected:
-                audit.log(
-                    event_type="token_request",
-                    endpoint="/token",
-                    method="POST",
-                    status="failed",
-                    username=username,
-                    client_id=client_id,
-                    details={
-                        "reason": "Requested scope exceeds originally granted scope",
-                        "grant_type": grant_type,
-                        "rejected_scopes": rejected,
-                    },
-                    **req_info,
-                )
-                return abort(
-                    400, description="Requested scope exceeds originally granted scope"
-                )
-            scope = requested_scope
-        else:
-            scope = original_scope or None
-
-        # A refreshed ID Token must carry the ORIGINAL authentication time
-        # (OIDC Core §12.2), persisted in the refresh token claims (#42).
-        auth_time = payload.get("auth_time")
-
-        # The family id survives rotation so descendants share it (#56).
-        refresh_family = payload.get("rt_family")
-
-        # Revocation check and (with rotation) consumption of this token, as a
-        # single check-and-claim under the lock: two concurrent refreshes of
-        # the same token can no longer both pass the check and both rotate
-        # (#56). Reuse of an already-consumed token is treated as leakage and
-        # revokes the whole family — attacker's copy and legitimate descendant
-        # alike (RFC 9700 §4.14.2). This block sits after every validation
-        # that may reject the request (binding, user, scope narrowing — and
-        # the grant-independent 'exp'/'extra' params, validated before the
-        # grant dispatch), so a rejected request never consumes the token:
-        # from here on, issuance is local signing and cannot fail.
-        jti = payload.get("jti")
-        with _revocation_lock:
-            family_revoked = bool(refresh_family) and refresh_family in _revoked_token_families
-            token_revoked = jti in _revoked_tokens
-            if token_revoked or family_revoked:
-                if (
-                    config.settings.rotation_enabled
-                    and refresh_family
-                    and not family_revoked
-                ):
-                    _revoked_token_families.add(refresh_family)
-                reuse_detected = True
-            else:
-                reuse_detected = False
-                if config.settings.rotation_enabled and jti:
-                    _revoked_tokens.add(jti)
-        if reuse_detected:
-            audit.log(
-                event_type="token_request",
-                endpoint="/token",
-                method="POST",
-                status="failed",
-                username=username,
-                client_id=client_id,
-                details={
-                    "reason": "Refresh token revoked (rotated, reused, or family revoked)",
-                    "grant_type": grant_type,
-                },
-                **req_info,
-            )
-            return abort(401, description="Refresh token has been revoked")
-
-    # Password grant
-    elif grant_type == "password":
-        # OAuth 2.1 removes the resource-owner password grant entirely; under
-        # the oauth21 profile it is rejected (RFC 6749 §5.2) and absent from
-        # the discovery document's grant_types_supported (#68).
-        if not config.settings.password_grant_enabled:
-            audit.log(
-                event_type="token_request",
-                endpoint="/token",
-                method="POST",
-                status="failed",
-                client_id=client_id,
-                details={
-                    "reason": "password grant disabled by the oauth21 profile",
-                    "grant_type": grant_type,
-                },
-                **req_info,
-            )
-            return abort(
-                400,
-                description="Unsupported grant_type: the password grant is "
-                "disabled by the oauth21 profile",
-            )
-
-        username = request.form.get("username", "").strip()
-        password = request.form.get("password", "")
-
-        if not username or not password:
-            audit.log(
-                event_type="token_request",
-                endpoint="/token",
-                method="POST",
-                status="failed",
-                client_id=client_id,
-                details={
-                    "reason": "Missing username or password",
-                    "grant_type": grant_type,
-                },
-                **req_info,
-            )
-            return abort(
-                400, description="username and password required for password grant"
-            )
-
-        user = config.authenticate(username, password)
-        if not user:
-            audit.log(
-                event_type="token_request",
-                endpoint="/token",
-                method="POST",
-                status="failed",
-                username=username,
-                client_id=client_id,
-                details={"reason": "Invalid credentials", "grant_type": grant_type},
-                **req_info,
-            )
-            return abort(401, description="Invalid credentials")
-
-        # An authenticated end-user is present, so honour an openid scope and
-        # emit an ID Token (issue #36). nonce is non-standard for this grant but
-        # accepted as a dev convenience; normalize an empty field to None so we
-        # don't emit an empty nonce claim (matches the authorization_code path).
-        scope = request.form.get("scope")
-        nonce = request.form.get("nonce") or None
-
-    # Authorization code grant
-    elif grant_type == "authorization_code":
-        code = request.form.get("code", "")
-        redirect_uri = request.form.get("redirect_uri", "")
-        code_verifier = request.form.get("code_verifier")  # PKCE
-
-        if not code:
-            audit.log(
-                event_type="token_request",
-                endpoint="/token",
-                method="POST",
-                status="failed",
-                client_id=client_id,
-                details={"reason": "Missing authorization code", "grant_type": grant_type},
-                **req_info,
-            )
-            return abort(400, description="code is required")
-
-        if not redirect_uri:
-            audit.log(
-                event_type="token_request",
-                endpoint="/token",
-                method="POST",
-                status="failed",
-                client_id=client_id,
-                details={"reason": "Missing redirect_uri", "grant_type": grant_type},
-                **req_info,
-            )
-            return abort(400, description="redirect_uri is required")
-
-        # Consume the authorization code
-        auth_code_store = get_auth_code_store()
-        auth_code = auth_code_store.consume_code(
-            code=code,
-            client_id=client_id,
-            redirect_uri=redirect_uri,
-            code_verifier=code_verifier,
-        )
-
-        if not auth_code:
-            audit.log(
-                event_type="token_request",
-                endpoint="/token",
-                method="POST",
-                status="failed",
-                client_id=client_id,
-                details={"reason": "Invalid or expired authorization code", "grant_type": grant_type},
-                **req_info,
-            )
-            return abort(400, description="Invalid or expired authorization code")
-
-        # Get the user from the authorization code
-        username = auth_code.username
-        user = config.get_user(username)
-        if not user:
-            audit.log(
-                event_type="token_request",
-                endpoint="/token",
-                method="POST",
-                status="failed",
-                username=username,
-                client_id=client_id,
-                details={"reason": "User not found", "grant_type": grant_type},
-                **req_info,
-            )
-            return abort(401, description="User not found")
-
-        if auth_code.nonce is not None:
-            nonce = auth_code.nonce
-
-        if auth_code.scope is not None:
-            scope = auth_code.scope
-
-        # The user authenticated at the login page when the code was created,
-        # not at this token exchange — use that moment as auth_time (#42).
-        auth_time = int(auth_code.created_at.timestamp())
-
-    # Client credentials grant
-    elif grant_type == "client_credentials":
-        # Use default user for client credentials
-        default_username = config.default_user
-        user = config.get_user(default_username)
-        if not user:
-            # Create a minimal service account user
-            user = User(
-                username="service-account",
-                password="",
-                roles=["user"],
-                tenant="default",
-            )
-        username = user.username
-
-    # Device code grant (RFC 8628)
-    elif grant_type == "urn:ietf:params:oauth:grant-type:device_code":
-        device_code = request.form.get("device_code", "")
-        if not device_code:
-            audit.log(
-                event_type="token_request",
-                endpoint="/token",
-                method="POST",
-                status="failed",
-                client_id=client_id,
-                details={"reason": "Missing device_code", "grant_type": grant_type},
-                **req_info,
-            )
-            return jsonify({
-                "error": "invalid_request",
-                "error_description": "device_code is required"
-            }), 400
-
-        # The whole lookup-check-claim sequence runs under the device codes
-        # lock so two concurrent polls can't both claim the same authorized
-        # code (one-time use, issue #43).
-        with _device_codes_lock:
-            # Look up device code
-            device_info = _device_codes.get(device_code)
-            if not device_info:
-                audit.log(
-                    event_type="token_request",
-                    endpoint="/token",
-                    method="POST",
-                    status="failed",
-                    client_id=client_id,
-                    details={"reason": "Invalid device_code", "grant_type": grant_type},
-                    **req_info,
-                )
-                return jsonify({
-                    "error": "invalid_grant",
-                    "error_description": "Invalid device code"
-                }), 400
-
-            # Check client_id matches
-            if device_info["client_id"] != client_id:
-                return jsonify({
-                    "error": "invalid_grant",
-                    "error_description": "Device code was not issued to this client"
-                }), 400
-
-            # Check expiration
-            import time as time_module
-            if time_module.time() > device_info["expires_at"]:
-                device_info["status"] = "expired"
-                return jsonify({
-                    "error": "expired_token",
-                    "error_description": "Device code has expired"
-                }), 400
-
-            # Check status
-            status = device_info["status"]
-            if status == "pending":
-                # User hasn't authorized yet - tell client to slow down/retry
-                return jsonify({
-                    "error": "authorization_pending",
-                    "error_description": "User has not yet authorized the device"
-                }), 400
-            elif status == "denied":
-                # User denied the request
-                return jsonify({
-                    "error": "access_denied",
-                    "error_description": "User denied the authorization request"
-                }), 400
-            elif status == "expired":
-                return jsonify({
-                    "error": "expired_token",
-                    "error_description": "Device code has expired"
-                }), 400
-            elif status == "authorized":
-                # Success! Get the user and issue tokens
-                username = device_info["username"]
-                user = config.get_user(username)
-                if not user:
-                    return jsonify({
-                        "error": "server_error",
-                        "error_description": "User not found"
-                    }), 500
-
-                # The device flow authenticates an end-user, so honour the requested
-                # scope and emit an ID Token when 'openid' was asked for (issue #36).
-                scope = device_info.get("scope")
-                # The user authenticated at /device, not at this poll (#42).
-                auth_time = device_info.get("auth_time")
-
-                # Clean up the device code (one-time use)
-                user_code = device_info["user_code"]
-                del _device_codes[device_code]
-                del _device_codes[f"user:{user_code}"]
-            else:
-                return jsonify({
-                    "error": "server_error",
-                    "error_description": "Unknown device code status"
-                }), 500
-
-    # Unknown grant type
-    else:
+    # Per-grant dispatch
+    handler = _GRANT_HANDLERS.get(grant_type)
+    if handler is None:
         audit.log(
             event_type="token_request",
             endpoint="/token",
@@ -924,18 +953,30 @@ def token() -> ResponseReturnValue:
         )
         return abort(400, description=f"Unsupported grant_type: {grant_type}")
 
+    ctx = _GrantContext(
+        config=config,
+        audit=audit,
+        req_info=req_info,
+        client_id=client_id,
+        grant_type=grant_type,
+    )
+    result = handler(ctx)
+    if not isinstance(result, _GrantOutcome):
+        return result
+
     # Create token ('exp' and 'extra' were validated before the grant dispatch
-    # so the rotation claim above is the last thing that can reject)
+    # so the rotation claim in the refresh handler is the last thing that can
+    # reject)
     token_service = get_token_service()
     token_response = token_service.create_token(
-        user=user,
+        user=result.user,
         exp_minutes=exp_minutes,
         extra_claims=extra_claims,
-        nonce=nonce,
-        scope=scope,
+        nonce=result.nonce,
+        scope=result.scope,
         client_id=client_id,
-        auth_time=auth_time,
-        refresh_family=refresh_family,
+        auth_time=result.auth_time,
+        refresh_family=result.refresh_family,
     )
 
     # Audit log
@@ -944,31 +985,19 @@ def token() -> ResponseReturnValue:
         endpoint="/token",
         method="POST",
         status="success",
-        username=username,
+        username=result.username,
         client_id=client_id,
         details={
             "grant_type": grant_type,
-            "authorities_count": len(token_service.build_authorities(user)),
+            "authorities_count": len(token_service.build_authorities(result.user)),
         },
         **req_info,
     )
 
     if config.settings.log_token_requests:
-        logger.info(f"Token issued for user '{username}' via {grant_type} grant")
+        logger.info(f"Token issued for user '{result.username}' via {grant_type} grant")
 
     return jsonify(token_response)
-
-
-# Token blacklists for revocation (in-memory). Refresh token rotation (#46)
-# introduced a check-then-claim sequence on _revoked_tokens, so compound
-# accesses in the refresh grant go through _revocation_lock (#56); the plain
-# membership tests in /userinfo,/introspect stay lock-free (single set ops,
-# atomic under the GIL). _revoked_token_families holds rt_family ids whose
-# entire rotation chain was revoked after a reuse was detected (RFC 9700
-# §4.14.2).
-_revoked_tokens: set = set()
-_revoked_token_families: set = set()
-_revocation_lock = threading.Lock()
 
 
 def _extract_bearer_token() -> str | None:
@@ -1031,7 +1060,7 @@ def userinfo() -> ResponseReturnValue:
 
     # Check if token is revoked
     jti = payload.get("jti")
-    if jti and jti in _revoked_tokens:
+    if get_revocation_store().is_revoked(jti):
         return jsonify({"error": "invalid_token", "error_description": "Token has been revoked"}), 401
 
     # Get user info
@@ -1132,7 +1161,7 @@ def introspect() -> ResponseReturnValue:
 
     # Check if revoked
     jti = payload.get("jti")
-    if jti and jti in _revoked_tokens:
+    if get_revocation_store().is_revoked(jti):
         return jsonify({"active": False})
 
     # Token is valid - return introspection response
@@ -1209,13 +1238,13 @@ def revoke() -> ResponseReturnValue:
         jti = payload.get("jti")
 
         if jti:
-            _revoked_tokens.add(jti)
+            get_revocation_store().revoke(jti)
             logger.info(f"Token revoked: {jti[:8]}...")
         else:
             # If no JTI, add the token hash to blacklist
             import hashlib
             token_hash = hashlib.sha256(token.encode()).hexdigest()
-            _revoked_tokens.add(token_hash)
+            get_revocation_store().revoke(token_hash)
 
         audit.log(
             event_type="revocation_request",
@@ -1275,7 +1304,7 @@ def end_session() -> ResponseReturnValue:
             # Optionally revoke the token
             jti = payload.get("jti")
             if jti:
-                _revoked_tokens.add(jti)
+                get_revocation_store().revoke(jti)
         except Exception:
             pass  # Invalid token, continue anyway
 
@@ -1314,49 +1343,6 @@ def end_session() -> ResponseReturnValue:
 # Device Authorization Grant (RFC 8628)
 # ============================================================================
 
-# In-memory storage for device codes. All compound accesses (lookup + status
-# mutation / deletion) must hold the lock: Flask serves requests on multiple
-# threads and the polling client races against the user's verification and
-# against its own retries (issue #43).
-# device_code -> grant state dict, plus "user:<code>" -> device_code back-references
-_device_codes: dict[str, Any] = {}
-_device_codes_lock = threading.RLock()
-
-
-def _prune_expired_device_codes() -> None:
-    """Drop expired device codes so they don't pile up on long-running servers.
-
-    Called on each new device authorization; entries past ``expires_at`` are
-    removed together with their ``user:<code>`` index.
-    """
-    now = time.time()
-    with _device_codes_lock:
-        expired = [
-            code
-            for code, info in _device_codes.items()
-            if not code.startswith("user:") and now > info["expires_at"]
-        ]
-        for code in expired:
-            user_code = _device_codes[code].get("user_code")
-            del _device_codes[code]
-            _device_codes.pop(f"user:{user_code}", None)
-    if expired:
-        logger.debug(f"Pruned {len(expired)} expired device codes")
-
-
-def _generate_user_code() -> str:
-    """Generate a user-friendly code (8 alphanumeric chars, uppercase)."""
-    # Use only uppercase letters and digits that are easy to read/type
-    # Exclude confusing characters: 0, O, I, 1, L
-    chars = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
-    return "".join(secrets.choice(chars) for _ in range(8))
-
-
-def _generate_device_code() -> str:
-    """Generate a secure device code."""
-    return secrets.token_urlsafe(32)
-
-
 @oauth_bp.route("/device_authorization", methods=["POST"])
 @oauth_bp.route("/device/code", methods=["POST"])
 def device_authorization() -> ResponseReturnValue:
@@ -1388,32 +1374,14 @@ def device_authorization() -> ResponseReturnValue:
         )
         return jsonify({"error": "invalid_client"}), 401
 
-    client_id = auth.username
+    # check_client fails closed on a missing username, so it is present here;
+    # the fallback only narrows the type.
+    client_id = auth.username or ""
     scope = request.form.get("scope", "openid")
 
-    # Generate codes
-    device_code = _generate_device_code()
-    user_code = _generate_user_code()
-
-    # Device code expires in 10 minutes (600 seconds)
-    expires_in = 600
-    interval = 5  # Polling interval in seconds
-
-    # Store device code info (and drop stale entries while we're at it)
-    _prune_expired_device_codes()
-    with _device_codes_lock:
-        _device_codes[device_code] = {
-            "user_code": user_code,
-            "client_id": client_id,
-            "scope": scope,
-            "expires_at": time.time() + expires_in,
-            "interval": interval,
-            "status": "pending",  # pending, authorized, denied, expired
-            "username": None,
-        }
-
-        # Also index by user_code for easy lookup during verification
-        _device_codes[f"user:{user_code}"] = device_code
+    # Create the device authorization; the store prunes stale entries and
+    # keeps the user-code index internally (#84, previously module globals).
+    device_code, user_code = get_device_code_store().create(client_id, scope)
 
     audit.log(
         event_type="device_authorization_request",
@@ -1436,8 +1404,8 @@ def device_authorization() -> ResponseReturnValue:
         "user_code": user_code,
         "verification_uri": verification_uri,
         "verification_uri_complete": verification_uri_complete,
-        "expires_in": expires_in,
-        "interval": interval,
+        "expires_in": DEVICE_CODE_EXPIRES_IN,
+        "interval": DEVICE_POLL_INTERVAL,
     })
 
 
@@ -1464,70 +1432,56 @@ def device_verify() -> ResponseReturnValue:
         password = request.form.get("password", "")
         action = request.form.get("action", "authorize")
 
-        # Look up the device code
-        device_code_key = f"user:{user_code}"
-        device_code = _device_codes.get(device_code_key)
+        # The store runs check-status + transition atomically so two
+        # concurrent verifications can't both claim the same pending code
+        # (issue #43); credential validation happens inside its lock, as
+        # it did when this logic lived here.
+        outcome, user = get_device_code_store().verify(
+            user_code, action, username, password, config.authenticate
+        )
 
-        if not device_code:
+        if outcome is DeviceVerifyOutcome.INVALID_CODE:
             error_msg = "Invalid or expired user code"
-        else:
-            # check-status + transition must be atomic so two concurrent
-            # verifications can't both claim the same pending code (issue #43)
-            with _device_codes_lock:
-                device_info = _device_codes.get(device_code)
-                if not device_info:
-                    error_msg = "Invalid or expired user code"
-                elif device_info["status"] != "pending":
-                    error_msg = "This code has already been used"
-                elif time.time() > device_info["expires_at"]:
-                    device_info["status"] = "expired"
-                    error_msg = "This code has expired"
-                elif action == "deny":
-                    device_info["status"] = "denied"
-                    success_msg = "Device authorization denied"
-                    audit.log(
-                        event_type="device_verification",
-                        endpoint="/device",
-                        method="POST",
-                        status="denied",
-                        username=username,
-                        details={"user_code": user_code},
-                        **req_info,
-                    )
-                else:
-                    # Validate user credentials
-                    if not username or not password:
-                        error_msg = "Username and password are required"
-                    else:
-                        user = config.authenticate(username, password)
-                        if not user:
-                            error_msg = "Invalid username or password"
-                            audit.log(
-                                event_type="device_verification",
-                                endpoint="/device",
-                                method="POST",
-                                status="failed",
-                                username=username,
-                                details={"user_code": user_code, "reason": "Invalid credentials"},
-                                **req_info,
-                            )
-                        else:
-                            # Authorization successful
-                            device_info["status"] = "authorized"
-                            device_info["username"] = user.username
-                            device_info["auth_time"] = int(time.time())
-                            success_msg = "Device authorized successfully! You can close this window."
-
-                            audit.log(
-                                event_type="device_verification",
-                                endpoint="/device",
-                                method="POST",
-                                status="success",
-                                username=user.username,
-                                details={"user_code": user_code},
-                                **req_info,
-                            )
-                            logger.info(f"Device authorized for user '{user.username}', user_code: {user_code}")
+        elif outcome is DeviceVerifyOutcome.ALREADY_USED:
+            error_msg = "This code has already been used"
+        elif outcome is DeviceVerifyOutcome.EXPIRED:
+            error_msg = "This code has expired"
+        elif outcome is DeviceVerifyOutcome.DENIED:
+            success_msg = "Device authorization denied"
+            audit.log(
+                event_type="device_verification",
+                endpoint="/device",
+                method="POST",
+                status="denied",
+                username=username,
+                details={"user_code": user_code},
+                **req_info,
+            )
+        elif outcome is DeviceVerifyOutcome.MISSING_CREDENTIALS:
+            error_msg = "Username and password are required"
+        elif outcome is DeviceVerifyOutcome.INVALID_CREDENTIALS:
+            error_msg = "Invalid username or password"
+            audit.log(
+                event_type="device_verification",
+                endpoint="/device",
+                method="POST",
+                status="failed",
+                username=username,
+                details={"user_code": user_code, "reason": "Invalid credentials"},
+                **req_info,
+            )
+        elif outcome is DeviceVerifyOutcome.AUTHORIZED and user is not None:
+            success_msg = "Device authorized successfully! You can close this window."
+            audit.log(
+                event_type="device_verification",
+                endpoint="/device",
+                method="POST",
+                status="success",
+                username=user.username,
+                details={"user_code": user_code},
+                **req_info,
+            )
+            logger.info(f"Device authorized for user '{user.username}', user_code: {user_code}")
 
     return render_template(
         "device.html",
