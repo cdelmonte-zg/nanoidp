@@ -21,11 +21,8 @@ def _decode(token: str) -> dict:
 @pytest.fixture(autouse=True)
 def cleanup_device_codes():
     yield
-    try:
-        from nanoidp.routes.oauth import _device_codes
-        _device_codes.clear()
-    except (ImportError, AttributeError):
-        pass
+    from nanoidp.services.device_code import get_device_code_store
+    get_device_code_store().clear()
 
 
 class TestPasswordGrantIdToken:

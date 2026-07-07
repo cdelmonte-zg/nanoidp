@@ -19,12 +19,10 @@ from nanoidp.config import get_config
 
 @pytest.fixture(autouse=True)
 def clean_revocation_state():
-    from nanoidp.routes.oauth import _revoked_token_families, _revoked_tokens
-    _revoked_tokens.clear()
-    _revoked_token_families.clear()
+    from nanoidp.services.revocation import get_revocation_store
+    get_revocation_store().clear()
     yield
-    _revoked_tokens.clear()
-    _revoked_token_families.clear()
+    get_revocation_store().clear()
 
 
 def _password_grant(client, headers, scope="openid"):
