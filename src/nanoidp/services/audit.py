@@ -70,7 +70,7 @@ class AuditLog:
         ip_address: str = "unknown",
         user_agent: str = "unknown",
         details: Optional[Dict[str, Any]] = None,
-    ):
+    ) -> None:
         """Log an audit event."""
         entry = AuditEntry(
             timestamp=datetime.now(timezone.utc),
@@ -109,7 +109,7 @@ class AuditLog:
         else:
             logger.warning(log_msg)
 
-    def _update_stats(self, event_type: str, status: str):
+    def _update_stats(self, event_type: str, status: str) -> None:
         """Update statistics counters."""
         self._stats["total_requests"] += 1
 
@@ -164,7 +164,7 @@ class AuditLog:
         with self._lock:
             return dict(self._stats)
 
-    def clear(self):
+    def clear(self) -> None:
         """Clear the audit log."""
         with self._lock:
             self._entries.clear()

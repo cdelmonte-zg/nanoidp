@@ -38,7 +38,7 @@ class AuthCodeStore:
     Codes expire after 10 minutes (per RFC 6749).
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._codes: Dict[str, AuthorizationCode] = {}
         # Flask serves requests on multiple threads; every access to the shared
         # dict goes through this lock so consume_code stays atomic and one-time
@@ -198,7 +198,7 @@ class AuthCodeStore:
             logger.warning(f"Unknown PKCE method: {method}")
             return False
 
-    def _cleanup_expired(self):
+    def _cleanup_expired(self) -> None:
         """Remove expired authorization codes. Callers must hold ``self._lock``."""
         with self._lock:
             now = datetime.now(timezone.utc)

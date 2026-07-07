@@ -117,6 +117,28 @@ warn_unused_ignores = true
 no_implicit_optional = true
 
 [[tool.mypy.overrides]]
+# Typing ratchet (#70): modules here require fully annotated defs. The list
+# only grows; when all of src/ is in, flip disallow_untyped_defs globally
+# and delete this block. Still out: config, routes.{api,oauth,saml,ui},
+# services.crypto.
+module = [
+    "nanoidp",
+    "nanoidp.__main__",
+    "nanoidp.app",
+    "nanoidp.exceptions",
+    "nanoidp.mcp_server",
+    "nanoidp.wizard",
+    "nanoidp.routes",
+    "nanoidp.services",
+    "nanoidp.services.audit",
+    "nanoidp.services.auth_code",
+    "nanoidp.services.discovery",
+    "nanoidp.services.token",
+    "nanoidp.services.yaml_writer",
+]
+disallow_untyped_defs = true
+
+[[tool.mypy.overrides]]
 # Only these dependencies ship no type stubs; keeping the list explicit (vs a
 # global ignore_missing_imports) means a new untyped import gets flagged
 # instead of silently ignored.

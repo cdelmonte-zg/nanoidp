@@ -106,7 +106,7 @@ def _check_readonly_mode(tool_name: str) -> Tuple[bool, str]:
     return True, ""
 
 
-def _log_mcp_tool(tool_name: str, success: bool, details: Optional[dict] = None):
+def _log_mcp_tool(tool_name: str, success: bool, details: Optional[dict] = None) -> None:
     """Log MCP tool call to audit log."""
     try:
         audit = get_audit_log()
@@ -971,7 +971,7 @@ async def _execute_tool(name: str, arguments: dict[str, Any], config: ConfigMana
 # Main Entry Point
 # =============================================================================
 
-def main():
+def main() -> None:
     """Run the MCP server."""
     global _readonly_mode
 
