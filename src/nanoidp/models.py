@@ -132,6 +132,16 @@ class Settings(BaseModel):
         default="exc_c14n",
         description="XML canonicalization algorithm: 'exc_c14n' (Exclusive 1.0, default), 'c14n' (1.0), or 'c14n11' (1.1)"
     )
+    saml_want_authn_requests_signed: bool = Field(
+        default=False,
+        description="Require and verify signatures on AuthnRequests, both "
+        "bindings (#69); advertised as WantAuthnRequestsSigned in metadata",
+    )
+    saml_sp_certificates: List[str] = Field(
+        default_factory=list,
+        description="PEM certificate files of SPs whose AuthnRequest "
+        "signatures are accepted",
+    )
     strict_saml_binding: bool = Field(
         default=False,
         description="Enforce strict SAML binding compliance (reject GET with uncompressed data)"

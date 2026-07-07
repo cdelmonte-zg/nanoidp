@@ -521,6 +521,15 @@ async def list_tools() -> list[Tool]:
                         "enum": ["c14n", "c14n11", "exc_c14n"],
                         "description": "XML canonicalization algorithm: 'c14n' (1.0), 'c14n11' (1.1), or 'exc_c14n' (Exclusive 1.0)",
                     },
+                    "saml_want_authn_requests_signed": {
+                        "type": "boolean",
+                        "description": "Require and verify AuthnRequest signatures, both bindings (#69)",
+                    },
+                    "saml_sp_certificates": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "PEM certificate files of SPs whose AuthnRequest signatures are accepted",
+                    },
                     "strict_saml_binding": {
                         "type": "boolean",
                         "description": "Enforce strict SAML binding compliance (reject GET with uncompressed data)",
@@ -874,6 +883,10 @@ async def _execute_tool(name: str, arguments: dict[str, Any], config: ConfigMana
                 "sign_responses": settings.saml_sign_responses,
                 "c14n_algorithm": settings.saml_c14n_algorithm,
                 "strict_binding": settings.strict_saml_binding,
+                "want_authn_requests_signed": (
+                    settings.saml_want_authn_requests_signed
+                ),
+                "sp_certificates": settings.saml_sp_certificates,
             },
             "logging": {
                 "verbose_logging": settings.verbose_logging,
@@ -907,6 +920,16 @@ async def _execute_tool(name: str, arguments: dict[str, Any], config: ConfigMana
         if "strict_saml_binding" in arguments:
             settings.strict_saml_binding = arguments["strict_saml_binding"]
             updated.append("strict_saml_binding")
+        if "saml_want_authn_requests_signed" in arguments:
+            settings.saml_want_authn_requests_signed = arguments[
+                "saml_want_authn_requests_signed"
+            ]
+            updated.append("saml_want_authn_requests_signed")
+        if "saml_sp_certificates" in arguments:
+            settings.saml_sp_certificates = _normalize_str_list(
+                arguments["saml_sp_certificates"], "saml_sp_certificates"
+            )
+            updated.append("saml_sp_certificates")
         if "verbose_logging" in arguments:
             settings.verbose_logging = arguments["verbose_logging"]
             updated.append("verbose_logging")
@@ -929,6 +952,10 @@ async def _execute_tool(name: str, arguments: dict[str, Any], config: ConfigMana
                 "saml_sign_responses": settings.saml_sign_responses,
                 "saml_c14n_algorithm": settings.saml_c14n_algorithm,
                 "strict_saml_binding": settings.strict_saml_binding,
+                "saml_want_authn_requests_signed": (
+                    settings.saml_want_authn_requests_signed
+                ),
+                "saml_sp_certificates": settings.saml_sp_certificates,
                 "verbose_logging": settings.verbose_logging,
             },
         }

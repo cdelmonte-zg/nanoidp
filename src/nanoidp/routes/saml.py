@@ -15,7 +15,13 @@ from flask.typing import ResponseReturnValue
 from lxml import etree
 
 from ..config import get_config
+from ..exceptions import SAMLSignatureError
 from ..services import get_crypto_service
+from ..services.saml_verification import (
+    load_sp_certificates,
+    verify_post_signature,
+    verify_redirect_signature,
+)
 from ._audit import audit_event
 
 # Create secure XML parser (XXE protection without deprecated defusedxml.lxml)
@@ -66,6 +72,19 @@ def _get_c14n_algorithm(config_value: str) -> "CanonicalizationMethod":
     return CanonicalizationMethod.EXCLUSIVE_XML_CANONICALIZATION_1_0
 
 saml_bp = Blueprint("saml", __name__, url_prefix="/saml")
+
+
+def _decode_saml_request_bytes(saml_request_b64: str) -> bytes:
+    """Decode a SAMLRequest to raw XML bytes, deflate-tolerant (#69).
+
+    Signature verification needs the XML before the full parse; binding
+    strictness is still enforced later by ``_parse_saml_request``.
+    """
+    decoded = b64decode(saml_request_b64)
+    try:
+        return zlib.decompress(decoded, -zlib.MAX_WBITS)
+    except zlib.error:
+        return decoded
 
 
 def _parse_saml_request(
@@ -294,6 +313,10 @@ def metadata() -> ResponseReturnValue:
         "{urn:oasis:names:tc:SAML:2.0:metadata}IDPSSODescriptor",
         protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol",
     )
+    # Advertised if and only if verification is actually enforced (#69,
+    # principle 2: metadata never lies).
+    if settings.saml_want_authn_requests_signed:
+        idpsso.set("WantAuthnRequestsSigned", "true")
 
     # KeyDescriptor
     kd = etree.SubElement(idpsso, "{urn:oasis:names:tc:SAML:2.0:metadata}KeyDescriptor", use="signing")
@@ -346,6 +369,59 @@ def sso() -> ResponseReturnValue:
 
     if not saml_request_b64:
         return abort(400, description="missing SAMLRequest")
+
+    # AuthnRequest signature verification (#69), opt-in via
+    # saml.want_authn_requests_signed. Verified where the request ENTERS:
+    # - GET = Redirect binding: query-string signature (Bindings §3.4.4.1).
+    #   The signature only exists on the original URL and cannot survive the
+    #   login-form roundtrip, so the verified request is bound SERVER-SIDE in
+    #   the session; the POST login leg (saml_original_verb=GET) is admitted
+    #   only for values byte-identical to a request this session already
+    #   verified, and fails closed otherwise (#69 review: hidden form fields
+    #   are client-controlled and must not be trusted on their own).
+    # - POST without saml_original_verb = POST-binding entry: enveloped XML
+    #   signature (Core §5).
+    # - POST login leg of a POST-binding request (saml_original_verb=POST):
+    #   the signature still travels inside the XML, so it is re-verified.
+    if config.settings.saml_want_authn_requests_signed:
+        form_leg_verb = (request.form.get("saml_original_verb") or "").upper()
+        try:
+            if request.method == "GET":
+                verify_redirect_signature(
+                    request.query_string.decode("latin-1"),
+                    load_sp_certificates(config.settings.saml_sp_certificates),
+                )
+                # A later Redirect-leg POST may only replay exactly this
+                # verified request. Overwritten by each newly verified GET.
+                session["saml_verified_redirect"] = {
+                    "SAMLRequest": saml_request_b64,
+                    "RelayState": relay_state,
+                }
+            elif form_leg_verb == "GET":
+                verified = session.get("saml_verified_redirect")
+                if (
+                    not isinstance(verified, dict)
+                    or verified.get("SAMLRequest") != saml_request_b64
+                    or verified.get("RelayState") != relay_state
+                ):
+                    raise SAMLSignatureError(
+                        "Redirect-binding login continuation does not match a "
+                        "signature-verified request in this session"
+                    )
+            else:
+                xml_bytes = _decode_saml_request_bytes(saml_request_b64)
+                verify_post_signature(
+                    xml_bytes,
+                    load_sp_certificates(config.settings.saml_sp_certificates),
+                )
+        except SAMLSignatureError as e:
+            audit_event(
+                "saml_request",
+                "failed",
+                endpoint="/saml/sso",
+                details={"reason": f"AuthnRequest signature rejected: {e}"},
+            )
+            return abort(400, description=f"AuthnRequest signature rejected: {e}")
 
     # Check if user is authenticated
     username = session.get("user")
@@ -404,11 +480,9 @@ def sso() -> ResponseReturnValue:
         )
         return abort(401, description=f"user '{username}' not found")
 
-    # Parse SAMLRequest
-    # NOTE: For HTTP-Redirect binding, SPs may send Signature/SigAlg query params.
-    # We do NOT verify the query string signature (dev tool - signature verification
-    # would require SP certificate which we don't have). This is acceptable for
-    # development/testing but not for production use.
+    # Parse SAMLRequest. Signature verification (when enabled) already
+    # happened at the top of this function (#69); without the opt-in,
+    # Signature/SigAlg query params are accepted and ignored, as before.
     #
     # Use original HTTP verb from form if set (inline login case: original GET
     # compressed SAMLRequest is POSTed back after login form submission).

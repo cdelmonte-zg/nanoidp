@@ -180,6 +180,8 @@ class YamlWriter:
         default_acs_url: Optional[str] = None,
         sign_responses: Optional[bool] = None,
         strict_binding: Optional[bool] = None,
+        want_authn_requests_signed: Optional[bool] = None,
+        sp_certificates: Optional[List[str]] = None,
         c14n_algorithm: Optional[str] = None,
     ) -> None:
         """Update SAML settings."""
@@ -196,6 +198,13 @@ class YamlWriter:
             saml["sign_responses"] = sign_responses
         if strict_binding is not None:
             saml["strict_binding"] = strict_binding
+        if want_authn_requests_signed is not None:
+            saml["want_authn_requests_signed"] = want_authn_requests_signed
+        if sp_certificates is not None:
+            if sp_certificates:
+                saml["sp_certificates"] = sp_certificates
+            else:
+                saml.pop("sp_certificates", None)
         if c14n_algorithm is not None:
             saml["c14n_algorithm"] = c14n_algorithm
 

@@ -107,6 +107,11 @@ def apply_settings_document(
     saml["sign_responses"] = settings.saml_sign_responses
     saml["c14n_algorithm"] = settings.saml_c14n_algorithm
     saml["strict_binding"] = settings.strict_saml_binding
+    saml["want_authn_requests_signed"] = settings.saml_want_authn_requests_signed
+    if settings.saml_sp_certificates:
+        saml["sp_certificates"] = settings.saml_sp_certificates
+    else:
+        saml.pop("sp_certificates", None)
 
     document.setdefault("logging", {})["verbose_logging"] = settings.verbose_logging
     document["authority_prefixes"] = settings.authority_prefixes
