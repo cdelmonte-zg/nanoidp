@@ -45,7 +45,7 @@ class AuditEntry:
 class AuditLog:
     """In-memory audit log with size limit."""
 
-    def __init__(self, max_entries: int = 1000):
+    def __init__(self, max_entries: int = 1000) -> None:
         self.max_entries = max_entries
         self._entries: deque = deque(maxlen=max_entries)
         self._lock = Lock()

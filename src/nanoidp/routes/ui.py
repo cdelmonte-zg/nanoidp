@@ -8,7 +8,17 @@ import logging
 import secrets
 from io import StringIO
 
-from flask import Blueprint, Response, flash, redirect, render_template, request, session, url_for
+from flask import (
+    Blueprint,
+    Response,
+    flash,
+    redirect,
+    render_template,
+    request,
+    session,
+    url_for,
+)
+from flask.typing import ResponseReturnValue
 
 from ..config import OAuthClient, User, get_config
 from ..services import get_audit_log, get_token_service, get_yaml_writer
@@ -21,7 +31,7 @@ ui_bp = Blueprint("ui", __name__)
 # ==================== Dashboard ====================
 
 @ui_bp.route("/")
-def index():
+def index() -> ResponseReturnValue:
     """Dashboard home page."""
     config = get_config()
     audit = get_audit_log()
@@ -39,7 +49,7 @@ def index():
 # ==================== Authentication ====================
 
 @ui_bp.route("/login", methods=["GET", "POST"])
-def login():
+def login() -> ResponseReturnValue:
     """Login page for web UI.
 
     Note: SAML SSO uses inline login at /saml/sso to preserve binding context.
@@ -99,7 +109,7 @@ def login():
 
 
 @ui_bp.route("/logout")
-def logout():
+def logout() -> ResponseReturnValue:
     """Logout and clear session."""
     username = session.get("user")
     session.clear()
@@ -122,7 +132,7 @@ def logout():
 # ==================== Users Management ====================
 
 @ui_bp.route("/users")
-def users():
+def users() -> ResponseReturnValue:
     """Users management page."""
     config = get_config()
     return render_template(
@@ -133,7 +143,7 @@ def users():
 
 
 @ui_bp.route("/users/create", methods=["GET", "POST"])
-def user_create():
+def user_create() -> ResponseReturnValue:
     """Create new user."""
     config = get_config()
 
@@ -200,7 +210,7 @@ def user_create():
 
 
 @ui_bp.route("/users/<username>")
-def user_detail(username: str):
+def user_detail(username: str) -> ResponseReturnValue:
     """User detail page."""
     config = get_config()
 
@@ -221,7 +231,7 @@ def user_detail(username: str):
 
 
 @ui_bp.route("/users/<username>/edit", methods=["GET", "POST"])
-def user_edit(username: str):
+def user_edit(username: str) -> ResponseReturnValue:
     """Edit user."""
     config = get_config()
 
@@ -285,7 +295,7 @@ def user_edit(username: str):
 
 
 @ui_bp.route("/users/<username>/delete", methods=["POST"])
-def user_delete(username: str):
+def user_delete(username: str) -> ResponseReturnValue:
     """Delete user."""
     try:
         yaml_writer = get_yaml_writer()
@@ -306,7 +316,7 @@ def user_delete(username: str):
 # ==================== OAuth Clients Management ====================
 
 @ui_bp.route("/clients")
-def clients():
+def clients() -> ResponseReturnValue:
     """OAuth clients management page."""
     config = get_config()
     return render_template(
@@ -316,13 +326,13 @@ def clients():
     )
 
 
-def _parse_audiences(form_value: str) -> list:
+def _parse_audiences(form_value: str) -> list[str]:
     """Parse a newline-separated additional_audiences form field into a clean list."""
     return [a.strip() for a in (form_value or "").splitlines() if a.strip()]
 
 
 @ui_bp.route("/clients/create", methods=["GET", "POST"])
-def client_create():
+def client_create() -> ResponseReturnValue:
     """Create new OAuth client."""
     if request.method == "GET":
         # Generate a random client secret
@@ -369,7 +379,7 @@ def client_create():
 
 
 @ui_bp.route("/clients/<client_id>/edit", methods=["GET", "POST"])
-def client_edit(client_id: str):
+def client_edit(client_id: str) -> ResponseReturnValue:
     """Edit OAuth client."""
     config = get_config()
 
@@ -419,7 +429,7 @@ def client_edit(client_id: str):
 
 
 @ui_bp.route("/clients/<client_id>/delete", methods=["POST"])
-def client_delete(client_id: str):
+def client_delete(client_id: str) -> ResponseReturnValue:
     """Delete OAuth client."""
     try:
         yaml_writer = get_yaml_writer()
@@ -438,7 +448,7 @@ def client_delete(client_id: str):
 
 
 @ui_bp.route("/clients/<client_id>/regenerate-secret", methods=["POST"])
-def client_regenerate_secret(client_id: str):
+def client_regenerate_secret(client_id: str) -> ResponseReturnValue:
     """Regenerate OAuth client secret."""
     config = get_config()
 
@@ -478,7 +488,7 @@ def client_regenerate_secret(client_id: str):
 # ==================== Settings ====================
 
 @ui_bp.route("/settings", methods=["GET", "POST"])
-def settings():
+def settings() -> ResponseReturnValue:
     """IdP settings configuration page."""
     config = get_config()
 
@@ -527,7 +537,7 @@ def settings():
 # ==================== Keys Management ====================
 
 @ui_bp.route("/keys")
-def keys():
+def keys() -> ResponseReturnValue:
     """Keys and certificates management page."""
     import os
     from datetime import datetime
@@ -567,7 +577,7 @@ def keys():
 
 
 @ui_bp.route("/keys/regenerate", methods=["POST"])
-def keys_regenerate():
+def keys_regenerate() -> ResponseReturnValue:
     """Regenerate RSA keys and certificate."""
     config = get_config()
     from ..services import get_crypto_service
@@ -586,7 +596,7 @@ def keys_regenerate():
 
 
 @ui_bp.route("/keys/download/<key_type>")
-def keys_download(key_type: str):
+def keys_download(key_type: str) -> ResponseReturnValue:
     """Download key or certificate."""
     config = get_config()
     from ..services import get_crypto_service
@@ -613,7 +623,7 @@ def keys_download(key_type: str):
 # ==================== Claims Configuration ====================
 
 @ui_bp.route("/claims", methods=["GET", "POST"])
-def claims():
+def claims() -> ResponseReturnValue:
     """Claims and authority prefixes configuration."""
     config = get_config()
 
@@ -657,7 +667,7 @@ def claims():
 
 
 @ui_bp.route("/claims/preview/<username>")
-def claims_preview(username: str):
+def claims_preview(username: str) -> ResponseReturnValue:
     """Preview token claims for a user (AJAX endpoint)."""
     config = get_config()
 
@@ -685,7 +695,7 @@ def claims_preview(username: str):
 # ==================== Audit Log ====================
 
 @ui_bp.route("/audit")
-def audit():
+def audit() -> ResponseReturnValue:
     """Audit log page."""
     audit_log = get_audit_log()
 
@@ -725,7 +735,7 @@ def audit():
 
 
 @ui_bp.route("/audit/export/<format>")
-def audit_export(format: str):
+def audit_export(format: str) -> ResponseReturnValue:
     """Export audit log with applied filters."""
     audit_log = get_audit_log()
 
@@ -772,7 +782,7 @@ def audit_export(format: str):
 
 
 @ui_bp.route("/audit/clear", methods=["POST"])
-def audit_clear():
+def audit_clear() -> ResponseReturnValue:
     """Clear the audit log."""
     audit_log = get_audit_log()
     audit_log.clear()
@@ -784,7 +794,7 @@ def audit_clear():
 # ==================== Token Testing ====================
 
 @ui_bp.route("/test")
-def test_page():
+def test_page() -> ResponseReturnValue:
     """Token testing page."""
     config = get_config()
     return render_template(

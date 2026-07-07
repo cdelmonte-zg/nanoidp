@@ -219,7 +219,7 @@ class Settings(BaseModel):
 class ConfigManager:
     """Manages configuration loading and access."""
 
-    def __init__(self, config_dir: Optional[str] = None):
+    def __init__(self, config_dir: Optional[str] = None) -> None:
         self.config_dir = Path(config_dir or self._find_config_dir())
         self.settings: Settings = Settings()
         self.users: Dict[str, User] = {}
@@ -246,14 +246,14 @@ class ConfigManager:
         # Default to ./config
         return "./config"
 
-    def _load_config(self):
+    def _load_config(self) -> None:
         """Load all configuration files."""
         self._load_settings()
         self._load_users()
         logger.info(f"Loaded configuration from {self.config_dir}")
         logger.info(f"Loaded {len(self.users)} users")
 
-    def _load_settings(self):
+    def _load_settings(self) -> None:
         """Load settings from settings.yaml."""
         settings_file = self.config_dir / "settings.yaml"
 
@@ -322,7 +322,7 @@ class ConfigManager:
             verbose_logging=logging_config.get("verbose_logging", True),
         )
 
-    def _set_default_settings(self):
+    def _set_default_settings(self) -> None:
         """Set default settings with demo client."""
         self.settings = Settings(
             clients=[OAuthClient(
@@ -338,7 +338,7 @@ class ConfigManager:
             allowed_identity_classes=["INTERNAL", "EXTERNAL", "PARTNER", "SERVICE"],
         )
 
-    def _load_users(self):
+    def _load_users(self) -> None:
         """Load users from users.yaml."""
         users_file = self.config_dir / "users.yaml"
 
@@ -379,7 +379,7 @@ class ConfigManager:
                 attributes=attributes,
             )
 
-    def _set_default_users(self):
+    def _set_default_users(self) -> None:
         """Set default users."""
         self.users = {
             "admin": User(
@@ -445,18 +445,18 @@ class ConfigManager:
                 return client
         return None
 
-    def reload(self):
+    def reload(self) -> None:
         """Reload configuration from files."""
         self._load_config()
         logger.info("Configuration reloaded")
 
-    def save(self):
+    def save(self) -> None:
         """Save current configuration to YAML files."""
         self._save_users()
         self._save_settings()
         logger.info(f"Configuration saved to {self.config_dir}")
 
-    def _save_users(self):
+    def _save_users(self) -> None:
         """Save users to users.yaml."""
         users_file = self.config_dir / "users.yaml"
 
@@ -486,7 +486,7 @@ class ConfigManager:
         with open(users_file, "w") as f:
             yaml.dump(data, f, default_flow_style=False, sort_keys=False)
 
-    def _save_settings(self):
+    def _save_settings(self) -> None:
         """Save settings to settings.yaml."""
         settings_file = self.config_dir / "settings.yaml"
 

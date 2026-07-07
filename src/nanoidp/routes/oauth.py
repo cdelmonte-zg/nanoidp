@@ -7,7 +7,7 @@ import logging
 import secrets
 import threading
 import time
-from typing import TypedDict
+from typing import Any, TypedDict
 from urllib.parse import urlencode, urlparse
 
 import jwt as pyjwt
@@ -1247,7 +1247,8 @@ def end_session() -> ResponseReturnValue:
 # mutation / deletion) must hold the lock: Flask serves requests on multiple
 # threads and the polling client races against the user's verification and
 # against its own retries (issue #43).
-_device_codes: dict = {}
+# device_code -> grant state dict, plus "user:<code>" -> device_code back-references
+_device_codes: dict[str, Any] = {}
 _device_codes_lock = threading.RLock()
 
 

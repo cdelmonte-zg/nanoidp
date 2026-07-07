@@ -61,7 +61,7 @@ MUTATING_TOOLS = {
 }
 
 
-def _check_admin_secret(tool_name: str, arguments: dict) -> Tuple[bool, str]:
+def _check_admin_secret(tool_name: str, arguments: dict[str, Any]) -> Tuple[bool, str]:
     """Check if admin secret is required and valid.
 
     Args:
