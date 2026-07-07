@@ -158,6 +158,8 @@ class YamlWriter:
         issuer: Optional[str] = None,
         audience: Optional[str] = None,
         token_expiry_minutes: Optional[int] = None,
+        require_pkce: Optional[bool] = None,
+        refresh_token_rotation: Optional[bool] = None,
     ) -> None:
         """Update OAuth settings."""
         data = self._load_settings_yaml()
@@ -169,6 +171,10 @@ class YamlWriter:
             oauth["audience"] = audience
         if token_expiry_minutes is not None:
             oauth["token_expiry_minutes"] = token_expiry_minutes
+        if require_pkce is not None:
+            oauth["require_pkce"] = require_pkce
+        if refresh_token_rotation is not None:
+            oauth["refresh_token_rotation"] = refresh_token_rotation
 
         self._atomic_write(self.settings_file, data)
         get_config().reload()

@@ -501,6 +501,10 @@ def settings() -> ResponseReturnValue:
             issuer=request.form.get("issuer"),
             audience=request.form.get("audience"),
             token_expiry_minutes=int(request.form.get("token_expiry_minutes", 60)),
+            require_pkce=request.form.get("require_pkce") == "true",
+            refresh_token_rotation=(
+                request.form.get("refresh_token_rotation") == "true"
+            ),
         )
 
         # SAML settings
