@@ -10,7 +10,7 @@ touches the docs.
 The guides and the project pages are **symlinks** into the canonical files,
 so they are never duplicated:
 
-- `src/guides/{MCP_WORKFLOW,SECURITY}.md` -> `docs/` (plus `src/guides/images` -> `docs/images`)
+- `src/guides/{MCP_WORKFLOW,SECURITY}.md` -> `docs/`
 - `src/project/vision.md` -> `VISION.md`, `src/project/changelog.md` -> `CHANGELOG.md`,
   `src/project/contributing.md` -> `CONTRIBUTING.md`
 
