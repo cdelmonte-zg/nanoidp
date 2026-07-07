@@ -181,23 +181,46 @@ def authorize() -> ResponseReturnValue:
             "error_description": "redirect_uri is not registered for this client"
         }), 400
 
-    # PKCE enforcement (issue #47). With require_pkce enabled (on by default in
-    # the stricter-dev profile) an authorization request without a
-    # code_challenge is rejected, so developers can verify their client
-    # actually sends PKCE (mandatory in OAuth 2.1).
-    if config.settings.require_pkce and not code_challenge:
+    # Under the oauth21 profile, registration is not optional: a client used
+    # at /authorize must have redirect_uris pinned (#68; OAuth 2.1 §2.3
+    # requires the AS to compare against registered values, which presumes
+    # they exist). Enforced here, not at config load, so other grants keep
+    # working for unregistered clients.
+    if config.settings.security_profile == "oauth21" and not client.redirect_uris:
         audit.log(
             event_type="authorization_request",
             endpoint="/authorize",
             method=request.method,
             status="failed",
             client_id=client_id,
-            details={"reason": "PKCE code_challenge required (require_pkce enabled)"},
+            details={"reason": "oauth21 profile requires registered redirect_uris"},
             **req_info,
         )
         return jsonify({
             "error": "invalid_request",
-            "error_description": "PKCE code_challenge is required (require_pkce is enabled)"
+            "error_description": "the oauth21 profile requires this client to have "
+                                 "registered redirect_uris"
+        }), 400
+
+    # PKCE enforcement (issues #47, #68). Via the require_pkce setting (on by
+    # default in the stricter-dev profile) or implied by the oauth21 profile
+    # (OAuth 2.1 §4.1.1 makes PKCE mandatory), an authorization request
+    # without a code_challenge is rejected, so developers can verify their
+    # client actually sends PKCE.
+    if config.settings.pkce_required and not code_challenge:
+        audit.log(
+            event_type="authorization_request",
+            endpoint="/authorize",
+            method=request.method,
+            status="failed",
+            client_id=client_id,
+            details={"reason": "PKCE code_challenge required (require_pkce or oauth21)"},
+            **req_info,
+        )
+        return jsonify({
+            "error": "invalid_request",
+            "error_description": "PKCE code_challenge is required "
+                                 "(require_pkce setting or oauth21 profile)"
         }), 400
 
     if code_challenge:
@@ -224,11 +247,12 @@ def authorize() -> ResponseReturnValue:
             }), 400
 
         # The 'plain' method is only acceptable when S256 is unavailable
-        # (RFC 7636 §4.2); the stricter-dev profile rejects it outright (#47),
-        # whether requested explicitly or via the implicit default.
+        # (RFC 7636 §4.2); the stricter-dev (#47) and oauth21 (#68, OAuth 2.1
+        # §7.5.2) profiles reject it outright, whether requested explicitly
+        # or via the implicit default.
         if (
             effective_method == "plain"
-            and config.settings.security_profile == "stricter-dev"
+            and not config.settings.pkce_plain_allowed
         ):
             audit.log(
                 event_type="authorization_request",
@@ -236,14 +260,18 @@ def authorize() -> ResponseReturnValue:
                 method=request.method,
                 status="failed",
                 client_id=client_id,
-                details={"reason": "PKCE method 'plain' rejected by stricter-dev profile"},
+                details={
+                    "reason": "PKCE method 'plain' rejected by "
+                    f"{config.settings.security_profile} profile"
+                },
                 **req_info,
             )
             return jsonify({
                 "error": "invalid_request",
                 "error_description": "code_challenge_method 'plain' (including the "
                                      "implicit default when the parameter is omitted) "
-                                     "is not allowed by the stricter-dev profile; use S256"
+                                     f"is not allowed by the {config.settings.security_profile} "
+                                     "profile; use S256"
             }), 400
 
     error_msg = None
@@ -600,7 +628,7 @@ def token() -> ResponseReturnValue:
             token_revoked = jti in _revoked_tokens
             if token_revoked or family_revoked:
                 if (
-                    config.settings.refresh_token_rotation
+                    config.settings.rotation_enabled
                     and refresh_family
                     and not family_revoked
                 ):
@@ -608,7 +636,7 @@ def token() -> ResponseReturnValue:
                 reuse_detected = True
             else:
                 reuse_detected = False
-                if config.settings.refresh_token_rotation and jti:
+                if config.settings.rotation_enabled and jti:
                     _revoked_tokens.add(jti)
         if reuse_detected:
             audit.log(
@@ -628,6 +656,28 @@ def token() -> ResponseReturnValue:
 
     # Password grant
     elif grant_type == "password":
+        # OAuth 2.1 removes the resource-owner password grant entirely; under
+        # the oauth21 profile it is rejected (RFC 6749 §5.2) and absent from
+        # the discovery document's grant_types_supported (#68).
+        if not config.settings.password_grant_enabled:
+            audit.log(
+                event_type="token_request",
+                endpoint="/token",
+                method="POST",
+                status="failed",
+                client_id=client_id,
+                details={
+                    "reason": "password grant disabled by the oauth21 profile",
+                    "grant_type": grant_type,
+                },
+                **req_info,
+            )
+            return abort(
+                400,
+                description="Unsupported grant_type: the password grant is "
+                "disabled by the oauth21 profile",
+            )
+
         username = request.form.get("username", "").strip()
         password = request.form.get("password", "")
 

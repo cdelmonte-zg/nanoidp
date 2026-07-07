@@ -186,7 +186,9 @@ class Settings(BaseModel):
     verbose_logging: bool = Field(default=True, description="Include usernames/client_ids in logs (dev convenience)")
 
     # Security (stricter-dev profile)
-    security_profile: str = Field(default="dev", description="Security profile: dev or stricter-dev")
+    security_profile: str = Field(
+        default="dev", description="Security profile: dev, stricter-dev or oauth21"
+    )
     cors_allowed_origins: List[str] = Field(default_factory=lambda: ["*"], description="CORS allowed origins")
     rate_limit_enabled: bool = Field(default=False, description="Enable rate limiting")
     rate_limit_token_endpoint: str = Field(default="10/minute", description="Rate limit for /token endpoint")
@@ -207,10 +209,39 @@ class Settings(BaseModel):
     @classmethod
     def validate_security_profile(cls, v: str) -> str:
         """Validate security profile."""
-        valid_profiles = {"dev", "stricter-dev"}
+        valid_profiles = {"dev", "stricter-dev", "oauth21"}
         if v not in valid_profiles:
             raise ValueError(f"Security profile must be one of: {valid_profiles}")
         return v
+
+    # ------------------------------------------------------------------
+    # Derived protocol behavior (#68). Routes and the shared discovery
+    # builder consume these properties instead of raw fields, so a profile
+    # means the same thing whether it comes from --profile or settings.yaml,
+    # and discovery can never advertise something the endpoints don't do.
+    # oauth21 = draft-ietf-oauth-v2-1 protocol strictness only; runtime
+    # hardening (bcrypt, CORS, rate limiting) stays stricter-dev's job.
+    # ------------------------------------------------------------------
+
+    @property
+    def pkce_required(self) -> bool:
+        """PKCE mandatory on the authorization code flow (OAuth 2.1 §4.1.1)."""
+        return self.require_pkce or self.security_profile == "oauth21"
+
+    @property
+    def pkce_plain_allowed(self) -> bool:
+        """'plain' is rejected by stricter-dev (#47) and oauth21 (§7.5.2)."""
+        return self.security_profile not in ("stricter-dev", "oauth21")
+
+    @property
+    def rotation_enabled(self) -> bool:
+        """Refresh token rotation, forced on by oauth21 (§4.3.1)."""
+        return self.refresh_token_rotation or self.security_profile == "oauth21"
+
+    @property
+    def password_grant_enabled(self) -> bool:
+        """OAuth 2.1 removes the resource-owner password grant entirely."""
+        return self.security_profile != "oauth21"
 
     @field_validator("issuer")
     @classmethod
@@ -326,6 +357,8 @@ class ConfigManager:
             # JWT
             jwt_algorithm=jwt_config.get("algorithm", "RS256"),
             keys_dir=jwt_config.get("keys_dir", "./keys"),
+            # Security profile (top-level; CLI --profile overrides it, #68)
+            security_profile=data.get("security_profile", "dev"),
             # Authority prefixes
             authority_prefixes=data.get("authority_prefixes", {}),
             # Allowed identity classes
@@ -549,6 +582,9 @@ class ConfigManager:
 
         if self.settings.allowed_identity_classes:
             data["allowed_identity_classes"] = self.settings.allowed_identity_classes
+
+        if self.settings.security_profile != "dev":
+            data["security_profile"] = self.settings.security_profile
 
         with open(settings_file, "w") as f:
             yaml.dump(data, f, default_flow_style=False, sort_keys=False)

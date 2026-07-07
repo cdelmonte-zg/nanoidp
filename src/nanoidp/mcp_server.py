@@ -864,6 +864,7 @@ async def _execute_tool(name: str, arguments: dict[str, Any], config: ConfigMana
             "issuer": settings.issuer,
             "audience": settings.audience,
             "token_expiry_minutes": settings.token_expiry_minutes,
+            "security_profile": settings.security_profile,
             "refresh_token_rotation": settings.refresh_token_rotation,
             "require_pkce": settings.require_pkce,
             "jwt_algorithm": settings.jwt_algorithm,

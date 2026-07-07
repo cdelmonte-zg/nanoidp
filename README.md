@@ -82,7 +82,8 @@ The full documentation lives at
 NanoIDP is a **development/testing tool** and must NOT be used in
 production. Defaults favor convenience (plaintext passwords in config,
 permissive CORS, open redirects); hardening is opt-in via the
-`stricter-dev` profile and explicit settings. The
+`stricter-dev` (runtime) and `oauth21` (draft OAuth 2.1 protocol
+strictness) profiles and explicit settings. The
 [Security guide](https://cdelmonte-zg.github.io/nanoidp/guides/SECURITY.html)
 draws the line precisely.
 

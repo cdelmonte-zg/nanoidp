@@ -2526,6 +2526,136 @@ class NanoIDPTestAgent:
     # TEST RUNNER
     # =========================================================================
 
+    def run_oauth21_tests(self) -> bool:
+        """Dedicated suite for a server running with --profile oauth21 (#68).
+
+        Asserts the draft-OAuth-2.1 strictness AND that discovery reflects it
+        (metadata never lies): password grant absent and rejected, S256-only,
+        PKCE required, registered redirect_uris mandatory at /authorize.
+        """
+        print("\n" + "=" * 70)
+        print("  NanoIDP oauth21 Profile Test Suite")
+        print("=" * 70)
+        print(f"\n  Target:   {self.base_url}\n")
+
+        # Discovery reflects the profile
+        try:
+            doc = requests.get(
+                f"{self.base_url}/.well-known/openid-configuration", timeout=5
+            ).json()
+            self._add_result(
+                "oauth21 Discovery",
+                TestCategory.OAUTH,
+                "password" not in doc.get("grant_types_supported", ["password"])
+                and doc.get("code_challenge_methods_supported") == ["S256"],
+                "No password grant advertised, S256-only",
+                {
+                    "grant_types_supported": doc.get("grant_types_supported"),
+                    "code_challenge_methods_supported": doc.get(
+                        "code_challenge_methods_supported"
+                    ),
+                },
+            )
+        except Exception as e:
+            self._add_result("oauth21 Discovery", TestCategory.OAUTH, False, f"Error: {e}")
+
+        # Password grant rejected
+        try:
+            r = requests.post(
+                f"{self.base_url}/token",
+                auth=(self.client_id, self.client_secret),
+                data={
+                    "grant_type": "password",
+                    "username": self.username,
+                    "password": self.password,
+                },
+                timeout=5,
+            )
+            self._add_result(
+                "oauth21 Password Grant Rejected",
+                TestCategory.OAUTH,
+                r.status_code == 400,
+                "password grant answered 400",
+                {"status": r.status_code},
+            )
+        except Exception as e:
+            self._add_result(
+                "oauth21 Password Grant Rejected", TestCategory.OAUTH, False, f"Error: {e}"
+            )
+
+        # /authorize strictness against the registered fixture client
+        registered_uri = "http://localhost:3000/callback"
+        base_params = {
+            "response_type": "code",
+            "client_id": "registered-client",
+            "redirect_uri": registered_uri,
+            "scope": "openid",
+        }
+        challenge = base64.urlsafe_b64encode(
+            hashlib.sha256(secrets.token_urlsafe(32).encode()).digest()
+        ).decode().rstrip("=")
+        try:
+            no_pkce = requests.get(
+                f"{self.base_url}/authorize", params=base_params,
+                allow_redirects=False, timeout=5,
+            )
+            plain = requests.get(
+                f"{self.base_url}/authorize",
+                params={
+                    **base_params,
+                    "code_challenge": "plain-verifier",
+                    "code_challenge_method": "plain",
+                },
+                allow_redirects=False, timeout=5,
+            )
+            s256 = requests.get(
+                f"{self.base_url}/authorize",
+                params={
+                    **base_params,
+                    "code_challenge": challenge,
+                    "code_challenge_method": "S256",
+                },
+                allow_redirects=False, timeout=5,
+            )
+            unregistered = requests.get(
+                f"{self.base_url}/authorize",
+                params={
+                    **base_params,
+                    "client_id": self.client_id,
+                    "code_challenge": challenge,
+                    "code_challenge_method": "S256",
+                },
+                allow_redirects=False, timeout=5,
+            )
+            self._add_result(
+                "oauth21 Authorize Strictness",
+                TestCategory.OAUTH,
+                no_pkce.status_code == 400
+                and plain.status_code == 400
+                and s256.status_code == 200
+                and unregistered.status_code == 400,
+                "no-PKCE 400, plain 400, S256+registered 200, "
+                "unregistered client 400",
+                {
+                    "no_pkce": no_pkce.status_code,
+                    "plain": plain.status_code,
+                    "s256": s256.status_code,
+                    "unregistered_client": unregistered.status_code,
+                },
+            )
+        except Exception as e:
+            self._add_result(
+                "oauth21 Authorize Strictness", TestCategory.OAUTH, False, f"Error: {e}"
+            )
+
+        print("\n" + "─" * 70)
+        ok = self.suite.failed == 0
+        print(
+            f"  oauth21 suite: {self.suite.passed}/{self.suite.total} passed"
+            + ("" if ok else "  [FAILED]")
+        )
+        return ok
+
     def run_all_tests(self) -> bool:
         """Esegue tutti i test organizzati per categoria."""
         print("\n" + "=" * 70)
@@ -2685,6 +2815,12 @@ Examples:
         action="store_true",
         help="Output results as JSON"
     )
+    parser.add_argument(
+        "--oauth21",
+        action="store_true",
+        help="Run only the oauth21-profile suite (server must run with "
+        "--profile oauth21)"
+    )
 
     args = parser.parse_args()
 
@@ -2697,7 +2833,7 @@ Examples:
         verbose=args.verbose
     )
 
-    success = agent.run_all_tests()
+    success = agent.run_oauth21_tests() if args.oauth21 else agent.run_all_tests()
 
     if args.json:
         results = [

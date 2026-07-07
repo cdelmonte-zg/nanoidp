@@ -42,9 +42,26 @@ jobs:
       - name: Run e2e agent
         run: python examples/test_agent.py
 
+      - name: Start oauth21 server
+        run: |
+          PORT=8001 python -m nanoidp --profile oauth21 > server-oauth21.log 2>&1 &
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:8001/api/health && exit 0
+            sleep 1
+          done
+          echo "oauth21 server did not become healthy" >&2
+          cat server-oauth21.log >&2
+          exit 1
+
+      - name: Run oauth21 profile suite
+        run: python examples/test_agent.py --oauth21 --url http://localhost:8001
+
       - name: Server log on failure
         if: failure()
-        run: cat server.log
+        run: |
+          cat server.log
+          echo "===== oauth21 server ====="
+          cat server-oauth21.log 2>/dev/null || true
 
   mcp-e2e:
     runs-on: ubuntu-latest
