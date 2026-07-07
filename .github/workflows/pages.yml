@@ -1,0 +1,57 @@
+# Build the mdBook documentation site and publish it to GitHub Pages.
+#
+# The book source lives in book/src (with the canonical docs symlinked in, so
+# there is a single source of truth); mdBook renders it to book/book. Pages
+# must be enabled once in the repo settings (Settings -> Pages -> Source:
+# GitHub Actions).
+name: Docs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "book/**"
+      - "docs/**"
+      - "VISION.md"
+      - "CHANGELOG.md"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install mdBook
+        run: |
+          version=0.4.52
+          url="https://github.com/rust-lang/mdBook/releases/download/v${version}/mdbook-v${version}-x86_64-unknown-linux-gnu.tar.gz"
+          curl -sSL "$url" | tar -xz -C /usr/local/bin
+
+      - name: Build the book
+        run: cd book && mdbook build
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: book/book
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/deploy-pages@v4
+        id: deployment

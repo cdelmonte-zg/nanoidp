@@ -220,4 +220,4 @@ All MCP tool calls are logged to the audit log, including:
 ## Related Documentation
 
 - [MCP Workflow](MCP_WORKFLOW.md) - Detailed Claude Code integration examples
-- [README](../README.md) - Installation and configuration
+- [README](https://github.com/cdelmonte-zg/nanoidp#readme) - Installation and configuration

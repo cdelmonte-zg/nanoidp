@@ -1,0 +1,1 @@
+../../../docs/MCP_WORKFLOW.md

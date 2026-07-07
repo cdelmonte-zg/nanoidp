@@ -40,3 +40,6 @@ build/
 
 # Local config overrides
 config/*.local.yaml
+
+# mdBook output
+book/book/

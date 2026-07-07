@@ -1,0 +1,19 @@
+[book]
+title = "NanoIDP"
+description = "A lightweight identity provider for development and testing."
+authors = ["Christian Del Monte"]
+language = "en"
+
+[output.html]
+default-theme = "rust"
+preferred-dark-theme = "ayu"
+git-repository-url = "https://github.com/cdelmonte-zg/nanoidp"
+edit-url-template = "https://github.com/cdelmonte-zg/nanoidp/edit/main/book/{path}"
+no-section-label = true
+
+[output.html.fold]
+enable = true
+level = 1
+
+[output.html.search]
+enable = true
