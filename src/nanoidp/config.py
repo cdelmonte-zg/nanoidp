@@ -42,13 +42,14 @@ def _expand_env_vars(value: Any) -> Any:
     return value
 
 
-def _coerce_additional_audiences(raw: Any, client_id: str) -> List[str]:
-    """Coerce a client's ``additional_audiences`` YAML value into a clean list.
+def _coerce_client_str_list(raw: Any, client_id: str, field: str) -> List[str]:
+    """Coerce a client's list-of-strings YAML value into a clean list.
 
-    The field is a ``List[str]`` on the model, but a single value is an easy
-    footgun in YAML (``additional_audiences: api://x``). Rather than let a raw
-    Pydantic ``ValidationError`` abort startup, accept a scalar string by wrapping
-    it, and raise a clear, client-scoped error for unsupported shapes (#35).
+    Fields like ``additional_audiences`` and ``redirect_uris`` are ``List[str]``
+    on the model, but a single value is an easy footgun in YAML
+    (``additional_audiences: api://x``). Rather than let a raw Pydantic
+    ``ValidationError`` abort startup, accept a scalar string by wrapping it,
+    and raise a clear, client-scoped error for unsupported shapes (#35).
     """
     label = client_id or "<missing client_id>"
     if raw is None:
@@ -59,14 +60,19 @@ def _coerce_additional_audiences(raw: Any, client_id: str) -> List[str]:
         non_strings = [a for a in raw if not isinstance(a, str)]
         if non_strings:
             raise ValueError(
-                f"Client '{label}': additional_audiences must be a list of strings, "
+                f"Client '{label}': {field} must be a list of strings, "
                 f"got non-string item(s): {non_strings!r}"
             )
         return [a for a in raw if a]
     raise ValueError(
-        f"Client '{label}': additional_audiences must be a string or a list of "
+        f"Client '{label}': {field} must be a string or a list of "
         f"strings, got {type(raw).__name__}"
     )
+
+
+def _coerce_additional_audiences(raw: Any, client_id: str) -> List[str]:
+    """Coerce a client's ``additional_audiences`` YAML value (see above)."""
+    return _coerce_client_str_list(raw, client_id, "additional_audiences")
 
 
 class User(BaseModel):
@@ -117,6 +123,14 @@ class OAuthClient(BaseModel):
     additional_audiences: List[str] = Field(
         default_factory=list,
         description="Extra audiences added to the ID Token 'aud' alongside the client_id",
+    )
+    redirect_uris: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Registered redirect URIs; when non-empty, /authorize enforces exact "
+            "string matching (RFC 6749 §3.1.2.3, OAuth 2.1 §4.1.1). Empty = any "
+            "syntactically valid URI is accepted (dev default)."
+        ),
     )
 
 
@@ -284,6 +298,9 @@ class ConfigManager:
                 description=client_data.get("description", ""),
                 additional_audiences=_coerce_additional_audiences(
                     client_data.get("additional_audiences", []), client_id
+                ),
+                redirect_uris=_coerce_client_str_list(
+                    client_data.get("redirect_uris", []), client_id, "redirect_uris"
                 ),
             ))
 
@@ -499,6 +516,8 @@ class ConfigManager:
             }
             if client.additional_audiences:
                 client_entry["additional_audiences"] = client.additional_audiences
+            if client.redirect_uris:
+                client_entry["redirect_uris"] = client.redirect_uris
             clients_data.append(client_entry)
 
         data = {

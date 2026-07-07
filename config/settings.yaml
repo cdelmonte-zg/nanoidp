@@ -19,6 +19,11 @@ oauth:
     additional_audiences:
     - https://api.example.com
     - urn:service:billing
+  - client_id: registered-client
+    client_secret: registered-secret
+    description: Client with registered redirect URIs (exact matching, issue #67)
+    redirect_uris:
+    - http://localhost:3000/callback
 saml:
   entity_id: http://localhost:${PORT:8000}/saml
   sso_url: http://localhost:${PORT:8000}/saml/sso

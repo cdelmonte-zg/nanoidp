@@ -517,6 +517,81 @@ class NanoIDPTestAgent:
             return None
         return token_resp.json()
 
+    def test_redirect_uri_exact_matching(self) -> TestResult:
+        """Registered redirect URIs are enforced with exact matching (issue #67).
+
+        Requires a 'registered-client' configured with
+        redirect_uris: ["http://localhost:3000/callback"] (present in the
+        default config). RFC 6749 §3.1.2.3 / OAuth 2.1 §4.1.1: simple string
+        comparison; a mismatch MUST NOT redirect (§3.1.2.4).
+        """
+        try:
+            base_params = {
+                "response_type": "code",
+                "client_id": "registered-client",
+                "scope": "openid",
+            }
+
+            # Exact match: accepted (login page)
+            ok = requests.get(
+                f"{self.base_url}/authorize",
+                params={**base_params, "redirect_uri": "http://localhost:3000/callback"},
+                allow_redirects=False,
+                timeout=5,
+            )
+
+            # Registered value plus a suffix: rejected, and NOT via redirect
+            evil = requests.get(
+                f"{self.base_url}/authorize",
+                params={**base_params, "redirect_uri": "http://localhost:3000/callbackevil"},
+                allow_redirects=False,
+                timeout=5,
+            )
+            evil_is_400 = evil.status_code == 400 and "Location" not in evil.headers
+            evil_error_ok = False
+            if evil_is_400:
+                try:
+                    evil_error_ok = evil.json().get("error") == "invalid_request"
+                except ValueError:
+                    evil_error_ok = False
+
+            # A client without registered URIs keeps the permissive behavior
+            permissive = requests.get(
+                f"{self.base_url}/authorize",
+                params={
+                    "response_type": "code",
+                    "client_id": self.client_id,
+                    "redirect_uri": "http://localhost:3000/anything",
+                    "scope": "openid",
+                },
+                allow_redirects=False,
+                timeout=5,
+            )
+
+            success = (
+                ok.status_code == 200
+                and evil_is_400
+                and evil_error_ok
+                and permissive.status_code == 200
+            )
+            return self._add_result(
+                "Redirect URI Exact Match",
+                TestCategory.OAUTH,
+                success,
+                "Registered URI accepted, mismatch rejected without redirect, "
+                "unregistered client stays permissive",
+                {
+                    "match_status": ok.status_code,
+                    "mismatch_status": evil.status_code,
+                    "mismatch_redirected": "Location" in evil.headers,
+                    "permissive_status": permissive.status_code,
+                },
+            )
+        except Exception as e:
+            return self._add_result(
+                "Redirect URI Exact Match", TestCategory.OAUTH, False, f"Error: {e}"
+            )
+
     def test_id_token_audience(self) -> TestResult:
         """ID Token `aud` is the client_id; access token `aud` is the resource (issue #32)."""
         try:
@@ -2472,6 +2547,7 @@ class NanoIDPTestAgent:
                 self.test_password_grant,
                 self.test_client_credentials,
                 self.test_authorization_code_pkce,
+                self.test_redirect_uri_exact_matching,
                 self.test_id_token_audience,
                 self.test_id_token_time_claims,
                 self.test_id_token_audience_array,

@@ -188,6 +188,8 @@ class YamlWriter:
         }
         if client.additional_audiences:
             client_data["additional_audiences"] = client.additional_audiences
+        if client.redirect_uris:
+            client_data["redirect_uris"] = client.redirect_uris
 
         if existing_idx is not None:
             clients[existing_idx] = client_data
