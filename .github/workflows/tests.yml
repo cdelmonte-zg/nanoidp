@@ -43,11 +43,4 @@ jobs:
         if: matrix.python-version == '3.12'
         run: |
           # Threshold ratchets upward only (#71); measured 73% when introduced.
-          pytest tests/ --cov=nanoidp --cov-report=xml --cov-report=term-missing --cov-fail-under=70
-
-      - name: Upload coverage to Codecov
-        if: matrix.python-version == '3.12'
-        uses: codecov/codecov-action@v4
-        with:
-          files: ./coverage.xml
-          fail_ci_if_error: true
+          pytest tests/ --cov=nanoidp --cov-report=term-missing --cov-fail-under=70
