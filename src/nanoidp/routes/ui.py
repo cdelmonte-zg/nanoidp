@@ -326,7 +326,7 @@ def clients() -> ResponseReturnValue:
     )
 
 
-def _parse_audiences(form_value: str) -> list:
+def _parse_audiences(form_value: str) -> list[str]:
     """Parse a newline-separated additional_audiences form field into a clean list."""
     return [a.strip() for a in (form_value or "").splitlines() if a.strip()]
 

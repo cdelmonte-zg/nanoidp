@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 class YamlWriter:
     """Service for safely writing YAML configuration files."""
 
-    def __init__(self, config_dir: Optional[str] = None):
+    def __init__(self, config_dir: Optional[str] = None) -> None:
         config = get_config()
         self.config_dir = Path(config_dir or config.config_dir)
         self.users_file = self.config_dir / "users.yaml"

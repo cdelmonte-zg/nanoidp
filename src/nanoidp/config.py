@@ -219,7 +219,7 @@ class Settings(BaseModel):
 class ConfigManager:
     """Manages configuration loading and access."""
 
-    def __init__(self, config_dir: Optional[str] = None):
+    def __init__(self, config_dir: Optional[str] = None) -> None:
         self.config_dir = Path(config_dir or self._find_config_dir())
         self.settings: Settings = Settings()
         self.users: Dict[str, User] = {}
