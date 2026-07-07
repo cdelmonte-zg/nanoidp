@@ -106,40 +106,15 @@ ignore = [
 ]
 
 [tool.mypy]
-# Gradual-adoption baseline (#55): catch real type errors in src/ without
-# demanding full annotation coverage yet. Tighten over time (e.g. enable
-# disallow_untyped_defs per module) as annotations improve.
+# Baseline from #55, ratcheted to full annotation coverage in #70: every def
+# in src/ is annotated and stays that way.
 python_version = "3.10"
 files = ["src"]
+disallow_untyped_defs = true
 check_untyped_defs = true
 warn_redundant_casts = true
 warn_unused_ignores = true
 no_implicit_optional = true
-
-[[tool.mypy.overrides]]
-# Typing ratchet (#70): modules here require fully annotated defs. The list
-# only grows; when all of src/ is in, flip disallow_untyped_defs globally
-# and delete this block. Still out: config, routes.ui.
-module = [
-    "nanoidp",
-    "nanoidp.__main__",
-    "nanoidp.app",
-    "nanoidp.exceptions",
-    "nanoidp.mcp_server",
-    "nanoidp.wizard",
-    "nanoidp.routes",
-    "nanoidp.routes.api",
-    "nanoidp.routes.oauth",
-    "nanoidp.routes.saml",
-    "nanoidp.services",
-    "nanoidp.services.audit",
-    "nanoidp.services.auth_code",
-    "nanoidp.services.crypto",
-    "nanoidp.services.discovery",
-    "nanoidp.services.token",
-    "nanoidp.services.yaml_writer",
-]
-disallow_untyped_defs = true
 
 [[tool.mypy.overrides]]
 # Only these dependencies ship no type stubs; keeping the list explicit (vs a
