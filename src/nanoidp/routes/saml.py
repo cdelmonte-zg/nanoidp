@@ -372,23 +372,43 @@ def sso() -> ResponseReturnValue:
 
     # AuthnRequest signature verification (#69), opt-in via
     # saml.want_authn_requests_signed. Verified where the request ENTERS:
-    # - GET = Redirect binding: query-string signature (Bindings §3.4.4.1),
-    #   which only exists on the original URL — the inline-login POST leg
-    #   cannot carry it, so that leg relies on the entry check.
+    # - GET = Redirect binding: query-string signature (Bindings §3.4.4.1).
+    #   The signature only exists on the original URL and cannot survive the
+    #   login-form roundtrip, so the verified request is bound SERVER-SIDE in
+    #   the session; the POST login leg (saml_original_verb=GET) is admitted
+    #   only for values byte-identical to a request this session already
+    #   verified, and fails closed otherwise (#69 review: hidden form fields
+    #   are client-controlled and must not be trusted on their own).
     # - POST without saml_original_verb = POST-binding entry: enveloped XML
     #   signature (Core §5).
     # - POST login leg of a POST-binding request (saml_original_verb=POST):
     #   the signature still travels inside the XML, so it is re-verified.
     if config.settings.saml_want_authn_requests_signed:
         form_leg_verb = (request.form.get("saml_original_verb") or "").upper()
-        verify_xml = request.method == "POST" and form_leg_verb in ("", "POST")
         try:
             if request.method == "GET":
                 verify_redirect_signature(
                     request.query_string.decode("latin-1"),
                     load_sp_certificates(config.settings.saml_sp_certificates),
                 )
-            elif verify_xml:
+                # A later Redirect-leg POST may only replay exactly this
+                # verified request. Overwritten by each newly verified GET.
+                session["saml_verified_redirect"] = {
+                    "SAMLRequest": saml_request_b64,
+                    "RelayState": relay_state,
+                }
+            elif form_leg_verb == "GET":
+                verified = session.get("saml_verified_redirect")
+                if (
+                    not isinstance(verified, dict)
+                    or verified.get("SAMLRequest") != saml_request_b64
+                    or verified.get("RelayState") != relay_state
+                ):
+                    raise SAMLSignatureError(
+                        "Redirect-binding login continuation does not match a "
+                        "signature-verified request in this session"
+                    )
+            else:
                 xml_bytes = _decode_saml_request_bytes(saml_request_b64)
                 verify_post_signature(
                     xml_bytes,
