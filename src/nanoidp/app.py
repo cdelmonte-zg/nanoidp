@@ -28,11 +28,14 @@ def create_app(config_dir: Optional[str] = None, profile: Optional[str] = None) 
     config = init_config(config_dir)
     settings = config.settings
 
-    # Apply profile overrides. oauth21 needs no mutations here: its protocol
-    # behavior is derived from security_profile via Settings properties (#68).
+    # Apply profile overrides. The CLI --profile wins over settings.yaml's
+    # security_profile; the runtime mutations key off the EFFECTIVE profile,
+    # so YAML and CLI mean the same thing (#68 review). oauth21 needs no
+    # mutations here: its protocol behavior is derived from security_profile
+    # via Settings properties (#68).
     if profile in ("stricter-dev", "oauth21"):
         settings.security_profile = profile
-    if profile == "stricter-dev":
+    if settings.security_profile == "stricter-dev":
         settings.rate_limit_enabled = True
         settings.password_hashing = True
         # PKCE required and 'plain' rejected in stricter-dev (#47)

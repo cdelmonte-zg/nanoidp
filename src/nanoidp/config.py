@@ -357,6 +357,8 @@ class ConfigManager:
             # JWT
             jwt_algorithm=jwt_config.get("algorithm", "RS256"),
             keys_dir=jwt_config.get("keys_dir", "./keys"),
+            # Security profile (top-level; CLI --profile overrides it, #68)
+            security_profile=data.get("security_profile", "dev"),
             # Authority prefixes
             authority_prefixes=data.get("authority_prefixes", {}),
             # Allowed identity classes
@@ -580,6 +582,9 @@ class ConfigManager:
 
         if self.settings.allowed_identity_classes:
             data["allowed_identity_classes"] = self.settings.allowed_identity_classes
+
+        if self.settings.security_profile != "dev":
+            data["security_profile"] = self.settings.security_profile
 
         with open(settings_file, "w") as f:
             yaml.dump(data, f, default_flow_style=False, sort_keys=False)

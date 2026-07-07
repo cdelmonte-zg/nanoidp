@@ -179,6 +179,75 @@ class TestAuthorizeEndpoint:
         assert response.status_code == 200
 
 
+class TestYamlProfileParity:
+    """security_profile from settings.yaml means the same as --profile (#68 review):
+    before the fix it was silently ignored on load and dropped on save."""
+
+    def _seed(self, tmp_path, extra_yaml=""):
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        (config_dir / "settings.yaml").write_text(
+            "oauth:\n"
+            '  issuer: "http://localhost:8000"\n'
+            '  audience: "my-app"\n'
+            "  clients:\n"
+            '    - client_id: "c1"\n'
+            '      client_secret: "s1"\n'
+            f"jwt:\n  keys_dir: {tmp_path}/keys\n" + extra_yaml
+        )
+        (config_dir / "users.yaml").write_text(
+            'users:\n  admin:\n    password: "admin"\ndefault_user: admin\n'
+        )
+        return config_dir
+
+    def test_yaml_oauth21_is_loaded_and_drives_behavior(self, tmp_path):
+        from nanoidp.config import ConfigManager
+
+        config_dir = self._seed(tmp_path, "security_profile: oauth21\n")
+        manager = ConfigManager(str(config_dir))
+        s = manager.settings
+        assert s.security_profile == "oauth21"
+        assert s.pkce_required and not s.password_grant_enabled
+        assert "password" not in build_discovery_document(s)["grant_types_supported"]
+
+    def test_yaml_stricter_dev_applies_runtime_hardening(self, tmp_path):
+        """A YAML-declared stricter-dev now gets the same runtime mutations
+        the CLI applies (previously the YAML value was ignored entirely)."""
+        from nanoidp.app import create_app
+
+        config_dir = self._seed(tmp_path, "security_profile: stricter-dev\n")
+        create_app(str(config_dir))
+        s = get_config().settings
+        assert s.security_profile == "stricter-dev"
+        assert s.require_pkce and s.rate_limit_enabled and s.password_hashing
+        assert not s.debug
+
+    def test_cli_profile_wins_over_yaml(self, tmp_path):
+        from nanoidp.app import create_app
+
+        config_dir = self._seed(tmp_path, "security_profile: oauth21\n")
+        create_app(str(config_dir), profile="stricter-dev")
+        assert get_config().settings.security_profile == "stricter-dev"
+
+    def test_save_round_trips_non_default_profile(self, tmp_path):
+        from nanoidp.config import ConfigManager
+
+        config_dir = self._seed(tmp_path)
+        manager = ConfigManager(str(config_dir))
+        manager.settings.security_profile = "oauth21"
+        manager.save()
+
+        reloaded = ConfigManager(str(config_dir))
+        assert reloaded.settings.security_profile == "oauth21"
+
+    def test_save_omits_default_profile(self, tmp_path):
+        from nanoidp.config import ConfigManager
+
+        config_dir = self._seed(tmp_path)
+        ConfigManager(str(config_dir)).save()
+        assert "security_profile" not in (config_dir / "settings.yaml").read_text()
+
+
 class TestMCPParity:
     async def test_get_settings_reports_profile(self, app):
         from nanoidp.mcp_server import _execute_tool
