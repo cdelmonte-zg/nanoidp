@@ -5,6 +5,81 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.3.0] - 2026-07-08
+
+### Added
+- **`oauth21` security profile** (#68): opt-in draft-OAuth-2.1 protocol
+  strictness alongside `dev` and `stricter-dev` — PKCE required on the
+  authorization code flow with S256 only (draft-ietf-oauth-v2-1 §4.1.1,
+  §7.5.2), refresh token rotation forced on (§4.3.1), the password grant
+  removed (RFC 6749 §5.2) and absent from discovery, and registered
+  redirect URIs mandatory at `/authorize`. Protocol behavior lives in
+  derived `Settings` properties consumed by both the routes and the shared
+  discovery builder, so the profile means the same thing from `--profile`
+  or `settings.yaml` and discovery can never advertise what the endpoints
+  refuse. Deliberately orthogonal to `stricter-dev` (runtime hardening).
+- **Registered redirect URIs with exact matching** (#67): clients gain an
+  optional `redirect_uris` list; when non-empty, `/authorize` compares the
+  requested `redirect_uri` with simple string comparison (RFC 6749
+  §3.1.2.3, OAuth 2.1 §4.1.1) and answers a mismatch with
+  `400 invalid_request` directly — never by redirecting to the unvalidated
+  URI (§3.1.2.4). Exposed in the web UI, MCP client tools and YAML.
+- **Signed AuthnRequest verification** (#69): with
+  `saml.want_authn_requests_signed: true` and PEM certificates in
+  `saml.sp_certificates`, nanoidp requires and verifies AuthnRequest
+  signatures under both bindings — the HTTP-Redirect query-string
+  signature over the raw transmitted fragment (SAML 2.0 Bindings
+  §3.4.4.1; rsa-sha256/rsa-sha512/legacy rsa-sha1) and the HTTP-POST
+  enveloped `ds:Signature` (Core §5) — rejecting unsigned or invalid
+  requests with 400, failing closed without registered certificates. The
+  verified Redirect request is bound server-side in the session, so the
+  inline-login leg only accepts byte-identical values. Metadata advertises
+  `WantAuthnRequestsSigned="true"` if and only if enforcement is on.
+  `examples/gen_sp_keypair.py` generates a test SP keypair.
+- **E2E workflow in CI** (#79): every PR now boots real servers and runs
+  `examples/test_agent.py` against them (default profile, `--oauth21`,
+  `--saml-signed` with a generated SP keypair) plus an MCP **stdio** smoke
+  test (`examples/mcp_smoke_test.py`) driving the real transport — the
+  regression guard for the class of bug where the stdio entrypoint crashed
+  unnoticed because unit tests bypass it (#56).
+- **Coverage gate in CI** (#71, #72): `--cov-fail-under`, introduced at 70
+  and ratcheted to 75 after the wizard went from 0% to 99% coverage;
+  measured coverage 78%. The dead Codecov upload (never configured, failed
+  silently since inception) was removed in favor of in-CI enforcement.
+- **Documentation site**: mdBook on GitHub Pages
+  (<https://cdelmonte-zg.github.io/nanoidp/>) with getting-started, guides
+  and a full reference; canonical docs are symlinked so there is a single
+  source of truth, and the README became a landing page.
+- **Web UI parity** (#94): `require_pkce` and `refresh_token_rotation`
+  toggles on the settings page; SP-certificates and signed-AuthnRequests
+  fields (#69); `redirect_uris` on the client form (#67); the dashboard
+  badge distinguishes the `oauth21` profile.
+- MCP: `get_settings` reports `security_profile`; `update_settings` covers
+  the SAML verification fields; client tools carry `redirect_uris`.
+
+### Changed
+- **`src/` is fully annotated** and mypy runs with a global
+  `disallow_untyped_defs` (#70) — new unannotated code fails CI.
+- **Internal architecture** (behavior-invariant, #83–#86): one shared YAML
+  serialization path for `ConfigManager` and the UI writer; the token
+  endpoint dispatches to per-grant handlers with device-flow and
+  revocation state in dedicated services (`DeviceCodeStore`,
+  `RevocationStore`); a single `audit_event` helper replaced 58 duplicated
+  audit blocks (invariance proven by a before/after snapshot harness); the
+  Pydantic models moved to `models.py` with compatibility re-exports.
+- `security_profile` is now read from `settings.yaml` (top-level key) and
+  round-trips on save; the CLI `--profile` still wins. A YAML-declared
+  `stricter-dev` now applies its runtime hardening (previously the YAML
+  value was silently ignored).
+
+### Fixed
+- **`ConfigManager.save()` was lossy** (#87): the save path behind MCP
+  `save_config` rewrote `settings.yaml` from scratch, silently deleting
+  every section it didn't own — `jwt` (external keys!), `session`,
+  `logging` levels, `server.debug` and custom keys. Saving is now
+  read-modify-write and preserves them, atomically and with a `.bak`
+  backup like the UI path always did.
+
 ## [2.2.0] - 2026-06-11
 
 ### Added
