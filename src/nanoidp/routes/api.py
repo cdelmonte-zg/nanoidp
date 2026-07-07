@@ -5,6 +5,7 @@ REST API routes for management and monitoring.
 import logging
 
 from flask import Blueprint, jsonify, request
+from flask.typing import ResponseReturnValue
 
 from ..config import get_config
 from ..services import get_audit_log, get_token_service
@@ -15,13 +16,13 @@ api_bp = Blueprint("api", __name__, url_prefix="/api")
 
 
 @api_bp.route("/health")
-def health():
+def health() -> ResponseReturnValue:
     """Health check endpoint."""
     return jsonify({"status": "ok"})
 
 
 @api_bp.route("/users")
-def list_users():
+def list_users() -> ResponseReturnValue:
     """List all configured users (without passwords)."""
     config = get_config()
     users = []
@@ -39,7 +40,7 @@ def list_users():
 
 
 @api_bp.route("/users/<username>")
-def get_user(username: str):
+def get_user(username: str) -> ResponseReturnValue:
     """Get details for a specific user."""
     config = get_config()
     user = config.get_user(username)
@@ -63,7 +64,7 @@ def get_user(username: str):
 
 
 @api_bp.route("/users/<username>/token", methods=["POST"])
-def generate_token(username: str):
+def generate_token(username: str) -> ResponseReturnValue:
     """Generate a token for a user (for testing)."""
     config = get_config()
     user = config.get_user(username)
@@ -79,7 +80,7 @@ def generate_token(username: str):
 
 
 @api_bp.route("/audit")
-def get_audit():
+def get_audit() -> ResponseReturnValue:
     """Get audit log entries."""
     audit = get_audit_log()
 
@@ -96,14 +97,14 @@ def get_audit():
 
 
 @api_bp.route("/audit/stats")
-def get_audit_stats():
+def get_audit_stats() -> ResponseReturnValue:
     """Get audit statistics."""
     audit = get_audit_log()
     return jsonify(audit.get_stats())
 
 
 @api_bp.route("/audit/clear", methods=["POST"])
-def clear_audit():
+def clear_audit() -> ResponseReturnValue:
     """Clear the audit log."""
     audit = get_audit_log()
     audit.clear()
@@ -111,7 +112,7 @@ def clear_audit():
 
 
 @api_bp.route("/config")
-def get_configuration():
+def get_configuration() -> ResponseReturnValue:
     """Get current configuration (excluding secrets)."""
     config = get_config()
     settings = config.settings
@@ -144,7 +145,7 @@ def get_configuration():
 
 
 @api_bp.route("/config/reload", methods=["POST"])
-def reload_config():
+def reload_config() -> ResponseReturnValue:
     """Reload configuration from files."""
     config = get_config()
     config.reload()
@@ -155,7 +156,7 @@ def reload_config():
 
 
 @api_bp.route("/keys/rotate", methods=["POST"])
-def rotate_keys():
+def rotate_keys() -> ResponseReturnValue:
     """Rotate cryptographic keys.
 
     Moves the current active key to 'previous' keys (kept for token validation)
@@ -191,7 +192,7 @@ def rotate_keys():
 
 
 @api_bp.route("/keys/info")
-def keys_info():
+def keys_info() -> ResponseReturnValue:
     """Get information about current cryptographic keys."""
     from ..services import get_crypto_service
 

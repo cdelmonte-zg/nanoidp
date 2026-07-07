@@ -73,7 +73,7 @@ class CryptoService:
 
         self._ensure_keys()
 
-    def _ensure_keys(self):
+    def _ensure_keys(self) -> None:
         """Ensure RSA keys and certificate exist."""
         self.keys_dir.mkdir(parents=True, exist_ok=True)
 
@@ -140,7 +140,7 @@ class CryptoService:
         with open(cert_path, "rb") as f:
             self.cert_pem = f.read()
 
-    def _load_external_keys(self):
+    def _load_external_keys(self) -> None:
         """Load external PEM keys instead of generating new ones."""
         if self._external_private_key is None or self._external_public_key is None:
             raise ValueError("External key paths not configured")
@@ -175,7 +175,7 @@ class CryptoService:
         with open(cert_path, "rb") as f:
             self.cert_pem = f.read()
 
-    def _load_previous_keys(self, keys_meta_path: Path):
+    def _load_previous_keys(self, keys_meta_path: Path) -> None:
         """Load previous keys from metadata file."""
         if not keys_meta_path.exists():
             return
@@ -201,7 +201,7 @@ class CryptoService:
         except Exception as e:
             logger.warning(f"Failed to load previous keys: {e}")
 
-    def _save_keys_metadata(self):
+    def _save_keys_metadata(self) -> None:
         """Save keys metadata to file."""
         keys_meta_path = self.keys_dir / "keys.json"
         metadata = {
@@ -214,7 +214,7 @@ class CryptoService:
         with open(keys_meta_path, "w") as f:
             json.dump(metadata, f, indent=2)
 
-    def _generate_certificate(self, cert_path: Path):
+    def _generate_certificate(self, cert_path: Path) -> None:
         """Generate a self-signed X.509 certificate."""
         logger.info("Generating self-signed certificate...")
 
@@ -455,7 +455,7 @@ class CryptoService:
             "rotated_at": datetime.now(timezone.utc).isoformat(),
         }
 
-    def regenerate_keys(self):
+    def regenerate_keys(self) -> Dict[str, Any]:
         """Regenerate RSA keys and certificate (legacy method, calls rotate_keys)."""
         return self.rotate_keys()
 

@@ -8,9 +8,10 @@ import uuid
 import zlib
 from base64 import b64decode, b64encode
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, TypedDict
 
 from flask import Blueprint, Response, abort, render_template, request, session
+from flask.typing import ResponseReturnValue
 from lxml import etree
 
 from ..config import get_config
@@ -66,7 +67,12 @@ def _get_c14n_algorithm(config_value: str) -> "CanonicalizationMethod":
 saml_bp = Blueprint("saml", __name__, url_prefix="/saml")
 
 
-def _get_request_info():
+class _RequestInfo(TypedDict):
+    ip_address: str
+    user_agent: str
+
+
+def _get_request_info() -> _RequestInfo:
     """Get request info for audit logging."""
     return {
         "ip_address": request.remote_addr or "unknown",
@@ -74,7 +80,9 @@ def _get_request_info():
     }
 
 
-def _parse_saml_request(saml_request_b64: str, http_verb: str, strict: bool = False):
+def _parse_saml_request(
+    saml_request_b64: str, http_verb: str, strict: bool = False
+) -> Optional[Dict[str, Optional[str]]]:
     """Parse a SAMLRequest to extract ID, ACS URL, and Issuer.
 
     Args:
@@ -147,14 +155,14 @@ def _build_saml_response(
     attributes: dict,
     in_response_to: Optional[str] = None,
     sign: bool = True,
-):
+) -> bytes:
     """Build a SAML Response XML."""
     config = get_config()
     crypto = get_crypto_service(config.settings.keys_dir)
 
     now = datetime.now(timezone.utc)
 
-    def iso(dt):
+    def iso(dt: datetime) -> str:
         return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
     response_id = f"_{uuid.uuid4().hex}"
@@ -277,7 +285,7 @@ def _build_saml_response(
 
 
 @saml_bp.route("/metadata")
-def metadata():
+def metadata() -> ResponseReturnValue:
     """SAML IdP Metadata endpoint."""
     config = get_config()
     crypto = get_crypto_service(config.settings.keys_dir)
@@ -325,7 +333,7 @@ def metadata():
 
 
 @saml_bp.route("/cert.pem")
-def cert():
+def cert() -> ResponseReturnValue:
     """Download the IdP certificate."""
     config = get_config()
     crypto = get_crypto_service(config.settings.keys_dir)
@@ -333,7 +341,7 @@ def cert():
 
 
 @saml_bp.route("/sso", methods=["GET", "POST"])
-def sso():
+def sso() -> ResponseReturnValue:
     """SAML SSO endpoint.
 
     Handles both SP-initiated SSO flows:
@@ -436,10 +444,8 @@ def sso():
     )
 
     # Determine ACS URL
-    if saml_info and saml_info.get("acs_url"):
-        acs_url = saml_info["acs_url"]
-    else:
-        acs_url = config.settings.default_acs_url
+    requested_acs = saml_info.get("acs_url") if saml_info else None
+    acs_url = requested_acs or config.settings.default_acs_url
 
     in_response_to = saml_info.get("id") if saml_info else None
 
@@ -504,7 +510,7 @@ def _build_attribute_query_response(user_id: str, attributes: dict, request_id: 
     """
     now = datetime.now(timezone.utc)
 
-    def iso(dt):
+    def iso(dt: datetime) -> str:
         return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
     SAML2_NS = "urn:oasis:names:tc:SAML:2.0:assertion"
@@ -625,7 +631,7 @@ def _sign_attribute_query_response(response_xml: str, sign: bool = True) -> str:
 
 
 @saml_bp.route("/attribute-query", methods=["POST"])
-def attribute_query():
+def attribute_query() -> ResponseReturnValue:
     """
     SAML 2.0 AttributeQuery endpoint (Backend-to-Backend).
 
