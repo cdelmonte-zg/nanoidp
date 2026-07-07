@@ -60,6 +60,34 @@ pytest --cov=nanoidp
 pytest tests/test_basic.py
 ```
 
+## End-to-End Test Agent
+
+NanoIDP includes a comprehensive test agent that validates all functionality against a running server:
+
+```bash
+# Run against local server (default: http://localhost:8000)
+python examples/test_agent.py
+
+# Run against custom URL
+python examples/test_agent.py --url http://localhost:9000
+
+# Verbose output
+python examples/test_agent.py --verbose
+
+# JSON output
+python examples/test_agent.py --json
+```
+
+The test agent covers:
+
+- **Core**: Health check, OIDC discovery
+- **OAuth2/OIDC**: All grant types, token introspection, revocation, logout
+- **SAML 2.0**: Metadata, SSO (POST/Redirect bindings), Attribute Query, signing config
+- **Key Management**: Key info, rotation, post-rotation token validation
+- **REST API**: Users, config, audit log
+
+**Caution:** a run against a live server persists configuration changes back to that server's `config/settings.yaml` (resolved `${PORT}` placeholders, cleared `default_acs_url`). If the server runs from a git checkout, restore the file before committing: `git checkout -- config/settings.yaml`.
+
 ## Code Quality
 
 ```bash
@@ -102,6 +130,44 @@ nanoidp/
 ├── tests/             # Test files
 ├── config/            # Default configuration
 └── docs/              # Documentation
+```
+
+## Releasing (maintainers)
+
+NanoIDP uses GitHub Actions for automated releases to both PyPI and GHCR.
+
+```bash
+# 1. Update version in pyproject.toml
+# 2. Update CHANGELOG.md
+# 3. Commit changes
+git add -A && git commit -m "Release v1.0.1"
+
+# 4. Create and push tag
+git tag v1.0.1
+git push origin main --tags
+```
+
+The workflow automatically:
+
+1. Runs all tests
+2. Builds the package
+3. Publishes to TestPyPI
+4. Publishes to PyPI (only for non-prerelease tags)
+5. Builds and publishes Docker images to GHCR
+
+Container tags are derived from the git tag (for example `v1.0.1`); the `latest` tag is only published for non-prerelease tags.
+
+### Pre-release Testing
+
+For testing releases before publishing to PyPI:
+
+```bash
+# Create a pre-release tag (publishes to TestPyPI and GHCR)
+git tag v1.0.1-rc1
+git push origin v1.0.1-rc1
+
+# Install from TestPyPI to verify
+pip install -i https://test.pypi.org/simple/ nanoidp==1.0.1rc1
 ```
 
 ## License
