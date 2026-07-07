@@ -47,18 +47,22 @@ def build_discovery_document(settings: Settings) -> Dict[str, Any]:
             "roles", "tenant", "identity_class", "entitlements",
             "source_acl", "attributes", "authorities"
         ],
+        # The password grant is removed by OAuth 2.1 and rejected under the
+        # oauth21 profile, so it must not be advertised there (#68).
         "grant_types_supported": [
-            "authorization_code",
-            "client_credentials",
-            "password",
-            "refresh_token",
-            "urn:ietf:params:oauth:grant-type:device_code",
+            grant
+            for grant in (
+                "authorization_code",
+                "client_credentials",
+                "password",
+                "refresh_token",
+                "urn:ietf:params:oauth:grant-type:device_code",
+            )
+            if grant != "password" or settings.password_grant_enabled
         ],
-        # stricter-dev rejects 'plain' at /authorize, so don't advertise it
-        # there (#47)
+        # stricter-dev and oauth21 reject 'plain' at /authorize, so don't
+        # advertise it there (#47, #68)
         "code_challenge_methods_supported": (
-            ["S256"]
-            if settings.security_profile == "stricter-dev"
-            else ["plain", "S256"]
+            ["plain", "S256"] if settings.pkce_plain_allowed else ["S256"]
         ),
     }

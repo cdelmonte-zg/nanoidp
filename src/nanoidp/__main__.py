@@ -177,9 +177,10 @@ def main() -> None:
     )
     parser.add_argument(
         "--profile",
-        choices=["dev", "stricter-dev"],
+        choices=["dev", "stricter-dev", "oauth21"],
         default="dev",
-        help="Security profile: dev (default) or stricter-dev",
+        help="Security profile: dev (default), stricter-dev (runtime hardening) "
+        "or oauth21 (draft OAuth 2.1 protocol strictness)",
     )
 
     args = parser.parse_args()

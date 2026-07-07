@@ -12,12 +12,15 @@ By design, NanoIDP prioritizes developer convenience over security hardening. It
 
 ## Security Profiles
 
-NanoIDP supports two security profiles to balance convenience with basic security controls:
+NanoIDP supports three security profiles to balance convenience with basic security controls:
 
 | Profile | Description |
 |---------|-------------|
 | `dev` (default) | Maximum convenience for development: plaintext passwords, permissive CORS, no rate limiting |
-| `stricter-dev` | Semi-hardened mode: bcrypt passwords, restricted CORS, rate limiting, debug mode blocked |
+| `stricter-dev` | Semi-hardened runtime: bcrypt passwords, restricted CORS, rate limiting, debug mode blocked |
+| `oauth21` | Draft OAuth 2.1 protocol strictness (#68): PKCE required (S256 only), refresh token rotation on, password grant removed, registered redirect URIs mandatory at `/authorize` |
+
+`stricter-dev` hardens the *runtime*; `oauth21` hardens the *protocol* — they are deliberately orthogonal. The discovery document always reflects the active profile: under `oauth21`, `password` disappears from `grant_types_supported` and `code_challenge_methods_supported` is `["S256"]`.
 
 ### Usage
 
@@ -27,16 +30,23 @@ python -m nanoidp
 
 # Run with stricter-dev profile
 python -m nanoidp --profile stricter-dev
+
+# Run with draft OAuth 2.1 protocol strictness
+python -m nanoidp --profile oauth21
 ```
 
 ### Feature Comparison
 
-| Feature | `dev` | `stricter-dev` |
-|---------|-------|----------------|
-| Password storage | Plaintext | bcrypt hash |
-| CORS | `*` (all origins) | localhost only |
-| Rate limiting | None | 10 req/min on `/token` |
-| Debug mode | Allowed | Blocked |
+| Feature | `dev` | `stricter-dev` | `oauth21` |
+|---------|-------|----------------|-----------|
+| Password storage | Plaintext | bcrypt hash | Plaintext |
+| CORS | `*` (all origins) | localhost only | `*` (all origins) |
+| Rate limiting | None | 10 req/min on `/token` | None |
+| Debug mode | Allowed | Blocked | Allowed |
+| PKCE | Optional | Required, S256 only | Required, S256 only |
+| Refresh token rotation | Setting (`off`) | Setting (`off`) | Forced on |
+| `password` grant | Enabled | Enabled | Removed (and not advertised) |
+| Redirect URIs at `/authorize` | Any valid URI, or exact match if registered | Same as `dev` | Registration mandatory, exact match |
 
 ---
 
