@@ -14,6 +14,12 @@ from typing import Any, Dict, List, Optional
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from .serialization import (
+    apply_settings_document,
+    apply_users_document,
+    atomic_write_yaml,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -507,87 +513,32 @@ class ConfigManager:
         logger.info(f"Configuration saved to {self.config_dir}")
 
     def _save_users(self) -> None:
-        """Save users to users.yaml."""
+        """Save users to users.yaml (shared builder, read-modify-write, #83)."""
         users_file = self.config_dir / "users.yaml"
 
-        users_data = {}
-        for username, user in self.users.items():
-            user_dict: Dict[str, Any] = {
-                "password": user.password,
-                "email": user.email,
-                "roles": user.roles,
-                "tenant": user.tenant,
-            }
-            if user.identity_class:
-                user_dict["identity_class"] = user.identity_class
-            if user.entitlements:
-                user_dict["entitlements"] = user.entitlements
-            if user.source_acl:
-                user_dict["source_acl"] = user.source_acl
-            if user.attributes:
-                user_dict["attributes"] = user.attributes
-            users_data[username] = user_dict
+        document: Dict[str, Any] = {}
+        if users_file.exists():
+            with open(users_file, "r") as f:
+                document = yaml.safe_load(f) or {}
 
-        data = {
-            "users": users_data,
-            "default_user": self.default_user,
-        }
-
-        with open(users_file, "w") as f:
-            yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+        apply_users_document(document, self.users, self.default_user)
+        atomic_write_yaml(users_file, document)
 
     def _save_settings(self) -> None:
-        """Save settings to settings.yaml."""
+        """Save settings to settings.yaml (shared builder, #83).
+
+        Read-modify-write: keys this codebase doesn't manage (jwt, session,
+        logging.level, custom keys) are preserved instead of deleted (#87).
+        """
         settings_file = self.config_dir / "settings.yaml"
 
-        clients_data = []
-        for client in self.settings.clients:
-            client_entry: Dict[str, Any] = {
-                "client_id": client.client_id,
-                "client_secret": client.client_secret,
-                "description": client.description,
-            }
-            if client.additional_audiences:
-                client_entry["additional_audiences"] = client.additional_audiences
-            if client.redirect_uris:
-                client_entry["redirect_uris"] = client.redirect_uris
-            clients_data.append(client_entry)
+        document: Dict[str, Any] = {}
+        if settings_file.exists():
+            with open(settings_file, "r") as f:
+                document = yaml.safe_load(f) or {}
 
-        data = {
-            "server": {
-                "host": self.settings.host,
-                "port": self.settings.port,
-            },
-            "oauth": {
-                "issuer": self.settings.issuer,
-                "audience": self.settings.audience,
-                "token_expiry_minutes": self.settings.token_expiry_minutes,
-                "refresh_token_rotation": self.settings.refresh_token_rotation,
-                "require_pkce": self.settings.require_pkce,
-                "clients": clients_data,
-            },
-            "saml": {
-                "entity_id": self.settings.saml_entity_id,
-                "sso_url": self.settings.saml_sso_url,
-                "default_acs_url": self.settings.default_acs_url,
-                "sign_responses": self.settings.saml_sign_responses,
-                "c14n_algorithm": self.settings.saml_c14n_algorithm,
-                "strict_binding": self.settings.strict_saml_binding,
-            },
-            "logging": {
-                "verbose_logging": self.settings.verbose_logging,
-            },
-            "authority_prefixes": self.settings.authority_prefixes,
-        }
-
-        if self.settings.allowed_identity_classes:
-            data["allowed_identity_classes"] = self.settings.allowed_identity_classes
-
-        if self.settings.security_profile != "dev":
-            data["security_profile"] = self.settings.security_profile
-
-        with open(settings_file, "w") as f:
-            yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+        apply_settings_document(document, self.settings)
+        atomic_write_yaml(settings_file, document)
 
 
 # Global config instance
