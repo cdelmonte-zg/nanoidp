@@ -11,9 +11,12 @@ The guides and the project pages are **symlinks** into the canonical files,
 so they are never duplicated:
 
 - `src/guides/{MCP_WORKFLOW,SECURITY}.md` -> `docs/` (plus `src/guides/images` -> `docs/images`)
-- `src/project/vision.md` -> `VISION.md`, `src/project/changelog.md` -> `CHANGELOG.md`
+- `src/project/vision.md` -> `VISION.md`, `src/project/changelog.md` -> `CHANGELOG.md`,
+  `src/project/contributing.md` -> `CONTRIBUTING.md`
 
-The introduction and getting-started pages are written for the site.
+The introduction, getting-started, remaining guides, and reference pages
+are written for the site — the site is their canonical home (the README
+links here instead of duplicating them).
 
 ## Build locally
 

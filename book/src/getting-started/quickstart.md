@@ -69,8 +69,11 @@ tokens interactively.
 
 ## Next steps
 
+- Exercise every grant with curl: [Requesting tokens](../guides/token-requests.md)
 - Drive it from Claude Code: [MCP with Claude Code](../guides/MCP_WORKFLOW.md)
 - Understand the trade-offs and the `stricter-dev` profile:
   [Security guide](../guides/SECURITY.md)
-- The full endpoint and configuration reference currently lives in the
-  [README](https://github.com/cdelmonte-zg/nanoidp#readme).
+- The full reference: [Configuration](../reference/configuration.md),
+  [Endpoints](../reference/endpoints.md),
+  [Tokens and claims](../reference/tokens.md),
+  [SAML options](../reference/saml.md)
