@@ -36,6 +36,26 @@
                                value="{{ settings.token_expiry_minutes }}" min="1" max="525600">
                         <div class="form-text">How long tokens are valid (default: 60 minutes)</div>
                     </div>
+
+                    <div class="mb-3">
+                        <div class="form-check form-switch">
+                            <input class="form-check-input" type="checkbox" role="switch"
+                                   id="require_pkce" name="require_pkce" value="true"
+                                   {% if settings.require_pkce %}checked{% endif %}>
+                            <label class="form-check-label" for="require_pkce">Require PKCE</label>
+                        </div>
+                        <div class="form-text">Reject <code>/authorize</code> requests without a PKCE <code>code_challenge</code> (on by default in stricter-dev and implied by oauth21).</div>
+                    </div>
+
+                    <div class="mb-3">
+                        <div class="form-check form-switch">
+                            <input class="form-check-input" type="checkbox" role="switch"
+                                   id="refresh_token_rotation" name="refresh_token_rotation" value="true"
+                                   {% if settings.refresh_token_rotation %}checked{% endif %}>
+                            <label class="form-check-label" for="refresh_token_rotation">Refresh Token Rotation</label>
+                        </div>
+                        <div class="form-text">Each refresh invalidates the used refresh token; reuse revokes its rotation family (forced on by oauth21).</div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -199,7 +219,9 @@ function updatePreview() {
         oauth: {
             issuer: document.getElementById('issuer').value,
             audience: document.getElementById('audience').value,
-            token_expiry_minutes: parseInt(document.getElementById('token_expiry_minutes').value) || 60
+            token_expiry_minutes: parseInt(document.getElementById('token_expiry_minutes').value) || 60,
+            require_pkce: document.getElementById('require_pkce').checked,
+            refresh_token_rotation: document.getElementById('refresh_token_rotation').checked
         },
         saml: {
             entity_id: document.getElementById('saml_entity_id').value,
