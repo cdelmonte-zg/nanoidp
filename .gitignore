@@ -43,3 +43,6 @@ config/*.local.yaml
 
 # mdBook output
 book/book/
+
+# Transient backups from atomic YAML writes
+config/*.yaml.bak

@@ -4,15 +4,13 @@ Provides atomic write operations for YAML configuration files.
 """
 
 import logging
-import os
-import shutil
-import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import yaml
 
 from ..config import OAuthClient, User, get_config
+from ..serialization import atomic_write_yaml, client_to_yaml, user_to_yaml
 
 logger = logging.getLogger(__name__)
 
@@ -27,41 +25,8 @@ class YamlWriter:
         self.settings_file = self.config_dir / "settings.yaml"
 
     def _atomic_write(self, file_path: Path, data: Dict[str, Any]) -> None:
-        """
-        Atomically write data to a YAML file.
-        Uses a temporary file and rename to ensure atomic operation.
-        """
-        # Create backup
-        backup_path = file_path.with_suffix(".yaml.bak")
-        if file_path.exists():
-            shutil.copy2(file_path, backup_path)
-
-        # Write to temporary file first
-        fd, temp_path = tempfile.mkstemp(
-            suffix=".yaml",
-            prefix=file_path.stem + "_",
-            dir=file_path.parent
-        )
-
-        try:
-            with os.fdopen(fd, "w") as f:
-                yaml.dump(data, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
-
-            # Atomic rename
-            os.replace(temp_path, file_path)
-            logger.info(f"Successfully wrote {file_path}")
-
-        except Exception as e:
-            # Clean up temp file if it exists
-            if os.path.exists(temp_path):
-                os.unlink(temp_path)
-
-            # Restore from backup if available
-            if backup_path.exists():
-                shutil.copy2(backup_path, file_path)
-                logger.warning(f"Restored {file_path} from backup after write failure")
-
-            raise RuntimeError(f"Failed to write {file_path}: {e}") from e
+        """Atomically write a YAML document (shared implementation, #83)."""
+        atomic_write_yaml(file_path, data)
 
     def _load_users_yaml(self) -> Dict[str, Any]:
         """Load the current users.yaml content."""
@@ -94,27 +59,7 @@ class YamlWriter:
         if is_new and user.username in data.get("users", {}):
             raise ValueError(f"User '{user.username}' already exists")
 
-        user_data: Dict[str, Any] = {
-            "password": user.password,
-            "email": user.email,
-        }
-
-        # Only include non-empty optional fields
-        if user.identity_class:
-            user_data["identity_class"] = user.identity_class
-        if user.entitlements:
-            user_data["entitlements"] = user.entitlements
-        if user.roles:
-            user_data["roles"] = user.roles
-        if user.tenant and user.tenant != "default":
-            user_data["tenant"] = user.tenant
-        if user.source_acl:
-            user_data["source_acl"] = user.source_acl
-        # Custom attributes
-        if user.attributes:
-            user_data["attributes"] = user.attributes
-
-        data.setdefault("users", {})[user.username] = user_data
+        data.setdefault("users", {})[user.username] = user_to_yaml(user)
 
         self._atomic_write(self.users_file, data)
 
@@ -181,15 +126,7 @@ class YamlWriter:
         if is_new and existing_idx is not None:
             raise ValueError(f"Client '{client.client_id}' already exists")
 
-        client_data: Dict[str, Any] = {
-            "client_id": client.client_id,
-            "client_secret": client.client_secret,
-            "description": client.description,
-        }
-        if client.additional_audiences:
-            client_data["additional_audiences"] = client.additional_audiences
-        if client.redirect_uris:
-            client_data["redirect_uris"] = client.redirect_uris
+        client_data = client_to_yaml(client)
 
         if existing_idx is not None:
             clients[existing_idx] = client_data
