@@ -23,10 +23,11 @@
 
 - **OAuth2 / OIDC** - OAuth2/OIDC support for development and integration testing: Authorization Code, Password, Client Credentials, Refresh Token, and Device Authorization grants
 - **PKCE Support** - Proof Key for Code Exchange (RFC 7636) with S256 and plain methods
+- **Security Profiles** - `stricter-dev` (runtime hardening) and `oauth21` (draft OAuth 2.1 protocol strictness: PKCE-only S256, rotation, no password grant, registered redirect URIs)
 - **Token Management** - Introspection (RFC 7662) and Revocation (RFC 7009) endpoints
 - **OIDC Logout** - End Session endpoint for RP-initiated logout
 - **Device Flow** - Device Authorization Grant (RFC 8628) for CLI/IoT applications
-- **SAML 2.0** - SSO and AttributeQuery endpoints with configurable signed assertions
+- **SAML 2.0** - SSO and AttributeQuery endpoints with configurable signed assertions and opt-in verification of signed AuthnRequests
 - **MCP Server** - Model Context Protocol integration for Claude Code
 - **Web UI** - Full configuration interface for users, clients, settings, and more
 - **YAML Configuration** - File-based configuration, no database required

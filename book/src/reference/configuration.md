@@ -72,6 +72,12 @@ saml:
   sso_url: "http://localhost:8000/saml/sso"
   default_acs_url: "http://localhost:8080/login/saml2/sso/nanoidp"
   sign_responses: true  # Set to false for testing unsigned SAML flows
+  want_authn_requests_signed: false  # verify AuthnRequest signatures (see SAML options)
+  # sp_certificates:                 # PEM files, required when the above is true
+  #   - /path/to/sp-cert.pem
+
+# Optional; also settable at startup with --profile (which wins over YAML)
+# security_profile: oauth21   # dev (default) | stricter-dev | oauth21
 
 authority_prefixes:
   roles: "ROLE_"
