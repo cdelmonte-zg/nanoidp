@@ -149,7 +149,7 @@ def authorize() -> ResponseReturnValue:
             "error_description": "Unknown client_id"
         }), 400
 
-    # Validate redirect_uri (basic validation - in production should check against registered URIs)
+    # Syntactic validation: must at least parse as an absolute URL.
     try:
         parsed = urlparse(redirect_uri)
         if not parsed.scheme or not parsed.netloc:
@@ -158,6 +158,27 @@ def authorize() -> ResponseReturnValue:
         return jsonify({
             "error": "invalid_request",
             "error_description": "Invalid redirect_uri"
+        }), 400
+
+    # Exact matching against registered redirect URIs (issue #67). RFC 6749
+    # §3.1.2.3 / OAuth 2.1 §4.1.1 require simple string comparison — no
+    # prefix, host or path normalization. Clients without registered URIs
+    # keep the permissive dev behavior (hardening is opt-in, principle 3).
+    # A mismatch MUST NOT redirect (§3.1.2.4): the error is returned
+    # directly, never sent to the unvalidated URI.
+    if client.redirect_uris and redirect_uri not in client.redirect_uris:
+        audit.log(
+            event_type="authorization_request",
+            endpoint="/authorize",
+            method=request.method,
+            status="failed",
+            client_id=client_id,
+            details={"reason": "redirect_uri not registered for client"},
+            **req_info,
+        )
+        return jsonify({
+            "error": "invalid_request",
+            "error_description": "redirect_uri is not registered for this client"
         }), 400
 
     # PKCE enforcement (issue #47). With require_pkce enabled (on by default in

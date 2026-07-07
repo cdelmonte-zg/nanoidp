@@ -68,6 +68,16 @@
                             When more than one distinct audience results, <code>aud</code> becomes an array and an <code>azp</code> claim is emitted.
                         </div>
                     </div>
+
+                    <div class="mb-3">
+                        <label for="redirect_uris" class="form-label">Registered Redirect URIs</label>
+                        <textarea class="form-control" id="redirect_uris" name="redirect_uris"
+                                  rows="3" placeholder="One URI per line, e.g.&#10;http://localhost:3000/callback">{{ client.redirect_uris | join('\n') if client else '' }}</textarea>
+                        <div class="form-text">
+                            When set, <code>/authorize</code> only accepts a <code>redirect_uri</code> that matches one of these exactly
+                            (RFC 6749 §3.1.2.3, OAuth 2.1 §4.1.1). Leave empty to accept any syntactically valid URI (dev default).
+                        </div>
+                    </div>
                 </div>
             </div>
 

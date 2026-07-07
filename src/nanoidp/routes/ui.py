@@ -326,8 +326,8 @@ def clients() -> ResponseReturnValue:
     )
 
 
-def _parse_audiences(form_value: str) -> list[str]:
-    """Parse a newline-separated additional_audiences form field into a clean list."""
+def _parse_textarea_list(form_value: str) -> list[str]:
+    """Parse a newline-separated textarea form field into a clean list of strings."""
     return [a.strip() for a in (form_value or "").splitlines() if a.strip()]
 
 
@@ -360,7 +360,10 @@ def client_create() -> ResponseReturnValue:
             client_id=client_id,
             client_secret=client_secret,
             description=request.form.get("description", ""),
-            additional_audiences=_parse_audiences(request.form.get("additional_audiences", "")),
+            additional_audiences=_parse_textarea_list(
+                request.form.get("additional_audiences", "")
+            ),
+            redirect_uris=_parse_textarea_list(request.form.get("redirect_uris", "")),
         )
 
         yaml_writer = get_yaml_writer()
@@ -413,7 +416,10 @@ def client_edit(client_id: str) -> ResponseReturnValue:
             client_id=client_id,
             client_secret=client_secret,
             description=request.form.get("description", ""),
-            additional_audiences=_parse_audiences(request.form.get("additional_audiences", "")),
+            additional_audiences=_parse_textarea_list(
+                request.form.get("additional_audiences", "")
+            ),
+            redirect_uris=_parse_textarea_list(request.form.get("redirect_uris", "")),
         )
 
         yaml_writer = get_yaml_writer()
@@ -471,6 +477,7 @@ def client_regenerate_secret(client_id: str) -> ResponseReturnValue:
             client_secret=new_secret,
             description=client.description,
             additional_audiences=client.additional_audiences,
+            redirect_uris=client.redirect_uris,
         )
 
         yaml_writer = get_yaml_writer()

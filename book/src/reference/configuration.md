@@ -61,6 +61,11 @@ oauth:
       additional_audiences:     # optional; makes the ID Token "aud" an array
         - "https://api.example.com"
         - "urn:service:billing"
+    - client_id: "registered-client"
+      client_secret: "secret"
+      description: "Client whose redirect_uri is pinned"
+      redirect_uris:            # optional; when set, /authorize enforces
+        - "http://localhost:3000/callback"  # exact string matching
 
 saml:
   entity_id: "http://localhost:8000/saml"
@@ -76,6 +81,13 @@ authority_prefixes:
 logging:
   verbose_logging: true  # Include usernames/client_ids in logs (default: true)
 ```
+
+**Registered redirect URIs** — a client with a non-empty `redirect_uris`
+list gets exact-string matching on `/authorize` (RFC 6749 §3.1.2.3,
+OAuth 2.1 §4.1.1): no prefix, host or path normalization, and a mismatch
+is answered with `400 invalid_request` directly — never by redirecting to
+the unvalidated URI (§3.1.2.4). Clients without the field keep accepting
+any syntactically valid URI, the permissive dev default.
 
 The SAML options (`strict_binding`, `sign_responses`, `c14n_algorithm`)
 are covered in detail in [SAML options](saml.md). Security-related

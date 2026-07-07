@@ -151,21 +151,27 @@ def _client_to_dict(client: OAuthClient) -> dict[str, Any]:
         "client_id": client.client_id,
         "description": client.description,
         "additional_audiences": client.additional_audiences,
+        "redirect_uris": client.redirect_uris,
     }
 
 
-def _normalize_audiences(value: Any) -> list[str]:
-    """Coerce a raw audiences argument into a list of non-empty strings.
+def _normalize_str_list(value: Any, field: str) -> list[str]:
+    """Coerce a raw list argument into a list of non-empty strings.
 
-    Only ``None`` (argument omitted) and an empty list mean "no audiences"; any
+    Only ``None`` (argument omitted) and an empty list mean "no values"; any
     other non-list (``""``, ``0``, ``False``) is a type error and is rejected,
     rather than silently coerced to ``[]`` (#37).
     """
     if value is None:
         return []
     if not isinstance(value, list) or not all(isinstance(a, str) for a in value):
-        raise ValueError("additional_audiences must be a list of strings")
+        raise ValueError(f"{field} must be a list of strings")
     return [a for a in value if a]
+
+
+def _normalize_audiences(value: Any) -> list[str]:
+    """Coerce a raw audiences argument (see ``_normalize_str_list``)."""
+    return _normalize_str_list(value, "additional_audiences")
 
 
 # =============================================================================
@@ -413,6 +419,11 @@ async def list_tools() -> list[Tool]:
                         "items": {"type": "string"},
                         "description": "Extra audiences added to the ID Token 'aud' alongside the client_id (optional)",
                     },
+                    "redirect_uris": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Registered redirect URIs; when non-empty, /authorize enforces exact matching (optional)",
+                    },
                 },
                 "required": ["client_id", "client_secret"],
             },
@@ -439,6 +450,11 @@ async def list_tools() -> list[Tool]:
                         "type": "array",
                         "items": {"type": "string"},
                         "description": "Replace the client's extra ID Token audiences (optional)",
+                    },
+                    "redirect_uris": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Replace the client's registered redirect URIs; empty list removes the restriction (optional)",
                     },
                 },
                 "required": ["client_id"],
@@ -794,6 +810,9 @@ async def _execute_tool(name: str, arguments: dict[str, Any], config: ConfigMana
             client_secret=arguments["client_secret"],
             description=arguments.get("description", ""),
             additional_audiences=_normalize_audiences(arguments.get("additional_audiences")),
+            redirect_uris=_normalize_str_list(
+                arguments.get("redirect_uris"), "redirect_uris"
+            ),
         )
         config.settings.clients.append(new_client)
         return {"success": True, "client": _client_to_dict(new_client)}
@@ -812,6 +831,11 @@ async def _execute_tool(name: str, arguments: dict[str, Any], config: ConfigMana
             if "additional_audiences" in arguments
             else None
         )
+        new_redirect_uris = (
+            _normalize_str_list(arguments["redirect_uris"], "redirect_uris")
+            if "redirect_uris" in arguments
+            else None
+        )
 
         if "client_secret" in arguments:
             client.client_secret = arguments["client_secret"]
@@ -819,6 +843,8 @@ async def _execute_tool(name: str, arguments: dict[str, Any], config: ConfigMana
             client.description = arguments["description"]
         if new_audiences is not None:
             client.additional_audiences = new_audiences
+        if new_redirect_uris is not None:
+            client.redirect_uris = new_redirect_uris
 
         return {"success": True, "client": _client_to_dict(client)}
 
