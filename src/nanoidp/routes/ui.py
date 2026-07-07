@@ -22,6 +22,7 @@ from flask.typing import ResponseReturnValue
 
 from ..config import OAuthClient, User, get_config
 from ..services import get_audit_log, get_token_service, get_yaml_writer
+from ._audit import audit_event
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +57,6 @@ def login() -> ResponseReturnValue:
     This endpoint is for direct web UI access only.
     """
     config = get_config()
-    audit = get_audit_log()
 
     if request.method == "GET":
         error = request.args.get("error")
@@ -70,24 +70,17 @@ def login() -> ResponseReturnValue:
     username = request.form.get("username", "").strip()
     password = request.form.get("password", "")
 
-    req_info = {
-        "ip_address": request.remote_addr or "unknown",
-        "user_agent": request.headers.get("User-Agent", "unknown"),
-    }
-
     if not username or not password:
         return redirect(url_for("ui.login", error="Username and password required"))
 
     user = config.authenticate(username, password)
     if not user:
-        audit.log(
-            event_type="login",
+        audit_event(
+            "login",
+            "failed",
             endpoint="/login",
-            method="POST",
-            status="failed",
             username=username,
             details={"reason": "Invalid credentials"},
-            **req_info,
         )
         return redirect(url_for("ui.login", error="Invalid credentials"))
 
@@ -95,14 +88,11 @@ def login() -> ResponseReturnValue:
     session["user"] = username
     session.permanent = True
 
-    audit.log(
-        event_type="login",
+    audit_event(
+        "login",
+        "success",
         endpoint="/login",
-        method="POST",
-        status="success",
         username=username,
-        ip_address=req_info["ip_address"],
-        user_agent=req_info["user_agent"],
     )
 
     return redirect(url_for("ui.index"))
@@ -115,15 +105,11 @@ def logout() -> ResponseReturnValue:
     session.clear()
 
     if username:
-        audit = get_audit_log()
-        audit.log(
-            event_type="logout",
+        audit_event(
+            "logout",
+            "success",
             endpoint="/logout",
-            method="GET",
-            status="success",
             username=username,
-            ip_address=request.remote_addr or "unknown",
-            user_agent=request.headers.get("User-Agent", "unknown"),
         )
 
     return redirect(url_for("ui.index"))

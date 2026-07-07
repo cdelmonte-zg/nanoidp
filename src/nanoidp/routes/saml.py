@@ -8,14 +8,15 @@ import uuid
 import zlib
 from base64 import b64decode, b64encode
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Optional, TypedDict
+from typing import Any, Dict, Optional
 
 from flask import Blueprint, Response, abort, render_template, request, session
 from flask.typing import ResponseReturnValue
 from lxml import etree
 
 from ..config import get_config
-from ..services import get_audit_log, get_crypto_service
+from ..services import get_crypto_service
+from ._audit import audit_event
 
 # Create secure XML parser (XXE protection without deprecated defusedxml.lxml)
 _secure_parser = etree.XMLParser(
@@ -65,19 +66,6 @@ def _get_c14n_algorithm(config_value: str) -> "CanonicalizationMethod":
     return CanonicalizationMethod.EXCLUSIVE_XML_CANONICALIZATION_1_0
 
 saml_bp = Blueprint("saml", __name__, url_prefix="/saml")
-
-
-class _RequestInfo(TypedDict):
-    ip_address: str
-    user_agent: str
-
-
-def _get_request_info() -> _RequestInfo:
-    """Get request info for audit logging."""
-    return {
-        "ip_address": request.remote_addr or "unknown",
-        "user_agent": request.headers.get("User-Agent", "unknown"),
-    }
 
 
 def _parse_saml_request(
@@ -352,8 +340,6 @@ def sso() -> ResponseReturnValue:
     to preserve the original binding context.
     """
     config = get_config()
-    audit = get_audit_log()
-    req_info = _get_request_info()
 
     saml_request_b64 = request.form.get("SAMLRequest") or request.args.get("SAMLRequest")
     relay_state = request.form.get("RelayState") or request.args.get("RelayState", "")
@@ -378,24 +364,20 @@ def sso() -> ResponseReturnValue:
                 session["user"] = form_username
                 session.permanent = True
                 username = form_username
-                audit.log(
-                    event_type="login",
+                audit_event(
+                    "login",
+                    "success",
                     endpoint="/saml/sso",
-                    method="POST",
-                    status="success",
                     username=username,
-                    **req_info,
                 )
             else:
                 login_error = "Invalid credentials"
-                audit.log(
-                    event_type="login",
+                audit_event(
+                    "login",
+                    "failed",
                     endpoint="/saml/sso",
-                    method="POST",
-                    status="failed",
                     username=form_username,
                     details={"reason": "Invalid credentials"},
-                    **req_info,
                 )
 
         # Still not authenticated - show login form
@@ -413,14 +395,12 @@ def sso() -> ResponseReturnValue:
 
     user = config.get_user(username)
     if not user:
-        audit.log(
-            event_type="saml_request",
+        audit_event(
+            "saml_request",
+            "failed",
             endpoint="/saml/sso",
-            method=request.method,
-            status="failed",
             username=username,
             details={"reason": "User not found"},
-            **req_info,
         )
         return abort(401, description=f"user '{username}' not found")
 
@@ -473,14 +453,12 @@ def sso() -> ResponseReturnValue:
     )
     saml_b64 = b64encode(xml).decode("ascii")
 
-    audit.log(
-        event_type="saml_request",
+    audit_event(
+        "saml_request",
+        "success",
         endpoint="/saml/sso",
-        method=request.method,
-        status="success",
         username=username,
         details={"acs_url": acs_url},
-        **req_info,
     )
 
     if config.settings.log_saml_requests:
@@ -641,8 +619,6 @@ def attribute_query() -> ResponseReturnValue:
     any custom attributes defined in the user configuration.
     """
     config = get_config()
-    audit = get_audit_log()
-    req_info = _get_request_info()
 
     try:
         # Parse SOAP request body (using defusedxml to prevent XXE attacks)
@@ -736,14 +712,12 @@ def attribute_query() -> ResponseReturnValue:
     </soap:Body>
 </soap:Envelope>"""
 
-        audit.log(
-            event_type="saml_attribute_query",
+        audit_event(
+            "saml_attribute_query",
+            "success",
             endpoint="/saml/attribute-query",
-            method="POST",
-            status="success",
             username=user_id,
             details={"attributes_count": len(attributes)},
-            **req_info,
         )
 
         logger.info(f"AttributeQuery response issued for user '{user_id}' with {len(attributes)} attributes")
@@ -755,13 +729,11 @@ def attribute_query() -> ResponseReturnValue:
         import traceback
         traceback.print_exc()
 
-        audit.log(
-            event_type="saml_attribute_query",
+        audit_event(
+            "saml_attribute_query",
+            "failed",
             endpoint="/saml/attribute-query",
-            method="POST",
-            status="failed",
             details={"error": str(e)},
-            **req_info,
         )
 
         return "AttributeQuery failed", 500
