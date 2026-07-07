@@ -58,6 +58,38 @@ When `sign_responses: true` (default), responses include:
 When `sign_responses: false`, responses are sent without any signature
 elements.
 
+## Signed AuthnRequests
+
+By default, nanoidp accepts unsigned AuthnRequests (and ignores
+`Signature`/`SigAlg` query parameters). SPs that sign their requests can
+turn on verification:
+
+```yaml
+saml:
+  want_authn_requests_signed: true
+  sp_certificates:
+    - /path/to/sp-cert.pem   # PEM; one entry per trusted SP
+```
+
+With the flag on, nanoidp **requires and verifies** the signature under
+both bindings and rejects unsigned or invalid requests with `400`:
+
+- **HTTP-Redirect** — the query-string signature over the URL-encoded
+  `SAMLRequest[&RelayState]&SigAlg` fragment (SAML 2.0 Bindings
+  §3.4.4.1); `rsa-sha256`, `rsa-sha512` and legacy `rsa-sha1` SigAlg
+  values are supported.
+- **HTTP-POST** — the enveloped `<ds:Signature>` inside the AuthnRequest
+  (SAML 2.0 Core §5).
+
+The metadata advertises `WantAuthnRequestsSigned="true"` if and only if
+enforcement is on. A request verifies if any registered certificate
+validates it.
+
+Need a test SP keypair? `python examples/gen_sp_keypair.py --out .`
+generates `sp-key.pem`/`sp-cert.pem`, and
+`examples/test_agent.py --saml-signed` exercises the whole behavior
+against a running server.
+
 ## XML canonicalization algorithm
 
 By default, NanoIDP uses **Exclusive C14N** for XML canonicalization,

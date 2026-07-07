@@ -510,6 +510,12 @@ def settings() -> ResponseReturnValue:
             default_acs_url=request.form.get("default_acs_url"),
             sign_responses=request.form.get("saml_sign_responses") == "true",
             strict_binding=request.form.get("strict_saml_binding") == "true",
+            want_authn_requests_signed=(
+                request.form.get("saml_want_authn_requests_signed") == "true"
+            ),
+            sp_certificates=_parse_textarea_list(
+                request.form.get("saml_sp_certificates", "")
+            ),
             c14n_algorithm=request.form.get("saml_c14n_algorithm"),
         )
 

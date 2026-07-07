@@ -148,6 +148,10 @@ class ConfigManager:
             default_acs_url=saml.get("default_acs_url", "http://localhost:8080/login/saml2/sso/samlIdp"),
             saml_sign_responses=saml.get("sign_responses", True),
             saml_c14n_algorithm=saml.get("c14n_algorithm", "exc_c14n"),
+            saml_want_authn_requests_signed=saml.get(
+                "want_authn_requests_signed", False
+            ),
+            saml_sp_certificates=saml.get("sp_certificates", []) or [],
             strict_saml_binding=saml.get("strict_binding", False),
             # JWT
             jwt_algorithm=jwt_config.get("algorithm", "RS256"),

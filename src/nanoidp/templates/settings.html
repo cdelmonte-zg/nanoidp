@@ -89,6 +89,23 @@
                     </div>
 
                     <div class="mb-3">
+                        <div class="form-check form-switch">
+                            <input class="form-check-input" type="checkbox" role="switch"
+                                   id="saml_want_authn_requests_signed" name="saml_want_authn_requests_signed" value="true"
+                                   {% if settings.saml_want_authn_requests_signed %}checked{% endif %}>
+                            <label class="form-check-label" for="saml_want_authn_requests_signed">Require Signed AuthnRequests</label>
+                        </div>
+                        <div class="form-text">Verify AuthnRequest signatures (both bindings) against the registered SP certificates; advertised as <code>WantAuthnRequestsSigned</code> in metadata.</div>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="saml_sp_certificates" class="form-label">SP Certificates</label>
+                        <textarea class="form-control" id="saml_sp_certificates" name="saml_sp_certificates"
+                                  rows="2" placeholder="One PEM file path per line">{{ settings.saml_sp_certificates | join('\n') }}</textarea>
+                        <div class="form-text">PEM certificate files of SPs whose AuthnRequest signatures are accepted.</div>
+                    </div>
+
+                    <div class="mb-3">
                         <label for="saml_c14n_algorithm" class="form-label">Canonicalization Algorithm</label>
                         <select class="form-select" id="saml_c14n_algorithm" name="saml_c14n_algorithm">
                             <option value="exc_c14n" {% if settings.saml_c14n_algorithm == 'exc_c14n' %}selected{% endif %}>Exclusive C14N 1.0 (default)</option>
@@ -190,6 +207,9 @@ function updatePreview() {
             default_acs_url: document.getElementById('default_acs_url').value,
             sign_responses: document.getElementById('saml_sign_responses').checked,
             strict_binding: document.getElementById('strict_saml_binding').checked,
+            want_authn_requests_signed: document.getElementById('saml_want_authn_requests_signed').checked,
+            sp_certificates: document.getElementById('saml_sp_certificates').value
+                .split('\n').map(s => s.trim()).filter(s => s),
             c14n_algorithm: document.getElementById('saml_c14n_algorithm').value
         },
         allowed_identity_classes: document.getElementById('allowed_identity_classes').value

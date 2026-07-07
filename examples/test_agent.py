@@ -2656,6 +2656,147 @@ class NanoIDPTestAgent:
         )
         return ok
 
+    def run_saml_signed_tests(self, sp_key_path: str, sp_cert_path: str) -> bool:
+        """Dedicated suite for a server with saml.want_authn_requests_signed (#69).
+
+        Requires the server to have the given SP certificate registered in
+        saml.sp_certificates. Signs real AuthnRequests with the SP key and
+        asserts acceptance/rejection under both bindings, plus the metadata
+        advertisement (metadata never lies).
+        """
+        import zlib
+        from urllib.parse import quote
+
+        from cryptography.hazmat.primitives import hashes as c_hashes
+        from cryptography.hazmat.primitives import serialization as c_ser
+        from cryptography.hazmat.primitives.asymmetric import padding as c_padding
+
+        print("\n" + "=" * 70)
+        print("  NanoIDP Signed-AuthnRequests Test Suite")
+        print("=" * 70)
+        print(f"\n  Target:   {self.base_url}\n")
+
+        with open(sp_key_path, "rb") as f:
+            sp_key = c_ser.load_pem_private_key(f.read(), password=None)
+        with open(sp_cert_path, "rb") as f:
+            sp_cert_pem = f.read()
+
+        authn = (
+            '<samlp:AuthnRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" '
+            'xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="_e2e-signed-1" '
+            'Version="2.0" IssueInstant="2026-01-01T00:00:00Z" '
+            'AssertionConsumerServiceURL="http://localhost:8080/login/saml2/sso/nanoidp">'
+            "<saml:Issuer>e2e-signed-sp</saml:Issuer></samlp:AuthnRequest>"
+        ).encode()
+
+        # Metadata advertisement
+        try:
+            meta = requests.get(f"{self.base_url}/saml/metadata", timeout=5)
+            self._add_result(
+                "Signed AuthnRequests Metadata",
+                TestCategory.SAML,
+                'WantAuthnRequestsSigned="true"' in meta.text,
+                "WantAuthnRequestsSigned advertised",
+            )
+        except Exception as e:
+            self._add_result(
+                "Signed AuthnRequests Metadata", TestCategory.SAML, False, f"Error: {e}"
+            )
+
+        # Redirect binding: signed accepted, unsigned/tampered rejected
+        sig_alg = "http://www.w3.org/2001/04/xmldsig-more#rsa-sha256"
+        deflated = zlib.compress(authn, 9)[2:-4]
+        sr = quote(base64.b64encode(deflated).decode(), safe="")
+        fragment = f"SAMLRequest={sr}&SigAlg={quote(sig_alg, safe='')}"
+        signature = sp_key.sign(
+            fragment.encode(), c_padding.PKCS1v15(), c_hashes.SHA256()
+        )
+        sig_q = quote(base64.b64encode(signature).decode(), safe="")
+        try:
+            ok = requests.get(
+                f"{self.base_url}/saml/sso?{fragment}&Signature={sig_q}",
+                allow_redirects=False, timeout=5,
+            )
+            unsigned = requests.get(
+                f"{self.base_url}/saml/sso?SAMLRequest={sr}",
+                allow_redirects=False, timeout=5,
+            )
+            evil = zlib.compress(authn.replace(b"_e2e-signed-1", b"_evil"), 9)[2:-4]
+            evil_sr = quote(base64.b64encode(evil).decode(), safe="")
+            tampered = requests.get(
+                f"{self.base_url}/saml/sso?SAMLRequest={evil_sr}"
+                f"&SigAlg={quote(sig_alg, safe='')}&Signature={sig_q}",
+                allow_redirects=False, timeout=5,
+            )
+            self._add_result(
+                "Signed Redirect Binding",
+                TestCategory.SAML,
+                ok.status_code == 200
+                and unsigned.status_code == 400
+                and tampered.status_code == 400,
+                "signed 200, unsigned 400, tampered 400",
+                {
+                    "signed": ok.status_code,
+                    "unsigned": unsigned.status_code,
+                    "tampered": tampered.status_code,
+                },
+            )
+        except Exception as e:
+            self._add_result(
+                "Signed Redirect Binding", TestCategory.SAML, False, f"Error: {e}"
+            )
+
+        # POST binding: enveloped XML signature
+        try:
+            from lxml import etree as l_etree
+            from signxml import XMLSigner, methods
+
+            root = l_etree.fromstring(authn)
+            signed_root = XMLSigner(
+                method=methods.enveloped,
+                signature_algorithm="rsa-sha256",
+                digest_algorithm="sha256",
+            ).sign(
+                root,
+                key=sp_key.private_bytes(
+                    c_ser.Encoding.PEM,
+                    c_ser.PrivateFormat.PKCS8,
+                    c_ser.NoEncryption(),
+                ),
+                cert=sp_cert_pem.decode(),
+            )
+            signed_b64 = base64.b64encode(l_etree.tostring(signed_root)).decode()
+
+            ok = requests.post(
+                f"{self.base_url}/saml/sso",
+                data={"SAMLRequest": signed_b64},
+                allow_redirects=False, timeout=5,
+            )
+            unsigned = requests.post(
+                f"{self.base_url}/saml/sso",
+                data={"SAMLRequest": base64.b64encode(authn).decode()},
+                allow_redirects=False, timeout=5,
+            )
+            self._add_result(
+                "Signed POST Binding",
+                TestCategory.SAML,
+                ok.status_code == 200 and unsigned.status_code == 400,
+                "signed 200, unsigned 400",
+                {"signed": ok.status_code, "unsigned": unsigned.status_code},
+            )
+        except Exception as e:
+            self._add_result(
+                "Signed POST Binding", TestCategory.SAML, False, f"Error: {e}"
+            )
+
+        print("\n" + "─" * 70)
+        ok_all = self.suite.failed == 0
+        print(
+            f"  signed-authnrequests suite: {self.suite.passed}/{self.suite.total} passed"
+            + ("" if ok_all else "  [FAILED]")
+        )
+        return ok_all
+
     def run_all_tests(self) -> bool:
         """Esegue tutti i test organizzati per categoria."""
         print("\n" + "=" * 70)
@@ -2821,6 +2962,22 @@ Examples:
         help="Run only the oauth21-profile suite (server must run with "
         "--profile oauth21)"
     )
+    parser.add_argument(
+        "--saml-signed",
+        action="store_true",
+        help="Run only the signed-AuthnRequests suite (server must have "
+        "saml.want_authn_requests_signed and the SP cert registered)"
+    )
+    parser.add_argument(
+        "--sp-key",
+        default="sp-key.pem",
+        help="SP private key PEM for --saml-signed (default: sp-key.pem)"
+    )
+    parser.add_argument(
+        "--sp-cert",
+        default="sp-cert.pem",
+        help="SP certificate PEM for --saml-signed (default: sp-cert.pem)"
+    )
 
     args = parser.parse_args()
 
@@ -2833,7 +2990,12 @@ Examples:
         verbose=args.verbose
     )
 
-    success = agent.run_oauth21_tests() if args.oauth21 else agent.run_all_tests()
+    if args.oauth21:
+        success = agent.run_oauth21_tests()
+    elif args.saml_signed:
+        success = agent.run_saml_signed_tests(args.sp_key, args.sp_cert)
+    else:
+        success = agent.run_all_tests()
 
     if args.json:
         results = [
