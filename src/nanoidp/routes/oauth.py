@@ -7,10 +7,12 @@ import logging
 import secrets
 import threading
 import time
+from typing import TypedDict
 from urllib.parse import urlencode, urlparse
 
 import jwt as pyjwt
 from flask import Blueprint, abort, jsonify, redirect, render_template, request, session
+from flask.typing import ResponseReturnValue
 
 from ..config import User, get_config
 from ..services import (
@@ -26,7 +28,12 @@ logger = logging.getLogger(__name__)
 oauth_bp = Blueprint("oauth", __name__)
 
 
-def _get_request_info():
+class _RequestInfo(TypedDict):
+    ip_address: str
+    user_agent: str
+
+
+def _get_request_info() -> _RequestInfo:
     """Get request info for audit logging."""
     return {
         "ip_address": request.remote_addr or "unknown",
@@ -37,14 +44,14 @@ def _get_request_info():
 
 
 @oauth_bp.route("/.well-known/openid-configuration")
-def oidc_config():
+def oidc_config() -> ResponseReturnValue:
     """OIDC Discovery endpoint."""
     config = get_config()
     return jsonify(build_discovery_document(config.settings))
 
 
 @oauth_bp.route("/.well-known/jwks.json")
-def jwks():
+def jwks() -> ResponseReturnValue:
     """JWKS endpoint for JWT verification.
 
     Returns all keys including previous keys for rotation support.
@@ -55,7 +62,7 @@ def jwks():
 
 
 @oauth_bp.route("/authorize", methods=["GET", "POST"])
-def authorize():
+def authorize() -> ResponseReturnValue:
     """
     OAuth2 Authorization endpoint.
     Supports Authorization Code Flow with optional PKCE.
@@ -298,7 +305,7 @@ def authorize():
 
 
 @oauth_bp.route("/token", methods=["POST"])
-def token():
+def token() -> ResponseReturnValue:
     """OAuth2 token endpoint."""
     config = get_config()
     audit = get_audit_log()
@@ -902,7 +909,7 @@ def _extract_bearer_token() -> str | None:
 
 
 @oauth_bp.route("/userinfo", methods=["GET", "POST"])
-def userinfo():
+def userinfo() -> ResponseReturnValue:
     """
     OIDC UserInfo endpoint.
     Returns claims about the authenticated user.
@@ -989,7 +996,7 @@ def userinfo():
 
 
 @oauth_bp.route("/introspect", methods=["POST"])
-def introspect():
+def introspect() -> ResponseReturnValue:
     """
     Token Introspection endpoint (RFC 7662).
     Allows resource servers to validate tokens.
@@ -1092,7 +1099,7 @@ def introspect():
 
 
 @oauth_bp.route("/revoke", methods=["POST"])
-def revoke():
+def revoke() -> ResponseReturnValue:
     """
     Token Revocation endpoint (RFC 7009).
     Allows clients to revoke tokens.
@@ -1164,7 +1171,7 @@ def revoke():
 
 @oauth_bp.route("/logout", methods=["GET", "POST"])
 @oauth_bp.route("/end_session", methods=["GET", "POST"])
-def end_session():
+def end_session() -> ResponseReturnValue:
     """
     OIDC End Session / Logout endpoint.
     Allows clients to initiate logout.
@@ -1280,7 +1287,7 @@ def _generate_device_code() -> str:
 
 @oauth_bp.route("/device_authorization", methods=["POST"])
 @oauth_bp.route("/device/code", methods=["POST"])
-def device_authorization():
+def device_authorization() -> ResponseReturnValue:
     """
     Device Authorization endpoint (RFC 8628).
     Initiates the device flow by returning device_code and user_code.
@@ -1363,7 +1370,7 @@ def device_authorization():
 
 
 @oauth_bp.route("/device", methods=["GET", "POST"])
-def device_verify():
+def device_verify() -> ResponseReturnValue:
     """
     Device verification endpoint.
     Users enter their user_code here to authorize the device.

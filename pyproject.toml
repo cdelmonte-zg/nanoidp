@@ -119,8 +119,7 @@ no_implicit_optional = true
 [[tool.mypy.overrides]]
 # Typing ratchet (#70): modules here require fully annotated defs. The list
 # only grows; when all of src/ is in, flip disallow_untyped_defs globally
-# and delete this block. Still out: config, routes.{api,oauth,saml,ui},
-# services.crypto.
+# and delete this block. Still out: config, routes.ui.
 module = [
     "nanoidp",
     "nanoidp.__main__",
@@ -129,9 +128,13 @@ module = [
     "nanoidp.mcp_server",
     "nanoidp.wizard",
     "nanoidp.routes",
+    "nanoidp.routes.api",
+    "nanoidp.routes.oauth",
+    "nanoidp.routes.saml",
     "nanoidp.services",
     "nanoidp.services.audit",
     "nanoidp.services.auth_code",
+    "nanoidp.services.crypto",
     "nanoidp.services.discovery",
     "nanoidp.services.token",
     "nanoidp.services.yaml_writer",
