@@ -42,5 +42,6 @@ jobs:
       - name: Run tests with coverage
         if: matrix.python-version == '3.12'
         run: |
-          # Threshold ratchets upward only (#71); measured 73% when introduced.
-          pytest tests/ --cov=nanoidp --cov-report=term-missing --cov-fail-under=70
+          # Threshold ratchets upward only (#71); 70 at introduction (73%
+          # measured), 75 after #72 covered the wizard (78% measured).
+          pytest tests/ --cov=nanoidp --cov-report=term-missing --cov-fail-under=75
