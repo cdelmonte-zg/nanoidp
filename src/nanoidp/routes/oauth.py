@@ -5,7 +5,7 @@ OAuth2/OIDC routes for token endpoint and discovery.
 import json
 import logging
 from dataclasses import dataclass
-from typing import Callable, Dict, Optional, TypedDict, Union
+from typing import Callable, Dict, Optional, Union
 from urllib.parse import urlencode, urlparse
 
 import jwt as pyjwt
@@ -14,11 +14,9 @@ from flask.typing import ResponseReturnValue
 
 from ..config import ConfigManager, User, get_config
 from ..services import (
-    AuditLog,
     DevicePollOutcome,
     DeviceVerifyOutcome,
     build_discovery_document,
-    get_audit_log,
     get_auth_code_store,
     get_crypto_service,
     get_device_code_store,
@@ -26,23 +24,11 @@ from ..services import (
     get_token_service,
 )
 from ..services.device_code import DEVICE_CODE_EXPIRES_IN, DEVICE_POLL_INTERVAL
+from ._audit import audit_event
 
 logger = logging.getLogger(__name__)
 
 oauth_bp = Blueprint("oauth", __name__)
-
-
-class _RequestInfo(TypedDict):
-    ip_address: str
-    user_agent: str
-
-
-def _get_request_info() -> _RequestInfo:
-    """Get request info for audit logging."""
-    return {
-        "ip_address": request.remote_addr or "unknown",
-        "user_agent": request.headers.get("User-Agent", "unknown"),
-    }
 
 
 
@@ -87,8 +73,6 @@ def authorize() -> ResponseReturnValue:
     - nonce: OIDC nonce for ID token
     """
     config = get_config()
-    audit = get_audit_log()
-    req_info = _get_request_info()
 
     # Get OAuth parameters (from query string for GET, form for POST)
     if request.method == "GET":
@@ -139,14 +123,12 @@ def authorize() -> ResponseReturnValue:
     # Validate client exists
     client = config.get_client(client_id)
     if not client:
-        audit.log(
-            event_type="authorization_request",
+        audit_event(
+            "authorization_request",
+            "failed",
             endpoint="/authorize",
-            method=request.method,
-            status="failed",
             client_id=client_id,
             details={"reason": "Unknown client"},
-            **req_info,
         )
         return jsonify({
             "error": "invalid_client",
@@ -171,14 +153,12 @@ def authorize() -> ResponseReturnValue:
     # A mismatch MUST NOT redirect (§3.1.2.4): the error is returned
     # directly, never sent to the unvalidated URI.
     if client.redirect_uris and redirect_uri not in client.redirect_uris:
-        audit.log(
-            event_type="authorization_request",
+        audit_event(
+            "authorization_request",
+            "failed",
             endpoint="/authorize",
-            method=request.method,
-            status="failed",
             client_id=client_id,
             details={"reason": "redirect_uri not registered for client"},
-            **req_info,
         )
         return jsonify({
             "error": "invalid_request",
@@ -191,14 +171,12 @@ def authorize() -> ResponseReturnValue:
     # they exist). Enforced here, not at config load, so other grants keep
     # working for unregistered clients.
     if config.settings.security_profile == "oauth21" and not client.redirect_uris:
-        audit.log(
-            event_type="authorization_request",
+        audit_event(
+            "authorization_request",
+            "failed",
             endpoint="/authorize",
-            method=request.method,
-            status="failed",
             client_id=client_id,
             details={"reason": "oauth21 profile requires registered redirect_uris"},
-            **req_info,
         )
         return jsonify({
             "error": "invalid_request",
@@ -212,14 +190,12 @@ def authorize() -> ResponseReturnValue:
     # without a code_challenge is rejected, so developers can verify their
     # client actually sends PKCE.
     if config.settings.pkce_required and not code_challenge:
-        audit.log(
-            event_type="authorization_request",
+        audit_event(
+            "authorization_request",
+            "failed",
             endpoint="/authorize",
-            method=request.method,
-            status="failed",
             client_id=client_id,
             details={"reason": "PKCE code_challenge required (require_pkce or oauth21)"},
-            **req_info,
         )
         return jsonify({
             "error": "invalid_request",
@@ -235,14 +211,12 @@ def authorize() -> ResponseReturnValue:
         # rejected at the authorization endpoint per §4.4.1.
         effective_method = code_challenge_method or "plain"
         if effective_method not in ("plain", "S256"):
-            audit.log(
-                event_type="authorization_request",
+            audit_event(
+                "authorization_request",
+                "failed",
                 endpoint="/authorize",
-                method=request.method,
-                status="failed",
                 client_id=client_id,
                 details={"reason": f"Unsupported code_challenge_method: {effective_method}"},
-                **req_info,
             )
             return jsonify({
                 "error": "invalid_request",
@@ -258,17 +232,15 @@ def authorize() -> ResponseReturnValue:
             effective_method == "plain"
             and not config.settings.pkce_plain_allowed
         ):
-            audit.log(
-                event_type="authorization_request",
+            audit_event(
+                "authorization_request",
+                "failed",
                 endpoint="/authorize",
-                method=request.method,
-                status="failed",
                 client_id=client_id,
                 details={
                     "reason": "PKCE method 'plain' rejected by "
                     f"{config.settings.security_profile} profile"
                 },
-                **req_info,
             )
             return jsonify({
                 "error": "invalid_request",
@@ -313,18 +285,16 @@ def authorize() -> ResponseReturnValue:
 
                 callback_url = f"{redirect_uri}?{urlencode(redirect_params)}"
 
-                audit.log(
-                    event_type="authorization_request",
+                audit_event(
+                    "authorization_request",
+                    "success",
                     endpoint="/authorize",
-                    method="POST",
-                    status="success",
                     username=user.username,
                     client_id=client_id,
                     details={
                         "scope": scope,
                         "pkce": bool(code_challenge),
                     },
-                    **req_info,
                 )
 
                 if config.settings.verbose_logging:
@@ -335,15 +305,13 @@ def authorize() -> ResponseReturnValue:
                 return redirect(callback_url)
             else:
                 error_msg = "Invalid username or password"
-                audit.log(
-                    event_type="authorization_request",
+                audit_event(
+                    "authorization_request",
+                    "failed",
                     endpoint="/authorize",
-                    method="POST",
-                    status="failed",
                     username=username,
                     client_id=client_id,
                     details={"reason": "Invalid credentials"},
-                    **req_info,
                 )
         else:
             error_msg = "Username and password are required"
@@ -379,8 +347,6 @@ class _GrantContext:
     """Request-scoped facts shared by every grant handler."""
 
     config: ConfigManager
-    audit: AuditLog
-    req_info: _RequestInfo
     # token() rejects requests without a client identity before dispatching,
     # so handlers always see a concrete id.
     client_id: str
@@ -395,14 +361,12 @@ def _grant_refresh_token(ctx: _GrantContext) -> GrantResult:
     """refresh_token grant (RFC 6749 §6; rotation per RFC 9700 §4.14)."""
     refresh_token = request.form.get("refresh_token", "")
     if not refresh_token:
-        ctx.audit.log(
-            event_type="token_request",
+        audit_event(
+            "token_request",
+            "failed",
             endpoint="/token",
-            method="POST",
-            status="failed",
             client_id=ctx.client_id,
             details={"reason": "Missing refresh_token", "grant_type": ctx.grant_type},
-            **ctx.req_info,
         )
         return abort(400, description="refresh_token is required")
 
@@ -411,30 +375,26 @@ def _grant_refresh_token(ctx: _GrantContext) -> GrantResult:
     try:
         payload = crypto.verify_jwt(refresh_token, ctx.config.settings.audience)
     except Exception as e:
-        ctx.audit.log(
-            event_type="token_request",
+        audit_event(
+            "token_request",
+            "failed",
             endpoint="/token",
-            method="POST",
-            status="failed",
             client_id=ctx.client_id,
             details={
                 "reason": f"Invalid refresh token: {str(e)}",
                 "grant_type": ctx.grant_type,
             },
-            **ctx.req_info,
         )
         return abort(401, description=f"Invalid refresh token: {str(e)}")
 
     # Check if it's actually a refresh token
     if payload.get("token_type") != "refresh":
-        ctx.audit.log(
-            event_type="token_request",
+        audit_event(
+            "token_request",
+            "failed",
             endpoint="/token",
-            method="POST",
-            status="failed",
             client_id=ctx.client_id,
             details={"reason": "Not a refresh token", "grant_type": ctx.grant_type},
-            **ctx.req_info,
         )
         return abort(400, description="Invalid token type")
 
@@ -443,18 +403,16 @@ def _grant_refresh_token(ctx: _GrantContext) -> GrantResult:
     # minted before it carry no client_id and stay usable (legacy compat).
     bound_client = payload.get("client_id")
     if bound_client and bound_client != ctx.client_id:
-        ctx.audit.log(
-            event_type="token_request",
+        audit_event(
+            "token_request",
+            "failed",
             endpoint="/token",
-            method="POST",
-            status="failed",
             client_id=ctx.client_id,
             details={
                 "reason": "Refresh token was issued to a different client",
                 "grant_type": ctx.grant_type,
                 "bound_client": bound_client,
             },
-            **ctx.req_info,
         )
         return abort(401, description="Refresh token was not issued to this client")
 
@@ -465,15 +423,13 @@ def _grant_refresh_token(ctx: _GrantContext) -> GrantResult:
 
     user = ctx.config.get_user(username)
     if not user:
-        ctx.audit.log(
-            event_type="token_request",
+        audit_event(
+            "token_request",
+            "failed",
             endpoint="/token",
-            method="POST",
-            status="failed",
             username=username,
             client_id=ctx.client_id,
             details={"reason": "User not found", "grant_type": ctx.grant_type},
-            **ctx.req_info,
         )
         return abort(401, description="User not found")
 
@@ -492,11 +448,10 @@ def _grant_refresh_token(ctx: _GrantContext) -> GrantResult:
         granted = set(original_scope.split())
         rejected = [s for s in requested_scope.split() if s not in granted]
         if rejected:
-            ctx.audit.log(
-                event_type="token_request",
+            audit_event(
+                "token_request",
+                "failed",
                 endpoint="/token",
-                method="POST",
-                status="failed",
                 username=username,
                 client_id=ctx.client_id,
                 details={
@@ -504,7 +459,6 @@ def _grant_refresh_token(ctx: _GrantContext) -> GrantResult:
                     "grant_type": ctx.grant_type,
                     "rejected_scopes": rejected,
                 },
-                **ctx.req_info,
             )
             return abort(
                 400, description="Requested scope exceeds originally granted scope"
@@ -535,18 +489,16 @@ def _grant_refresh_token(ctx: _GrantContext) -> GrantResult:
         jti, refresh_family, ctx.config.settings.rotation_enabled
     )
     if reuse_detected:
-        ctx.audit.log(
-            event_type="token_request",
+        audit_event(
+            "token_request",
+            "failed",
             endpoint="/token",
-            method="POST",
-            status="failed",
             username=username,
             client_id=ctx.client_id,
             details={
                 "reason": "Refresh token revoked (rotated, reused, or family revoked)",
                 "grant_type": ctx.grant_type,
             },
-            **ctx.req_info,
         )
         return abort(401, description="Refresh token has been revoked")
 
@@ -565,17 +517,15 @@ def _grant_password(ctx: _GrantContext) -> GrantResult:
     # the oauth21 profile it is rejected (RFC 6749 §5.2) and absent from
     # the discovery document's grant_types_supported (#68).
     if not ctx.config.settings.password_grant_enabled:
-        ctx.audit.log(
-            event_type="token_request",
+        audit_event(
+            "token_request",
+            "failed",
             endpoint="/token",
-            method="POST",
-            status="failed",
             client_id=ctx.client_id,
             details={
                 "reason": "password grant disabled by the oauth21 profile",
                 "grant_type": ctx.grant_type,
             },
-            **ctx.req_info,
         )
         return abort(
             400,
@@ -587,17 +537,15 @@ def _grant_password(ctx: _GrantContext) -> GrantResult:
     password = request.form.get("password", "")
 
     if not username or not password:
-        ctx.audit.log(
-            event_type="token_request",
+        audit_event(
+            "token_request",
+            "failed",
             endpoint="/token",
-            method="POST",
-            status="failed",
             client_id=ctx.client_id,
             details={
                 "reason": "Missing username or password",
                 "grant_type": ctx.grant_type,
             },
-            **ctx.req_info,
         )
         return abort(
             400, description="username and password required for password grant"
@@ -605,15 +553,13 @@ def _grant_password(ctx: _GrantContext) -> GrantResult:
 
     user = ctx.config.authenticate(username, password)
     if not user:
-        ctx.audit.log(
-            event_type="token_request",
+        audit_event(
+            "token_request",
+            "failed",
             endpoint="/token",
-            method="POST",
-            status="failed",
             username=username,
             client_id=ctx.client_id,
             details={"reason": "Invalid credentials", "grant_type": ctx.grant_type},
-            **ctx.req_info,
         )
         return abort(401, description="Invalid credentials")
 
@@ -636,26 +582,22 @@ def _grant_authorization_code(ctx: _GrantContext) -> GrantResult:
     code_verifier = request.form.get("code_verifier")  # PKCE
 
     if not code:
-        ctx.audit.log(
-            event_type="token_request",
+        audit_event(
+            "token_request",
+            "failed",
             endpoint="/token",
-            method="POST",
-            status="failed",
             client_id=ctx.client_id,
             details={"reason": "Missing authorization code", "grant_type": ctx.grant_type},
-            **ctx.req_info,
         )
         return abort(400, description="code is required")
 
     if not redirect_uri:
-        ctx.audit.log(
-            event_type="token_request",
+        audit_event(
+            "token_request",
+            "failed",
             endpoint="/token",
-            method="POST",
-            status="failed",
             client_id=ctx.client_id,
             details={"reason": "Missing redirect_uri", "grant_type": ctx.grant_type},
-            **ctx.req_info,
         )
         return abort(400, description="redirect_uri is required")
 
@@ -669,14 +611,12 @@ def _grant_authorization_code(ctx: _GrantContext) -> GrantResult:
     )
 
     if not auth_code:
-        ctx.audit.log(
-            event_type="token_request",
+        audit_event(
+            "token_request",
+            "failed",
             endpoint="/token",
-            method="POST",
-            status="failed",
             client_id=ctx.client_id,
             details={"reason": "Invalid or expired authorization code", "grant_type": ctx.grant_type},
-            **ctx.req_info,
         )
         return abort(400, description="Invalid or expired authorization code")
 
@@ -684,15 +624,13 @@ def _grant_authorization_code(ctx: _GrantContext) -> GrantResult:
     username = auth_code.username
     user = ctx.config.get_user(username)
     if not user:
-        ctx.audit.log(
-            event_type="token_request",
+        audit_event(
+            "token_request",
+            "failed",
             endpoint="/token",
-            method="POST",
-            status="failed",
             username=username,
             client_id=ctx.client_id,
             details={"reason": "User not found", "grant_type": ctx.grant_type},
-            **ctx.req_info,
         )
         return abort(401, description="User not found")
 
@@ -727,14 +665,12 @@ def _grant_device_code(ctx: _GrantContext) -> GrantResult:
     """device_code grant (RFC 8628 §3.4/§3.5)."""
     device_code = request.form.get("device_code", "")
     if not device_code:
-        ctx.audit.log(
-            event_type="token_request",
+        audit_event(
+            "token_request",
+            "failed",
             endpoint="/token",
-            method="POST",
-            status="failed",
             client_id=ctx.client_id,
             details={"reason": "Missing device_code", "grant_type": ctx.grant_type},
-            **ctx.req_info,
         )
         return jsonify({
             "error": "invalid_request",
@@ -749,14 +685,12 @@ def _grant_device_code(ctx: _GrantContext) -> GrantResult:
     )
 
     if outcome is DevicePollOutcome.NOT_FOUND:
-        ctx.audit.log(
-            event_type="token_request",
+        audit_event(
+            "token_request",
+            "failed",
             endpoint="/token",
-            method="POST",
-            status="failed",
             client_id=ctx.client_id,
             details={"reason": "Invalid device_code", "grant_type": ctx.grant_type},
-            **ctx.req_info,
         )
         return jsonify({
             "error": "invalid_grant",
@@ -816,8 +750,6 @@ _GRANT_HANDLERS: Dict[str, Callable[[_GrantContext], GrantResult]] = {
 def token() -> ResponseReturnValue:
     """OAuth2 token endpoint: shared validation, then per-grant dispatch."""
     config = get_config()
-    audit = get_audit_log()
-    req_info = _get_request_info()
 
     auth = request.authorization
     grant_type = request.form.get("grant_type", "client_credentials")
@@ -827,52 +759,44 @@ def token() -> ResponseReturnValue:
 
     # Reject if client identity cannot be determined at all
     if not client_id:
-        audit.log(
-            event_type="token_request",
+        audit_event(
+            "token_request",
+            "failed",
             endpoint="/token",
-            method="POST",
-            status="failed",
             details={"reason": "Client authentication required", "grant_type": grant_type},
-            **req_info,
         )
         return abort(401, description="Client authentication required")
 
     # Reject if body client_id conflicts with the authenticated client in the header
     if auth and body_client_id and auth.username != body_client_id:
-        audit.log(
-            event_type="token_request",
+        audit_event(
+            "token_request",
+            "failed",
             endpoint="/token",
-            method="POST",
-            status="failed",
             client_id=auth.username,
             details={"reason": "client_id mismatch", "body_client_id": body_client_id},
-            **req_info,
         )
         return abort(401, description="client_id in request body does not match authenticated client")
 
     # For grant types that require client authentication, enforce it
     if not auth and grant_type != "authorization_code":
-        audit.log(
-            event_type="token_request",
+        audit_event(
+            "token_request",
+            "failed",
             endpoint="/token",
-            method="POST",
-            status="failed",
             client_id=client_id,
             details={"reason": "Client authentication required", "grant_type": grant_type},
-            **req_info,
         )
         return abort(401, description="Client authentication required")
 
     # Check client authentication
     if auth and not config.check_client(auth.username, auth.password):
-        audit.log(
-            event_type="token_request",
+        audit_event(
+            "token_request",
+            "failed",
             endpoint="/token",
-            method="POST",
-            status="failed",
             client_id=auth.username if auth else None,
             details={"reason": "Invalid client credentials"},
-            **req_info,
         )
         return abort(401, description="Invalid client credentials")
 
@@ -886,26 +810,22 @@ def token() -> ResponseReturnValue:
     try:
         exp_minutes = int(request.form.get("exp", config.settings.token_expiry_minutes))
     except (TypeError, ValueError):
-        audit.log(
-            event_type="token_request",
+        audit_event(
+            "token_request",
+            "failed",
             endpoint="/token",
-            method="POST",
-            status="failed",
             client_id=client_id,
             details={"reason": "Invalid 'exp' parameter", "grant_type": grant_type},
-            **req_info,
         )
         return abort(400, description="'exp' must be an integer number of minutes")
     # Same bounds the Settings model enforces for token_expiry_minutes
     if not 1 <= exp_minutes <= 1440:
-        audit.log(
-            event_type="token_request",
+        audit_event(
+            "token_request",
+            "failed",
             endpoint="/token",
-            method="POST",
-            status="failed",
             client_id=client_id,
             details={"reason": "'exp' out of range", "grant_type": grant_type},
-            **req_info,
         )
         return abort(400, description="'exp' must be between 1 and 1440 minutes")
 
@@ -915,26 +835,22 @@ def token() -> ResponseReturnValue:
         try:
             parsed_extra = json.loads(extra_raw)
         except json.JSONDecodeError:
-            audit.log(
-                event_type="token_request",
+            audit_event(
+                "token_request",
+                "failed",
                 endpoint="/token",
-                method="POST",
-                status="failed",
                 client_id=client_id,
                 details={"reason": "Invalid JSON in 'extra'", "grant_type": grant_type},
-                **req_info,
             )
             return abort(400, description="Invalid JSON in 'extra'")
         # Any JSON scalar/array parses fine but is not a claims mapping
         if not isinstance(parsed_extra, dict):
-            audit.log(
-                event_type="token_request",
+            audit_event(
+                "token_request",
+                "failed",
                 endpoint="/token",
-                method="POST",
-                status="failed",
                 client_id=client_id,
                 details={"reason": "'extra' is not a JSON object", "grant_type": grant_type},
-                **req_info,
             )
             return abort(400, description="'extra' must be a JSON object")
         extra_claims = parsed_extra
@@ -942,21 +858,17 @@ def token() -> ResponseReturnValue:
     # Per-grant dispatch
     handler = _GRANT_HANDLERS.get(grant_type)
     if handler is None:
-        audit.log(
-            event_type="token_request",
+        audit_event(
+            "token_request",
+            "failed",
             endpoint="/token",
-            method="POST",
-            status="failed",
             client_id=client_id,
             details={"reason": f"Unsupported grant type: {grant_type}", "grant_type": grant_type},
-            **req_info,
         )
         return abort(400, description=f"Unsupported grant_type: {grant_type}")
 
     ctx = _GrantContext(
         config=config,
-        audit=audit,
-        req_info=req_info,
         client_id=client_id,
         grant_type=grant_type,
     )
@@ -980,18 +892,16 @@ def token() -> ResponseReturnValue:
     )
 
     # Audit log
-    audit.log(
-        event_type="token_request",
+    audit_event(
+        "token_request",
+        "success",
         endpoint="/token",
-        method="POST",
-        status="success",
         username=result.username,
         client_id=client_id,
         details={
             "grant_type": grant_type,
             "authorities_count": len(token_service.build_authorities(result.user)),
         },
-        **req_info,
     )
 
     if config.settings.log_token_requests:
@@ -1016,8 +926,6 @@ def userinfo() -> ResponseReturnValue:
     Requires a valid Bearer token.
     """
     config = get_config()
-    audit = get_audit_log()
-    req_info = _get_request_info()
 
     # Extract Bearer token
     token = _extract_bearer_token()
@@ -1029,13 +937,11 @@ def userinfo() -> ResponseReturnValue:
     try:
         payload = crypto.verify_jwt(token, config.settings.audience)
     except ValueError as e:
-        audit.log(
-            event_type="userinfo_request",
+        audit_event(
+            "userinfo_request",
+            "failed",
             endpoint="/userinfo",
-            method=request.method,
-            status="failed",
             details={"reason": str(e)},
-            **req_info,
         )
         return jsonify({"error": "invalid_token", "error_description": "Token validation failed"}), 401
 
@@ -1048,13 +954,11 @@ def userinfo() -> ResponseReturnValue:
     # dev IdP) is still accepted. The security goal still holds: the IdP marks every
     # ID/refresh token it issues, so an ID Token can never be spent as an access token.
     if payload.get("token_use") in ("id", "refresh"):
-        audit.log(
-            event_type="userinfo_request",
+        audit_event(
+            "userinfo_request",
+            "failed",
             endpoint="/userinfo",
-            method=request.method,
-            status="failed",
             details={"reason": "Not an access token", "token_use": payload.get("token_use")},
-            **req_info,
         )
         return jsonify({"error": "invalid_token", "error_description": "An access token is required"}), 401
 
@@ -1083,13 +987,11 @@ def userinfo() -> ResponseReturnValue:
         if user.attributes:
             response["attributes"] = user.attributes
 
-    audit.log(
-        event_type="userinfo_request",
+    audit_event(
+        "userinfo_request",
+        "success",
         endpoint="/userinfo",
-        method=request.method,
-        status="success",
         username=username,
-        **req_info,
     )
 
     return jsonify(response)
@@ -1103,20 +1005,16 @@ def introspect() -> ResponseReturnValue:
     Requires client authentication.
     """
     config = get_config()
-    audit = get_audit_log()
-    req_info = _get_request_info()
 
     # Check client authentication (Basic auth)
     auth = request.authorization
     if not auth or not config.check_client(auth.username, auth.password):
-        audit.log(
-            event_type="introspection_request",
+        audit_event(
+            "introspection_request",
+            "failed",
             endpoint="/introspect",
-            method="POST",
-            status="failed",
             client_id=auth.username if auth else None,
             details={"reason": "Invalid client credentials"},
-            **req_info,
         )
         return jsonify({"error": "invalid_client"}), 401
 
@@ -1134,28 +1032,24 @@ def introspect() -> ResponseReturnValue:
         payload = crypto.verify_jwt(token, config.settings.audience)
     except ValueError:
         # Token is invalid or expired
-        audit.log(
-            event_type="introspection_request",
+        audit_event(
+            "introspection_request",
+            "success",
             endpoint="/introspect",
-            method="POST",
-            status="success",
             client_id=client_id,
             details={"active": False, "reason": "Invalid or expired token"},
-            **req_info,
         )
         return jsonify({"active": False})
 
     # ID Tokens are OIDC artifacts, not OAuth access/refresh tokens. They must not
     # be reported as active here (or be usable as access tokens) (issue #34).
     if payload.get("token_use") == "id":
-        audit.log(
-            event_type="introspection_request",
+        audit_event(
+            "introspection_request",
+            "success",
             endpoint="/introspect",
-            method="POST",
-            status="success",
             client_id=client_id,
             details={"active": False, "reason": "ID Token is not introspectable"},
-            **req_info,
         )
         return jsonify({"active": False})
 
@@ -1184,15 +1078,13 @@ def introspect() -> ResponseReturnValue:
     else:
         response["scope"] = "openid"
 
-    audit.log(
-        event_type="introspection_request",
+    audit_event(
+        "introspection_request",
+        "success",
         endpoint="/introspect",
-        method="POST",
-        status="success",
         client_id=client_id,
         username=payload.get("sub"),
         details={"active": True},
-        **req_info,
     )
 
     return jsonify(response)
@@ -1206,20 +1098,16 @@ def revoke() -> ResponseReturnValue:
     Requires client authentication.
     """
     config = get_config()
-    audit = get_audit_log()
-    req_info = _get_request_info()
 
     # Check client authentication (Basic auth)
     auth = request.authorization
     if not auth or not config.check_client(auth.username, auth.password):
-        audit.log(
-            event_type="revocation_request",
+        audit_event(
+            "revocation_request",
+            "failed",
             endpoint="/revoke",
-            method="POST",
-            status="failed",
             client_id=auth.username if auth else None,
             details={"reason": "Invalid client credentials"},
-            **req_info,
         )
         return jsonify({"error": "invalid_client"}), 401
 
@@ -1246,15 +1134,13 @@ def revoke() -> ResponseReturnValue:
             token_hash = hashlib.sha256(token.encode()).hexdigest()
             get_revocation_store().revoke(token_hash)
 
-        audit.log(
-            event_type="revocation_request",
+        audit_event(
+            "revocation_request",
+            "success",
             endpoint="/revoke",
-            method="POST",
-            status="success",
             client_id=client_id,
             username=payload.get("sub"),
             details={"revoked": True},
-            **req_info,
         )
 
     except Exception:
@@ -1282,8 +1168,6 @@ def end_session() -> ResponseReturnValue:
     - state: CSRF protection state (optional)
     - client_id: Client identifier (optional, required if no id_token_hint)
     """
-    audit = get_audit_log()
-    req_info = _get_request_info()
 
     # Get parameters from query string or form
     params = request.args if request.method == "GET" else request.form
@@ -1311,15 +1195,13 @@ def end_session() -> ResponseReturnValue:
     # Clear session
     session.clear()
 
-    audit.log(
-        event_type="logout_request",
+    audit_event(
+        "logout_request",
+        "success",
         endpoint="/logout",
-        method=request.method,
-        status="success",
         username=username,
         client_id=client_id,
         details={"has_redirect": bool(post_logout_redirect_uri)},
-        **req_info,
     )
 
     logger.info(f"Logout completed for user '{username or 'unknown'}'")
@@ -1357,20 +1239,16 @@ def device_authorization() -> ResponseReturnValue:
     - scope: Requested scopes
     """
     config = get_config()
-    audit = get_audit_log()
-    req_info = _get_request_info()
 
     # Check client authentication
     auth = request.authorization
     if not auth or not config.check_client(auth.username, auth.password):
-        audit.log(
-            event_type="device_authorization_request",
+        audit_event(
+            "device_authorization_request",
+            "failed",
             endpoint="/device_authorization",
-            method="POST",
-            status="failed",
             client_id=auth.username if auth else None,
             details={"reason": "Invalid client credentials"},
-            **req_info,
         )
         return jsonify({"error": "invalid_client"}), 401
 
@@ -1383,14 +1261,12 @@ def device_authorization() -> ResponseReturnValue:
     # keeps the user-code index internally (#84, previously module globals).
     device_code, user_code = get_device_code_store().create(client_id, scope)
 
-    audit.log(
-        event_type="device_authorization_request",
+    audit_event(
+        "device_authorization_request",
+        "success",
         endpoint="/device_authorization",
-        method="POST",
-        status="success",
         client_id=client_id,
         details={"user_code": user_code, "scope": scope},
-        **req_info,
     )
 
     logger.info(f"Device authorization initiated, user_code: {user_code}")
@@ -1419,8 +1295,6 @@ def device_verify() -> ResponseReturnValue:
     POST: Process user_code and login
     """
     config = get_config()
-    audit = get_audit_log()
-    req_info = _get_request_info()
 
     error_msg = None
     success_msg = None
@@ -1448,38 +1322,32 @@ def device_verify() -> ResponseReturnValue:
             error_msg = "This code has expired"
         elif outcome is DeviceVerifyOutcome.DENIED:
             success_msg = "Device authorization denied"
-            audit.log(
-                event_type="device_verification",
+            audit_event(
+                "device_verification",
+                "denied",
                 endpoint="/device",
-                method="POST",
-                status="denied",
                 username=username,
                 details={"user_code": user_code},
-                **req_info,
             )
         elif outcome is DeviceVerifyOutcome.MISSING_CREDENTIALS:
             error_msg = "Username and password are required"
         elif outcome is DeviceVerifyOutcome.INVALID_CREDENTIALS:
             error_msg = "Invalid username or password"
-            audit.log(
-                event_type="device_verification",
+            audit_event(
+                "device_verification",
+                "failed",
                 endpoint="/device",
-                method="POST",
-                status="failed",
                 username=username,
                 details={"user_code": user_code, "reason": "Invalid credentials"},
-                **req_info,
             )
         elif outcome is DeviceVerifyOutcome.AUTHORIZED and user is not None:
             success_msg = "Device authorized successfully! You can close this window."
-            audit.log(
-                event_type="device_verification",
+            audit_event(
+                "device_verification",
+                "success",
                 endpoint="/device",
-                method="POST",
-                status="success",
                 username=user.username,
                 details={"user_code": user_code},
-                **req_info,
             )
             logger.info(f"Device authorized for user '{user.username}', user_code: {user_code}")
 
