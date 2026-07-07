@@ -13,6 +13,9 @@ on:
 jobs:
   http-e2e:
     runs-on: ubuntu-latest
+    # The agent has per-request timeouts, but a wedged server or a hung
+    # login flow would otherwise burn the 360-minute Actions default.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
@@ -45,6 +48,9 @@ jobs:
 
   mcp-e2e:
     runs-on: ubuntu-latest
+    # stdio has no request timeouts: if the server starts but hangs in
+    # initialize/list_tools/call_tool, only this job timeout saves the run.
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
 

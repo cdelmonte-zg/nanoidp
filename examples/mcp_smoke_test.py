@@ -22,6 +22,8 @@ import sys
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
+# Deliberately a hard number: the docs advertise the tool count, so growing or
+# shrinking the MCP surface must consciously update both (metadata never lies).
 EXPECTED_TOOLS = 24
 
 
