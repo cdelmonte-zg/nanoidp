@@ -13,7 +13,7 @@
   Supports OAuth2/OIDC and SAML 2.0 protocols with a full-featured web UI for configuration.
 </p>
 
-> Design principles, non-goals and medium-term direction live in [VISION.md](VISION.md).
+> 📖 Documentation: <https://cdelmonte-zg.github.io/nanoidp/> — design principles, non-goals and medium-term direction live in [VISION.md](VISION.md).
 
 ## Features
 
