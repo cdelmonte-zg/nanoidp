@@ -1,0 +1,61 @@
+# End-to-end checks that the unit suite structurally cannot cover (#79):
+# the HTTP agent drives a real server over the network, and the MCP smoke
+# test drives the real stdio server — the transport whose startup crash
+# once went unnoticed because unit tests call _execute_tool directly (#56).
+name: E2E
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  http-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Start server
+        run: |
+          python -m nanoidp > server.log 2>&1 &
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:8000/api/health && exit 0
+            sleep 1
+          done
+          echo "server did not become healthy" >&2
+          cat server.log >&2
+          exit 1
+
+      - name: Run e2e agent
+        run: python examples/test_agent.py
+
+      - name: Server log on failure
+        if: failure()
+        run: cat server.log
+
+  mcp-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: MCP stdio smoke test
+        run: python examples/mcp_smoke_test.py --config ./config
