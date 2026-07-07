@@ -15,6 +15,9 @@ curl -X POST 'http://localhost:8000/token' \
 Add `&scope=openid` to also receive an ID Token — see
 [Tokens and claims](../reference/tokens.md) for what comes back.
 
+> Under the `oauth21` profile this grant is rejected with `400` and does
+> not appear in `grant_types_supported` — OAuth 2.1 removes it entirely.
+
 ## Client credentials grant
 
 ```bash
