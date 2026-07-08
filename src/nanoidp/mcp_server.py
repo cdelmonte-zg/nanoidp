@@ -339,6 +339,17 @@ async def list_tools() -> list[Tool]:
                             "re-issues an ID Token (OIDC Core §12.2)"
                         ),
                     },
+                    "id_token_claims": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "Claim names to embed in the ID Token, mirroring the "
+                            "OIDC `claims` request parameter (§5.5). Requires an "
+                            "'openid' scope. Resolved from the user (e.g. 'email', "
+                            "'preferred_username', or a custom attribute); names "
+                            "nanoidp cannot supply are skipped."
+                        ),
+                    },
                 },
                 "required": ["username"],
             },
@@ -767,6 +778,7 @@ async def _execute_tool(name: str, arguments: dict[str, Any], config: ConfigMana
             exp_minutes=arguments.get("expires_in_minutes", config.settings.token_expiry_minutes),
             extra_claims=arguments.get("extra_claims"),
             scope=arguments.get("scope"),
+            id_token_claims=arguments.get("id_token_claims"),
         )
         result = {
             "success": True,

@@ -12,6 +12,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   granted scope (RFC 9068 §2.2.3), letting resource endpoints reason about it.
   Set authoritatively in `TokenService.create_token`, so a caller-supplied
   `extra_claims` cannot override it.
+- **OIDC `claims` request parameter** (#104, OIDC Core §5.5): `/authorize`
+  accepts a `claims` parameter to request specific claims in the ID Token
+  (`id_token` member) or from UserInfo (`userinfo` member), e.g.
+  `claims={"id_token":{"email":null}}`. Requested claims are resolved from the
+  user and added when available (voluntary form, §5.5.1); protocol claims are
+  never overwritten and unresolvable names are skipped. Malformed input is
+  ignored with a warning rather than failing the flow. Discovery advertises
+  `claims_parameter_supported: true`, and the MCP `generate_token` tool gains an
+  `id_token_claims` argument. Scoped to the authorization code grant; the
+  requested claims are not yet persisted across a refresh.
 
 ### Changed
 - **`/userinfo` gates `email`/`profile` claims by granted scope** (#102, OIDC

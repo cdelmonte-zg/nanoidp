@@ -369,7 +369,10 @@ class NanoIDPTestAgent:
                 "scope": "openid profile",
                 "state": state,
                 "code_challenge": challenge,
-                "code_challenge_method": "S256"
+                "code_challenge_method": "S256",
+                # OIDC `claims` request parameter (§5.5, #104): ask for the
+                # email claim to be delivered inside the ID Token.
+                "claims": json.dumps({"id_token": {"email": None, "email_verified": None}}),
             }
 
             # Get the authorization page
@@ -427,19 +430,24 @@ class NanoIDPTestAgent:
                             data = token_response.json()
 
                             nonce_ok = False
+                            # The `claims` parameter above requested email in the
+                            # ID Token (#104); it must now be present there.
+                            email_in_id_token = False
                             if jwt and "id_token" in data:
                                 decoded = jwt.decode(data["id_token"], options={"verify_signature": False})
                                 nonce_ok = decoded.get("nonce") == auth_params["nonce"]
+                                email_in_id_token = bool(decoded.get("email"))
 
                             return self._add_result(
                                 "Auth Code + PKCE",
                                 TestCategory.OAUTH,
-                                "id_token" in data and "access_token" in data and nonce_ok,
-                                "Flow completo: authorize -> code -> token",
+                                "id_token" in data and "access_token" in data and nonce_ok and email_in_id_token,
+                                "Flow completo: authorize -> code -> token (claims: email in ID Token)",
                                 {
                                     "has_access_token": "access_token" in data,
                                     "has_id_token": "id_token" in data,
                                     "nonce_ok": nonce_ok,
+                                    "email_in_id_token": email_in_id_token,
                                 }
                             )
 

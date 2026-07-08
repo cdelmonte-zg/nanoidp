@@ -47,6 +47,9 @@ def build_discovery_document(settings: Settings) -> Dict[str, Any]:
             "roles", "tenant", "identity_class", "entitlements",
             "source_acl", "attributes", "authorities"
         ],
+        # The OIDC `claims` request parameter is honoured at /authorize to
+        # deliver requested claims in the ID Token / UserInfo (§5.5, #104).
+        "claims_parameter_supported": True,
         # The password grant is removed by OAuth 2.1 and rejected under the
         # oauth21 profile, so it must not be advertised there (#68).
         "grant_types_supported": [
