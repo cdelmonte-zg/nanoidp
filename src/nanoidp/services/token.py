@@ -15,6 +15,22 @@ from .crypto import get_crypto_service
 
 logger = logging.getLogger(__name__)
 
+# Claim names a client must never be able to request through the OIDC ``claims``
+# parameter (#110). Registered JWT claims are set by ``create_jwt`` and the
+# protocol claims are set authoritatively by ``create_token``; letting a
+# requested name resolve to a user attribute of the same name would overwrite
+# them (``create_jwt`` applies ``payload.update(extra)`` after the registered
+# claims), e.g. a user attribute ``aud``/``exp`` hijacking the ID Token. None of
+# these are legitimately requestable, so the resolver refuses them outright.
+_RESERVED_CLAIMS = frozenset({
+    # registered JWT claims (RFC 7519)
+    "iss", "sub", "aud", "exp", "iat", "nbf", "jti",
+    # nanoidp protocol claims
+    "token_use", "auth_time", "at_hash", "azp", "nonce", "scope",
+    "req_userinfo_claims",
+})
+
+
 def resolve_user_claim(user: User, name: str) -> tuple[bool, Any]:
     """Resolve a requested OIDC/custom claim name to the user's value.
 
@@ -23,7 +39,12 @@ def resolve_user_claim(user: User, name: str) -> tuple[bool, Any]:
     attribute can be requested for the ID Token or UserInfo. Returns
     ``(found, value)``; ``found`` is False when nanoidp cannot supply the claim,
     so voluntary claims are simply omitted rather than emitted as null (§5.5.1).
+
+    Reserved registered/protocol claim names (``_RESERVED_CLAIMS``) are always
+    refused so a requested name can never overwrite them (#110).
     """
+    if name in _RESERVED_CLAIMS:
+        return False, None
     if name == "email":
         return True, user.email
     if name == "email_verified":
@@ -261,8 +282,11 @@ class TokenService:
                 id_extra["azp"] = azp
             # Claims the client asked for in the ID Token via the OIDC `claims`
             # parameter (§5.5, #104). Resolved from the user and added only when
-            # available (voluntary claims, §5.5.1). setdefault so a requested
-            # name can never overwrite a protocol claim (auth_time/at_hash/azp).
+            # available (voluntary claims, §5.5.1). resolve_user_claim refuses
+            # reserved registered/protocol names (#110), so a requested claim can
+            # never overwrite iss/sub/aud/exp/... (which create_jwt sets after
+            # applying `extra`) nor the id_extra protocol claims; setdefault is a
+            # belt-and-suspenders guard for the id_extra keys.
             for claim_name in id_token_claims or []:
                 found, value = resolve_user_claim(user, claim_name)
                 if found:

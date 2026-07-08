@@ -242,6 +242,50 @@ class TestReservedClaimsCannotBeSpoofed:
 
 
 # --------------------------------------------------------------------------
+# Security: reserved claim names cannot be requested/overwritten (#110)
+# --------------------------------------------------------------------------
+_RESERVED = [
+    "iss", "sub", "aud", "exp", "iat", "nbf", "jti",
+    "token_use", "auth_time", "at_hash", "azp", "nonce", "scope",
+    "req_userinfo_claims",
+]
+
+
+class TestReservedClaimNames:
+    def test_resolver_refuses_reserved_names_even_with_colliding_attribute(self):
+        user = User(
+            username="u", password="p", email="u@example.org",
+            attributes={"exp": 111, "aud": "evil", "sub": "spoof", "department": "eng"},
+        )
+        for name in _RESERVED:
+            assert resolve_user_claim(user, name) == (False, None), name
+        # a non-reserved attribute still resolves normally
+        assert resolve_user_claim(user, "department") == (True, "eng")
+
+    def test_id_token_registered_claims_not_overwritable(self):
+        """A requested claim colliding with a user attribute must not hijack the
+        registered ID Token claims (create_jwt applies `extra` last)."""
+        from nanoidp.services.token import get_token_service
+
+        app = create_app(profile="dev")
+        app.config["TESTING"] = True
+        user = User(
+            username="attacker", password="p", email="a@example.org",
+            attributes={"exp": 111, "aud": "https://evil.example", "iss": "https://evil"},
+        )
+        resp = get_token_service().create_token(
+            user, scope="openid", client_id="demo-client",
+            id_token_claims=["exp", "aud", "iss", "email"],
+        )
+        payload = pyjwt.decode(resp["id_token"], options={"verify_signature": False})
+        assert payload["exp"] > 111  # real future expiry, not the attribute
+        assert "evil" not in str(payload["aud"])  # real audience, not attacker value
+        assert "evil" not in payload["iss"]
+        # a legitimate requested claim still lands
+        assert payload["email"] == "a@example.org"
+
+
+# --------------------------------------------------------------------------
 # Discovery advertisement
 # --------------------------------------------------------------------------
 def test_discovery_advertises_claims_parameter_supported():
