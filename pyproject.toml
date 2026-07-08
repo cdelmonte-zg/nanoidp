@@ -69,8 +69,8 @@ nanoidp = "nanoidp.__main__:main"
 nanoidp-mcp = "nanoidp.mcp_server:main"
 
 [project.urls]
-Homepage = "https://github.com/cdelmonte-zg/nanoidp"
-Documentation = "https://github.com/cdelmonte-zg/nanoidp#readme"
+Homepage = "https://cdelmonte-zg.github.io/nanoidp/"
+Documentation = "https://cdelmonte-zg.github.io/nanoidp/"
 Repository = "https://github.com/cdelmonte-zg/nanoidp.git"
 Issues = "https://github.com/cdelmonte-zg/nanoidp/issues"
 
