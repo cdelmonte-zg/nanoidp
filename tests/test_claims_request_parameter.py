@@ -197,6 +197,51 @@ class TestUserinfoMember:
 
 
 # --------------------------------------------------------------------------
+# Security: authoritative claims cannot be spoofed via `extra`
+# --------------------------------------------------------------------------
+class TestReservedClaimsCannotBeSpoofed:
+    """`scope`/`req_userinfo_claims` must reflect the grant, not `extra_claims`.
+
+    The /token endpoint accepts an arbitrary `extra` JSON object, so a caller
+    must not be able to smuggle these authoritative claims into the access token
+    and have /userinfo honour them past the #102 scope gating.
+    """
+
+    def _mint(self, profile, scope, extra_claims):
+        from nanoidp.config import get_config
+        from nanoidp.services.token import get_token_service
+
+        app = create_app(profile=profile)
+        app.config["TESTING"] = True
+        token = get_token_service().create_token(
+            get_config().get_user("admin"),
+            scope=scope,
+            client_id="demo-client",
+            extra_claims=extra_claims,
+        )["access_token"]
+        payload = pyjwt.decode(token, options={"verify_signature": False})
+        resp = app.test_client().get(
+            "/userinfo", headers={"Authorization": f"Bearer {token}"}
+        )
+        assert resp.status_code == 200, resp.data
+        return payload, json.loads(resp.data)
+
+    def test_req_userinfo_claims_via_extra_is_dropped(self):
+        payload, data = self._mint(
+            "stricter-dev", scope="openid", extra_claims={"req_userinfo_claims": ["email"]}
+        )
+        assert "req_userinfo_claims" not in payload
+        assert "email" not in data
+
+    def test_scope_via_extra_is_dropped(self):
+        payload, data = self._mint(
+            "stricter-dev", scope=None, extra_claims={"scope": "openid email"}
+        )
+        assert "scope" not in payload
+        assert "email" not in data
+
+
+# --------------------------------------------------------------------------
 # Discovery advertisement
 # --------------------------------------------------------------------------
 def test_discovery_advertises_claims_parameter_supported():
