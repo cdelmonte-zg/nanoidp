@@ -13,7 +13,6 @@ import base64
 import json
 
 import jwt as pyjwt
-import pytest
 
 from nanoidp.app import create_app
 
