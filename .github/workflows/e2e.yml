@@ -1,6 +1,6 @@
 # End-to-end checks that the unit suite structurally cannot cover (#79):
 # the HTTP agent drives a real server over the network, and the MCP smoke
-# test drives the real stdio server — the transport whose startup crash
+# test drives the real stdio server - the transport whose startup crash
 # once went unnoticed because unit tests call _execute_tool directly (#56).
 name: E2E
 

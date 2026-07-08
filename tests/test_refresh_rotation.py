@@ -4,7 +4,7 @@ Tests for optional refresh token rotation (issue #46).
 Off by default: the same refresh token can be reused indefinitely (old
 behavior). When ``oauth.refresh_token_rotation`` is enabled, each refresh
 invalidates the consumed refresh token (its jti joins the revocation list),
-so reuse fails with 401 — letting clients test rotation and reuse-detection
+so reuse fails with 401 - letting clients test rotation and reuse-detection
 handling (OAuth 2.0 Security BCP §4.14.2).
 """
 

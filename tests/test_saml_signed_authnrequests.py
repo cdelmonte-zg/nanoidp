@@ -198,7 +198,7 @@ class TestPostBinding:
 class TestRedirectLegBinding:
     """The Redirect login leg is bound server-side (#69 review): a POST with
     saml_original_verb=GET is only admitted for values byte-identical to a
-    request this session already verified — hidden form fields alone are
+    request this session already verified - hidden form fields alone are
     client-controlled and must not bypass enforcement."""
 
     def _unsigned_b64(self, request_id: bytes = b"_sig-test-1") -> str:
@@ -225,7 +225,7 @@ class TestRedirectLegBinding:
         self, client, signed_mode
     ):
         """Already-authenticated bypass: session user set, still no verified
-        Redirect request bound — must not proceed to response generation."""
+        Redirect request bound - must not proceed to response generation."""
         with client.session_transaction() as sess:
             sess["user"] = "admin"
         r = client.post(

@@ -1,8 +1,8 @@
 """
 Configuration models for NanoIDP (#86, split out of config.py).
 
-The Pydantic models — ``User``, ``OAuthClient``, ``Settings`` with its
-field validators and the profile-derived protocol properties (#68) — plus
+The Pydantic models - ``User``, ``OAuthClient``, ``Settings`` with its
+field validators and the profile-derived protocol properties (#68) - plus
 the YAML shape coercers used when loading them. Persistence lives in
 ``serialization.py``, loading and the runtime singleton in ``config.py``,
 which re-exports everything here for compatibility.

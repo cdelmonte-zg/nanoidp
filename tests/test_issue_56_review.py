@@ -131,7 +131,7 @@ class TestAtomicRotationAndFamilies:
 
     def test_non_object_extra_is_a_400_and_does_not_consume(self, client, auth_header):
         """json.loads('42') succeeds, but extra.update(42) would be a 500
-        AFTER the claim — 'extra' must be a JSON object (second review)."""
+        AFTER the claim - 'extra' must be a JSON object (second review)."""
         tokens = _password_grant(client, auth_header)
 
         for bad_extra in ("42", '"hello"', "[1, 2]"):

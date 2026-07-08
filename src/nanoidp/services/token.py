@@ -75,7 +75,7 @@ class TokenService:
         the ID Token was issued.
 
         When no client is known we fall back to the configured resource audience
-        (a safety fallback — a real OIDC token endpoint always has a client).
+        (a safety fallback - a real OIDC token endpoint always has a client).
 
         The resource audience (``settings.audience``, used by access/refresh
         tokens) is never allowed into the ID Token ``aud``: otherwise
@@ -217,7 +217,7 @@ class TokenService:
         # - scope and auth_time, so the grant re-issues an ID Token with the
         #   same authentication context (OIDC Core §12.2, #39/#42);
         # - client_id, binding the token to the client it was issued to so no
-        #   other client can spend it (RFC 9700 §4.14, #56) — which also keeps
+        #   other client can spend it (RFC 9700 §4.14, #56) - which also keeps
         #   the refreshed ID Token aud identical to the original;
         # - rt_family, a stable id across rotations: reuse of a consumed token
         #   revokes the whole family (RFC 9700 §4.14.2, #56).
@@ -245,7 +245,7 @@ class TokenService:
             "expires_in": exp_minutes * 60,
             "refresh_token": refresh_token,
         }
-        # RFC 6749 §5.1: report the scope actually granted — it may have been
+        # RFC 6749 §5.1: report the scope actually granted - it may have been
         # narrowed on refresh (§6) and was previously hardcoded to "openid"
         # regardless of the grant (#56). Omitted when no scope was involved.
         if scope:

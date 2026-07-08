@@ -3,7 +3,7 @@ Single source of truth for the OIDC discovery document.
 
 Both the HTTP endpoint (``/.well-known/openid-configuration``) and the MCP
 ``get_oidc_discovery`` tool build their response here, so the two can never
-drift apart (issue #40 — the MCP tool used to return an abbreviated dict that
+drift apart (issue #40 - the MCP tool used to return an abbreviated dict that
 omitted ``claims_supported``/``azp`` and the auth-method metadata).
 """
 
@@ -16,7 +16,7 @@ def build_discovery_document(settings: Settings) -> Dict[str, Any]:
     """Build the OIDC discovery metadata for the given settings.
 
     Every value advertised here must reflect what the endpoints actually
-    implement — the document is a contract, and for a dev IdP a misleading
+    implement - the document is a contract, and for a dev IdP a misleading
     entry is worse than a missing feature (see issue #41: ``token`` was
     advertised in ``response_types_supported`` while ``/authorize`` only
     accepts ``code``).

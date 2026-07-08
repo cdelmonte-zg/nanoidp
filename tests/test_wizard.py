@@ -1,5 +1,5 @@
 """
-Tests for the interactive configuration wizard (issue #72 — it was the only
+Tests for the interactive configuration wizard (issue #72 - it was the only
 module with zero coverage, capping the CI threshold).
 
 The wizard is driven by monkeypatching ``builtins.input`` (and

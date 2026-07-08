@@ -69,14 +69,14 @@ and [Quickstart](https://cdelmonte-zg.github.io/nanoidp/getting-started/quicksta
 The full documentation lives at
 **<https://cdelmonte-zg.github.io/nanoidp/>**:
 
-- [Requesting tokens](https://cdelmonte-zg.github.io/nanoidp/guides/token-requests.html) — curl examples for every grant, introspection, revocation
-- [MCP with Claude Code](https://cdelmonte-zg.github.io/nanoidp/guides/MCP_WORKFLOW.html) — drive NanoIDP from an agent
-- [Security guide](https://cdelmonte-zg.github.io/nanoidp/guides/SECURITY.html) — profiles, key management, MCP hardening
-- [Configuration](https://cdelmonte-zg.github.io/nanoidp/reference/configuration.html) — `users.yaml`, `settings.yaml`, logging
-- [Endpoints](https://cdelmonte-zg.github.io/nanoidp/reference/endpoints.html) — OAuth2/OIDC, SAML, REST API
-- [Tokens and claims](https://cdelmonte-zg.github.io/nanoidp/reference/tokens.html) — token structure and `aud` semantics
-- [SAML options](https://cdelmonte-zg.github.io/nanoidp/reference/saml.html) — bindings, strict mode, signing, canonicalization
-- [MCP server](https://cdelmonte-zg.github.io/nanoidp/reference/mcp.html) — all tools and Claude Code/Desktop setup
+- [Requesting tokens](https://cdelmonte-zg.github.io/nanoidp/guides/token-requests.html) - curl examples for every grant, introspection, revocation
+- [MCP with Claude Code](https://cdelmonte-zg.github.io/nanoidp/guides/MCP_WORKFLOW.html) - drive NanoIDP from an agent
+- [Security guide](https://cdelmonte-zg.github.io/nanoidp/guides/SECURITY.html) - profiles, key management, MCP hardening
+- [Configuration](https://cdelmonte-zg.github.io/nanoidp/reference/configuration.html) - `users.yaml`, `settings.yaml`, logging
+- [Endpoints](https://cdelmonte-zg.github.io/nanoidp/reference/endpoints.html) - OAuth2/OIDC, SAML, REST API
+- [Tokens and claims](https://cdelmonte-zg.github.io/nanoidp/reference/tokens.html) - token structure and `aud` semantics
+- [SAML options](https://cdelmonte-zg.github.io/nanoidp/reference/saml.html) - bindings, strict mode, signing, canonicalization
+- [MCP server](https://cdelmonte-zg.github.io/nanoidp/reference/mcp.html) - all tools and Claude Code/Desktop setup
 
 ## Security
 

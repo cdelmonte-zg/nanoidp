@@ -13,7 +13,7 @@ Contract (per the official specifications):
   can test authorized-party validation.
 * **RFC 9068 §2.2 (JWT access tokens):** the *access token* ``aud`` identifies the
   resource server (``settings.audience``), NOT the client. It is therefore left
-  unchanged by this contract — see :class:`TestAccessTokenAudienceUnchanged`.
+  unchanged by this contract - see :class:`TestAccessTokenAudienceUnchanged`.
 
 Additional audiences for a client are configured via the new
 ``OAuthClient.additional_audiences`` field, which is what makes the ``aud`` an

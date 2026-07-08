@@ -6,7 +6,7 @@ can test that nanoidp actually validates the signatures, under both bindings:
 
 - **HTTP-Redirect** (SAML 2.0 Bindings §3.4.4.1): the signature covers the
   URL-encoded query fragment ``SAMLRequest=...[&RelayState=...]&SigAlg=...``
-  exactly as transmitted, so verification works on the *raw* query string —
+  exactly as transmitted, so verification works on the *raw* query string -
   re-encoding the values would break it.
 - **HTTP-POST** (SAML 2.0 Core §5): an enveloped ``ds:Signature`` inside the
   AuthnRequest XML, verified with signxml against the registered
@@ -32,7 +32,7 @@ from ..exceptions import SAMLSignatureError
 logger = logging.getLogger(__name__)
 
 # SigAlg URIs (RFC 4051 / xmldsig) accepted for the Redirect binding. SHA-1 is
-# obsolete but kept for legacy SPs — this is a dev tool and the point is
+# obsolete but kept for legacy SPs - this is a dev tool and the point is
 # exercising the SP's actual configuration.
 _REDIRECT_SIG_ALGS: Dict[str, Callable[[], hashes.HashAlgorithm]] = {
     "http://www.w3.org/2001/04/xmldsig-more#rsa-sha256": hashes.SHA256,
@@ -56,7 +56,7 @@ def load_sp_certificates(paths: List[str]) -> List[bytes]:
 
 def _raw_query_params(raw_query: str) -> List[Tuple[str, str]]:
     """Split a raw query string into (name, raw_value) pairs WITHOUT decoding
-    the values — the Redirect-binding signature covers the transmitted bytes."""
+    the values - the Redirect-binding signature covers the transmitted bytes."""
     pairs: List[Tuple[str, str]] = []
     for chunk in raw_query.split("&"):
         if not chunk:

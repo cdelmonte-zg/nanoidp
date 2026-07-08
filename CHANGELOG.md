@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **`oauth21` security profile** (#68): opt-in draft-OAuth-2.1 protocol
-  strictness alongside `dev` and `stricter-dev` — PKCE required on the
+  strictness alongside `dev` and `stricter-dev` - PKCE required on the
   authorization code flow with S256 only (draft-ietf-oauth-v2-1 §4.1.1,
   §7.5.2), refresh token rotation forced on (§4.3.1), the password grant
   removed (RFC 6749 §5.2) and absent from discovery, and registered
@@ -22,15 +22,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   optional `redirect_uris` list; when non-empty, `/authorize` compares the
   requested `redirect_uri` with simple string comparison (RFC 6749
   §3.1.2.3, OAuth 2.1 §4.1.1) and answers a mismatch with
-  `400 invalid_request` directly — never by redirecting to the unvalidated
+  `400 invalid_request` directly - never by redirecting to the unvalidated
   URI (§3.1.2.4). Exposed in the web UI, MCP client tools and YAML.
 - **Signed AuthnRequest verification** (#69): with
   `saml.want_authn_requests_signed: true` and PEM certificates in
   `saml.sp_certificates`, nanoidp requires and verifies AuthnRequest
-  signatures under both bindings — the HTTP-Redirect query-string
+  signatures under both bindings - the HTTP-Redirect query-string
   signature over the raw transmitted fragment (SAML 2.0 Bindings
   §3.4.4.1; rsa-sha256/rsa-sha512/legacy rsa-sha1) and the HTTP-POST
-  enveloped `ds:Signature` (Core §5) — rejecting unsigned or invalid
+  enveloped `ds:Signature` (Core §5) - rejecting unsigned or invalid
   requests with 400, failing closed without registered certificates. The
   verified Redirect request is bound server-side in the session, so the
   inline-login leg only accepts byte-identical values. Metadata advertises
@@ -39,7 +39,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **E2E workflow in CI** (#79): every PR now boots real servers and runs
   `examples/test_agent.py` against them (default profile, `--oauth21`,
   `--saml-signed` with a generated SP keypair) plus an MCP **stdio** smoke
-  test (`examples/mcp_smoke_test.py`) driving the real transport — the
+  test (`examples/mcp_smoke_test.py`) driving the real transport - the
   regression guard for the class of bug where the stdio entrypoint crashed
   unnoticed because unit tests bypass it (#56).
 - **Coverage gate in CI** (#71, #72): `--cov-fail-under`, introduced at 70
@@ -59,7 +59,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - **`src/` is fully annotated** and mypy runs with a global
-  `disallow_untyped_defs` (#70) — new unannotated code fails CI.
+  `disallow_untyped_defs` (#70) - new unannotated code fails CI.
 - **Internal architecture** (behavior-invariant, #83–#86): one shared YAML
   serialization path for `ConfigManager` and the UI writer; the token
   endpoint dispatches to per-grant handlers with device-flow and
@@ -75,7 +75,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - **`ConfigManager.save()` was lossy** (#87): the save path behind MCP
   `save_config` rewrote `settings.yaml` from scratch, silently deleting
-  every section it didn't own — `jwt` (external keys!), `session`,
+  every section it didn't own - `jwt` (external keys!), `session`,
   `logging` levels, `server.debug` and custom keys. Saving is now
   read-modify-write and preserves them, atomically and with a `.bak`
   backup like the UI path always did.
@@ -87,16 +87,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   included the `openid` scope (OIDC Core §12.2, #39). The granted scope is
   persisted in the refresh token claims and recovered on refresh; a `scope`
   form parameter may narrow, but never broaden, the original grant (RFC 6749
-  §6 — broadening is rejected with `400`). The refreshed ID Token carries no
+  §6 - broadening is rejected with `400`). The refreshed ID Token carries no
   `nonce` (it binds the original authentication request). Refresh tokens minted
   before this change have no persisted scope and keep the old behavior.
 - ID Tokens now carry `auth_time` and `at_hash` (#42). `auth_time` reflects
   when the end-user actually authenticated: the login page for the
   authorization code flow, the `/device` verification for the device flow,
-  the request itself for the password grant — and it is preserved unchanged
+  the request itself for the password grant - and it is preserved unchanged
   across refreshes (OIDC Core §12.2), carried in the refresh token claims
   like the scope. `at_hash` binds the ID Token to the access token issued
-  alongside it (left half of SHA-256, base64url — §3.1.3.6). Discovery
+  alongside it (left half of SHA-256, base64url - §3.1.3.6). Discovery
   `claims_supported` now also advertises `auth_time`, `nonce` and `at_hash`.
 - Optional **refresh token rotation** (#46): with `oauth.refresh_token_rotation: true`
   (default off), each refresh atomically invalidates the consumed refresh
@@ -105,8 +105,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **PKCE enforcement** (#47): new `require_pkce` setting (enabled by the
   `stricter-dev` profile, persisted in `settings.yaml`) rejects `/authorize`
   requests without a `code_challenge`; `stricter-dev` also rejects
-  `code_challenge_method=plain` — explicit or implicit via the RFC 7636 §4.3
-  omitted-parameter default — and discovery only advertises `S256` there.
+  `code_challenge_method=plain` - explicit or implicit via the RFC 7636 §4.3
+  omitted-parameter default - and discovery only advertises `S256` there.
   Unsupported methods are rejected at the authorization endpoint (§4.4.1).
   Default profile unchanged.
 - **MCP audit & key tools** (#48): `get_audit_log`, `get_audit_stats`,
@@ -119,11 +119,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `id_token` when `openid` is included, matching the HTTP token endpoint.
 - CI now lints with **ruff** (#45) and type-checks `src/` with **mypy**
   (#55, documented gradual-adoption baseline in `pyproject.toml`). The
-  codebase is lint-clean — 153 findings fixed (#49): deprecated
+  codebase is lint-clean - 153 findings fixed (#49): deprecated
   `datetime.utcnow()` replaced (removes 80 DeprecationWarnings), unused
   imports/variables dropped, imports sorted and moved to module level,
   `Optional[...]` type hints in the crypto service, `verify_jwt` accepts an
-  array audience, exceptions re-raised with `from e` — and mypy-clean (40
+  array audience, exceptions re-raised with `from e` - and mypy-clean (40
   baseline errors fixed; the baseline also surfaced the broken `nanoidp-mcp`
   entrypoint below).
 
@@ -135,7 +135,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Review follow-ups of the 2026-06-11 merge block (#56):
   - **Refresh tokens are bound to their client**: the issuing `client_id` is
     persisted in the refresh token claims and the refresh grant rejects any
-    other client (RFC 9700 §4.14) — which also guarantees the refreshed ID
+    other client (RFC 9700 §4.14) - which also guarantees the refreshed ID
     Token keeps the original `aud` (OIDC Core §12.2). Tokens minted before
     the claim existed keep working.
   - **Rotation is atomic and revokes families on reuse**: the revocation
@@ -175,7 +175,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   new shared helper (`services.discovery.build_discovery_document`), so the
   MCP tool now advertises `claims_supported` (including `azp`),
   `response_types_supported`, `id_token_signing_alg_values_supported`,
-  `code_challenge_methods_supported` and the endpoint auth methods — and the
+  `code_challenge_methods_supported` and the endpoint auth methods - and the
   two documents can no longer drift apart.
 - Discovery no longer advertises the `token` response type (#41): the implicit
   flow was never implemented (`/authorize` only accepts `response_type=code`)
@@ -282,7 +282,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [1.2.3] - 2026-03-03
 
 ### Fixed
-- Dockerfile and docker-compose.yml: replaced `curl` with Python's `urllib` for healthcheck — avoids adding `curl` as a system dependency in the image
+- Dockerfile and docker-compose.yml: replaced `curl` with Python's `urllib` for healthcheck - avoids adding `curl` as a system dependency in the image
 
 ### Docs
 - Added mascotte/logo images to the project

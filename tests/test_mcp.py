@@ -482,7 +482,7 @@ class TestMCPClientAdditionalAudiences:
     @pytest.mark.asyncio
     async def test_call_tool_returns_clean_error_for_bad_audiences(self, tmp_path, monkeypatch):
         """The public call_tool handler turns the ValueError into a readable error
-        response (not a crash) — closing the raise/handle loop end to end."""
+        response (not a crash) - closing the raise/handle loop end to end."""
         import nanoidp.mcp_server as mcp
 
         monkeypatch.setattr(mcp, "_config", self._config(tmp_path))

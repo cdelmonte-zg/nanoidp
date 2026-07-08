@@ -74,11 +74,11 @@ saml:
 With the flag on, nanoidp **requires and verifies** the signature under
 both bindings and rejects unsigned or invalid requests with `400`:
 
-- **HTTP-Redirect** — the query-string signature over the URL-encoded
+- **HTTP-Redirect** - the query-string signature over the URL-encoded
   `SAMLRequest[&RelayState]&SigAlg` fragment (SAML 2.0 Bindings
   §3.4.4.1); `rsa-sha256`, `rsa-sha512` and legacy `rsa-sha1` SigAlg
   values are supported.
-- **HTTP-POST** — the enveloped `<ds:Signature>` inside the AuthnRequest
+- **HTTP-POST** - the enveloped `<ds:Signature>` inside the AuthnRequest
   (SAML 2.0 Core §5).
 
 The metadata advertises `WantAuthnRequestsSigned="true"` if and only if

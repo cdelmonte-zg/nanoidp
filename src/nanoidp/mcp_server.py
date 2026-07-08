@@ -634,7 +634,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="rotate_keys",
-            description="Rotate the signing keys: the active key moves to 'previous' (still valid for verification) and a new active key is generated — useful to test clients' JWKS refresh handling",
+            description="Rotate the signing keys: the active key moves to 'previous' (still valid for verification) and a new active key is generated - useful to test clients' JWKS refresh handling",
             inputSchema={
                 "type": "object",
                 "properties": {},
@@ -1069,7 +1069,7 @@ Examples:
     _ensure_config()
 
     # Run the server. stdio_server() is an async context manager yielding the
-    # (read, write) streams the Server pumps messages through — the previous
+    # (read, write) streams the Server pumps messages through - the previous
     # `asyncio.run(stdio_server(server))` crashed at startup (found by mypy,
     # #55: "a coroutine was expected").
     async def _serve() -> None:

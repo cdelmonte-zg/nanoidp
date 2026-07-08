@@ -8,7 +8,7 @@ now a typed store with the user-code index as a separate mapping.
 
 Concurrency semantics are unchanged from #43: the polling client races against
 the user's verification and against its own retries, so every compound
-lookup-check-transition runs under one lock — ``poll`` cannot double-issue an
+lookup-check-transition runs under one lock - ``poll`` cannot double-issue an
 authorized code, ``verify`` cannot double-claim a pending one. Credential
 verification during ``verify`` intentionally happens inside the lock, exactly
 as before, so a concurrent poll can never observe a half-transitioned entry.
