@@ -5,14 +5,14 @@ NanoIDP is configured through two YAML files in the config directory
 Everything below can also be managed from the web UI at
 `http://localhost:8000`:
 
-- **Dashboard** - overview and quick stats
-- **Users** - create, edit, delete users
-- **OAuth Clients** - manage OAuth2 client credentials
-- **Settings** - configure IdP settings (issuer, audience, SAML)
-- **Keys & Certs** - view and regenerate RSA keys
-- **Claims** - configure authority prefix mappings
-- **Audit Log** - view and export authentication events
-- **Token Tester** - generate and inspect tokens
+- **Dashboard**: overview and quick stats
+- **Users**: create, edit, delete users
+- **OAuth Clients**: manage OAuth2 client credentials
+- **Settings**: configure IdP settings (issuer, audience, SAML)
+- **Keys & Certs**: view and regenerate RSA keys
+- **Claims**: configure authority prefix mappings
+- **Audit Log**: view and export authentication events
+- **Token Tester**: generate and inspect tokens
 
 ## Users (`config/users.yaml`)
 
@@ -36,8 +36,8 @@ users:
 default_user: "admin"
 ```
 
-How these attributes end up in tokens - including the `authority_prefixes`
-mapping below - is described in [Tokens and claims](tokens.md).
+How these attributes end up in tokens, including the `authority_prefixes`
+mapping below, is described in [Tokens and claims](tokens.md).
 
 ## Settings (`config/settings.yaml`)
 
@@ -88,17 +88,17 @@ logging:
   verbose_logging: true  # Include usernames/client_ids in logs (default: true)
 ```
 
-**Registered redirect URIs** - a client with a non-empty `redirect_uris`
+**Registered redirect URIs**: a client with a non-empty `redirect_uris`
 list gets exact-string matching on `/authorize` (RFC 6749 §3.1.2.3,
 OAuth 2.1 §4.1.1): no prefix, host or path normalization, and a mismatch
-is answered with `400 invalid_request` directly - never by redirecting to
+is answered with `400 invalid_request` directly, never by redirecting to
 the unvalidated URI (§3.1.2.4). Clients without the field keep accepting
 any syntactically valid URI, the permissive dev default.
 
 The SAML options (`strict_binding`, `sign_responses`, `c14n_algorithm`)
 are covered in detail in [SAML options](saml.md). Security-related
-settings - profiles, `require_pkce`, key management, `jwt.external_keys` -
-are covered in the [Security guide](../guides/SECURITY.md).
+settings are covered in the [Security guide](../guides/SECURITY.md):
+profiles, `require_pkce`, key management, and `jwt.external_keys`.
 
 ## Logging
 

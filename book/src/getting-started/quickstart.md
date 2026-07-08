@@ -14,10 +14,10 @@ python -m nanoidp init ./my-idp-config
 
 This creates:
 
-- `users.yaml` - user definitions (a default `admin`/`admin` user)
-- `settings.yaml` - OAuth/SAML settings (a default `demo-client` with
+- `users.yaml`: user definitions (a default `admin`/`admin` user)
+- `settings.yaml`: OAuth/SAML settings (a default `demo-client` with
   secret `demo-secret`)
-- `keys/` - RSA keys, auto-generated on first startup
+- `keys/`: RSA keys, auto-generated on first startup
 
 Prefer a guided setup? The interactive wizard walks through server
 configuration, OAuth clients, admin user, and token settings:
@@ -50,8 +50,8 @@ curl -X POST 'http://localhost:8000/token' \
 ```
 
 The response carries an `access_token` (its `aud` is the resource audience
-from `oauth.audience`) and - because the request included the `openid`
-scope - an `id_token` (its `aud` is the client's `client_id`).
+from `oauth.audience`) and, because the request included the `openid`
+scope, an `id_token` (its `aud` is the client's `client_id`).
 
 Verify it the way your client would, via discovery and JWKS:
 

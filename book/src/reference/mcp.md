@@ -1,8 +1,8 @@
 # MCP server
 
 NanoIDP includes an MCP (Model Context Protocol) server for integration
-with Claude Code and other MCP-compatible tools. For a hands-on tour -
-prompts, workflows, end-to-end examples - see
+with Claude Code and other MCP-compatible tools. For a hands-on tour with
+prompts, workflows, and end-to-end examples, see
 [MCP with Claude Code](../guides/MCP_WORKFLOW.md). For the admin secret,
 readonly mode, and the exposure warnings, see the
 [Security guide](../guides/SECURITY.md#mcp-server-security).
