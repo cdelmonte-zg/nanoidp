@@ -84,6 +84,14 @@ authority_prefixes:
   identity_class: "IDENTITY_"
   entitlements: "ENT_"
 
+# Optional; the identity-class values selectable when editing a user
+# (web UI and user forms). Defaults to the four values below.
+allowed_identity_classes:
+  - "INTERNAL"
+  - "EXTERNAL"
+  - "PARTNER"
+  - "SERVICE"
+
 logging:
   verbose_logging: true  # Include usernames/client_ids in logs (default: true)
 ```

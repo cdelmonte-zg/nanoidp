@@ -6,13 +6,13 @@
 |----------|-------------|
 | `GET /.well-known/openid-configuration` | OIDC Discovery |
 | `GET /.well-known/jwks.json` | JSON Web Key Set |
-| `GET /authorize` | Authorization endpoint (login page) |
+| `GET/POST /authorize` | Authorization endpoint (login page) |
 | `POST /token` | Token endpoint |
 | `GET/POST /userinfo` | UserInfo endpoint |
 | `POST /introspect` | Token Introspection (RFC 7662) |
 | `POST /revoke` | Token Revocation (RFC 7009) |
-| `GET/POST /logout` | OIDC End Session / Logout |
-| `POST /device_authorization` | Device Authorization (RFC 8628) |
+| `GET/POST /logout` | OIDC End Session / Logout (alias: `/end_session`) |
+| `POST /device_authorization` | Device Authorization (RFC 8628; alias: `/device/code`) |
 | `GET/POST /device` | Device verification page |
 
 curl examples for every grant are in
@@ -23,6 +23,7 @@ curl examples for every grant are in
 | Endpoint | Description |
 |----------|-------------|
 | `GET /saml/metadata` | IdP Metadata |
+| `GET /saml/cert.pem` | IdP signing certificate (PEM) |
 | `GET/POST /saml/sso` | Single Sign-On (supports both HTTP-POST and HTTP-Redirect bindings) |
 | `POST /saml/attribute-query` | Attribute Query |
 
@@ -38,6 +39,9 @@ covered in [SAML options](saml.md).
 | `GET /api/users/{username}` | Get user details |
 | `POST /api/users/{username}/token` | Generate token |
 | `GET /api/audit` | Get audit log |
+| `GET /api/audit/stats` | Audit log statistics |
+| `POST /api/audit/clear` | Clear the audit log |
+| `GET /api/config` | Get current configuration |
 | `POST /api/config/reload` | Reload configuration |
 | `POST /api/keys/rotate` | Rotate cryptographic keys |
 | `GET /api/keys/info` | Get key information |
