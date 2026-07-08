@@ -10,7 +10,7 @@ import secrets
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +27,10 @@ class AuthorizationCode:
     code_challenge_method: Optional[str] = None
     nonce: Optional[str] = None
     state: Optional[str] = None
+    # Claim names requested via the OIDC `claims` parameter (§5.5, #104),
+    # normalized to {"id_token": [...], "userinfo": [...]}. Carried from
+    # /authorize to the token exchange so the ID Token / UserInfo can honour it.
+    claims: Optional[Dict[str, Any]] = None
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     expires_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc) + timedelta(minutes=10))
     used: bool = False
@@ -56,6 +60,7 @@ class AuthCodeStore:
         code_challenge_method: Optional[str] = None,
         nonce: Optional[str] = None,
         state: Optional[str] = None,
+        claims: Optional[Dict[str, Any]] = None,
     ) -> str:
         """
         Create a new authorization code.
@@ -69,6 +74,7 @@ class AuthCodeStore:
             code_challenge_method: PKCE method ("plain" or "S256")
             nonce: OIDC nonce for ID token (optional)
             state: OAuth state parameter (optional)
+            claims: Normalized OIDC `claims` request (§5.5, optional)
 
         Returns:
             The generated authorization code
@@ -86,6 +92,7 @@ class AuthCodeStore:
             code_challenge_method=code_challenge_method,
             nonce=nonce,
             state=state,
+            claims=claims,
         )
 
         with self._lock:

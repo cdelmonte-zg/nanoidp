@@ -24,11 +24,44 @@ from ..services import (
     get_token_service,
 )
 from ..services.device_code import DEVICE_CODE_EXPIRES_IN, DEVICE_POLL_INTERVAL
+from ..services.token import resolve_user_claim
 from ._audit import audit_event
 
 logger = logging.getLogger(__name__)
 
 oauth_bp = Blueprint("oauth", __name__)
+
+
+def _parse_claims_parameter(raw: Optional[str]) -> Optional[Dict[str, list]]:
+    """Parse the OIDC ``claims`` request parameter (OIDC Core §5.5, #104).
+
+    Returns a normalized ``{"id_token": [names], "userinfo": [names]}`` mapping
+    (members present only when non-empty), or ``None`` when the parameter is
+    absent or malformed. Malformed input is ignored with a warning rather than
+    failing the request, so a bad ``claims`` value never breaks an otherwise
+    valid authorization flow. Only the claim *names* are kept; the voluntary
+    (``null``) form is honoured, and ``essential``/``value`` refinements are
+    accepted but not yet acted on.
+    """
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except (ValueError, TypeError):
+        logger.warning("Ignoring malformed 'claims' request parameter (invalid JSON)")
+        return None
+    if not isinstance(parsed, dict):
+        logger.warning("Ignoring 'claims' request parameter: top-level value is not an object")
+        return None
+
+    result: Dict[str, list] = {}
+    for member in ("id_token", "userinfo"):
+        spec = parsed.get(member)
+        if isinstance(spec, dict):
+            names = [name for name in spec if isinstance(name, str)]
+            if names:
+                result[member] = names
+    return result or None
 
 
 
@@ -89,6 +122,7 @@ def authorize() -> ResponseReturnValue:
     code_challenge = params.get("code_challenge", session.get("oauth_code_challenge", ""))
     code_challenge_method = params.get("code_challenge_method", session.get("oauth_code_challenge_method", ""))
     nonce = params.get("nonce", session.get("oauth_nonce", ""))
+    claims_param = params.get("claims", session.get("oauth_claims", ""))
 
     # Store OAuth params in session for POST handling
     if request.method == "GET":
@@ -100,6 +134,7 @@ def authorize() -> ResponseReturnValue:
         session["oauth_code_challenge"] = code_challenge
         session["oauth_code_challenge_method"] = code_challenge_method
         session["oauth_nonce"] = nonce
+        session["oauth_claims"] = claims_param
 
     # Validate required parameters
     if response_type != "code":
@@ -271,6 +306,7 @@ def authorize() -> ResponseReturnValue:
                     code_challenge_method=code_challenge_method if code_challenge_method else None,
                     nonce=nonce if nonce else None,
                     state=state if state else None,
+                    claims=_parse_claims_parameter(claims_param),
                 )
 
                 # Clear OAuth session data
@@ -340,6 +376,9 @@ class _GrantOutcome:
     scope: Optional[str] = None
     auth_time: Optional[int] = None
     refresh_family: Optional[str] = None
+    # Claim names requested via the OIDC `claims` parameter (§5.5, #104).
+    id_token_claims: Optional[list] = None
+    userinfo_claims: Optional[list] = None
 
 
 @dataclass
@@ -634,6 +673,7 @@ def _grant_authorization_code(ctx: _GrantContext) -> GrantResult:
         )
         return abort(401, description="User not found")
 
+    requested_claims = auth_code.claims or {}
     return _GrantOutcome(
         user=user,
         username=username,
@@ -642,6 +682,9 @@ def _grant_authorization_code(ctx: _GrantContext) -> GrantResult:
         # The user authenticated at the login page when the code was created,
         # not at this token exchange - use that moment as auth_time (#42).
         auth_time=int(auth_code.created_at.timestamp()),
+        # Claims the client asked for through the OIDC `claims` parameter (#104).
+        id_token_claims=requested_claims.get("id_token"),
+        userinfo_claims=requested_claims.get("userinfo"),
     )
 
 
@@ -889,6 +932,8 @@ def token() -> ResponseReturnValue:
         client_id=client_id,
         auth_time=result.auth_time,
         refresh_family=result.refresh_family,
+        id_token_claims=result.id_token_claims,
+        userinfo_claims=result.userinfo_claims,
     )
 
     # Audit log
@@ -1001,6 +1046,16 @@ def userinfo() -> ResponseReturnValue:
             response["identity_class"] = user.identity_class
         if user.attributes:
             response["attributes"] = user.attributes
+
+        # Honour the UserInfo member of the OIDC `claims` request parameter
+        # (§5.5, #104): claim names the client asked for are added even when
+        # scope-gating above would have omitted them, provided nanoidp can
+        # supply them. Never overwrites a claim already set.
+        for claim_name in payload.get("req_userinfo_claims") or []:
+            if claim_name not in response:
+                found, value = resolve_user_claim(user, claim_name)
+                if found:
+                    response[claim_name] = value
 
     audit_event(
         "userinfo_request",

@@ -15,6 +15,33 @@ from .crypto import get_crypto_service
 
 logger = logging.getLogger(__name__)
 
+def resolve_user_claim(user: User, name: str) -> tuple[bool, Any]:
+    """Resolve a requested OIDC/custom claim name to the user's value.
+
+    Backs the OIDC ``claims`` request parameter (OIDC Core §5.5): the standard
+    ``email``/``profile`` claims plus nanoidp's custom claims and any user
+    attribute can be requested for the ID Token or UserInfo. Returns
+    ``(found, value)``; ``found`` is False when nanoidp cannot supply the claim,
+    so voluntary claims are simply omitted rather than emitted as null (§5.5.1).
+    """
+    if name == "email":
+        return True, user.email
+    if name == "email_verified":
+        return True, True
+    if name == "preferred_username":
+        return True, user.username
+    if name == "roles":
+        return True, user.roles
+    if name == "tenant":
+        return True, user.tenant
+    if name == "identity_class":
+        return (True, user.identity_class) if user.identity_class else (False, None)
+    if name == "entitlements":
+        return (True, user.entitlements) if user.entitlements else (False, None)
+    if name in user.attributes:
+        return True, user.attributes[name]
+    return False, None
+
 
 class TokenService:
     """Service for generating JWT tokens."""
@@ -127,6 +154,8 @@ class TokenService:
         client_id: Optional[str] = None,
         auth_time: Optional[int] = None,
         refresh_family: Optional[str] = None,
+        id_token_claims: Optional[List[str]] = None,
+        userinfo_claims: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """Create a JWT token for a user.
 
@@ -135,6 +164,11 @@ class TokenService:
         code creation time, device authorization time, value preserved from a
         refresh token); when omitted it defaults to "now", which is correct
         for grants that authenticate the user in the same request (password).
+
+        ``id_token_claims``/``userinfo_claims`` are the claim names a client
+        asked for through the OIDC ``claims`` request parameter (OIDC Core
+        §5.5, #104): the former are resolved into the ID Token here, the latter
+        are stamped on the access token so ``/userinfo`` can honour them.
         """
         settings = self.config.settings
 
@@ -171,6 +205,13 @@ class TokenService:
         # authoritative and cannot be overridden by a caller-supplied claim.
         if scope:
             extra["scope"] = scope
+
+        # Carry the claim names the client requested for UserInfo via the OIDC
+        # `claims` parameter (§5.5, #104), so /userinfo can return them on top of
+        # whatever the granted scope already allows. Access-token only; never an
+        # ID Token claim.
+        if userinfo_claims:
+            extra["req_userinfo_claims"] = userinfo_claims
 
         # Mark the token type so access-token endpoints can reject ID/refresh
         # tokens presented as access tokens (issue #34). Set last so it cannot be
@@ -209,6 +250,14 @@ class TokenService:
             }
             if azp:
                 id_extra["azp"] = azp
+            # Claims the client asked for in the ID Token via the OIDC `claims`
+            # parameter (§5.5, #104). Resolved from the user and added only when
+            # available (voluntary claims, §5.5.1). setdefault so a requested
+            # name can never overwrite a protocol claim (auth_time/at_hash/azp).
+            for claim_name in id_token_claims or []:
+                found, value = resolve_user_claim(user, claim_name)
+                if found:
+                    id_extra.setdefault(claim_name, value)
             id_token = self.crypto.create_jwt(
                 sub=user.username,
                 issuer=settings.issuer,
