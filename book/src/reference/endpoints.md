@@ -18,6 +18,10 @@
 curl examples for every grant are in
 [Requesting tokens](../guides/token-requests.md).
 
+The standard OIDC `profile` / `email` claims (`email`, `email_verified`,
+`preferred_username`, ...) are served from `GET /userinfo`, not embedded
+in the tokens - see [Tokens and claims](tokens.md#where-do-the-email--profile-claims-come-from).
+
 ## SAML
 
 | Endpoint | Description |

@@ -65,6 +65,20 @@ curl -X POST 'http://localhost:8000/token' \
   -d 'grant_type=urn:ietf:params:oauth:grant-type:device_code&device_code=YOUR_DEVICE_CODE'
 ```
 
+## UserInfo
+
+The `email` / `profile` claims (`email`, `email_verified`,
+`preferred_username`, ...) are returned here, using the access token - not
+embedded in the ID Token. See
+[Tokens and claims](../reference/tokens.md#where-do-the-email--profile-claims-come-from)
+for the details and for the `claims` request parameter that can put a
+claim inside the ID Token.
+
+```bash
+curl 'http://localhost:8000/userinfo' \
+  -H 'Authorization: Bearer YOUR_ACCESS_TOKEN'
+```
+
 ## Token introspection
 
 ```bash
