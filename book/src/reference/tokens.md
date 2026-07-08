@@ -85,13 +85,14 @@ A common surprise: you request `scope=openid email`, then look for an
 `email` claim inside the ID Token or access token and don't find it.
 
 That is expected. The **standard OpenID Connect profile/email claims**
-(`email`, `email_verified`, `preferred_username`, `name`, ...) are **not
-embedded in the tokens**. For the authorization code flow they are served
-from the **UserInfo endpoint**, using the access token (OpenID Connect
-Core 1.0 §5.4). The discovery document advertises what is available -
-`scopes_supported` (`openid`, `profile`, `email`, `offline_access`) and
-`claims_supported` - but those scope-based claims are returned from
-`GET /userinfo`, not from the tokens themselves.
+(`email`, `email_verified`, `preferred_username`; plus NanoIDP-specific and
+custom claims where configured) are **not embedded in the tokens**. For the
+authorization code flow they are served from the **UserInfo endpoint**,
+using the access token (OpenID Connect Core 1.0 §5.4). The discovery
+document advertises what is available - `scopes_supported` (`openid`,
+`profile`, `email`, `offline_access`) and `claims_supported` - but those
+scope-based claims are returned from `GET /userinfo`, not from the tokens
+themselves.
 
 ```bash
 curl 'http://localhost:8000/userinfo' \
