@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **`scope` claim on access tokens** (#102): access tokens now advertise the
+  granted scope (RFC 9068 §2.2.3), letting resource endpoints reason about it.
+  Set authoritatively in `TokenService.create_token`, so a caller-supplied
+  `extra_claims` cannot override it.
+
+### Changed
+- **`/userinfo` gates `email`/`profile` claims by granted scope** (#102, OIDC
+  Core §5.4): `email`/`email_verified` require the `email` scope and
+  `preferred_username` requires the `profile` scope. Enforced only under the
+  `stricter-dev` and `oauth21` profiles; the default `dev` profile keeps
+  returning them unconditionally, so this is not a breaking change for existing
+  setups. nanoidp-specific claims (`roles`, `tenant`, `identity_class`,
+  `attributes`) have no standard scope and are always returned.
+
 ## [2.3.0] - 2026-07-08
 
 ### Added

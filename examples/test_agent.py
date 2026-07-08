@@ -903,6 +903,13 @@ class NanoIDPTestAgent:
             custom = ["roles", "authorities", "tenant", "identity_class"]
             custom_found = [c for c in custom if c in decoded]
 
+            # The access token must advertise its granted scope (RFC 9068
+            # §2.2.3); /userinfo relies on it to gate scope-based claims under
+            # the stricter profiles (#102). The password grant above requested
+            # "openid profile email".
+            scope_claim = decoded.get("scope")
+            scope_ok = scope_claim == "openid profile email"
+
             sub = decoded.get("sub", "?")
             roles = decoded.get("roles", [])
             authorities = len(decoded.get("authorities", []))
@@ -910,13 +917,14 @@ class NanoIDPTestAgent:
             return self._add_result(
                 "Token Decode",
                 TestCategory.OAUTH,
-                len(found) == len(required),
-                f"sub={sub}, roles={roles}, authorities={authorities}",
+                len(found) == len(required) and scope_ok,
+                f"sub={sub}, roles={roles}, authorities={authorities}, scope={scope_claim}",
                 {
                     "claims": found,
                     "custom_claims": custom_found,
                     "sub": sub,
-                    "roles": roles
+                    "roles": roles,
+                    "scope": scope_claim,
                 }
             )
         except Exception as e:

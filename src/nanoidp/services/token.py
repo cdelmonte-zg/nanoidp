@@ -165,6 +165,13 @@ class TokenService:
         if extra_claims:
             extra.update(extra_claims)
 
+        # Advertise the granted scope on the access token (RFC 9068 §2.2.3), so
+        # resource endpoints (e.g. /userinfo, /introspect) can gate scope-based
+        # claims (#102). Set after the extra_claims merge so the granted scope is
+        # authoritative and cannot be overridden by a caller-supplied claim.
+        if scope:
+            extra["scope"] = scope
+
         # Mark the token type so access-token endpoints can reject ID/refresh
         # tokens presented as access tokens (issue #34). Set last so it cannot be
         # overridden by caller-supplied extra_claims.

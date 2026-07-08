@@ -977,9 +977,24 @@ def userinfo() -> ResponseReturnValue:
     }
 
     if user:
-        response["email"] = user.email
-        response["email_verified"] = True
-        response["preferred_username"] = user.username
+        # Standard OIDC scope-to-claim gating (OIDC Core §5.4): the email and
+        # profile claims are only returned when the matching scope was granted.
+        # Enforced only under the stricter profiles; the permissive `dev`
+        # default keeps returning them unconditionally so this is not a breaking
+        # change for existing setups (#102). The granted scope is read from the
+        # access token's `scope` claim (RFC 9068 §2.2.3).
+        granted_scopes = set((payload.get("scope") or "").split())
+        strict_scopes = config.settings.security_profile in ("stricter-dev", "oauth21")
+
+        if not strict_scopes or "email" in granted_scopes:
+            response["email"] = user.email
+            response["email_verified"] = True
+        if not strict_scopes or "profile" in granted_scopes:
+            response["preferred_username"] = user.username
+
+        # nanoidp-specific claims have no standard OIDC scope, so they are always
+        # returned for a valid token; gating them would be arbitrary and has no
+        # spec basis (#102).
         response["roles"] = user.roles
         response["tenant"] = user.tenant
         if user.identity_class:
