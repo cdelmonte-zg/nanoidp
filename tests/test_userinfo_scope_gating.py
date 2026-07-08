@@ -111,3 +111,47 @@ class TestUserinfoStrictProfileGated:
         assert "roles" in data
         assert "tenant" in data
         assert data["sub"] == "admin"
+
+
+class TestUserinfoOauth21ProfileGated:
+    """``oauth21`` enforces the same gating.
+
+    The password grant is disabled under ``oauth21``, so the access token is
+    minted directly via the internal ``TokenService`` (signed with the app's
+    keys, hence verifiable at /userinfo) instead of the /token endpoint.
+    """
+
+    def _mint_and_query(self, scope):
+        from nanoidp.config import get_config
+        from nanoidp.services.token import get_token_service
+
+        app = create_app(profile="oauth21")
+        app.config["TESTING"] = True
+
+        config = get_config()
+        assert config.settings.security_profile == "oauth21"
+        token = get_token_service().create_token(
+            config.get_user("admin"), scope=scope, client_id="demo-client"
+        )["access_token"]
+
+        resp = app.test_client().get(
+            "/userinfo", headers={"Authorization": f"Bearer {token}"}
+        )
+        assert resp.status_code == 200, resp.data
+        return json.loads(resp.data)
+
+    def test_email_omitted_without_email_scope(self):
+        data = self._mint_and_query("openid")
+        assert "email" not in data
+        assert "email_verified" not in data
+
+    def test_email_returned_with_email_scope(self):
+        data = self._mint_and_query("openid email")
+        assert data.get("email") == "admin@example.org"
+        assert data.get("email_verified") is True
+
+    def test_preferred_username_gated_by_profile_scope(self):
+        without = self._mint_and_query("openid")
+        assert "preferred_username" not in without
+        with_profile = self._mint_and_query("openid profile")
+        assert with_profile.get("preferred_username") == "admin"
