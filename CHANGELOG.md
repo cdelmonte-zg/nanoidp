@@ -22,6 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `claims_parameter_supported: true`, and the MCP `generate_token` tool gains an
   `id_token_claims` argument. Scoped to the authorization code grant; the
   requested claims are not yet persisted across a refresh.
+  `TokenService.create_token` now strips `scope`/`req_userinfo_claims` from a
+  caller-supplied `extra` before setting them authoritatively, so the `/token`
+  `extra` parameter can never smuggle scope-gated claims past `/userinfo`
+  (closes a spoofing gap in the #102 scope handling too).
 
 ### Changed
 - **`/userinfo` gates `email`/`profile` claims by granted scope** (#102, OIDC

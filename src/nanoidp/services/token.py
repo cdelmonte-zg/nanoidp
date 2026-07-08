@@ -199,10 +199,19 @@ class TokenService:
         if extra_claims:
             extra.update(extra_claims)
 
+        # `scope` and `req_userinfo_claims` are authoritative: they must reflect
+        # the actual grant, never a caller-supplied `extra`. Drop any spoofed
+        # copy the merge may have introduced before setting them below. Without
+        # this, a request like extra={"scope": "openid email"} or
+        # extra={"req_userinfo_claims": ["email"]} would smuggle scope-gated
+        # claims past /userinfo when the authoritative value is absent
+        # (#102/#104 hardening).
+        for reserved in ("scope", "req_userinfo_claims"):
+            extra.pop(reserved, None)
+
         # Advertise the granted scope on the access token (RFC 9068 §2.2.3), so
         # resource endpoints (e.g. /userinfo, /introspect) can gate scope-based
-        # claims (#102). Set after the extra_claims merge so the granted scope is
-        # authoritative and cannot be overridden by a caller-supplied claim.
+        # claims (#102).
         if scope:
             extra["scope"] = scope
 
