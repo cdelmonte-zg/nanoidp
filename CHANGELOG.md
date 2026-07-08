@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **`claims` parameter could overwrite registered ID Token claims** (#110): a
+  requested claim name that collided with a user attribute (e.g. an attribute
+  named `aud` or `exp`) could hijack the corresponding registered claim, because
+  `create_jwt` applies `extra` after setting the registered claims and the
+  `setdefault` guard only covered the protocol claims. `resolve_user_claim` now
+  refuses reserved registered/protocol names outright (`iss`, `sub`, `aud`,
+  `exp`, `iat`, `nbf`, `jti`, `token_use`, `auth_time`, `at_hash`, `azp`,
+  `nonce`, `scope`, `req_userinfo_claims`), protecting both the ID Token and
+  `/userinfo` paths at a single choke point.
+
 ## [2.4.0] - 2026-07-08
 
 ### Added
