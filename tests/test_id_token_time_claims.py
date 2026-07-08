@@ -9,7 +9,7 @@ Tests for the ``auth_time`` and ``at_hash`` ID Token claims (issue #42).
 
 ``at_hash`` binds the ID Token to the access token issued alongside it:
 base64url(left half of SHA-256(access_token)), per OIDC Core §3.1.3.6.
-Both claims belong to the ID Token only — never to the access token.
+Both claims belong to the ID Token only - never to the access token.
 """
 
 import base64

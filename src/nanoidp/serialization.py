@@ -2,10 +2,10 @@
 Single source of truth for serializing config objects into their YAML documents.
 
 ``ConfigManager.save()`` and the ``YamlWriter`` behind the web UI used to each
-build their own YAML entries. The duplication drifted repeatedly — #32 (UI
+build their own YAML entries. The duplication drifted repeatedly - #32 (UI
 saves dropped ``additional_audiences``), #78 (``redirect_uris`` had to be added
 in two places), #82 (``security_profile`` persisted only via ``ConfigManager``)
-— and ``ConfigManager`` rewrote ``settings.yaml`` from scratch, deleting every
+- and ``ConfigManager`` rewrote ``settings.yaml`` from scratch, deleting every
 section it didn't own (#87). Both paths now delegate here (#83): entry builders
 produce identical entries, and ``apply_settings_document`` is read-modify-write,
 so keys this module doesn't manage (``jwt``, ``session``, custom keys) survive
@@ -82,7 +82,7 @@ def apply_settings_document(
     """Update the settings.yaml keys this codebase manages, in place.
 
     Read-modify-write: ``document`` is the currently persisted document (or
-    ``{}``), and only owned keys are (re)written — anything else (``jwt``,
+    ``{}``), and only owned keys are (re)written - anything else (``jwt``,
     ``session``, ``logging`` keys other than ``verbose_logging``, unknown
     custom keys) is preserved verbatim (#87). Optional owned keys are removed
     when back at their defaults, so a cleared ``security_profile`` does not

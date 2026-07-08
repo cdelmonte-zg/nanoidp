@@ -3,7 +3,7 @@ Tests for registered redirect URIs with exact matching on /authorize (issue #67)
 
 RFC 6749 §3.1.2.3 / OAuth 2.1 §4.1.1: when a client has registered redirect
 URIs, the authorization endpoint compares the requested ``redirect_uri`` using
-simple string comparison — no prefix, host or path normalization. A mismatch
+simple string comparison - no prefix, host or path normalization. A mismatch
 MUST NOT redirect (§3.1.2.4); the error is returned directly. Clients without
 registered URIs keep the permissive dev behavior (hardening is opt-in).
 """

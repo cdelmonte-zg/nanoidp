@@ -20,7 +20,7 @@ NanoIDP supports three security profiles to balance convenience with basic secur
 | `stricter-dev` | Semi-hardened runtime: bcrypt passwords, restricted CORS, rate limiting, debug mode blocked |
 | `oauth21` | Draft OAuth 2.1 protocol strictness (#68): PKCE required (S256 only), refresh token rotation on, password grant removed, registered redirect URIs mandatory at `/authorize` |
 
-`stricter-dev` hardens the *runtime*; `oauth21` hardens the *protocol* — they are deliberately orthogonal. The discovery document always reflects the active profile: under `oauth21`, `password` disappears from `grant_types_supported` and `code_challenge_methods_supported` is `["S256"]`.
+`stricter-dev` hardens the *runtime*; `oauth21` hardens the *protocol*. They are deliberately orthogonal. The discovery document always reflects the active profile: under `oauth21`, `password` disappears from `grant_types_supported` and `code_challenge_methods_supported` is `["S256"]`.
 
 ### Usage
 
@@ -219,7 +219,7 @@ All MCP tool calls are logged to the audit log, including:
 2. **Enable readonly mode** for MCP when only introspection is needed
 3. **Set MCP admin secret** if multiple developers share the same NanoIDP instance
 4. **Rotate keys periodically** to test token validation with multiple keys
-5. **Never expose NanoIDP to public networks** - it's designed for local/isolated use only
+5. **Never expose NanoIDP to public networks**: it's designed for local/isolated use only
 
 ---
 

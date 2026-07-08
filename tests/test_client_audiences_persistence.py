@@ -4,7 +4,7 @@ Regression tests: persisting OAuth client `additional_audiences` (issue #32).
 Before the fix, the YAML writer and the web-UI client handlers serialized only
 client_id/client_secret/description and replaced the whole client entry, so any
 save through the UI (edit, regenerate secret) silently dropped a client's
-`additional_audiences` from disk — reverting its ID Token `aud` to a plain string.
+`additional_audiences` from disk - reverting its ID Token `aud` to a plain string.
 """
 
 import pytest

@@ -3,7 +3,7 @@ Tests for which OAuth grants emit an ID Token when ``openid`` scope is requested
 (issue #36).
 
 Spec rationale: an ID Token represents an authenticated end-user, so it is emitted
-for grants that authenticate one — ``authorization_code`` (covered elsewhere),
+for grants that authenticate one - ``authorization_code`` (covered elsewhere),
 ``password`` and the device flow (RFC 8628). ``client_credentials`` has no
 end-user, so it never emits an ID Token even if ``openid`` is requested.
 """

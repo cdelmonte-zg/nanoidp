@@ -147,7 +147,7 @@ def authorize() -> ResponseReturnValue:
         }), 400
 
     # Exact matching against registered redirect URIs (issue #67). RFC 6749
-    # §3.1.2.3 / OAuth 2.1 §4.1.1 require simple string comparison — no
+    # §3.1.2.3 / OAuth 2.1 §4.1.1 require simple string comparison - no
     # prefix, host or path normalization. Clients without registered URIs
     # keep the permissive dev behavior (hardening is opt-in, principle 3).
     # A mismatch MUST NOT redirect (§3.1.2.4): the error is returned
@@ -205,7 +205,7 @@ def authorize() -> ResponseReturnValue:
 
     if code_challenge:
         # RFC 7636 §4.3: an omitted code_challenge_method defaults to 'plain',
-        # and the verifier honors that — so the method must be normalized
+        # and the verifier honors that - so the method must be normalized
         # BEFORE validation or the stricter-dev rejection could be bypassed by
         # simply omitting the parameter (#56). Unsupported methods are
         # rejected at the authorization endpoint per §4.4.1.
@@ -439,7 +439,7 @@ def _grant_refresh_token(ctx: _GrantContext) -> GrantResult:
     # broaden, the original grant (RFC 6749 §6). Refresh tokens minted
     # before scope was persisted carry no scope claim and keep the old
     # behavior: tokens are refreshed without an ID Token. The refreshed
-    # ID Token intentionally carries no nonce — that claim binds the
+    # ID Token intentionally carries no nonce - that claim binds the
     # original authentication request, not later refreshes.
     original_scope = payload.get("scope") or ""
     requested_scope = request.form.get("scope")
@@ -478,9 +478,9 @@ def _grant_refresh_token(ctx: _GrantContext) -> GrantResult:
     # single check-and-claim under the store's lock: two concurrent refreshes
     # of the same token can no longer both pass the check and both rotate
     # (#56). Reuse of an already-consumed token is treated as leakage and
-    # revokes the whole family — attacker's copy and legitimate descendant
+    # revokes the whole family - attacker's copy and legitimate descendant
     # alike (RFC 9700 §4.14.2). This call sits after every validation that
-    # may reject the request (binding, user, scope narrowing — and the
+    # may reject the request (binding, user, scope narrowing - and the
     # grant-independent 'exp'/'extra' params, validated before the grant
     # dispatch), so a rejected request never consumes the token: from here
     # on, issuance is local signing and cannot fail.
@@ -640,7 +640,7 @@ def _grant_authorization_code(ctx: _GrantContext) -> GrantResult:
         nonce=auth_code.nonce if auth_code.nonce is not None else None,
         scope=auth_code.scope if auth_code.scope is not None else None,
         # The user authenticated at the login page when the code was created,
-        # not at this token exchange — use that moment as auth_time (#42).
+        # not at this token exchange - use that moment as auth_time (#42).
         auth_time=int(auth_code.created_at.timestamp()),
     )
 
@@ -805,7 +805,7 @@ def token() -> ResponseReturnValue:
     # the end of its validations, so nothing after it may reject the request
     # (#56 review follow-up). Validation is semantic, not just syntactic:
     # json.loads("42") succeeds but extra.update(42) raises later, and a huge
-    # 'exp' passes int() but overflows the timedelta arithmetic — both would
+    # 'exp' passes int() but overflows the timedelta arithmetic - both would
     # be 500s after the token was consumed.
     try:
         exp_minutes = int(request.form.get("exp", config.settings.token_expiry_minutes))
@@ -950,7 +950,7 @@ def userinfo() -> ResponseReturnValue:
     #
     # Deliberate compat (not strict) choice: we reject tokens *marked* as id/refresh
     # rather than requiring token_use == "access". A validly-signed token without the
-    # marker (legacy, or hand-crafted with the IdP key — a first-class workflow for a
+    # marker (legacy, or hand-crafted with the IdP key - a first-class workflow for a
     # dev IdP) is still accepted. The security goal still holds: the IdP marks every
     # ID/refresh token it issues, so an ID Token can never be spent as an access token.
     if payload.get("token_use") in ("id", "refresh"):

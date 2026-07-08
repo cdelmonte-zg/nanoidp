@@ -149,7 +149,7 @@ class TestSingleUserEntry:
 
     def test_defaults_are_omitted_and_round_trip(self, tmp_path):
         """Sparse form: default tenant / empty lists are dropped on disk and
-        restored by the loader's defaults — semantics unchanged."""
+        restored by the loader's defaults - semantics unchanged."""
         entry = user_to_yaml(self.USER)
         assert "tenant" not in entry  # default
         assert "entitlements" not in entry  # empty

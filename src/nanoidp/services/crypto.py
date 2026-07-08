@@ -221,7 +221,7 @@ class CryptoService:
         private_key = serialization.load_pem_private_key(self.priv_pem, password=None)
         public_key = serialization.load_pem_public_key(self.pub_pem)
         # The loaders return a union over every supported key algorithm, but
-        # nanoidp keys are always RSA — and CertificateBuilder rejects e.g. DH
+        # nanoidp keys are always RSA - and CertificateBuilder rejects e.g. DH
         # keys, so narrow before use.
         if not isinstance(private_key, rsa.RSAPrivateKey) or not isinstance(
             public_key, rsa.RSAPublicKey

@@ -4,13 +4,13 @@
 
 NanoIDP follows the OpenID Connect / OAuth specs for the `aud` claim:
 
-- **ID Token** — `aud` is the requesting client's `client_id` (OpenID
+- **ID Token**: `aud` is the requesting client's `client_id` (OpenID
   Connect Core 1.0 §2). This lets you test multiple clients independently.
   Configure `additional_audiences` on a client to append extra audiences;
   if this produces more than one distinct audience value, `aud` is emitted
   as an array and NanoIDP also emits an `azp` claim equal to the
   `client_id` so you can exercise authorized-party validation.
-- **Access Token** — `aud` is the resource audience from `oauth.audience`
+- **Access Token**: `aud` is the resource audience from `oauth.audience`
   (RFC 9068 §2.2), independent of the client.
 
 ## Access Token
@@ -59,8 +59,8 @@ Issued when the `openid` scope is requested. Its `aud` is the client's
 ```
 
 ID Tokens also carry `auth_time` (when the end-user actually
-authenticated, preserved across refreshes — OIDC Core §12.2) and `at_hash`
-(binding to the access token issued alongside — §3.1.3.6).
+authenticated, preserved across refreshes, OIDC Core §12.2) and `at_hash`
+(binding to the access token issued alongside, §3.1.3.6).
 
 If `additional_audiences` produces more than one distinct audience value,
 `aud` becomes an array and `azp` is added:

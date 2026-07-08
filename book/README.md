@@ -15,7 +15,7 @@ so they are never duplicated:
   `src/project/contributing.md` -> `CONTRIBUTING.md`
 
 The introduction, getting-started, remaining guides, and reference pages
-are written for the site — the site is their canonical home (the README
+are written for the site: the site is their canonical home (the README
 links here instead of duplicating them).
 
 ## Build locally

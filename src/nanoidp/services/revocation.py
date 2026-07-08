@@ -4,13 +4,13 @@ In-memory revocation state for tokens and refresh-token rotation families.
 Extracted from ``routes/oauth.py`` module globals (#84). Semantics are
 unchanged from #46/#56:
 
-- Plain membership tests and single additions are lock-free — individual
-  ``set`` operations are atomic under the GIL — and serve ``/userinfo``,
+- Plain membership tests and single additions are lock-free - individual
+  ``set`` operations are atomic under the GIL - and serve ``/userinfo``,
   ``/introspect``, ``/revoke`` and ``/logout``.
 - The refresh grant's compound check-then-claim goes through the lock, so two
   concurrent refreshes of the same token cannot both pass the check and both
   rotate (#56). Reuse of an already-consumed token revokes its whole rotation
-  family — attacker's copy and legitimate descendant alike (RFC 9700 §4.14.2).
+  family - attacker's copy and legitimate descendant alike (RFC 9700 §4.14.2).
 """
 
 import threading

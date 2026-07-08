@@ -4,7 +4,7 @@ Tests for the shared OIDC discovery document (issues #40 and #41).
 The HTTP ``/.well-known/openid-configuration`` endpoint and the MCP
 ``get_oidc_discovery`` tool both build their response via
 ``services.discovery.build_discovery_document``, so the two documents must be
-identical — the MCP tool used to return an abbreviated dict that omitted
+identical - the MCP tool used to return an abbreviated dict that omitted
 ``claims_supported``/``azp`` and the auth-method metadata (#40).
 
 The document must also only advertise what the endpoints implement: the

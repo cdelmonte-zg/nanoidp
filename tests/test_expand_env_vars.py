@@ -1,5 +1,5 @@
 """
-Unit tests for _expand_env_vars — the YAML env-var substitution helper.
+Unit tests for _expand_env_vars - the YAML env-var substitution helper.
 
 Covers:
   - Basic ${NAME} and ${NAME:default} substitution
@@ -207,13 +207,13 @@ class TestNestedStructures:
 
 
 # ---------------------------------------------------------------------------
-# Pattern validation — only valid identifiers matched
+# Pattern validation - only valid identifiers matched
 # ---------------------------------------------------------------------------
 
 class TestPatternBoundaries:
 
     def test_invalid_var_name_not_expanded(self):
-        # Starts with digit — not a valid identifier per regex
+        # Starts with digit - not a valid identifier per regex
         assert _expand_env_vars("${1INVALID}") == "${1INVALID}"
 
     def test_dollar_without_braces_not_expanded(self):
