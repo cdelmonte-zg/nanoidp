@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 # Claims ``create_token`` sets authoritatively from the grant and therefore
 # strips from caller-supplied ``extra`` before setting them (#102/#104/#112).
 # ``_RESERVED_CLAIMS`` is derived from this tuple, so a claim added here is
-# automatically refused by ``resolve_user_claim`` as well — the strip list and
+# automatically refused by ``resolve_user_claim`` as well - the strip list and
 # the reserved list cannot drift apart.
 _AUTHORITATIVE_CLAIMS = ("scope", "req_userinfo_claims", "req_id_token_claims")
 
@@ -46,7 +46,7 @@ def sanitize_claim_names(value: Any) -> Optional[List[str]]:
     names are recovered from the refresh-token payload, which may be
     hand-crafted with the IdP key (a first-class dev workflow). Anything but a
     list is ignored and non-string entries are dropped, always with a warning
-    and never an exception — token issuance must not be able to fail on a
+    and never an exception - token issuance must not be able to fail on a
     malformed value after the refresh token has been consumed.
     """
     if value is None:

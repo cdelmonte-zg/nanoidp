@@ -355,11 +355,68 @@ class TestClaimsPersistAcrossRefresh:
         )
         assert "req_userinfo_claims" not in access_payload
 
+    def test_claims_request_survives_scope_narrowing(self):
+        # Deliberate semantic decision (documented in _grant_refresh_token and
+        # tokens.md): a claims request binds to the original authorization and
+        # is orthogonal to scope (OIDC Core 5.5), so narrowing the scope on
+        # refresh does NOT shed it. Under stricter-dev this is observable:
+        # email would be scope-gated out after dropping the email scope, yet
+        # the persisted userinfo claims request keeps forcing it back in.
+        from nanoidp.config import get_config
+        from nanoidp.services.token import get_token_service
+
+        app = create_app(profile="stricter-dev")
+        app.config["TESTING"] = True
+        client = app.test_client()
+
+        # 1. original grant: scope "openid email" + userinfo claims request
+        original = get_token_service().create_token(
+            get_config().get_user("admin"),
+            scope="openid email",
+            client_id="demo-client",
+            userinfo_claims=["email"],
+        )
+
+        # 2. refresh narrowing the scope to "openid" (drops email)
+        narrowed = self._refresh(
+            client, original["refresh_token"], extra_form={"scope": "openid"}
+        )
+        assert narrowed["scope"] == "openid"
+
+        # 3. the narrowed access token still carries the claims request
+        access_payload = pyjwt.decode(
+            narrowed["access_token"], options={"verify_signature": False}
+        )
+        assert access_payload["scope"] == "openid"
+        assert access_payload["req_userinfo_claims"] == ["email"]
+
+        # 4. /userinfo keeps honouring it despite the dropped email scope
+        resp = client.get(
+            "/userinfo",
+            headers={"Authorization": "Bearer " + narrowed["access_token"]},
+        )
+        assert resp.status_code == 200, resp.data
+        assert json.loads(resp.data)["email"] == "admin@example.org"
+
+        # 5. a second refresh after the narrowing keeps the request through
+        #    rotation as well
+        narrowed2 = self._refresh(client, narrowed["refresh_token"])
+        access_payload2 = pyjwt.decode(
+            narrowed2["access_token"], options={"verify_signature": False}
+        )
+        assert access_payload2["req_userinfo_claims"] == ["email"]
+        resp2 = client.get(
+            "/userinfo",
+            headers={"Authorization": "Bearer " + narrowed2["access_token"]},
+        )
+        assert resp2.status_code == 200, resp2.data
+        assert json.loads(resp2.data)["email"] == "admin@example.org"
+
     def test_forged_refresh_token_with_malformed_claims_refreshes_cleanly(self):
         # Hand-crafting tokens with the IdP key is a first-class dev workflow:
         # a refresh token carrying garbage requested-claims values (an int, the
         # raw §5.5 object instead of names, a bare string) must not 500 after
-        # the token has been consumed — sanitize_claim_names drops the garbage
+        # the token has been consumed - sanitize_claim_names drops the garbage
         # and the refresh succeeds without it.
         from nanoidp.config import get_config
         from nanoidp.services.crypto import get_crypto_service

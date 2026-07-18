@@ -517,7 +517,7 @@ def _grant_refresh_token(ctx: _GrantContext) -> GrantResult:
     # neither claim and simply refresh without them. Deliberately NOT
     # intersected with a narrowed scope: a claims request binds to the
     # original authorization and §5.5 is orthogonal to scope, so it keeps
-    # being honoured when the client narrows the scope on refresh — narrowing
+    # being honoured when the client narrows the scope on refresh - narrowing
     # sheds scope-derived claims, not claims requested by name. The values are
     # taken as-is here; create_token sanitizes them (a hand-crafted refresh
     # token may carry anything), so issuance below cannot fail on them.
@@ -1048,8 +1048,8 @@ def userinfo() -> ResponseReturnValue:
         strict_scopes = config.settings.security_profile in ("stricter-dev", "oauth21")
 
         # The scope-gated standard claims and the nanoidp-specific claims below
-        # all resolve through resolve_user_claim — the same resolver that backs
-        # the `claims` request parameter — so those two mappings cannot diverge
+        # all resolve through resolve_user_claim - the same resolver that backs
+        # the `claims` request parameter - so those two mappings cannot diverge
         # (#113). A claim the resolver cannot supply is omitted. The raw
         # `attributes` passthrough further down is the one deliberate
         # exception: the whole dict is not a resolvable claim name.
