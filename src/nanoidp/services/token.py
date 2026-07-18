@@ -15,6 +15,13 @@ from .crypto import get_crypto_service
 
 logger = logging.getLogger(__name__)
 
+# Claims ``create_token`` sets authoritatively from the grant and therefore
+# strips from caller-supplied ``extra`` before setting them (#102/#104/#112).
+# ``_RESERVED_CLAIMS`` is derived from this tuple, so a claim added here is
+# automatically refused by ``resolve_user_claim`` as well — the strip list and
+# the reserved list cannot drift apart.
+_AUTHORITATIVE_CLAIMS = ("scope", "req_userinfo_claims", "req_id_token_claims")
+
 # Claim names a client must never be able to request through the OIDC ``claims``
 # parameter (#110). Registered JWT claims are set by ``create_jwt`` and the
 # protocol claims are set authoritatively by ``create_token``; letting a
@@ -26,9 +33,34 @@ _RESERVED_CLAIMS = frozenset({
     # registered JWT claims (RFC 7519)
     "iss", "sub", "aud", "exp", "iat", "nbf", "jti",
     # nanoidp protocol claims
-    "token_use", "auth_time", "at_hash", "azp", "nonce", "scope",
-    "req_userinfo_claims", "req_id_token_claims",
+    "token_use", "auth_time", "at_hash", "azp", "nonce",
+    *_AUTHORITATIVE_CLAIMS,
 })
+
+
+def sanitize_claim_names(value: Any) -> Optional[List[str]]:
+    """Coerce a requested-claims value to a list of claim names, or ``None``.
+
+    The requested-claims lists cross trust boundaries: MCP arguments reach
+    ``create_token`` without SDK-side schema enforcement, and on refresh the
+    names are recovered from the refresh-token payload, which may be
+    hand-crafted with the IdP key (a first-class dev workflow). Anything but a
+    list is ignored and non-string entries are dropped, always with a warning
+    and never an exception — token issuance must not be able to fail on a
+    malformed value after the refresh token has been consumed.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        logger.warning(
+            "Ignoring malformed requested-claims value: expected a list of "
+            "claim names, got %s", type(value).__name__
+        )
+        return None
+    names = [name for name in value if isinstance(name, str)]
+    if len(names) != len(value):
+        logger.warning("Dropping non-string entries from requested-claims value")
+    return names or None
 
 
 def resolve_user_claim(user: User, name: str) -> tuple[bool, Any]:
@@ -198,6 +230,12 @@ class TokenService:
         if exp_minutes is None:
             exp_minutes = settings.token_expiry_minutes
 
+        # Defense in depth at the single choke point every issuance path goes
+        # through: requested-claims values may come from a hand-crafted refresh
+        # token or an unvalidated MCP call (see sanitize_claim_names).
+        id_token_claims = sanitize_claim_names(id_token_claims)
+        userinfo_claims = sanitize_claim_names(userinfo_claims)
+
         # Build extra claims
         extra: Dict[str, Any] = {}
 
@@ -222,16 +260,13 @@ class TokenService:
         if extra_claims:
             extra.update(extra_claims)
 
-        # `scope` and `req_userinfo_claims` are authoritative: they must reflect
-        # the actual grant, never a caller-supplied `extra`. Drop any spoofed
-        # copy the merge may have introduced before setting them below. Without
-        # this, a request like extra={"scope": "openid email"} or
-        # extra={"req_userinfo_claims": ["email"]} would smuggle scope-gated
-        # claims past /userinfo when the authoritative value is absent
-        # (#102/#104 hardening). req_id_token_claims is dropped too: it is a
-        # protocol claim of the refresh token (#112) and must never appear in
-        # an access token via caller-supplied extra.
-        for reserved in ("scope", "req_userinfo_claims", "req_id_token_claims"):
+        # The authoritative claims must reflect the actual grant, never a
+        # caller-supplied `extra`. Drop any spoofed copy the merge may have
+        # introduced before setting them below. Without this, a request like
+        # extra={"scope": "openid email"} or extra={"req_userinfo_claims":
+        # ["email"]} would smuggle scope-gated claims past /userinfo when the
+        # authoritative value is absent (#102/#104 hardening).
+        for reserved in _AUTHORITATIVE_CLAIMS:
             extra.pop(reserved, None)
 
         # Advertise the granted scope on the access token (RFC 9068 §2.2.3), so

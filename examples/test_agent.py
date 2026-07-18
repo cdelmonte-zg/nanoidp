@@ -153,6 +153,9 @@ class NanoIDPTestAgent:
         self._pkce_verifier: Optional[str] = None
         self._device_code: Optional[str] = None
         self._initial_kid: Optional[str] = None
+        # Refresh token from the auth-code flow, whose grant carried a
+        # `claims` request (consumed by test_claims_persist_across_refresh).
+        self._authcode_refresh_token: Optional[str] = None
 
     def _log(self, msg: str):
         """Log verbose output."""
@@ -1080,7 +1083,7 @@ class NanoIDPTestAgent:
         `claims` parameter; refreshing that grant's token must re-issue an
         ID Token that still carries it.
         """
-        refresh_token = getattr(self, "_authcode_refresh_token", None)
+        refresh_token = self._authcode_refresh_token
         if not refresh_token:
             return self._add_result(
                 "Claims across refresh",

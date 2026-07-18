@@ -232,26 +232,25 @@ class TestUserinfoMember:
     def test_no_overwrite_keeps_scope_gated_value(self, monkeypatch):
         # White-box check of the `claim_name not in response` guard. /userinfo
         # resolves every claim through resolve_user_claim (defaults and the
-        # req_userinfo_claims loop alike, #113), so a call-numbered sentinel
-        # tells the two apart: if the loop overwrote an already-present claim,
-        # its value would carry a LATER call number than the default assembly's.
+        # req_userinfo_claims loop alike, #113), so a resolver wrapper that
+        # records each resolved name proves the guard: a requested claim that
+        # is already present must be resolved exactly once (by the defaults),
+        # never re-resolved by the requested-claims loop.
         import nanoidp.routes.oauth as oauth_module
         from nanoidp.services.token import resolve_user_claim as real_resolver
 
-        calls = {"n": 0}
+        resolved_names = []
 
-        def numbering_resolver(user, name):
+        def recording_resolver(user, name):
             found, value = real_resolver(user, name)
-            if not found:
-                return found, value
-            calls["n"] += 1
-            return True, f"SENTINEL-{name}-{calls['n']}"
+            if found:
+                resolved_names.append(name)
+            return found, value
 
         from nanoidp.config import get_config
         from nanoidp.services.token import get_token_service
 
-        app = create_app(profile="dev")
-        app.config["TESTING"] = True
+        client = _dev_client()
         token = get_token_service().create_token(
             get_config().get_user("admin"),
             scope="openid",
@@ -260,17 +259,16 @@ class TestUserinfoMember:
         )["access_token"]
 
         # Patch AFTER minting, and only where /userinfo resolves claims.
-        monkeypatch.setattr(oauth_module, "resolve_user_claim", numbering_resolver)
-        resp = app.test_client().get(
-            "/userinfo", headers={"Authorization": f"Bearer {token}"}
-        )
+        monkeypatch.setattr(oauth_module, "resolve_user_claim", recording_resolver)
+        resp = client.get("/userinfo", headers={"Authorization": f"Bearer {token}"})
         assert resp.status_code == 200, resp.data
         data = json.loads(resp.data)
-        # email is resolved first by the permissive dev defaults; the requested
-        # duplicate must NOT re-resolve it (an overwrite would bump the number).
-        assert data["email"] == "SENTINEL-email-1"
+        # email was already placed by the permissive dev defaults: the
+        # requested duplicate must not have re-resolved it.
+        assert resolved_names.count("email") == 1
+        assert data["email"] == "admin@example.org"
         # department was not among the defaults -> added by the requested loop
-        assert data["department"].startswith("SENTINEL-department-")
+        assert data["department"] == "IT"
 
 
 # --------------------------------------------------------------------------
@@ -356,6 +354,79 @@ class TestClaimsPersistAcrossRefresh:
             refreshed["access_token"], options={"verify_signature": False}
         )
         assert "req_userinfo_claims" not in access_payload
+
+    def test_forged_refresh_token_with_malformed_claims_refreshes_cleanly(self):
+        # Hand-crafting tokens with the IdP key is a first-class dev workflow:
+        # a refresh token carrying garbage requested-claims values (an int, the
+        # raw §5.5 object instead of names, a bare string) must not 500 after
+        # the token has been consumed — sanitize_claim_names drops the garbage
+        # and the refresh succeeds without it.
+        from nanoidp.config import get_config
+        from nanoidp.services.crypto import get_crypto_service
+
+        client = _dev_client()
+        config = get_config()
+        crypto = get_crypto_service(config.settings.keys_dir)
+        forged = crypto.create_jwt(
+            sub="admin",
+            issuer=config.settings.issuer,
+            audience=config.settings.audience,
+            exp_minutes=60,
+            extra={
+                "token_type": "refresh",
+                "token_use": "refresh",
+                "scope": "openid",
+                "rt_family": "forged-family",
+                "req_id_token_claims": 42,  # non-iterable
+                "req_userinfo_claims": "email",  # bare string, not a list
+            },
+        )
+
+        refreshed = self._refresh(client, forged)
+        id_payload = pyjwt.decode(refreshed["id_token"], options={"verify_signature": False})
+        assert "email" not in id_payload  # the garbage resolved nothing
+        access_payload = pyjwt.decode(
+            refreshed["access_token"], options={"verify_signature": False}
+        )
+        assert "req_userinfo_claims" not in access_payload
+        # ...and a list with mixed entries keeps only the string names
+        forged_mixed = crypto.create_jwt(
+            sub="admin",
+            issuer=config.settings.issuer,
+            audience=config.settings.audience,
+            exp_minutes=60,
+            extra={
+                "token_type": "refresh",
+                "token_use": "refresh",
+                "scope": "openid",
+                "rt_family": "forged-family-2",
+                "req_id_token_claims": ["email", {"essential": True}],
+            },
+        )
+        refreshed = self._refresh(client, forged_mixed)
+        id_payload = pyjwt.decode(refreshed["id_token"], options={"verify_signature": False})
+        assert id_payload["email"] == "admin@example.org"
+
+    def test_userinfo_tolerates_malformed_req_claims_on_access_token(self):
+        # A hand-crafted ACCESS token with a non-list req_userinfo_claims must
+        # not 500 /userinfo (nor leak single-character attribute lookups from
+        # iterating a string).
+        from nanoidp.config import get_config
+        from nanoidp.services.crypto import get_crypto_service
+
+        client = _dev_client()
+        config = get_config()
+        crypto = get_crypto_service(config.settings.keys_dir)
+        for bad in (5, "email", {"email": None}):
+            token = crypto.create_jwt(
+                sub="admin",
+                issuer=config.settings.issuer,
+                audience=config.settings.audience,
+                exp_minutes=5,
+                extra={"req_userinfo_claims": bad},
+            )
+            resp = client.get("/userinfo", headers={"Authorization": f"Bearer {token}"})
+            assert resp.status_code == 200, (bad, resp.data)
 
 
 # --------------------------------------------------------------------------

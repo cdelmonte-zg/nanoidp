@@ -569,6 +569,27 @@ class TestGenerateTokenClaims:
         assert data["department"] == "IT"
 
     @pytest.mark.asyncio
+    async def test_non_list_claims_arguments_rejected(self, app):
+        """The SDK does not enforce inputSchema server-side: a non-list value
+        must be rejected with a clean ValueError (turned into an error payload
+        by call_tool), not minted into a token that misbehaves at /userinfo."""
+        from nanoidp.config import get_config
+        from nanoidp.mcp_server import _execute_tool
+
+        for field, bad in (
+            ("userinfo_claims", "email"),
+            ("userinfo_claims", 5),
+            ("id_token_claims", "email"),
+            ("id_token_claims", [1, 2]),
+        ):
+            with pytest.raises(ValueError, match=field):
+                await _execute_tool(
+                    "generate_token",
+                    {"username": "admin", "scope": "openid", field: bad},
+                    get_config(),
+                )
+
+    @pytest.mark.asyncio
     async def test_claims_persist_across_refresh(self, app, client, auth_header):
         import jwt as pyjwt
 

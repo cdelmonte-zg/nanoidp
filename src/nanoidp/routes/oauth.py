@@ -24,7 +24,7 @@ from ..services import (
     get_token_service,
 )
 from ..services.device_code import DEVICE_CODE_EXPIRES_IN, DEVICE_POLL_INTERVAL
-from ..services.token import resolve_user_claim
+from ..services.token import resolve_user_claim, sanitize_claim_names
 from ._audit import audit_event
 
 logger = logging.getLogger(__name__)
@@ -514,7 +514,13 @@ def _grant_refresh_token(ctx: _GrantContext) -> GrantResult:
     # the refresh token like scope/auth_time (#112), so the refreshed ID Token
     # keeps the requested claims and the refreshed access token keeps its
     # `req_userinfo_claims` for /userinfo. Tokens minted before #112 carry
-    # neither claim and simply refresh without them.
+    # neither claim and simply refresh without them. Deliberately NOT
+    # intersected with a narrowed scope: a claims request binds to the
+    # original authorization and §5.5 is orthogonal to scope, so it keeps
+    # being honoured when the client narrows the scope on refresh — narrowing
+    # sheds scope-derived claims, not claims requested by name. The values are
+    # taken as-is here; create_token sanitizes them (a hand-crafted refresh
+    # token may carry anything), so issuance below cannot fail on them.
     id_token_claims = payload.get("req_id_token_claims")
     userinfo_claims = payload.get("req_userinfo_claims")
 
@@ -1041,9 +1047,12 @@ def userinfo() -> ResponseReturnValue:
         granted_scopes = set((payload.get("scope") or "").split())
         strict_scopes = config.settings.security_profile in ("stricter-dev", "oauth21")
 
-        # All claim values come from resolve_user_claim, the same resolver that
-        # backs the `claims` request parameter, so the two mappings cannot
-        # diverge (#113). A claim the resolver cannot supply is omitted.
+        # The scope-gated standard claims and the nanoidp-specific claims below
+        # all resolve through resolve_user_claim — the same resolver that backs
+        # the `claims` request parameter — so those two mappings cannot diverge
+        # (#113). A claim the resolver cannot supply is omitted. The raw
+        # `attributes` passthrough further down is the one deliberate
+        # exception: the whole dict is not a resolvable claim name.
         def _put(claim_name: str) -> None:
             found, value = resolve_user_claim(user, claim_name)
             if found:
@@ -1067,12 +1076,12 @@ def userinfo() -> ResponseReturnValue:
         # Honour the UserInfo member of the OIDC `claims` request parameter
         # (§5.5, #104): claim names the client asked for are added even when
         # scope-gating above would have omitted them, provided nanoidp can
-        # supply them. Never overwrites a claim already set.
-        for claim_name in payload.get("req_userinfo_claims") or []:
+        # supply them. Never overwrites a claim already set. Sanitized because
+        # the value comes straight from the token payload, which may be
+        # hand-crafted (a malformed value must not 500 the endpoint).
+        for claim_name in sanitize_claim_names(payload.get("req_userinfo_claims")) or []:
             if claim_name not in response:
-                found, value = resolve_user_claim(user, claim_name)
-                if found:
-                    response[claim_name] = value
+                _put(claim_name)
 
     audit_event(
         "userinfo_request",
