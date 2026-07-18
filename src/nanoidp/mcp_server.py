@@ -350,6 +350,18 @@ async def list_tools() -> list[Tool]:
                             "nanoidp cannot supply are skipped."
                         ),
                     },
+                    "userinfo_claims": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "Claim names /userinfo should return for this access "
+                            "token, mirroring the `userinfo` member of the OIDC "
+                            "`claims` request parameter (§5.5). Stamped on the "
+                            "access token as `req_userinfo_claims` and honoured "
+                            "by /userinfo even under a stricter profile that "
+                            "would scope-gate them out."
+                        ),
+                    },
                 },
                 "required": ["username"],
             },
@@ -779,6 +791,7 @@ async def _execute_tool(name: str, arguments: dict[str, Any], config: ConfigMana
             extra_claims=arguments.get("extra_claims"),
             scope=arguments.get("scope"),
             id_token_claims=arguments.get("id_token_claims"),
+            userinfo_claims=arguments.get("userinfo_claims"),
         )
         result = {
             "success": True,

@@ -158,5 +158,12 @@ when available (voluntary form, §5.5.1); protocol claims are never
 overwritten and unknown names are skipped. This is currently honoured for
 the authorization code grant.
 
+The requested claim names are persisted in the refresh token (like the
+granted scope and `auth_time`), so a refreshed ID Token keeps carrying
+the requested claims and `/userinfo` keeps honouring the `userinfo`
+member for the refreshed access token (OIDC Core §12.2). The `nonce` is
+the deliberate exception: it binds the original authentication request
+and is never re-issued on refresh.
+
 All tokens are signed with RS256; verify them against the JWKS at
 `/.well-known/jwks.json` (see [Endpoints](endpoints.md)).

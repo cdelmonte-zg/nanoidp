@@ -510,6 +510,14 @@ def _grant_refresh_token(ctx: _GrantContext) -> GrantResult:
     # (OIDC Core §12.2), persisted in the refresh token claims (#42).
     auth_time = payload.get("auth_time")
 
+    # Claim names requested via the OIDC `claims` parameter are persisted in
+    # the refresh token like scope/auth_time (#112), so the refreshed ID Token
+    # keeps the requested claims and the refreshed access token keeps its
+    # `req_userinfo_claims` for /userinfo. Tokens minted before #112 carry
+    # neither claim and simply refresh without them.
+    id_token_claims = payload.get("req_id_token_claims")
+    userinfo_claims = payload.get("req_userinfo_claims")
+
     # The family id survives rotation so descendants share it (#56).
     refresh_family = payload.get("rt_family")
 
@@ -547,6 +555,8 @@ def _grant_refresh_token(ctx: _GrantContext) -> GrantResult:
         scope=scope,
         auth_time=auth_time,
         refresh_family=refresh_family,
+        id_token_claims=id_token_claims,
+        userinfo_claims=userinfo_claims,
     )
 
 
@@ -1031,19 +1041,26 @@ def userinfo() -> ResponseReturnValue:
         granted_scopes = set((payload.get("scope") or "").split())
         strict_scopes = config.settings.security_profile in ("stricter-dev", "oauth21")
 
+        # All claim values come from resolve_user_claim, the same resolver that
+        # backs the `claims` request parameter, so the two mappings cannot
+        # diverge (#113). A claim the resolver cannot supply is omitted.
+        def _put(claim_name: str) -> None:
+            found, value = resolve_user_claim(user, claim_name)
+            if found:
+                response[claim_name] = value
+
         if not strict_scopes or "email" in granted_scopes:
-            response["email"] = user.email
-            response["email_verified"] = True
+            _put("email")
+            _put("email_verified")
         if not strict_scopes or "profile" in granted_scopes:
-            response["preferred_username"] = user.username
+            _put("preferred_username")
 
         # nanoidp-specific claims have no standard OIDC scope, so they are always
         # returned for a valid token; gating them would be arbitrary and has no
         # spec basis (#102).
-        response["roles"] = user.roles
-        response["tenant"] = user.tenant
-        if user.identity_class:
-            response["identity_class"] = user.identity_class
+        _put("roles")
+        _put("tenant")
+        _put("identity_class")
         if user.attributes:
             response["attributes"] = user.attributes
 

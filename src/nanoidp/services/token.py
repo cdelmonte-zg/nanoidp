@@ -27,7 +27,7 @@ _RESERVED_CLAIMS = frozenset({
     "iss", "sub", "aud", "exp", "iat", "nbf", "jti",
     # nanoidp protocol claims
     "token_use", "auth_time", "at_hash", "azp", "nonce", "scope",
-    "req_userinfo_claims",
+    "req_userinfo_claims", "req_id_token_claims",
 })
 
 
@@ -189,7 +189,9 @@ class TokenService:
         ``id_token_claims``/``userinfo_claims`` are the claim names a client
         asked for through the OIDC ``claims`` request parameter (OIDC Core
         §5.5, #104): the former are resolved into the ID Token here, the latter
-        are stamped on the access token so ``/userinfo`` can honour them.
+        are stamped on the access token so ``/userinfo`` can honour them. Both
+        lists are also persisted in the refresh token (like ``scope`` and
+        ``auth_time``), so refreshed tokens keep honouring the request (#112).
         """
         settings = self.config.settings
 
@@ -226,8 +228,10 @@ class TokenService:
         # this, a request like extra={"scope": "openid email"} or
         # extra={"req_userinfo_claims": ["email"]} would smuggle scope-gated
         # claims past /userinfo when the authoritative value is absent
-        # (#102/#104 hardening).
-        for reserved in ("scope", "req_userinfo_claims"):
+        # (#102/#104 hardening). req_id_token_claims is dropped too: it is a
+        # protocol claim of the refresh token (#112) and must never appear in
+        # an access token via caller-supplied extra.
+        for reserved in ("scope", "req_userinfo_claims", "req_id_token_claims"):
             extra.pop(reserved, None)
 
         # Advertise the granted scope on the access token (RFC 9068 §2.2.3), so
@@ -309,7 +313,11 @@ class TokenService:
         #   other client can spend it (RFC 9700 §4.14, #56) - which also keeps
         #   the refreshed ID Token aud identical to the original;
         # - rt_family, a stable id across rotations: reuse of a consumed token
-        #   revokes the whole family (RFC 9700 §4.14.2, #56).
+        #   revokes the whole family (RFC 9700 §4.14.2, #56);
+        # - req_id_token_claims/req_userinfo_claims, the claim names requested
+        #   via the OIDC `claims` parameter, so a refreshed ID Token keeps the
+        #   requested claims and /userinfo keeps honouring them for the
+        #   refreshed access token (OIDC Core §12.2, #112).
         refresh_extra: Dict[str, Any] = {"token_type": "refresh", "token_use": "refresh"}
         if scope:
             refresh_extra["scope"] = scope
@@ -317,6 +325,10 @@ class TokenService:
             refresh_extra["auth_time"] = effective_auth_time
         if client_id:
             refresh_extra["client_id"] = client_id
+        if id_token_claims:
+            refresh_extra["req_id_token_claims"] = id_token_claims
+        if userinfo_claims:
+            refresh_extra["req_userinfo_claims"] = userinfo_claims
         refresh_extra["rt_family"] = refresh_family or str(uuid.uuid4())
         refresh_token = self.crypto.create_jwt(
             sub=user.username,

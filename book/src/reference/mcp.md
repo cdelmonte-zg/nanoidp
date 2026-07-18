@@ -16,7 +16,7 @@ readonly mode, and the exposure warnings, see the
 | `create_user` | Create a new user |
 | `update_user` | Update an existing user (password, email, roles, …) |
 | `delete_user` | Delete a user |
-| `generate_token` | Generate OAuth2 tokens for a user (pass `scope` with `openid` to also get an ID Token) |
+| `generate_token` | Generate OAuth2 tokens for a user (pass `scope` with `openid` to also get an ID Token; `id_token_claims`/`userinfo_claims` mirror the OIDC `claims` request parameter) |
 | `decode_token` | Decode JWT token (without verification) |
 | `verify_token` | Verify JWT token signature and expiration |
 | `list_clients` | List OAuth clients |

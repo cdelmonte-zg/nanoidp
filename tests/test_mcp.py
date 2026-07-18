@@ -498,3 +498,105 @@ class TestMCPClientAdditionalAudiences:
         payload = json.loads(result[0].text)
         assert payload["tool"] == "create_client"
         assert "additional_audiences" in payload["error"]
+
+
+class TestGenerateTokenClaims:
+    """MCP ``generate_token`` claims arguments (#104/#113, parity #112).
+
+    The MCP half of the OIDC ``claims`` parameter: ``id_token_claims`` must
+    actually land the claims in the ID Token, ``userinfo_claims`` must be
+    stamped on the access token and honoured by ``/userinfo``, and both must
+    survive a token refresh like their HTTP counterparts.
+    """
+
+    async def _generate(self, arguments):
+        from nanoidp.config import get_config
+        from nanoidp.mcp_server import _execute_tool
+
+        result = await _execute_tool("generate_token", arguments, get_config())
+        assert result["success"] is True, result
+        return result
+
+    @pytest.mark.asyncio
+    async def test_id_token_claims_land_in_id_token(self, app):
+        import jwt as pyjwt
+
+        result = await self._generate(
+            {"username": "admin", "scope": "openid", "id_token_claims": ["email", "department"]}
+        )
+        payload = pyjwt.decode(result["id_token"], options={"verify_signature": False})
+        assert payload["email"] == "admin@example.org"
+        # custom user attribute resolved like any standard claim
+        assert payload["department"] == "IT"
+
+    @pytest.mark.asyncio
+    async def test_unresolvable_names_are_skipped(self, app):
+        import jwt as pyjwt
+
+        result = await self._generate(
+            {"username": "admin", "scope": "openid", "id_token_claims": ["no_such_claim"]}
+        )
+        payload = pyjwt.decode(result["id_token"], options={"verify_signature": False})
+        assert "no_such_claim" not in payload
+
+    @pytest.mark.asyncio
+    async def test_id_token_claims_inert_without_openid_scope(self, app):
+        result = await self._generate(
+            {"username": "admin", "id_token_claims": ["email"]}
+        )
+        assert "id_token" not in result
+
+    @pytest.mark.asyncio
+    async def test_userinfo_claims_stamped_and_honoured(self, app, client):
+        import jwt as pyjwt
+
+        result = await self._generate(
+            {"username": "admin", "scope": "openid", "userinfo_claims": ["department"]}
+        )
+        access_payload = pyjwt.decode(
+            result["access_token"], options={"verify_signature": False}
+        )
+        assert access_payload["req_userinfo_claims"] == ["department"]
+
+        # /userinfo returns the requested claim at top level - under the dev
+        # profile `department` only appears nested in `attributes`, so this is
+        # observable even without scope gating.
+        resp = client.get(
+            "/userinfo", headers={"Authorization": "Bearer " + result["access_token"]}
+        )
+        assert resp.status_code == 200, resp.data
+        data = json.loads(resp.data)
+        assert data["department"] == "IT"
+
+    @pytest.mark.asyncio
+    async def test_claims_persist_across_refresh(self, app, client, auth_header):
+        import jwt as pyjwt
+
+        result = await self._generate(
+            {
+                "username": "admin",
+                "scope": "openid",
+                "id_token_claims": ["email"],
+                "userinfo_claims": ["department"],
+            }
+        )
+        rt_payload = pyjwt.decode(
+            result["refresh_token"], options={"verify_signature": False}
+        )
+        assert rt_payload["req_id_token_claims"] == ["email"]
+        assert rt_payload["req_userinfo_claims"] == ["department"]
+
+        # Refresh over HTTP: the refreshed tokens keep honouring the request (#112).
+        resp = client.post(
+            "/token",
+            data={"grant_type": "refresh_token", "refresh_token": result["refresh_token"]},
+            headers=auth_header,
+        )
+        assert resp.status_code == 200, resp.data
+        refreshed = json.loads(resp.data)
+        id_payload = pyjwt.decode(refreshed["id_token"], options={"verify_signature": False})
+        assert id_payload["email"] == "admin@example.org"
+        access_payload = pyjwt.decode(
+            refreshed["access_token"], options={"verify_signature": False}
+        )
+        assert access_payload["req_userinfo_claims"] == ["department"]
