@@ -24,7 +24,7 @@ docker run --rm -p 8000:8000 \
   ghcr.io/cdelmonte-zg/nanoidp:latest
 ```
 
-Container tags are derived from release tags (for example `v2.4.0`);
+Container tags are derived from release tags (for example `v2.5.0`);
 `latest` points at the newest non-prerelease.
 
 ## From source
