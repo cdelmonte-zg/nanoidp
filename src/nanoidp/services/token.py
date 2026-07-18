@@ -15,6 +15,13 @@ from .crypto import get_crypto_service
 
 logger = logging.getLogger(__name__)
 
+# Claims ``create_token`` sets authoritatively from the grant and therefore
+# strips from caller-supplied ``extra`` before setting them (#102/#104/#112).
+# ``_RESERVED_CLAIMS`` is derived from this tuple, so a claim added here is
+# automatically refused by ``resolve_user_claim`` as well - the strip list and
+# the reserved list cannot drift apart.
+_AUTHORITATIVE_CLAIMS = ("scope", "req_userinfo_claims", "req_id_token_claims")
+
 # Claim names a client must never be able to request through the OIDC ``claims``
 # parameter (#110). Registered JWT claims are set by ``create_jwt`` and the
 # protocol claims are set authoritatively by ``create_token``; letting a
@@ -26,9 +33,34 @@ _RESERVED_CLAIMS = frozenset({
     # registered JWT claims (RFC 7519)
     "iss", "sub", "aud", "exp", "iat", "nbf", "jti",
     # nanoidp protocol claims
-    "token_use", "auth_time", "at_hash", "azp", "nonce", "scope",
-    "req_userinfo_claims",
+    "token_use", "auth_time", "at_hash", "azp", "nonce",
+    *_AUTHORITATIVE_CLAIMS,
 })
+
+
+def sanitize_claim_names(value: Any) -> Optional[List[str]]:
+    """Coerce a requested-claims value to a list of claim names, or ``None``.
+
+    The requested-claims lists cross trust boundaries: MCP arguments reach
+    ``create_token`` without SDK-side schema enforcement, and on refresh the
+    names are recovered from the refresh-token payload, which may be
+    hand-crafted with the IdP key (a first-class dev workflow). Anything but a
+    list is ignored and non-string entries are dropped, always with a warning
+    and never an exception - token issuance must not be able to fail on a
+    malformed value after the refresh token has been consumed.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        logger.warning(
+            "Ignoring malformed requested-claims value: expected a list of "
+            "claim names, got %s", type(value).__name__
+        )
+        return None
+    names = [name for name in value if isinstance(name, str)]
+    if len(names) != len(value):
+        logger.warning("Dropping non-string entries from requested-claims value")
+    return names or None
 
 
 def resolve_user_claim(user: User, name: str) -> tuple[bool, Any]:
@@ -189,12 +221,20 @@ class TokenService:
         ``id_token_claims``/``userinfo_claims`` are the claim names a client
         asked for through the OIDC ``claims`` request parameter (OIDC Core
         §5.5, #104): the former are resolved into the ID Token here, the latter
-        are stamped on the access token so ``/userinfo`` can honour them.
+        are stamped on the access token so ``/userinfo`` can honour them. Both
+        lists are also persisted in the refresh token (like ``scope`` and
+        ``auth_time``), so refreshed tokens keep honouring the request (#112).
         """
         settings = self.config.settings
 
         if exp_minutes is None:
             exp_minutes = settings.token_expiry_minutes
+
+        # Defense in depth at the single choke point every issuance path goes
+        # through: requested-claims values may come from a hand-crafted refresh
+        # token or an unvalidated MCP call (see sanitize_claim_names).
+        id_token_claims = sanitize_claim_names(id_token_claims)
+        userinfo_claims = sanitize_claim_names(userinfo_claims)
 
         # Build extra claims
         extra: Dict[str, Any] = {}
@@ -220,14 +260,13 @@ class TokenService:
         if extra_claims:
             extra.update(extra_claims)
 
-        # `scope` and `req_userinfo_claims` are authoritative: they must reflect
-        # the actual grant, never a caller-supplied `extra`. Drop any spoofed
-        # copy the merge may have introduced before setting them below. Without
-        # this, a request like extra={"scope": "openid email"} or
-        # extra={"req_userinfo_claims": ["email"]} would smuggle scope-gated
-        # claims past /userinfo when the authoritative value is absent
-        # (#102/#104 hardening).
-        for reserved in ("scope", "req_userinfo_claims"):
+        # The authoritative claims must reflect the actual grant, never a
+        # caller-supplied `extra`. Drop any spoofed copy the merge may have
+        # introduced before setting them below. Without this, a request like
+        # extra={"scope": "openid email"} or extra={"req_userinfo_claims":
+        # ["email"]} would smuggle scope-gated claims past /userinfo when the
+        # authoritative value is absent (#102/#104 hardening).
+        for reserved in _AUTHORITATIVE_CLAIMS:
             extra.pop(reserved, None)
 
         # Advertise the granted scope on the access token (RFC 9068 §2.2.3), so
@@ -309,7 +348,11 @@ class TokenService:
         #   other client can spend it (RFC 9700 §4.14, #56) - which also keeps
         #   the refreshed ID Token aud identical to the original;
         # - rt_family, a stable id across rotations: reuse of a consumed token
-        #   revokes the whole family (RFC 9700 §4.14.2, #56).
+        #   revokes the whole family (RFC 9700 §4.14.2, #56);
+        # - req_id_token_claims/req_userinfo_claims, the claim names requested
+        #   via the OIDC `claims` parameter, so a refreshed ID Token keeps the
+        #   requested claims and /userinfo keeps honouring them for the
+        #   refreshed access token (OIDC Core §12.2, #112).
         refresh_extra: Dict[str, Any] = {"token_type": "refresh", "token_use": "refresh"}
         if scope:
             refresh_extra["scope"] = scope
@@ -317,6 +360,10 @@ class TokenService:
             refresh_extra["auth_time"] = effective_auth_time
         if client_id:
             refresh_extra["client_id"] = client_id
+        if id_token_claims:
+            refresh_extra["req_id_token_claims"] = id_token_claims
+        if userinfo_claims:
+            refresh_extra["req_userinfo_claims"] = userinfo_claims
         refresh_extra["rt_family"] = refresh_family or str(uuid.uuid4())
         refresh_token = self.crypto.create_jwt(
             sub=user.username,

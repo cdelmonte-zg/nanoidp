@@ -155,8 +155,22 @@ way for `/userinfo` and composes with the scope gating above, so a client
 can pull a specific claim even under a stricter profile that would
 otherwise gate it out. Claims are resolved from the user and added only
 when available (voluntary form, §5.5.1); protocol claims are never
-overwritten and unknown names are skipped. This is currently honoured for
-the authorization code grant.
+overwritten and unknown names are skipped. The `claims` parameter is
+accepted on the authorization code grant, carried through the
+refresh_token grant (below), and mirrored by the MCP `generate_token`
+tool (`id_token_claims` / `userinfo_claims`).
+
+The requested claim names are persisted in the refresh token (like the
+granted scope and `auth_time`), so a refreshed ID Token keeps carrying
+the requested claims and `/userinfo` keeps honouring the `userinfo`
+member for the refreshed access token (OIDC Core §12.2). The `nonce` is
+the deliberate exception: it binds the original authentication request
+and is never re-issued on refresh. Note that a claims request binds to
+the original authorization and is orthogonal to scope (§5.5), so it is
+**not** shed by narrowing the scope on refresh: under a stricter profile,
+a claim requested via the `userinfo` member keeps being returned by
+`/userinfo` even after the client drops the scope that would otherwise
+gate it. To shed a claims request, start a new authorization.
 
 All tokens are signed with RS256; verify them against the JWKS at
 `/.well-known/jwks.json` (see [Endpoints](endpoints.md)).

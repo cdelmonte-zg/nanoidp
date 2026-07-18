@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`claims` parameter requests persist across token refresh** (#112, OIDC
+  Core §12.2): the claim names requested via the OIDC `claims` parameter are
+  now persisted in the refresh token (`req_id_token_claims` /
+  `req_userinfo_claims`, alongside `scope` and `auth_time`), so a refreshed ID
+  Token keeps the requested claims and `/userinfo` keeps honouring the
+  `userinfo` member for the refreshed access token. Refresh tokens minted
+  before this change carry neither claim and refresh as before. Both names are
+  reserved: they cannot be requested via the `claims` parameter nor injected
+  through the `/token` `extra` parameter. Requested-claims values are
+  sanitized at the token service (`sanitize_claim_names`): a hand-crafted
+  refresh or access token carrying a non-list value (or non-string entries)
+  refreshes and serves `/userinfo` cleanly instead of failing token issuance
+  after the refresh token was consumed. A claims request deliberately
+  survives scope narrowing on refresh (OIDC Core §5.5 is orthogonal to
+  scope); see the token reference docs.
+- **MCP `generate_token` gains `userinfo_claims`** (#113): parity with the
+  HTTP `claims` flow's `userinfo` member; the names are stamped on the access
+  token as `req_userinfo_claims` and honoured by `/userinfo`. Both
+  `id_token_claims` and `userinfo_claims` are now validated like
+  `additional_audiences`: a non-list value is rejected with a clean error
+  instead of being minted into the token.
+
+### Changed
+- **`/userinfo` reuses `resolve_user_claim` for its default claim assembly**
+  (#113): the scope-gated standard claims and the nanoidp-specific claims now
+  come from the same resolver that backs the `claims` request parameter, so
+  the two mappings cannot diverge. No behavior change.
+
 ### Fixed
 - **`claims` parameter could overwrite registered ID Token claims** (#110): a
   requested claim name that collided with a user attribute (e.g. an attribute

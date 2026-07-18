@@ -153,6 +153,9 @@ class NanoIDPTestAgent:
         self._pkce_verifier: Optional[str] = None
         self._device_code: Optional[str] = None
         self._initial_kid: Optional[str] = None
+        # Refresh token from the auth-code flow, whose grant carried a
+        # `claims` request (consumed by test_claims_persist_across_refresh).
+        self._authcode_refresh_token: Optional[str] = None
 
     def _log(self, msg: str):
         """Log verbose output."""
@@ -428,6 +431,9 @@ class NanoIDPTestAgent:
 
                         if token_response.status_code == 200:
                             data = token_response.json()
+
+                            # Kept for test_claims_persist_across_refresh (#112).
+                            self._authcode_refresh_token = data.get("refresh_token")
 
                             nonce_ok = False
                             # The `claims` parameter above requested email in the
@@ -1069,6 +1075,68 @@ class NanoIDPTestAgent:
             )
         except Exception as e:
             return self._add_result("Refresh Token", TestCategory.OAUTH, False, str(e))
+
+    def test_claims_persist_across_refresh(self) -> TestResult:
+        """Requested `claims` survive a token refresh (OIDC Core §12.2, #112).
+
+        The auth-code flow above requested email in the ID Token via the
+        `claims` parameter; refreshing that grant's token must re-issue an
+        ID Token that still carries it.
+        """
+        refresh_token = self._authcode_refresh_token
+        if not refresh_token:
+            return self._add_result(
+                "Claims across refresh",
+                TestCategory.OAUTH,
+                False,
+                "No refresh token from the auth-code flow"
+            )
+
+        try:
+            response = self.session.post(
+                f"{self.base_url}/token",
+                data={
+                    "grant_type": "refresh_token",
+                    "refresh_token": refresh_token
+                },
+                timeout=5
+            )
+            if response.status_code != 200:
+                error = response.json().get("error", "unknown")
+                return self._add_result(
+                    "Claims across refresh",
+                    TestCategory.OAUTH,
+                    False,
+                    f"Refresh failed: {error}"
+                )
+
+            data = response.json()
+            has_id_token = "id_token" in data
+            email_in_refreshed = False
+            unrequested_absent = True
+            if jwt and has_id_token:
+                decoded = jwt.decode(data["id_token"], options={"verify_signature": False})
+                email_in_refreshed = bool(decoded.get("email"))
+                # Negative check: an attribute that was never requested must
+                # not leak into the refreshed ID Token.
+                unrequested_absent = "department" not in decoded
+
+            return self._add_result(
+                "Claims across refresh",
+                TestCategory.OAUTH,
+                has_id_token and email_in_refreshed and unrequested_absent,
+                f"Refreshed ID Token keeps requested claims: email={email_in_refreshed}, "
+                f"unrequested absent={unrequested_absent}",
+                {
+                    "has_id_token": has_id_token,
+                    "email_in_refreshed_id_token": email_in_refreshed,
+                    "unrequested_claim_absent": unrequested_absent,
+                }
+            )
+        except Exception as e:
+            return self._add_result(
+                "Claims across refresh", TestCategory.OAUTH, False, str(e)
+            )
 
     def test_token_revocation(self) -> TestResult:
         """Token revocation (RFC 7009)."""
@@ -2844,6 +2912,7 @@ class NanoIDPTestAgent:
                 self.test_introspection,
                 self.test_userinfo,
                 self.test_refresh_token,
+                self.test_claims_persist_across_refresh,
                 self.test_token_revocation,
                 self.test_logout,
             ]),

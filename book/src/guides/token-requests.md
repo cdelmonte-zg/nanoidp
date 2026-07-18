@@ -36,8 +36,11 @@ curl -X POST 'http://localhost:8000/token' \
 
 If the original grant included the `openid` scope, the refresh re-issues
 an ID Token as well. A `scope` parameter may narrow, but never broaden,
-the originally granted scope (RFC 6749 §6). With
-`oauth.refresh_token_rotation: true`, each refresh invalidates the
+the originally granted scope (RFC 6749 §6). Claims requested via the
+OIDC `claims` parameter persist across the refresh, including a
+narrowed one; see
+[Tokens and claims](../reference/tokens.md#requesting-claims-in-the-id-token-claims-parameter).
+With `oauth.refresh_token_rotation: true`, each refresh invalidates the
 consumed refresh token; reuse revokes the whole rotation family
 (RFC 9700 §4.14.2).
 

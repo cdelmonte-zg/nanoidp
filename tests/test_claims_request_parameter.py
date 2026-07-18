@@ -98,8 +98,8 @@ def _basic_auth():
     return {"Authorization": "Basic " + base64.b64encode(b"demo-client:demo-secret").decode()}
 
 
-def _id_token_via_authcode(client, claims=None):
-    """Drive the full authorization code flow and return the decoded ID Token."""
+def _tokens_via_authcode(client, claims=None):
+    """Drive the full authorization code flow and return the token response."""
     query = {
         "response_type": "code",
         "client_id": "demo-client",
@@ -123,7 +123,12 @@ def _id_token_via_authcode(client, claims=None):
         headers=_basic_auth(),
     )
     assert token_resp.status_code == 200, token_resp.data
-    id_token = json.loads(token_resp.data)["id_token"]
+    return json.loads(token_resp.data)
+
+
+def _id_token_via_authcode(client, claims=None):
+    """Drive the full authorization code flow and return the decoded ID Token."""
+    id_token = _tokens_via_authcode(client, claims=claims)["id_token"]
     return pyjwt.decode(id_token, options={"verify_signature": False})
 
 
@@ -161,6 +166,24 @@ class TestIdTokenMember:
         assert payload["sub"] == "admin"
         assert "email" not in payload
 
+    def test_custom_user_attribute_lands_in_id_token(self):
+        # admin carries department/cost_center in users.yaml attributes; a
+        # requested attribute name resolves like any standard claim (#113).
+        claims = json.dumps({"id_token": {"department": None}})
+        payload = _id_token_via_authcode(_dev_client(), claims=claims)
+        assert payload["department"] == "IT"
+
+    def test_essential_and_value_refinements_accepted_but_ignored(self):
+        # §5.5.1 refinements are parsed for the claim NAME only: essential
+        # claims are delivered as if voluntary, and a `value` constraint never
+        # overrides the user's real value.
+        claims = json.dumps(
+            {"id_token": {"email": {"essential": True}, "tenant": {"value": "spoofed"}}}
+        )
+        payload = _id_token_via_authcode(_dev_client(), claims=claims)
+        assert payload["email"] == "admin@example.org"
+        assert payload["tenant"] == "default"  # real value, not the requested one
+
 
 # --------------------------------------------------------------------------
 # Integration: UserInfo member (composes with #102 scope gating)
@@ -194,6 +217,273 @@ class TestUserinfoMember:
     def test_without_member_scope_gating_still_applies(self):
         data = _mint_and_userinfo("stricter-dev", scope="openid", userinfo_claims=None)
         assert "email" not in data
+
+    def test_requesting_already_present_claims_is_invariant_under_dev(self):
+        # Under the permissive dev profile email/preferred_username are already
+        # in the response; the no-overwrite branch must leave the response
+        # exactly as it would be without the request (#113).
+        with_claims = _mint_and_userinfo(
+            "dev", scope="openid", userinfo_claims=["email", "email_verified", "roles"]
+        )
+        without_claims = _mint_and_userinfo("dev", scope="openid", userinfo_claims=None)
+        assert with_claims == without_claims
+        assert with_claims["email"] == "admin@example.org"
+
+    def test_no_overwrite_keeps_scope_gated_value(self, monkeypatch):
+        # White-box check of the `claim_name not in response` guard. /userinfo
+        # resolves every claim through resolve_user_claim (defaults and the
+        # req_userinfo_claims loop alike, #113), so a resolver wrapper that
+        # records each resolved name proves the guard: a requested claim that
+        # is already present must be resolved exactly once (by the defaults),
+        # never re-resolved by the requested-claims loop.
+        import nanoidp.routes.oauth as oauth_module
+        from nanoidp.services.token import resolve_user_claim as real_resolver
+
+        resolved_names = []
+
+        def recording_resolver(user, name):
+            found, value = real_resolver(user, name)
+            if found:
+                resolved_names.append(name)
+            return found, value
+
+        from nanoidp.config import get_config
+        from nanoidp.services.token import get_token_service
+
+        client = _dev_client()
+        token = get_token_service().create_token(
+            get_config().get_user("admin"),
+            scope="openid",
+            client_id="demo-client",
+            userinfo_claims=["email", "department"],
+        )["access_token"]
+
+        # Patch AFTER minting, and only where /userinfo resolves claims.
+        monkeypatch.setattr(oauth_module, "resolve_user_claim", recording_resolver)
+        resp = client.get("/userinfo", headers={"Authorization": f"Bearer {token}"})
+        assert resp.status_code == 200, resp.data
+        data = json.loads(resp.data)
+        # email was already placed by the permissive dev defaults: the
+        # requested duplicate must not have re-resolved it.
+        assert resolved_names.count("email") == 1
+        assert data["email"] == "admin@example.org"
+        # department was not among the defaults -> added by the requested loop
+        assert data["department"] == "IT"
+
+
+# --------------------------------------------------------------------------
+# Integration: requested claims persist across token refresh (#112)
+# --------------------------------------------------------------------------
+class TestClaimsPersistAcrossRefresh:
+    def _refresh(self, client, refresh_token, extra_form=None):
+        form = {"grant_type": "refresh_token", "refresh_token": refresh_token}
+        if extra_form:
+            form.update(extra_form)
+        resp = client.post("/token", data=form, headers=_basic_auth())
+        assert resp.status_code == 200, resp.data
+        return json.loads(resp.data)
+
+    def test_refresh_token_carries_requested_claim_names(self):
+        client = _dev_client()
+        claims = json.dumps({"id_token": {"email": None}, "userinfo": {"department": None}})
+        tokens = _tokens_via_authcode(client, claims=claims)
+        rt = pyjwt.decode(tokens["refresh_token"], options={"verify_signature": False})
+        assert rt["req_id_token_claims"] == ["email"]
+        assert rt["req_userinfo_claims"] == ["department"]
+
+    def test_refreshed_id_token_keeps_requested_claims(self):
+        client = _dev_client()
+        claims = json.dumps({"id_token": {"email": None, "department": None}})
+        tokens = _tokens_via_authcode(client, claims=claims)
+
+        refreshed = self._refresh(client, tokens["refresh_token"])
+        payload = pyjwt.decode(refreshed["id_token"], options={"verify_signature": False})
+        assert payload["email"] == "admin@example.org"
+        assert payload["department"] == "IT"
+
+        # ...and across a SECOND refresh (rotation re-persists the names).
+        refreshed2 = self._refresh(client, refreshed["refresh_token"])
+        payload2 = pyjwt.decode(refreshed2["id_token"], options={"verify_signature": False})
+        assert payload2["email"] == "admin@example.org"
+
+    def test_refreshed_access_token_keeps_userinfo_claims(self):
+        # Under stricter-dev, /userinfo would gate email out without the email
+        # scope (#102); the persisted userinfo member must keep forcing it back
+        # in after a refresh. The refresh leg is driven over HTTP; the original
+        # grant is minted directly (the stricter-dev authorize leg would need
+        # PKCE, which is orthogonal here).
+        from nanoidp.config import get_config
+        from nanoidp.services.token import get_token_service
+
+        app = create_app(profile="stricter-dev")
+        app.config["TESTING"] = True
+        client = app.test_client()
+        original = get_token_service().create_token(
+            get_config().get_user("admin"),
+            scope="openid",
+            client_id="demo-client",
+            userinfo_claims=["email"],
+        )
+
+        refreshed = self._refresh(client, original["refresh_token"])
+        access_payload = pyjwt.decode(
+            refreshed["access_token"], options={"verify_signature": False}
+        )
+        assert access_payload["req_userinfo_claims"] == ["email"]
+
+        resp = client.get(
+            "/userinfo",
+            headers={"Authorization": "Bearer " + refreshed["access_token"]},
+        )
+        assert resp.status_code == 200, resp.data
+        assert json.loads(resp.data)["email"] == "admin@example.org"
+
+    def test_legacy_refresh_token_without_claims_still_works(self):
+        # Refresh tokens minted before #112 carry neither claim: the refresh
+        # succeeds and simply issues tokens without the requested-claims extras.
+        client = _dev_client()
+        tokens = _tokens_via_authcode(client)  # no claims parameter
+        rt = pyjwt.decode(tokens["refresh_token"], options={"verify_signature": False})
+        assert "req_id_token_claims" not in rt
+        assert "req_userinfo_claims" not in rt
+
+        refreshed = self._refresh(client, tokens["refresh_token"])
+        id_payload = pyjwt.decode(refreshed["id_token"], options={"verify_signature": False})
+        assert "email" not in id_payload
+        access_payload = pyjwt.decode(
+            refreshed["access_token"], options={"verify_signature": False}
+        )
+        assert "req_userinfo_claims" not in access_payload
+
+    def test_claims_request_survives_scope_narrowing(self):
+        # Deliberate semantic decision (documented in _grant_refresh_token and
+        # tokens.md): a claims request binds to the original authorization and
+        # is orthogonal to scope (OIDC Core 5.5), so narrowing the scope on
+        # refresh does NOT shed it. Under stricter-dev this is observable:
+        # email would be scope-gated out after dropping the email scope, yet
+        # the persisted userinfo claims request keeps forcing it back in.
+        from nanoidp.config import get_config
+        from nanoidp.services.token import get_token_service
+
+        app = create_app(profile="stricter-dev")
+        app.config["TESTING"] = True
+        client = app.test_client()
+
+        # 1. original grant: scope "openid email" + userinfo claims request
+        original = get_token_service().create_token(
+            get_config().get_user("admin"),
+            scope="openid email",
+            client_id="demo-client",
+            userinfo_claims=["email"],
+        )
+
+        # 2. refresh narrowing the scope to "openid" (drops email)
+        narrowed = self._refresh(
+            client, original["refresh_token"], extra_form={"scope": "openid"}
+        )
+        assert narrowed["scope"] == "openid"
+
+        # 3. the narrowed access token still carries the claims request
+        access_payload = pyjwt.decode(
+            narrowed["access_token"], options={"verify_signature": False}
+        )
+        assert access_payload["scope"] == "openid"
+        assert access_payload["req_userinfo_claims"] == ["email"]
+
+        # 4. /userinfo keeps honouring it despite the dropped email scope
+        resp = client.get(
+            "/userinfo",
+            headers={"Authorization": "Bearer " + narrowed["access_token"]},
+        )
+        assert resp.status_code == 200, resp.data
+        assert json.loads(resp.data)["email"] == "admin@example.org"
+
+        # 5. a second refresh after the narrowing keeps the request through
+        #    rotation as well
+        narrowed2 = self._refresh(client, narrowed["refresh_token"])
+        access_payload2 = pyjwt.decode(
+            narrowed2["access_token"], options={"verify_signature": False}
+        )
+        assert access_payload2["req_userinfo_claims"] == ["email"]
+        resp2 = client.get(
+            "/userinfo",
+            headers={"Authorization": "Bearer " + narrowed2["access_token"]},
+        )
+        assert resp2.status_code == 200, resp2.data
+        assert json.loads(resp2.data)["email"] == "admin@example.org"
+
+    def test_forged_refresh_token_with_malformed_claims_refreshes_cleanly(self):
+        # Hand-crafting tokens with the IdP key is a first-class dev workflow:
+        # a refresh token carrying garbage requested-claims values (an int, the
+        # raw §5.5 object instead of names, a bare string) must not 500 after
+        # the token has been consumed - sanitize_claim_names drops the garbage
+        # and the refresh succeeds without it.
+        from nanoidp.config import get_config
+        from nanoidp.services.crypto import get_crypto_service
+
+        client = _dev_client()
+        config = get_config()
+        crypto = get_crypto_service(config.settings.keys_dir)
+        forged = crypto.create_jwt(
+            sub="admin",
+            issuer=config.settings.issuer,
+            audience=config.settings.audience,
+            exp_minutes=60,
+            extra={
+                "token_type": "refresh",
+                "token_use": "refresh",
+                "scope": "openid",
+                "rt_family": "forged-family",
+                "req_id_token_claims": 42,  # non-iterable
+                "req_userinfo_claims": "email",  # bare string, not a list
+            },
+        )
+
+        refreshed = self._refresh(client, forged)
+        id_payload = pyjwt.decode(refreshed["id_token"], options={"verify_signature": False})
+        assert "email" not in id_payload  # the garbage resolved nothing
+        access_payload = pyjwt.decode(
+            refreshed["access_token"], options={"verify_signature": False}
+        )
+        assert "req_userinfo_claims" not in access_payload
+        # ...and a list with mixed entries keeps only the string names
+        forged_mixed = crypto.create_jwt(
+            sub="admin",
+            issuer=config.settings.issuer,
+            audience=config.settings.audience,
+            exp_minutes=60,
+            extra={
+                "token_type": "refresh",
+                "token_use": "refresh",
+                "scope": "openid",
+                "rt_family": "forged-family-2",
+                "req_id_token_claims": ["email", {"essential": True}],
+            },
+        )
+        refreshed = self._refresh(client, forged_mixed)
+        id_payload = pyjwt.decode(refreshed["id_token"], options={"verify_signature": False})
+        assert id_payload["email"] == "admin@example.org"
+
+    def test_userinfo_tolerates_malformed_req_claims_on_access_token(self):
+        # A hand-crafted ACCESS token with a non-list req_userinfo_claims must
+        # not 500 /userinfo (nor leak single-character attribute lookups from
+        # iterating a string).
+        from nanoidp.config import get_config
+        from nanoidp.services.crypto import get_crypto_service
+
+        client = _dev_client()
+        config = get_config()
+        crypto = get_crypto_service(config.settings.keys_dir)
+        for bad in (5, "email", {"email": None}):
+            token = crypto.create_jwt(
+                sub="admin",
+                issuer=config.settings.issuer,
+                audience=config.settings.audience,
+                exp_minutes=5,
+                extra={"req_userinfo_claims": bad},
+            )
+            resp = client.get("/userinfo", headers={"Authorization": f"Bearer {token}"})
+            assert resp.status_code == 200, (bad, resp.data)
 
 
 # --------------------------------------------------------------------------
@@ -247,7 +537,7 @@ class TestReservedClaimsCannotBeSpoofed:
 _RESERVED = [
     "iss", "sub", "aud", "exp", "iat", "nbf", "jti",
     "token_use", "auth_time", "at_hash", "azp", "nonce", "scope",
-    "req_userinfo_claims",
+    "req_userinfo_claims", "req_id_token_claims",
 ]
 
 
