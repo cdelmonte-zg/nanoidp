@@ -21,10 +21,18 @@ import os
 from typing import Any, Optional, Tuple
 
 import jwt as pyjwt
-from mcp.server import Server
+from mcp.server import Server, ServerRequestContext
 from mcp.server.stdio import stdio_server
-from mcp.types import TextContent, Tool
+from mcp.types import (
+    CallToolRequestParams,
+    CallToolResult,
+    ListToolsResult,
+    PaginatedRequestParams,
+    TextContent,
+    Tool,
+)
 
+from . import __version__
 from .config import ConfigManager, OAuthClient, User, init_config
 from .services import (
     build_discovery_document,
@@ -36,8 +44,8 @@ from .services import (
 
 logger = logging.getLogger(__name__)
 
-# Initialize the MCP server
-server = Server("nanoidp")
+# The MCP server itself is constructed at the bottom of this module: the SDK
+# takes its handlers as constructor arguments, so they must be defined first.
 
 # Global config - initialized on startup
 _config: ConfigManager | None = None
@@ -178,10 +186,11 @@ def _normalize_audiences(value: Any) -> list[str]:
 # Tool Definitions
 # =============================================================================
 
-@server.list_tools()
-async def list_tools() -> list[Tool]:
+async def list_tools(
+    ctx: ServerRequestContext, params: PaginatedRequestParams | None
+) -> ListToolsResult:
     """List available MCP tools."""
-    return [
+    return ListToolsResult(tools=[
         # User Management
         Tool(
             name="list_users",
@@ -664,49 +673,69 @@ async def list_tools() -> list[Tool]:
                 "required": [],
             },
         ),
-    ]
+    ])
 
 
 # =============================================================================
 # Tool Implementations
 # =============================================================================
 
-@server.call_tool()
-async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
+def _text_result(payload: dict[str, Any], *, is_error: bool = False) -> CallToolResult:
+    """Serialize a tool payload into the JSON text result clients expect."""
+    return CallToolResult(
+        content=[TextContent(type="text", text=json.dumps(payload, indent=2))],
+        is_error=is_error,
+    )
+
+
+async def call_tool(
+    ctx: ServerRequestContext, params: CallToolRequestParams
+) -> CallToolResult:
     """Handle tool calls with readonly and admin secret checks, plus audit logging."""
     config = _ensure_config()
+    name = params.name
+    # Copied because _check_admin_secret pops admin_secret off it, and params is
+    # a validated protocol model. `arguments` is None when the call carried none.
+    arguments = dict(params.arguments or {})
 
     # Check readonly mode first (completely blocks mutating tools)
     allowed, error_msg = _check_readonly_mode(name)
     if not allowed:
         _log_mcp_tool(name, success=False, details={"error": "readonly_mode", "tool": name})
-        return [TextContent(type="text", text=json.dumps({
+        return _text_result({
             "error": error_msg,
             "code": "MCP_READONLY_MODE",
             "tool": name,
-        }, indent=2))]
+        }, is_error=True)
 
     # Check admin secret for mutating operations
     allowed, error_msg = _check_admin_secret(name, arguments)
     if not allowed:
         _log_mcp_tool(name, success=False, details={"error": "admin_secret_required"})
-        return [TextContent(type="text", text=json.dumps({
+        return _text_result({
             "error": error_msg,
             "code": "MCP_ADMIN_SECRET_REQUIRED",
             "tool": name,
-        }, indent=2))]
+        }, is_error=True)
 
     try:
         result = await _execute_tool(name, arguments, config)
         _log_mcp_tool(name, success=True, details={"tool": name})
-        return [TextContent(type="text", text=json.dumps(result, indent=2))]
+        return _text_result(result)
     except Exception as e:
+        # The SDK no longer turns handler exceptions into is_error results, so a
+        # bare raise here would reach the client as a JSON-RPC error instead.
         logger.exception(f"Error executing tool {name}")
         _log_mcp_tool(name, success=False, details={"error": str(e)})
-        return [TextContent(type="text", text=json.dumps({
-            "error": str(e),
-            "tool": name,
-        }, indent=2))]
+        return _text_result({"error": str(e), "tool": name}, is_error=True)
+
+
+server = Server(
+    "nanoidp",
+    version=__version__,
+    on_list_tools=list_tools,
+    on_call_tool=call_tool,
+)
 
 
 async def _execute_tool(name: str, arguments: dict[str, Any], config: ConfigManager) -> dict[str, Any]:

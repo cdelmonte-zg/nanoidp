@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- **Migrated the MCP server to the mcp 2.0 SDK** and pinned `mcp>=2,<3`. mcp 2.0
+  replaced the lowlevel `Server` decorators (`@server.list_tools()` /
+  `@server.call_tool()`) with `on_*` constructor parameters, so a fresh install
+  resolving to 2.0 could not import `nanoidp.mcp_server` at all. Handlers now
+  take `(ctx, params)` and return `ListToolsResult` / `CallToolResult` instead
+  of relying on the SDK's removed return-value wrapping. The tool set, tool
+  schemas, readonly mode, and the admin-secret gate are unchanged, and the
+  stdio transport and `nanoidp-mcp` entry point are untouched.
+- **Rejected and failed MCP tool calls now set `is_error: true`.** mcp 2.0 no
+  longer converts a handler exception into an error-flagged result, so nanoidp
+  builds it explicitly - and readonly-mode and admin-secret rejections, which
+  previously came back as successful results whose JSON body happened to carry
+  an `error` key, are now flagged too. The response body is unchanged.
+
 ## [2.5.0] - 2026-07-19
 
 ### Added
