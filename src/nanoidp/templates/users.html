@@ -33,6 +33,7 @@
                         <th>Email</th>
                         <th>Identity Class</th>
                         <th>Roles</th>
+                        <th>Groups</th>
                         <th>Entitlements</th>
                         <th>ACL</th>
                         <th>Quick Token</th>
@@ -41,7 +42,7 @@
                 </thead>
                 <tbody id="usersTable">
                     {% for username, user in users.items() %}
-                    <tr class="user-row" data-search="{{ username }} {{ user.email }} {{ user.identity_class or '' }} {{ user.roles|join(' ') }} {{ user.tenant }}">
+                    <tr class="user-row" data-search="{{ username }} {{ user.email }} {{ user.identity_class or '' }} {{ user.roles|join(' ') }} {{ user.groups|join(' ') }} {{ user.tenant }}">
                         <td>
                             <div class="d-flex align-items-center">
                                 <div class="user-avatar me-2" style="width: 32px; height: 32px; font-size: 0.8rem;">
@@ -63,6 +64,13 @@
                         <td>
                             {% for role in user.roles %}
                             <span class="badge bg-primary me-1">{{ role }}</span>
+                            {% endfor %}
+                        </td>
+                        <td>
+                            {% for group in user.groups %}
+                            <span class="badge bg-secondary me-1">{{ group }}</span>
+                            {% else %}
+                            <span class="text-muted">-</span>
                             {% endfor %}
                         </td>
                         <td>
@@ -118,6 +126,7 @@
                 <ul class="list-unstyled">
                     <li><strong>Entitlements</strong> - Feature-based access control</li>
                     <li><strong>Roles</strong> - Role-based access control (RBAC)</li>
+                    <li><strong>Groups</strong> - Group-based access control</li>
                     <li><strong>ACL</strong> - Data source access control lists</li>
                     <li><strong>Attributes</strong> - Attribute-based access control (ABAC)</li>
                 </ul>

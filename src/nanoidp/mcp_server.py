@@ -137,6 +137,7 @@ def _user_to_dict(user: User) -> dict[str, Any]:
         "username": user.username,
         "email": user.email,
         "roles": user.roles,
+        "groups": user.groups,
         "tenant": user.tenant,
         "identity_class": user.identity_class,
         "entitlements": user.entitlements,
@@ -229,6 +230,11 @@ async def list_tools() -> list[Tool]:
                         "items": {"type": "string"},
                         "description": "List of roles (optional, default: ['USER'])",
                     },
+                    "groups": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "List of groups (optional)",
+                    },
                     "tenant": {
                         "type": "string",
                         "description": "Tenant identifier (optional, default: 'default')",
@@ -287,6 +293,11 @@ async def list_tools() -> list[Tool]:
                         "type": "array",
                         "items": {"type": "string"},
                         "description": "New roles list (optional)",
+                    },
+                    "groups": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "New groups list (optional)",
                     },
                     "tenant": {
                         "type": "string",
@@ -539,6 +550,22 @@ async def list_tools() -> list[Tool]:
                         "type": "boolean",
                         "description": "Enable/disable SAML response signing",
                     },
+                    "saml_export_roles": {
+                        "type": "boolean",
+                        "description": "Emit the user's roles as a SAML attribute (off by default)",
+                    },
+                    "saml_export_groups": {
+                        "type": "boolean",
+                        "description": "Emit the user's groups as a SAML attribute (off by default)",
+                    },
+                    "saml_roles_attr_name": {
+                        "type": "string",
+                        "description": "SAML attribute name for the roles (default: 'roles')",
+                    },
+                    "saml_groups_attr_name": {
+                        "type": "string",
+                        "description": "SAML attribute name for the groups (default: 'groups')",
+                    },
                     "saml_c14n_algorithm": {
                         "type": "string",
                         "enum": ["c14n", "c14n11", "exc_c14n"],
@@ -738,6 +765,7 @@ async def _execute_tool(name: str, arguments: dict[str, Any], config: ConfigMana
             password=arguments["password"],
             email=arguments.get("email", ""),
             roles=arguments.get("roles", ["USER"]),
+            groups=arguments.get("groups", []),
             tenant=arguments.get("tenant", "default"),
             identity_class=arguments.get("identity_class"),
             entitlements=arguments.get("entitlements", []),
@@ -766,6 +794,8 @@ async def _execute_tool(name: str, arguments: dict[str, Any], config: ConfigMana
             user.email = arguments["email"]
         if "roles" in arguments:
             user.roles = arguments["roles"]
+        if "groups" in arguments:
+            user.groups = arguments["groups"]
         if "tenant" in arguments:
             user.tenant = arguments["tenant"]
         if "identity_class" in arguments:
@@ -920,6 +950,10 @@ async def _execute_tool(name: str, arguments: dict[str, Any], config: ConfigMana
                     settings.saml_want_authn_requests_signed
                 ),
                 "sp_certificates": settings.saml_sp_certificates,
+                "export_roles": settings.saml_export_roles,
+                "export_groups": settings.saml_export_groups,
+                "roles_attr_name": settings.saml_roles_attr_name,
+                "groups_attr_name": settings.saml_groups_attr_name,
             },
             "logging": {
                 "verbose_logging": settings.verbose_logging,
@@ -950,6 +984,18 @@ async def _execute_tool(name: str, arguments: dict[str, Any], config: ConfigMana
         if "saml_c14n_algorithm" in arguments:
             settings.saml_c14n_algorithm = arguments["saml_c14n_algorithm"]
             updated.append("saml_c14n_algorithm")
+        if "saml_export_roles" in arguments:
+            settings.saml_export_roles = arguments["saml_export_roles"]
+            updated.append("saml_export_roles")
+        if "saml_export_groups" in arguments:
+            settings.saml_export_groups = arguments["saml_export_groups"]
+            updated.append("saml_export_groups")
+        if "saml_roles_attr_name" in arguments:
+            settings.saml_roles_attr_name = arguments["saml_roles_attr_name"]
+            updated.append("saml_roles_attr_name")
+        if "saml_groups_attr_name" in arguments:
+            settings.saml_groups_attr_name = arguments["saml_groups_attr_name"]
+            updated.append("saml_groups_attr_name")
         if "strict_saml_binding" in arguments:
             settings.strict_saml_binding = arguments["strict_saml_binding"]
             updated.append("strict_saml_binding")
@@ -989,6 +1035,10 @@ async def _execute_tool(name: str, arguments: dict[str, Any], config: ConfigMana
                     settings.saml_want_authn_requests_signed
                 ),
                 "saml_sp_certificates": settings.saml_sp_certificates,
+                "saml_export_roles": settings.saml_export_roles,
+                "saml_export_groups": settings.saml_export_groups,
+                "saml_roles_attr_name": settings.saml_roles_attr_name,
+                "saml_groups_attr_name": settings.saml_groups_attr_name,
                 "verbose_logging": settings.verbose_logging,
             },
         }

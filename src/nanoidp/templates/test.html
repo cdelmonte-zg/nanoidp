@@ -408,6 +408,18 @@ function displayAuthorityMapping(payload) {
         });
     }
 
+    // Groups mapping
+    if (payload.groups && payload.groups.length > 0) {
+        payload.groups.forEach(group => {
+            mappings.push({
+                source: 'groups',
+                value: group,
+                authority: `GROUP_${group}`,
+                badgeClass: 'bg-secondary'
+            });
+        });
+    }
+
     // Identity class mapping
     if (payload.identity_class) {
         mappings.push({
@@ -492,6 +504,7 @@ document.getElementById('username').addEventListener('change', async (e) => {
             <table class="table table-sm mb-0">
                 <tr><td class="text-muted">Identity Class</td><td>${user.identity_class || '-'}</td></tr>
                 <tr><td class="text-muted">Roles</td><td>${user.roles.join(', ') || '-'}</td></tr>
+                <tr><td class="text-muted">Groups</td><td>${(user.groups || []).join(', ') || '-'}</td></tr>
                 <tr><td class="text-muted">Entitlements</td><td>${user.entitlements.length} items</td></tr>
                 <tr><td class="text-muted">ACLs</td><td>${user.source_acl.length} items</td></tr>
                 <tr><td class="text-muted">Authorities</td><td><strong>${user.authorities.length}</strong> total</td></tr>

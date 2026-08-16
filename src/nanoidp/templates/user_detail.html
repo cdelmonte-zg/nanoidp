@@ -78,11 +78,11 @@
         </div>
     </div>
 
-    <!-- Roles & Entitlements -->
+    <!-- Roles, Groups & Entitlements -->
     <div class="col-md-6">
         <div class="card h-100">
             <div class="card-header">
-                <i class="bi bi-shield-check me-2"></i>Roles & Entitlements
+                <i class="bi bi-shield-check me-2"></i>Roles, Groups & Entitlements
             </div>
             <div class="card-body">
                 <h6 class="text-muted mb-2">Roles</h6>
@@ -91,6 +91,15 @@
                     <span class="badge bg-primary me-1 mb-1">{{ role }}</span>
                     {% else %}
                     <span class="text-muted">No roles</span>
+                    {% endfor %}
+                </div>
+
+                <h6 class="text-muted mb-2">Groups</h6>
+                <div class="mb-3">
+                    {% for group in user.groups %}
+                    <span class="badge bg-secondary me-1 mb-1">{{ group }}</span>
+                    {% else %}
+                    <span class="text-muted">No groups</span>
                     {% endfor %}
                 </div>
 

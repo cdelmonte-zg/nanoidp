@@ -26,6 +26,12 @@
                     </div>
 
                     <div class="mb-3">
+                        <label for="prefix_groups" class="form-label">Groups Prefix</label>
+                        <input type="text" class="form-control" id="prefix_groups" name="prefix_groups"
+                               value="{{ settings.authority_prefixes.get('groups', 'GROUP_') }}">
+                    </div>
+
+                    <div class="mb-3">
                         <label for="prefix_identity_class" class="form-label">Identity Class Prefix</label>
                         <input type="text" class="form-control" id="prefix_identity_class" name="prefix_identity_class"
                                value="{{ settings.authority_prefixes.get('identity_class', 'IDENTITY_') }}">
@@ -44,7 +50,7 @@
                     <p class="text-muted small">Add prefixes for custom user attributes. If a user's custom attribute key matches one of these, it will be added to authorities.</p>
 
                     <div id="prefixes-container">
-                        {% set core_prefixes = ['roles', 'identity_class', 'entitlements'] %}
+                        {% set core_prefixes = ['roles', 'groups', 'identity_class', 'entitlements'] %}
                         {% for key, value in settings.authority_prefixes.items() %}
                         {% if key not in core_prefixes %}
                         <div class="row g-2 mb-2 prefix-row">
@@ -127,6 +133,11 @@
                             <td>roles</td>
                             <td><code>roles</code></td>
                             <td><code>ROLE_ADMIN</code></td>
+                        </tr>
+                        <tr>
+                            <td>groups</td>
+                            <td><code>groups</code></td>
+                            <td><code>GROUP_ENGINEERING</code></td>
                         </tr>
                         <tr>
                             <td>identity_class</td>

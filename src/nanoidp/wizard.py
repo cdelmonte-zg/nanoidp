@@ -203,6 +203,8 @@ users:
     roles:
       - "USER"
       - "ADMIN"
+    groups:
+      - "ADMINISTRATORS"
     tenant: "default"
     source_acl:
       - "ACL_READ"
@@ -235,9 +237,15 @@ saml:
   entity_id: "{issuer}/saml"
   sso_url: "{issuer}/saml/sso"
   default_acs_url: "http://localhost:8080/login/saml2/sso/nanoidp"
+  # Roles/groups are not standard SAML attributes; enable and name them here.
+  export_roles: false
+  export_groups: false
+  roles_attr_name: "roles"
+  groups_attr_name: "groups"
 
 authority_prefixes:
   roles: "ROLE_"
+  groups: "GROUP_"
   identity_class: "IDENTITY_"
   entitlements: "ENT_"
 """

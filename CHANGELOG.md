@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **First-class group support**: users gain a `groups` list alongside `roles`,
+  modelled exactly the same way. It is loaded from and persisted to
+  `users.yaml` (omitted when empty), emitted as a `groups` claim on the access
+  token and from `/userinfo`, requestable in the ID Token via the OIDC `claims`
+  parameter, advertised in `claims_supported`, and flattened into `authorities`
+  using the new `groups` authority prefix (default `GROUP_`, editable on the
+  Claims page). Groups are editable from the user form, shown on the users list
+  and user detail pages, exposed by `/api/users`, and settable through the MCP
+  `create_user` / `update_user` tools. Users without groups behave exactly as
+  before: no claim, no authorities, nothing written to YAML.
+- **Optional SAML export of roles and groups**: new `saml.export_roles` /
+  `saml.export_groups` toggles (both off by default, so the previous behaviour
+  is preserved) with companion `saml.roles_attr_name` / `saml.groups_attr_name`
+  settings defaulting to `roles` and `groups`. Roles and groups are not
+  standard SAML attributes and every SP expects a different name, so the name
+  is configurable; blanking it restores the default. Both toggles are on the
+  Settings page and the MCP `update_settings` tool, and apply to both the SSO
+  assertion and the AttributeQuery endpoint, with one `AttributeValue` per
+  entry.
+
 ## [2.5.0] - 2026-07-19
 
 ### Added
