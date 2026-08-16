@@ -85,6 +85,8 @@ def resolve_user_claim(user: User, name: str) -> tuple[bool, Any]:
         return True, user.username
     if name == "roles":
         return True, user.roles
+    if name == "groups":
+        return (True, user.groups) if user.groups else (False, None)
     if name == "tenant":
         return True, user.tenant
     if name == "identity_class":
@@ -112,6 +114,11 @@ class TokenService:
         role_prefix = prefixes.get("roles", "ROLE_")
         if user.roles:
             authorities.extend([f"{role_prefix}{role.upper()}" for role in user.roles])
+
+        # Add GROUP_ prefix for user groups
+        group_prefix = prefixes.get("groups", "GROUP_")
+        if user.groups:
+            authorities.extend([f"{group_prefix}{group.upper()}" for group in user.groups])
 
         # Add IDENTITY_ prefix for identity class
         identity_prefix = prefixes.get("identity_class", "IDENTITY_")
@@ -244,6 +251,8 @@ class TokenService:
             extra["identity_class"] = user.identity_class
         if user.entitlements:
             extra["entitlements"] = user.entitlements
+        if user.groups:
+            extra["groups"] = user.groups
         if user.source_acl:
             extra["source_acl"] = user.source_acl
 

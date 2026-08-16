@@ -1498,3 +1498,243 @@ class TestSAMLFlowsComprehensive:
             "Metadata should advertise HTTP-POST binding"
         assert "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect" in bindings, \
             "Metadata should advertise HTTP-Redirect binding"
+
+
+class TestSAMLRolesGroupsExport:
+    """Roles and groups are opt-in SAML attributes: the export flags decide
+    whether they are emitted, the *_attr_name settings decide under which name."""
+
+    ADFS_ROLE_ATTR = "http://schemas.microsoft.com/ws/2008/06/identity/claims/role"
+
+    @pytest.fixture
+    def saml_settings(self, client):
+        """Yield the live settings; the reset_singletons fixture drops the
+        mutated config after the test."""
+        from nanoidp.config import get_config
+
+        with client.session_transaction() as sess:
+            sess['user'] = 'admin'
+        settings = get_config().settings
+        settings.saml_sign_responses = False
+        return settings
+
+    def _sso_assertion(self, client):
+        """Run an authenticated SSO round-trip and return the parsed Response."""
+        import re
+
+        saml_request = """<?xml version="1.0" encoding="UTF-8"?>
+<samlp:AuthnRequest
+    xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"
+    xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion"
+    ID="_req123"
+    Version="2.0"
+    IssueInstant="2025-01-01T00:00:00Z"
+    AssertionConsumerServiceURL="http://sp.example.com/acs">
+    <saml:Issuer>http://sp.example.com</saml:Issuer>
+</samlp:AuthnRequest>"""
+        compressed = zlib.compress(saml_request.encode('utf-8'))[2:-4]
+        response = client.post('/saml/sso', data={
+            'SAMLRequest': base64.b64encode(compressed).decode('ascii')
+        })
+        assert response.status_code == 200
+
+        match = re.search(
+            r'name="SAMLResponse"\s+value="([^"]+)"', response.data.decode('utf-8')
+        )
+        assert match, "SAMLResponse not found in form"
+        return etree.fromstring(base64.b64decode(match.group(1)))
+
+    def _attribute_values(self, root, name):
+        for attr in root.findall(".//saml2:Attribute", SAML_NS):
+            if attr.get("Name") == name:
+                return [v.text for v in attr.findall("saml2:AttributeValue", SAML_NS)]
+        return None
+
+    def test_sso_omits_roles_and_groups_by_default(self, client, saml_settings):
+        saml_settings.saml_export_roles = False
+        saml_settings.saml_export_groups = False
+
+        root = self._sso_assertion(client)
+        names = [a.get("Name") for a in root.findall(".//saml2:Attribute", SAML_NS)]
+        assert 'roles' not in names
+        assert 'groups' not in names
+
+    def test_sso_exports_roles_when_enabled(self, client, saml_settings):
+        saml_settings.saml_export_roles = True
+        saml_settings.saml_export_groups = False
+
+        root = self._sso_assertion(client)
+        assert self._attribute_values(root, "roles") == ["USER", "ADMIN"]
+        assert self._attribute_values(root, "groups") is None
+
+    def test_sso_exports_groups_when_enabled(self, client, saml_settings):
+        saml_settings.saml_export_roles = False
+        saml_settings.saml_export_groups = True
+
+        root = self._sso_assertion(client)
+        assert self._attribute_values(root, "groups") == ["ADMINISTRATORS", "EVERYONE"]
+        assert self._attribute_values(root, "roles") is None
+
+    def test_attribute_names_default_to_roles_and_groups(self, client, saml_settings):
+        assert saml_settings.saml_roles_attr_name == "roles"
+        assert saml_settings.saml_groups_attr_name == "groups"
+
+    def test_sso_supports_non_standard_attribute_names(self, client, saml_settings):
+        """SPs expect wildly different names (ADFS, Shibboleth OIDs, ...)."""
+        saml_settings.saml_export_roles = True
+        saml_settings.saml_export_groups = True
+        saml_settings.saml_roles_attr_name = self.ADFS_ROLE_ATTR
+        saml_settings.saml_groups_attr_name = "urn:oid:1.3.6.1.4.1.5923.1.5.1.1"
+
+        root = self._sso_assertion(client)
+        assert self._attribute_values(root, self.ADFS_ROLE_ATTR) == ["USER", "ADMIN"]
+        assert self._attribute_values(root, "urn:oid:1.3.6.1.4.1.5923.1.5.1.1") == [
+            "ADMINISTRATORS", "EVERYONE"
+        ]
+
+    def test_name_alone_does_not_enable_the_export(self, client, saml_settings):
+        """The name is only a name; the flag is the switch."""
+        saml_settings.saml_export_roles = False
+        saml_settings.saml_roles_attr_name = self.ADFS_ROLE_ATTR
+
+        root = self._sso_assertion(client)
+        assert self._attribute_values(root, self.ADFS_ROLE_ATTR) is None
+
+    def test_sso_skips_export_for_user_without_groups(self, client, saml_settings):
+        from nanoidp.config import get_config
+
+        saml_settings.saml_export_roles = True
+        saml_settings.saml_export_groups = True
+        get_config().get_user("admin").groups = []
+
+        root = self._sso_assertion(client)
+        assert self._attribute_values(root, "roles") == ["USER", "ADMIN"]
+        assert self._attribute_values(root, "groups") is None
+
+    def test_blank_attribute_name_falls_back_to_the_default(self):
+        """A blank configured name must not produce an empty attribute name."""
+        from nanoidp.models import Settings
+
+        normalized = Settings(saml_roles_attr_name="   ", saml_groups_attr_name="")
+        assert normalized.saml_roles_attr_name == "roles"
+        assert normalized.saml_groups_attr_name == "groups"
+
+    def test_attribute_query_exports_roles_and_groups(self, client, saml_settings):
+        saml_settings.saml_export_roles = True
+        saml_settings.saml_export_groups = True
+
+        query = """<?xml version="1.0" encoding="UTF-8"?>
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+    <soap:Body>
+        <saml2p:AttributeQuery
+            xmlns:saml2p="urn:oasis:names:tc:SAML:2.0:protocol"
+            xmlns:saml2="urn:oasis:names:tc:SAML:2.0:assertion"
+            ID="_req123"
+            Version="2.0"
+            IssueInstant="2025-01-01T00:00:00Z">
+            <saml2:Issuer>http://sp.example.com</saml2:Issuer>
+            <saml2:Subject>
+                <saml2:NameID>admin</saml2:NameID>
+            </saml2:Subject>
+        </saml2p:AttributeQuery>
+    </soap:Body>
+</soap:Envelope>"""
+        response = client.post(
+            '/saml/attribute-query', data=query, content_type='text/xml'
+        )
+        assert response.status_code == 200
+
+        root = etree.fromstring(response.data)
+        # The route comma-joins, then the response builder splits back out into
+        # one AttributeValue per entry (same handling as entitlements).
+        assert self._attribute_values(root, "roles") == ["USER", "ADMIN"]
+        assert self._attribute_values(root, "groups") == ["ADMINISTRATORS", "EVERYONE"]
+
+
+class TestSAMLAttributeNameSettingsUI:
+    """The export toggles and attribute names are editable from the settings page."""
+
+    def _base_form(self, settings) -> dict:
+        return {
+            "issuer": settings.issuer,
+            "audience": settings.audience,
+            "token_expiry_minutes": settings.token_expiry_minutes,
+            "saml_entity_id": settings.saml_entity_id,
+            "saml_sso_url": settings.saml_sso_url,
+            "default_acs_url": settings.default_acs_url,
+            "saml_sign_responses": "true",
+            "allowed_identity_classes": "INTERNAL\nEXTERNAL",
+        }
+
+    def test_settings_page_renders_the_fields(self, client):
+        with client.session_transaction() as sess:
+            sess['user'] = 'admin'
+        response = client.get('/settings')
+
+        assert response.status_code == 200
+        assert b'name="saml_export_roles"' in response.data
+        assert b'name="saml_export_groups"' in response.data
+        assert b'name="saml_roles_attr_name"' in response.data
+        assert b'name="saml_groups_attr_name"' in response.data
+
+    def test_settings_post_enables_and_names_the_exports(
+        self, client, preserve_config_files
+    ):
+        from nanoidp.config import get_config
+
+        with client.session_transaction() as sess:
+            sess['user'] = 'admin'
+        config = get_config()
+
+        response = client.post('/settings', data={
+            **self._base_form(config.settings),
+            "saml_export_roles": "true",
+            "saml_export_groups": "true",
+            "saml_roles_attr_name": "Role",
+            "saml_groups_attr_name": "memberOf",
+        }, follow_redirects=True)
+        assert response.status_code == 200
+        config.reload()
+        assert config.settings.saml_export_roles is True
+        assert config.settings.saml_export_groups is True
+        assert config.settings.saml_roles_attr_name == "Role"
+        assert config.settings.saml_groups_attr_name == "memberOf"
+
+    def test_settings_post_unchecked_toggles_disable_the_exports(
+        self, client, preserve_config_files
+    ):
+        """Checkbox semantics: an absent field means off, and off is persisted."""
+        from nanoidp.config import get_config
+
+        with client.session_transaction() as sess:
+            sess['user'] = 'admin'
+        config = get_config()
+        config.settings.saml_export_roles = True
+        config.settings.saml_export_groups = True
+
+        response = client.post(
+            '/settings', data=self._base_form(config.settings), follow_redirects=True
+        )
+        assert response.status_code == 200
+        config.reload()
+        assert config.settings.saml_export_roles is False
+        assert config.settings.saml_export_groups is False
+
+    def test_blank_name_field_restores_the_default(self, client, preserve_config_files):
+        from nanoidp.config import get_config
+
+        with client.session_transaction() as sess:
+            sess['user'] = 'admin'
+        config = get_config()
+
+        client.post('/settings', data={
+            **self._base_form(config.settings),
+            "saml_roles_attr_name": "Role",
+        }, follow_redirects=True)
+        client.post('/settings', data={
+            **self._base_form(config.settings),
+            "saml_roles_attr_name": "",
+        }, follow_redirects=True)
+
+        config.reload()
+        assert config.settings.saml_roles_attr_name == "roles"
