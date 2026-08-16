@@ -156,6 +156,7 @@ class YamlWriter:
     def update_oauth_settings(
         self,
         issuer: Optional[str] = None,
+        issuer_from_request: Optional[bool] = None,
         audience: Optional[str] = None,
         token_expiry_minutes: Optional[int] = None,
         require_pkce: Optional[bool] = None,
@@ -167,6 +168,8 @@ class YamlWriter:
 
         if issuer is not None:
             oauth["issuer"] = issuer
+        if issuer_from_request is not None:
+            oauth["issuer_from_request"] = issuer_from_request
         if audience is not None:
             oauth["audience"] = audience
         if token_expiry_minutes is not None:

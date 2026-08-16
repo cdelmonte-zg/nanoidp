@@ -27,6 +27,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Settings page and the MCP `update_settings` tool, and apply to both the SSO
   assertion and the AttributeQuery endpoint, with one `AttributeValue` per
   entry.
+- **`oauth.issuer_from_request`** (off by default): when enabled, the
+  discovery document's `issuer`, every minted token's `iss`, and the device
+  flow's `verification_uri` are derived from the incoming request's own Host
+  header instead of the fixed `oauth.issuer`. Lets the same NanoIDP be
+  reachable under more than one hostname (e.g. a Docker Compose service name
+  from other containers and `localhost` from the host browser) without a
+  discovery/token issuer mismatch - each hostname advertises and issues
+  tokens against itself. The MCP `get_oidc_discovery`/`get_settings` tools
+  have no request of their own and always report the fixed `issuer`.
 
 ### Changed
 - **Migrated the MCP server to the mcp 2.0 SDK** and pinned `mcp>=2,<3`. mcp 2.0

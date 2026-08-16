@@ -121,6 +121,16 @@ class Settings(BaseModel):
 
     # OAuth
     issuer: str = Field(default="http://localhost:8000", description="OAuth issuer URL")
+    issuer_from_request: bool = Field(
+        default=False,
+        description="Derive the issuer (discovery 'issuer', token 'iss', device "
+        "verification_uri) from each request's own Host header instead of the "
+        "fixed 'issuer' above. Lets the same NanoIDP be reachable under more "
+        "than one hostname (e.g. Docker Compose service name vs. localhost) "
+        "without a discovery/token issuer mismatch. Off by default; the MCP "
+        "tools have no request to derive from and always report the fixed "
+        "'issuer'.",
+    )
     audience: str = Field(default="default", min_length=1, description="OAuth audience")
     token_expiry_minutes: int = Field(default=60, gt=0, le=1440, description="Token expiry in minutes")
     refresh_token_rotation: bool = Field(

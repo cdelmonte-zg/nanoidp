@@ -96,6 +96,7 @@ def apply_settings_document(
 
     oauth = document.setdefault("oauth", {})
     oauth["issuer"] = settings.issuer
+    oauth["issuer_from_request"] = settings.issuer_from_request
     oauth["audience"] = settings.audience
     oauth["token_expiry_minutes"] = settings.token_expiry_minutes
     oauth["refresh_token_rotation"] = settings.refresh_token_rotation

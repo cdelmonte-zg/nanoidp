@@ -503,6 +503,7 @@ def settings() -> ResponseReturnValue:
         # OAuth settings
         yaml_writer.update_oauth_settings(
             issuer=request.form.get("issuer"),
+            issuer_from_request=request.form.get("issuer_from_request") == "true",
             audience=request.form.get("audience"),
             token_expiry_minutes=int(request.form.get("token_expiry_minutes", 60)),
             require_pkce=request.form.get("require_pkce") == "true",

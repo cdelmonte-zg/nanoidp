@@ -51,6 +51,14 @@ server:
 
 oauth:
   issuer: "http://localhost:8000"
+  issuer_from_request: false    # true: derive issuer/iss/verification_uri from
+                                 # each request's own Host header instead of the
+                                 # fixed issuer above - lets the same NanoIDP be
+                                 # reachable under more than one hostname (e.g. a
+                                 # Docker Compose service name vs. localhost) without
+                                 # a discovery/token issuer mismatch. MCP tools have
+                                 # no request of their own and always report the
+                                 # fixed issuer.
   audience: "my-app"            # access token "aud" (resource audience, RFC 9068)
   token_expiry_minutes: 60
   refresh_token_rotation: false # true: each refresh invalidates the used refresh token

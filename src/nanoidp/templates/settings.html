@@ -24,6 +24,16 @@
                     </div>
 
                     <div class="mb-3">
+                        <div class="form-check form-switch">
+                            <input class="form-check-input" type="checkbox" role="switch"
+                                   id="issuer_from_request" name="issuer_from_request" value="true"
+                                   {% if settings.issuer_from_request %}checked{% endif %}>
+                            <label class="form-check-label" for="issuer_from_request">Derive Issuer from Request</label>
+                        </div>
+                        <div class="form-text">Use each request's own Host header instead of the Issuer URL above (discovery, tokens, device flow all agree per-hostname; dev convenience for setups reachable under more than one hostname).</div>
+                    </div>
+
+                    <div class="mb-3">
                         <label for="audience" class="form-label">Audience</label>
                         <input type="text" class="form-control" id="audience" name="audience"
                                value="{{ settings.audience }}">
@@ -252,6 +262,7 @@ function updatePreview() {
     const preview = {
         oauth: {
             issuer: document.getElementById('issuer').value,
+            issuer_from_request: document.getElementById('issuer_from_request').checked,
             audience: document.getElementById('audience').value,
             token_expiry_minutes: parseInt(document.getElementById('token_expiry_minutes').value) || 60,
             require_pkce: document.getElementById('require_pkce').checked,

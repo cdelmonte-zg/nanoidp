@@ -137,6 +137,7 @@ class ConfigManager:
             debug=server.get("debug", False),
             # OAuth
             issuer=oauth.get("issuer", "http://localhost:8000"),
+            issuer_from_request=oauth.get("issuer_from_request", False),
             audience=oauth.get("audience", "default"),
             token_expiry_minutes=oauth.get("token_expiry_minutes", 60),
             refresh_token_rotation=oauth.get("refresh_token_rotation", False),

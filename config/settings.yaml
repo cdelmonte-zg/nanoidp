@@ -3,7 +3,7 @@ server:
   port: ${PORT:8000}
   debug: false
 oauth:
-  issuer: http://localhost:${PORT:8000}
+  issuer: http://localhost:8000
   audience: my-app
   token_expiry_minutes: 60
   clients:
@@ -21,21 +21,24 @@ oauth:
     - urn:service:billing
   - client_id: registered-client
     client_secret: registered-secret
-    description: Client with registered redirect URIs (exact matching, issue #67)
+    description: Client with registered redirect URIs (exact matching, issue
     redirect_uris:
     - http://localhost:3000/callback
+  issuer_from_request: false
+  require_pkce: false
+  refresh_token_rotation: false
 saml:
-  entity_id: http://localhost:${PORT:8000}/saml
-  sso_url: http://localhost:${PORT:8000}/saml/sso
+  entity_id: http://localhost:8000/saml
+  sso_url: http://localhost:8000/saml/sso
   default_acs_url: http://localhost:8080/login/saml2/sso/nanoidp
   sign_responses: true
   c14n_algorithm: exc_c14n
   strict_binding: false
-  # Roles/groups are not standard SAML attributes; enable and name them here.
   export_roles: false
   export_groups: false
   roles_attr_name: roles
   groups_attr_name: groups
+  want_authn_requests_signed: false
 jwt:
   algorithm: RS256
   keys_dir: ./keys

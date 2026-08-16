@@ -547,6 +547,14 @@ _TOOLS: list[Tool] = [
                     "type": "string",
                     "description": "OAuth2/OIDC issuer URL",
                 },
+                "issuer_from_request": {
+                        "type": "boolean",
+                        "description": "Derive the issuer from each request's own Host "
+                        "header instead of the fixed 'issuer' (dev convenience for "
+                        "setups reachable under more than one hostname). MCP tools "
+                        "have no request of their own, so this only affects HTTP "
+                        "discovery/token/device-flow responses, never MCP ones.",
+                },
                 "audience": {
                     "type": "string",
                     "description": "Default token audience",
@@ -1001,6 +1009,7 @@ async def _execute_tool(name: str, arguments: dict[str, Any], config: ConfigMana
         settings = config.settings
         return {
             "issuer": settings.issuer,
+            "issuer_from_request": settings.issuer_from_request,
             "audience": settings.audience,
             "token_expiry_minutes": settings.token_expiry_minutes,
             "security_profile": settings.security_profile,
@@ -1039,6 +1048,9 @@ async def _execute_tool(name: str, arguments: dict[str, Any], config: ConfigMana
         if "issuer" in arguments:
             settings.issuer = arguments["issuer"]
             updated.append("issuer")
+        if "issuer_from_request" in arguments:
+            settings.issuer_from_request = arguments["issuer_from_request"]
+            updated.append("issuer_from_request")
         if "audience" in arguments:
             settings.audience = arguments["audience"]
             updated.append("audience")
@@ -1091,6 +1103,7 @@ async def _execute_tool(name: str, arguments: dict[str, Any], config: ConfigMana
             "updated_fields": updated,
             "current_settings": {
                 "issuer": settings.issuer,
+                "issuer_from_request": settings.issuer_from_request,
                 "audience": settings.audience,
                 "token_expiry_minutes": settings.token_expiry_minutes,
                 "refresh_token_rotation": settings.refresh_token_rotation,
