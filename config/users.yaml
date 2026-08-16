@@ -8,6 +8,7 @@
 #   - identity_class: User identity classification (e.g., INTERNAL, EXTERNAL)
 #   - entitlements: List of entitlements (will be prefixed with ENT_)
 #   - roles: List of user roles (will be prefixed with ROLE_)
+#   - groups: List of user groups (will be prefixed with GROUP_)
 #   - tenant: Tenant identifier
 #   - source_acl: List of ACL entries for data source access control
 #
@@ -30,6 +31,9 @@ users:
     roles:
       - "USER"
       - "ADMIN"
+    groups:
+      - "ADMINISTRATORS"
+      - "EVERYONE"
     tenant: "default"
     source_acl:
       - "ACL_READ"
@@ -51,6 +55,9 @@ users:
       - "DOCUMENT_WRITE"
     roles:
       - "USER"
+    groups:
+      - "SALES"
+      - "EVERYONE"
     tenant: "default"
     source_acl:
       - "ACL_READ"

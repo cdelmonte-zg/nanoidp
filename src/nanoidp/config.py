@@ -147,6 +147,10 @@ class ConfigManager:
             saml_sso_url=saml.get("sso_url", "http://localhost:8000/saml/sso"),
             default_acs_url=saml.get("default_acs_url", "http://localhost:8080/login/saml2/sso/samlIdp"),
             saml_sign_responses=saml.get("sign_responses", True),
+            saml_export_roles=saml.get("export_roles", False),
+            saml_export_groups=saml.get("export_groups", False),
+            saml_roles_attr_name=saml.get("roles_attr_name", "roles"),
+            saml_groups_attr_name=saml.get("groups_attr_name", "groups"),
             saml_c14n_algorithm=saml.get("c14n_algorithm", "exc_c14n"),
             saml_want_authn_requests_signed=saml.get(
                 "want_authn_requests_signed", False
@@ -181,6 +185,7 @@ class ConfigManager:
             )],
             authority_prefixes={
                 "roles": "ROLE_",
+                "groups": "GROUP_",
                 "identity_class": "IDENTITY_",
                 "entitlements": "ENT_",
             },
@@ -205,7 +210,7 @@ class ConfigManager:
             # Extract known fields
             known_fields = {
                 "password", "email", "identity_class", "entitlements",
-                "roles", "tenant", "source_acl", "attributes"
+                "roles", "groups", "tenant", "source_acl", "attributes"
             }
 
             # Get explicit attributes or collect unknown fields as attributes
@@ -223,6 +228,7 @@ class ConfigManager:
                 identity_class=user_data.get("identity_class"),
                 entitlements=user_data.get("entitlements", []),
                 roles=user_data.get("roles", ["USER"]),
+                groups=user_data.get("groups", []),
                 tenant=user_data.get("tenant", "default"),
                 source_acl=user_data.get("source_acl", []),
                 attributes=attributes,

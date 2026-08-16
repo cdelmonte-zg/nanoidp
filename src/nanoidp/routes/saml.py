@@ -509,6 +509,12 @@ def sso() -> ResponseReturnValue:
         "entitlements": user.entitlements,
         "email": user.email,
     }
+    # Roles/groups are opt-in: they have no standard SAML attribute name, so the
+    # SP-specific name is configured alongside the switch.
+    if config.settings.saml_export_roles and user.roles:
+        saml_attrs[config.settings.saml_roles_attr_name] = user.roles
+    if config.settings.saml_export_groups and user.groups:
+        saml_attrs[config.settings.saml_groups_attr_name] = user.groups
     # Add custom attributes
     if user.attributes:
         saml_attrs.update(user.attributes)
@@ -749,6 +755,12 @@ def attribute_query() -> ResponseReturnValue:
             # Add source_acl for data source authorization
             if user.source_acl:
                 attributes["source_acl"] = user.source_acl  # List for multiple values
+
+            # Roles/groups only when explicitly enabled (see /saml/sso)
+            if config.settings.saml_export_roles and user.roles:
+                attributes[config.settings.saml_roles_attr_name] = ",".join(user.roles)
+            if config.settings.saml_export_groups and user.groups:
+                attributes[config.settings.saml_groups_attr_name] = ",".join(user.groups)
 
             # Add custom attributes
             if user.attributes:

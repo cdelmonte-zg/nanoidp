@@ -38,11 +38,11 @@ spring:
 
 ## Test Users
 
-| Username | Password | Roles |
-|----------|----------|-------|
-| `admin` | `admin` | ADMIN, USER |
-| `user` | `user` | USER |
-| `readonly` | `readonly` | VIEWER |
+| Username | Password | Roles | Groups |
+|----------|----------|-------|--------|
+| `admin` | `admin` | ADMIN, USER | ADMINISTRATORS |
+| `user` | `user` | USER | |
+| `readonly` | `readonly` | VIEWER | |
 
 ## SAML Attributes Mapping
 
@@ -51,7 +51,8 @@ NanoIDP sends these SAML attributes:
 | Attribute | Description |
 |-----------|-------------|
 | `email` | User's email address |
-| `roles` | Comma-separated list of roles |
+| `roles` | User's roles, one `AttributeValue` each; requires `saml.export_roles: true` (set in this example) |
+| `groups` | User's groups, one `AttributeValue` each; requires `saml.export_groups: true` (set in this example) |
 | `tenant` | User's tenant |
 | `authorities` | All Spring GrantedAuthorities |
 

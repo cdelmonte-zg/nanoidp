@@ -44,6 +44,7 @@ class TestUserManagement:
         assert hasattr(user, "password")
         assert hasattr(user, "email")
         assert hasattr(user, "roles")
+        assert hasattr(user, "groups")
         assert hasattr(user, "tenant")
 
     def test_user_optional_fields(self, app):
@@ -179,6 +180,7 @@ class TestSettings:
 
         prefixes = config.settings.authority_prefixes
         assert "roles" in prefixes
+        assert "groups" in prefixes
         assert "identity_class" in prefixes
         assert "entitlements" in prefixes
 

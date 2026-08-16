@@ -19,10 +19,16 @@ saml:
   sso_url: "http://localhost:8000/saml/sso"
   # Change this to match your Spring Boot app's ACS URL
   default_acs_url: "http://localhost:8080/login/saml2/sso/nanoidp"
+  # Export roles/groups as SAML attributes (off by default in NanoIDP)
+  export_roles: true
+  export_groups: true
+  roles_attr_name: "roles"
+  groups_attr_name: "groups"
 
 # Authority prefix mapping for Spring Security GrantedAuthority
 authority_prefixes:
   roles: "ROLE_"
+  groups: "GROUP_"
   identity_class: "IDENTITY_"
   entitlements: "ENT_"
 

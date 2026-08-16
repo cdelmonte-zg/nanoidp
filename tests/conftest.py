@@ -128,6 +128,7 @@ def sample_user():
         password="test-password",
         email="test@example.org",
         roles=["USER", "TESTER"],
+        groups=["ENGINEERING"],
         tenant="test-tenant",
         identity_class="INTERNAL",
         entitlements=["TEST_ACCESS"],

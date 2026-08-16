@@ -108,11 +108,11 @@
             </div>
         </div>
 
-        <!-- Roles -->
+        <!-- Roles & Groups -->
         <div class="col-md-6">
             <div class="card">
                 <div class="card-header">
-                    <i class="bi bi-shield me-2"></i>Roles
+                    <i class="bi bi-shield me-2"></i>Roles &amp; Groups
                 </div>
                 <div class="card-body">
                     <div class="mb-3">
@@ -121,6 +121,13 @@
                                value="{{ user.roles|join(', ') if user else 'USER' }}"
                                placeholder="USER, ADMIN, API_CLIENT">
                         <div class="form-text">Comma-separated list of roles</div>
+                    </div>
+                    <div class="mb-3">
+                        <label for="groups" class="form-label">Groups</label>
+                        <input type="text" class="form-control" id="groups" name="groups"
+                               value="{{ user.groups|join(', ') if user else '' }}"
+                               placeholder="ENGINEERING, FINANCE">
+                        <div class="form-text">Comma-separated list of groups</div>
                     </div>
                 </div>
             </div>

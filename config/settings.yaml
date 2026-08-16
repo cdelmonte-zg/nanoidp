@@ -31,11 +31,17 @@ saml:
   sign_responses: true
   c14n_algorithm: exc_c14n
   strict_binding: false
+  # Roles/groups are not standard SAML attributes; enable and name them here.
+  export_roles: false
+  export_groups: false
+  roles_attr_name: roles
+  groups_attr_name: groups
 jwt:
   algorithm: RS256
   keys_dir: ./keys
 authority_prefixes:
   roles: ROLE_
+  groups: GROUP_
   identity_class: IDENTITY_
   entitlements: ENT_
 allowed_identity_classes:
