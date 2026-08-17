@@ -28,8 +28,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   assertion and the AttributeQuery endpoint, with one `AttributeValue` per
   entry.
 
-## [Unreleased]
-
 ### Changed
 - **Migrated the MCP server to the mcp 2.0 SDK** and pinned `mcp>=2,<3`. mcp 2.0
   replaced the lowlevel `Server` decorators (`@server.list_tools()` /

@@ -239,11 +239,11 @@ _TOOLS: list[Tool] = [
                     "items": {"type": "string"},
                     "description": "List of roles (optional, default: ['USER'])",
                 },
-                    "groups": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "List of groups (optional)",
-                    },
+                "groups": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "List of groups (optional)",
+                },
                 "tenant": {
                     "type": "string",
                     "description": "Tenant identifier (optional, default: 'default')",
@@ -303,11 +303,11 @@ _TOOLS: list[Tool] = [
                     "items": {"type": "string"},
                     "description": "New roles list (optional)",
                 },
-                    "groups": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "New groups list (optional)",
-                    },
+                "groups": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "New groups list (optional)",
+                },
                 "tenant": {
                     "type": "string",
                     "description": "New tenant (optional)",
@@ -559,22 +559,22 @@ _TOOLS: list[Tool] = [
                     "type": "boolean",
                     "description": "Enable/disable SAML response signing",
                 },
-                    "saml_export_roles": {
-                        "type": "boolean",
-                        "description": "Emit the user's roles as a SAML attribute (off by default)",
-                    },
-                    "saml_export_groups": {
-                        "type": "boolean",
-                        "description": "Emit the user's groups as a SAML attribute (off by default)",
-                    },
-                    "saml_roles_attr_name": {
-                        "type": "string",
-                        "description": "SAML attribute name for the roles (default: 'roles')",
-                    },
-                    "saml_groups_attr_name": {
-                        "type": "string",
-                        "description": "SAML attribute name for the groups (default: 'groups')",
-                    },
+                "saml_export_roles": {
+                    "type": "boolean",
+                    "description": "Emit the user's roles as a SAML attribute (off by default)",
+                },
+                "saml_export_groups": {
+                    "type": "boolean",
+                    "description": "Emit the user's groups as a SAML attribute (off by default)",
+                },
+                "saml_roles_attr_name": {
+                    "type": "string",
+                    "description": "SAML attribute name for the roles (default: 'roles')",
+                },
+                "saml_groups_attr_name": {
+                    "type": "string",
+                    "description": "SAML attribute name for the groups (default: 'groups')",
+                },
                 "saml_c14n_algorithm": {
                     "type": "string",
                     "enum": ["c14n", "c14n11", "exc_c14n"],
