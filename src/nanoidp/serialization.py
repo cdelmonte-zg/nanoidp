@@ -107,6 +107,10 @@ def apply_settings_document(
     saml["sso_url"] = settings.saml_sso_url
     saml["default_acs_url"] = settings.default_acs_url
     saml["sign_responses"] = settings.saml_sign_responses
+    saml["export_roles"] = settings.saml_export_roles
+    saml["export_groups"] = settings.saml_export_groups
+    saml["roles_attr_name"] = settings.saml_roles_attr_name
+    saml["groups_attr_name"] = settings.saml_groups_attr_name
     saml["c14n_algorithm"] = settings.saml_c14n_algorithm
     saml["strict_binding"] = settings.strict_saml_binding
     saml["want_authn_requests_signed"] = settings.saml_want_authn_requests_signed

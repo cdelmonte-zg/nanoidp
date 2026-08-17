@@ -189,6 +189,10 @@ class YamlWriter:
         want_authn_requests_signed: Optional[bool] = None,
         sp_certificates: Optional[List[str]] = None,
         c14n_algorithm: Optional[str] = None,
+        export_roles: Optional[bool] = None,
+        export_groups: Optional[bool] = None,
+        roles_attr_name: Optional[str] = None,
+        groups_attr_name: Optional[str] = None,
     ) -> None:
         """Update SAML settings."""
         data = self._load_settings_yaml()
@@ -213,6 +217,21 @@ class YamlWriter:
                 saml.pop("sp_certificates", None)
         if c14n_algorithm is not None:
             saml["c14n_algorithm"] = c14n_algorithm
+        if export_roles is not None:
+            saml["export_roles"] = export_roles
+        if export_groups is not None:
+            saml["export_groups"] = export_groups
+        # Empty string drops the key so the default name applies again.
+        if roles_attr_name is not None:
+            if roles_attr_name:
+                saml["roles_attr_name"] = roles_attr_name
+            else:
+                saml.pop("roles_attr_name", None)
+        if groups_attr_name is not None:
+            if groups_attr_name:
+                saml["groups_attr_name"] = groups_attr_name
+            else:
+                saml.pop("groups_attr_name", None)
 
         self._atomic_write(self.settings_file, data)
         get_config().reload()

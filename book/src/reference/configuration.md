@@ -78,6 +78,10 @@ saml:
   want_authn_requests_signed: false  # verify AuthnRequest signatures (see SAML options)
   # sp_certificates:                 # PEM files, required when the above is true
   #   - /path/to/sp-cert.pem
+  export_roles: false        # include the user's roles as a SAML attribute
+  export_groups: false       # include the user's groups as a SAML attribute
+  roles_attr_name: "roles"   # attribute name used when export_roles is on
+  groups_attr_name: "groups" # attribute name used when export_groups is on
 
 # Optional; also settable at startup with --profile (which wins over YAML)
 # security_profile: oauth21   # dev (default) | stricter-dev | oauth21

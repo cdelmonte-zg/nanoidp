@@ -2113,6 +2113,81 @@ class NanoIDPTestAgent:
         except Exception as e:
             return self._add_result("SAML Attribute Query (verification)", TestCategory.SAML, False, str(e))
 
+    def test_saml_roles_groups_export(self) -> TestResult:
+        """Optional SAML export of roles/groups as attributes.
+
+        saml.export_roles/export_groups default to off, so the attributes
+        must be absent by default; if an operator's config has them on, they
+        must be present instead. Mirrors test_saml_signing_config's pattern
+        of reading /api/config first and asserting the toggle is honoured
+        either way, rather than mutating the running server's config.
+        """
+        try:
+            config_response = self.session.get(
+                f"{self.base_url}/api/config",
+                timeout=5
+            )
+
+            export_roles = False
+            export_groups = False
+            if config_response.status_code == 200:
+                saml_config = config_response.json().get("saml", {})
+                export_roles = saml_config.get("export_roles", False)
+                export_groups = saml_config.get("export_groups", False)
+
+            attr_query = f"""
+            <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+                <soap:Body>
+                    <samlp:AttributeQuery xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"
+                        xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion"
+                        ID="_attrquery_export_123" Version="2.0" IssueInstant="2024-01-01T00:00:00Z">
+                        <saml:Issuer>test-sp</saml:Issuer>
+                        <saml:Subject>
+                            <saml:NameID>{self.username}</saml:NameID>
+                        </saml:Subject>
+                    </samlp:AttributeQuery>
+                </soap:Body>
+            </soap:Envelope>
+            """.strip()
+
+            response = requests.post(
+                f"{self.base_url}/saml/attribute-query",
+                data=attr_query,
+                headers={"Content-Type": "text/xml"},
+                timeout=5
+            )
+
+            if response.status_code == 200:
+                saml_response = response.text
+                has_roles = 'Name="roles"' in saml_response
+                has_groups = 'Name="groups"' in saml_response
+
+                roles_respected = has_roles == export_roles
+                groups_respected = has_groups == export_groups
+
+                return self._add_result(
+                    "SAML Roles/Groups Export",
+                    TestCategory.SAML,
+                    roles_respected and groups_respected,
+                    f"export_roles={export_roles} (found={has_roles}), "
+                    f"export_groups={export_groups} (found={has_groups})",
+                    {
+                        "export_roles": export_roles,
+                        "has_roles": has_roles,
+                        "export_groups": export_groups,
+                        "has_groups": has_groups,
+                    }
+                )
+
+            return self._add_result(
+                "SAML Roles/Groups Export",
+                TestCategory.SAML,
+                False,
+                f"Status: {response.status_code}"
+            )
+        except Exception as e:
+            return self._add_result("SAML Roles/Groups Export", TestCategory.SAML, False, str(e))
+
     def test_saml_login_flow_preserves_binding(self) -> TestResult:
         """Test that inline login at /saml/sso preserves SAML binding semantics.
 
@@ -2984,6 +3059,7 @@ class NanoIDPTestAgent:
                 self.test_saml_login_flow_preserves_binding,
                 self.test_saml_attribute_query,
                 self.test_saml_attribute_query_verification,
+                self.test_saml_roles_groups_export,
                 self.test_saml_signing_config,
                 self.test_saml_c14n_algorithm,
                 self.test_saml_exclusive_c14n,
