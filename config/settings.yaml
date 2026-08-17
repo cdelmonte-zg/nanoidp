@@ -36,6 +36,7 @@ jwt:
   keys_dir: ./keys
 authority_prefixes:
   roles: ROLE_
+  groups: GROUP_
   identity_class: IDENTITY_
   entitlements: ENT_
 allowed_identity_classes:

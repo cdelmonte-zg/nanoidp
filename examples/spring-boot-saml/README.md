@@ -38,11 +38,11 @@ spring:
 
 ## Test Users
 
-| Username | Password | Roles |
-|----------|----------|-------|
-| `admin` | `admin` | ADMIN, USER |
-| `user` | `user` | USER |
-| `readonly` | `readonly` | VIEWER |
+| Username | Password | Roles | Groups |
+|----------|----------|-------|--------|
+| `admin` | `admin` | ADMIN, USER | ADMINISTRATORS |
+| `user` | `user` | USER | |
+| `readonly` | `readonly` | VIEWER | |
 
 ## SAML Attributes Mapping
 

@@ -27,12 +27,15 @@ and flattened into `authorities` via the configured `authority_prefixes`:
   "iat": 1704100000,
   "exp": 1704103600,
   "roles": ["USER", "ADMIN"],
+  "groups": ["ADMINISTRATORS", "EVERYONE"],
   "tenant": "default",
   "identity_class": "INTERNAL",
   "entitlements": ["ADMIN_ACCESS", "USER_MANAGEMENT"],
   "authorities": [
     "ROLE_USER",
     "ROLE_ADMIN",
+    "GROUP_ADMINISTRATORS",
+    "GROUP_EVERYONE",
     "IDENTITY_INTERNAL",
     "ENT_ADMIN_ACCESS",
     "ENT_USER_MANAGEMENT",
@@ -106,6 +109,7 @@ curl 'http://localhost:8000/userinfo' \
   "email_verified": true,
   "preferred_username": "admin",
   "roles": ["USER", "ADMIN"],
+  "groups": ["ADMINISTRATORS", "EVERYONE"],
   "tenant": "default",
   "identity_class": "INTERNAL"
 }
@@ -119,7 +123,7 @@ standard OIDC claims are gated by the granted scope (OIDC Core §5.4):
 `email` / `email_verified` require the `email` scope and
 `preferred_username` requires the `profile` scope. The granted scope is
 carried on the access token as the `scope` claim (RFC 9068 §2.2.3).
-NanoIDP-specific claims (`roles`, `tenant`, `identity_class`,
+NanoIDP-specific claims (`roles`, `groups`, `tenant`, `identity_class`,
 `attributes`) have no standard scope and are always returned.
 
 ## Requesting claims in the ID Token (`claims` parameter)

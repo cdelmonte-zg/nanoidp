@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **First-class group support**: users gain a `groups` list alongside `roles`,
+  modelled exactly the same way. It is loaded from and persisted to
+  `users.yaml` (omitted when empty), emitted as a `groups` claim on the access
+  token and from `/userinfo`, requestable in the ID Token via the OIDC `claims`
+  parameter, advertised in `claims_supported`, and flattened into `authorities`
+  using the new `groups` authority prefix (default `GROUP_`, editable on the
+  Claims page). Groups are editable from the user form, shown on the users list
+  and user detail pages, exposed by `/api/users`, and settable through the MCP
+  `create_user` / `update_user` tools. Users without groups behave exactly as
+  before: no claim, no authorities, nothing written to YAML.
+
 ### Changed
 - **Migrated the MCP server to the mcp 2.0 SDK** and pinned `mcp>=2,<3`. mcp 2.0
   replaced the lowlevel `Server` decorators (`@server.list_tools()` /

@@ -13,6 +13,8 @@ users:
     roles:
       - "ADMIN"
       - "USER"
+    groups:
+      - "ADMINISTRATORS"
     tenant: "default"
     source_acl:
       - "ACL_READ"

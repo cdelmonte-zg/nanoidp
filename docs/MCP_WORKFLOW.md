@@ -70,10 +70,10 @@ Copy and paste these prompts directly into Claude Code.
 ### User Management
 
 **Create a test user on the fly:**
-> "Create a new user 'testuser' with password 'test123', roles ['USER', 'TESTER'], and identity_class 'EXTERNAL' using nanoidp"
+> "Create a new user 'testuser' with password 'test123', roles ['USER', 'TESTER'], groups ['ENGINEERING'], and identity_class 'EXTERNAL' using nanoidp"
 
 **List users and their roles:**
-> "List all nanoidp users and show their roles"
+> "List all nanoidp users and show their roles and groups"
 
 **Delete a temporary test user:**
 > "Delete the user 'testuser' from nanoidp"

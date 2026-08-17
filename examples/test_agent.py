@@ -914,7 +914,7 @@ class NanoIDPTestAgent:
             found = [c for c in required if c in decoded]
 
             # Check custom claims
-            custom = ["roles", "authorities", "tenant", "identity_class"]
+            custom = ["roles", "groups", "authorities", "tenant", "identity_class"]
             custom_found = [c for c in custom if c in decoded]
 
             # The access token must advertise its granted scope (RFC 9068
@@ -1018,6 +1018,63 @@ class NanoIDPTestAgent:
             )
         except Exception as e:
             return self._add_result("UserInfo", TestCategory.OAUTH, False, str(e))
+
+    def test_userinfo_groups_and_authorities(self) -> TestResult:
+        """UserInfo returns the groups claim; the access token's authorities
+        reflect it under the GROUP_ prefix (default config/users.yaml gives
+        the test user ADMINISTRATORS/EVERYONE)."""
+        if not self.access_token:
+            return self._add_result(
+                "UserInfo Groups & Authorities",
+                TestCategory.OAUTH,
+                False,
+                "No token available"
+            )
+
+        if jwt is None:
+            return self._add_result(
+                "UserInfo Groups & Authorities",
+                TestCategory.OAUTH,
+                False,
+                "PyJWT not installed"
+            )
+
+        try:
+            headers = {"Authorization": f"Bearer {self.access_token}"}
+            response = requests.get(
+                f"{self.base_url}/userinfo",
+                headers=headers,
+                timeout=5
+            )
+            if response.status_code != 200:
+                return self._add_result(
+                    "UserInfo Groups & Authorities",
+                    TestCategory.OAUTH,
+                    False,
+                    f"Status: {response.status_code}"
+                )
+
+            groups = response.json().get("groups", [])
+
+            decoded = jwt.decode(
+                self.access_token,
+                options={"verify_signature": False}
+            )
+            authorities = decoded.get("authorities", [])
+            group_authorities = [a for a in authorities if a.startswith("GROUP_")]
+            authorities_match = all(
+                f"GROUP_{g.upper()}" in group_authorities for g in groups
+            )
+
+            return self._add_result(
+                "UserInfo Groups & Authorities",
+                TestCategory.OAUTH,
+                bool(groups) and authorities_match,
+                f"groups={groups}, group_authorities={group_authorities}",
+                {"groups": groups, "group_authorities": group_authorities}
+            )
+        except Exception as e:
+            return self._add_result("UserInfo Groups & Authorities", TestCategory.OAUTH, False, str(e))
 
     def test_refresh_token(self) -> TestResult:
         """Refresh token flow."""
@@ -2911,6 +2968,7 @@ class NanoIDPTestAgent:
                 self.test_token_decode,
                 self.test_introspection,
                 self.test_userinfo,
+                self.test_userinfo_groups_and_authorities,
                 self.test_refresh_token,
                 self.test_claims_persist_across_refresh,
                 self.test_token_revocation,

@@ -146,6 +146,7 @@ def _user_to_dict(user: User) -> dict[str, Any]:
         "username": user.username,
         "email": user.email,
         "roles": user.roles,
+        "groups": user.groups,
         "tenant": user.tenant,
         "identity_class": user.identity_class,
         "entitlements": user.entitlements,
@@ -238,6 +239,11 @@ _TOOLS: list[Tool] = [
                     "items": {"type": "string"},
                     "description": "List of roles (optional, default: ['USER'])",
                 },
+                "groups": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "List of groups (optional)",
+                },
                 "tenant": {
                     "type": "string",
                     "description": "Tenant identifier (optional, default: 'default')",
@@ -296,6 +302,11 @@ _TOOLS: list[Tool] = [
                     "type": "array",
                     "items": {"type": "string"},
                     "description": "New roles list (optional)",
+                },
+                "groups": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "New groups list (optional)",
                 },
                 "tenant": {
                     "type": "string",
@@ -804,6 +815,7 @@ async def _execute_tool(name: str, arguments: dict[str, Any], config: ConfigMana
             password=arguments["password"],
             email=arguments.get("email", ""),
             roles=arguments.get("roles", ["USER"]),
+            groups=arguments.get("groups", []),
             tenant=arguments.get("tenant", "default"),
             identity_class=arguments.get("identity_class"),
             entitlements=arguments.get("entitlements", []),
@@ -832,6 +844,8 @@ async def _execute_tool(name: str, arguments: dict[str, Any], config: ConfigMana
             user.email = arguments["email"]
         if "roles" in arguments:
             user.roles = arguments["roles"]
+        if "groups" in arguments:
+            user.groups = arguments["groups"]
         if "tenant" in arguments:
             user.tenant = arguments["tenant"]
         if "identity_class" in arguments:
