@@ -3,14 +3,49 @@ Pytest configuration and shared fixtures for NanoIDP tests.
 """
 
 import base64
+from typing import Any, Optional, cast
 
 import pytest
 
 import nanoidp.config as config_module
+import nanoidp.mcp_server as mcp_server_module
 import nanoidp.services.crypto as crypto_module
 import nanoidp.services.token as token_module
 from nanoidp.app import create_app
 from nanoidp.config import OAuthClient, User
+
+
+async def call_mcp_tool(name: str, arguments: Optional[dict] = None):
+    """Drive the lowlevel MCP tool handler, which takes (ctx, params).
+
+    ``ctx`` is None because nanoidp's handler never reads it.
+    """
+    from mcp.types import CallToolRequestParams
+
+    from nanoidp.mcp_server import call_tool
+
+    return await call_tool(
+        cast(Any, None), CallToolRequestParams(name=name, arguments=arguments)
+    )
+
+
+async def list_mcp_tools():
+    """Drive the lowlevel MCP tools/list handler and return its Tool list."""
+    from nanoidp.mcp_server import list_tools
+
+    return (await list_tools(cast(Any, None), None)).tools
+
+
+@pytest.fixture
+def mcp_call_tool():
+    """The MCP tools/call handler, callable as ``await f(name, arguments)``."""
+    return call_mcp_tool
+
+
+@pytest.fixture
+def mcp_list_tools():
+    """The MCP tools/list handler, callable as ``await f()``."""
+    return list_mcp_tools
 
 
 @pytest.fixture(autouse=True)
@@ -20,16 +55,21 @@ def reset_singletons():
     This ensures test isolation by preventing state leakage between tests.
     The token service is reset too so it never holds a reference to a stale
     config singleton (relevant when a test mutates the active configuration).
+    mcp_server keeps its own separate config singleton (populated via
+    _ensure_config()), which must be reset the same way or a test that drives
+    it caches a ConfigManager into that global for the rest of the session.
     """
     # Reset before test
     crypto_module._crypto_service = None
     config_module._config = None
     token_module._token_service = None
+    mcp_server_module._config = None
     yield
     # Reset after test
     crypto_module._crypto_service = None
     config_module._config = None
     token_module._token_service = None
+    mcp_server_module._config = None
 
 
 @pytest.fixture

@@ -167,6 +167,127 @@ class TestMCPToolSchema:
         assert 'update_settings' in mcp_server.MUTATING_TOOLS
 
 
+class TestMCPHandlerRegistration:
+    """The SDK takes handlers as constructor args; nothing else registers them."""
+
+    def test_handlers_are_registered(self):
+        from nanoidp.mcp_server import server
+
+        assert server.get_request_handler("tools/list") is not None
+        assert server.get_request_handler("tools/call") is not None
+
+    @pytest.mark.asyncio
+    async def test_every_tool_schema_is_an_object(self, mcp_list_tools):
+        """Results are validated against the protocol schema on the wire, which
+        requires inputSchema to declare "type": "object"."""
+        tools = await mcp_list_tools()
+        assert tools
+        for tool in tools:
+            assert tool.input_schema.get("type") == "object", tool.name
+
+    @pytest.mark.asyncio
+    async def test_missing_arguments_are_treated_as_empty(self, tmp_path, monkeypatch, mcp_call_tool):
+        """params.arguments is None when the call carries none."""
+        import nanoidp.mcp_server as mcp
+        from nanoidp.config import ConfigManager
+
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        (config_dir / "settings.yaml").write_text(
+            'oauth:\n'
+            '  issuer: "http://localhost:8000"\n'
+            '  clients:\n'
+            '    - client_id: "test"\n'
+            '      client_secret: "test"\n'
+        )
+        (config_dir / "users.yaml").write_text(
+            'users:\n  admin:\n    password: "admin"\ndefault_user: admin\n'
+        )
+
+        monkeypatch.setattr(mcp, "_readonly_mode", False)
+        monkeypatch.setattr(mcp, "_config", ConfigManager(str(config_dir)))
+        monkeypatch.delenv("NANOIDP_MCP_ADMIN_SECRET", raising=False)
+
+        result = await mcp_call_tool("list_users", None)
+
+        assert result.is_error is False
+        assert "users" in json.loads(result.content[0].text)
+
+    @pytest.mark.asyncio
+    async def test_missing_required_argument_is_a_clean_validation_error(
+        self, monkeypatch, mcp_call_tool
+    ):
+        """The SDK no longer validates arguments against input_schema before
+        dispatch (mcp 1.x's @server.call_tool(validate_input=True) did); a
+        missing required field must come back as an is_error result, not a
+        bare KeyError leaking out of _execute_tool."""
+        import nanoidp.mcp_server as mcp
+
+        monkeypatch.setattr(mcp, "_readonly_mode", False)
+        monkeypatch.delenv("NANOIDP_MCP_ADMIN_SECRET", raising=False)
+
+        result = await mcp_call_tool("create_user", {})
+
+        assert result.is_error is True
+        payload = json.loads(result.content[0].text)
+        assert payload["tool"] == "create_user"
+        assert payload["code"] == "MCP_INVALID_ARGUMENTS"
+        assert "username" in payload["error"]
+
+    @pytest.mark.asyncio
+    async def test_config_init_failure_returns_is_error_result(self, monkeypatch, mcp_call_tool):
+        """_ensure_config() runs before the readonly/admin-secret checks; a
+        failure there must still come back as CallToolResult(is_error=True)
+        instead of escaping call_tool as a raw exception."""
+        import nanoidp.mcp_server as mcp
+
+        def _boom() -> None:
+            raise RuntimeError("config init failed")
+
+        monkeypatch.setattr(mcp, "_ensure_config", _boom)
+
+        result = await mcp_call_tool("list_users", None)
+
+        assert result.is_error is True
+        payload = json.loads(result.content[0].text)
+        assert payload["tool"] == "list_users"
+        assert "config init failed" in payload["error"]
+
+    @pytest.mark.asyncio
+    async def test_unknown_tool_is_a_clean_error_not_a_success(self, monkeypatch, mcp_call_tool):
+        """A misspelled tool name must not take the success path: without this,
+        _execute_tool's `{"error": "Unknown tool: ..."}` fallback returned
+        is_error=False, so a client gating on isError - and the audit log -
+        would treat it as a successful call."""
+        import nanoidp.mcp_server as mcp
+
+        monkeypatch.setattr(mcp, "_readonly_mode", False)
+        monkeypatch.delenv("NANOIDP_MCP_ADMIN_SECRET", raising=False)
+
+        result = await mcp_call_tool("totally_bogus_tool", {})
+
+        assert result.is_error is True
+        payload = json.loads(result.content[0].text)
+        assert payload["tool"] == "totally_bogus_tool"
+        assert payload["code"] == "MCP_UNKNOWN_TOOL"
+
+    @pytest.mark.asyncio
+    async def test_domain_level_failure_sets_is_error(self, monkeypatch, mcp_call_tool):
+        """A tool-level failure returned as data (e.g. {"success": False, ...})
+        must still be flagged is_error=True - it's a failed call, not an
+        exception, so it doesn't go through call_tool's except branch."""
+        import nanoidp.mcp_server as mcp
+
+        monkeypatch.setattr(mcp, "_readonly_mode", False)
+        monkeypatch.delenv("NANOIDP_MCP_ADMIN_SECRET", raising=False)
+
+        result = await mcp_call_tool("delete_user", {"username": "does-not-exist"})
+
+        assert result.is_error is True
+        payload = json.loads(result.content[0].text)
+        assert payload["success"] is False
+
+
 class TestMCPReadonlyMode:
     """Tests for MCP readonly mode behavior."""
 
@@ -414,12 +535,10 @@ class TestMCPClientAdditionalAudiences:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("tool_name", ["create_client", "update_client"])
-    async def test_schema_exposes_additional_audiences(self, tool_name):
-        from nanoidp import mcp_server
-
-        tools = await mcp_server.list_tools()
+    async def test_schema_exposes_additional_audiences(self, tool_name, mcp_list_tools):
+        tools = await mcp_list_tools()
         tool = next(t for t in tools if t.name == tool_name)
-        props = tool.inputSchema["properties"]
+        props = tool.input_schema["properties"]
         assert "additional_audiences" in props
         assert props["additional_audiences"]["type"] == "array"
         assert props["additional_audiences"]["items"]["type"] == "string"
@@ -480,7 +599,7 @@ class TestMCPClientAdditionalAudiences:
             )
 
     @pytest.mark.asyncio
-    async def test_call_tool_returns_clean_error_for_bad_audiences(self, tmp_path, monkeypatch):
+    async def test_call_tool_returns_clean_error_for_bad_audiences(self, tmp_path, monkeypatch, mcp_call_tool):
         """The public call_tool handler turns the ValueError into a readable error
         response (not a crash) - closing the raise/handle loop end to end."""
         import nanoidp.mcp_server as mcp
@@ -489,13 +608,14 @@ class TestMCPClientAdditionalAudiences:
         monkeypatch.setattr(mcp, "_readonly_mode", False)
         monkeypatch.delenv("NANOIDP_MCP_ADMIN_SECRET", raising=False)
 
-        result = await mcp.call_tool(
+        result = await mcp_call_tool(
             "create_client",
             {"client_id": "c", "client_secret": "s", "additional_audiences": ["a", 123]},
         )
 
-        assert len(result) == 1
-        payload = json.loads(result[0].text)
+        assert len(result.content) == 1
+        assert result.is_error is True
+        payload = json.loads(result.content[0].text)
         assert payload["tool"] == "create_client"
         assert "additional_audiences" in payload["error"]
 

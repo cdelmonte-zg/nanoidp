@@ -174,6 +174,8 @@ class TestMCPSecurityIntegration:
         with patch("nanoidp.mcp_server._ensure_config") as mock:
             config = MagicMock()
             config.users = {}
+            # Concrete, or the tool result is a MagicMock that cannot be serialized.
+            config.default_user = "admin"
             config.settings.clients = []
             config.settings.issuer = "http://localhost:8000"
             config.settings.audience = "test"
@@ -183,43 +185,39 @@ class TestMCPSecurityIntegration:
             yield config
 
     @pytest.mark.asyncio
-    async def test_call_tool_blocks_mutating_without_secret(self, mock_config):
+    async def test_call_tool_blocks_mutating_without_secret(self, mock_config, mcp_call_tool):
         """Test that call_tool blocks mutating operations without secret."""
-        from nanoidp.mcp_server import call_tool
-
         with patch.dict(os.environ, {"NANOIDP_MCP_ADMIN_SECRET": "secret123"}):
             with patch("nanoidp.mcp_server._log_mcp_tool"):
-                result = await call_tool("create_user", {"username": "test", "password": "pass"})
+                result = await mcp_call_tool("create_user", {"username": "test", "password": "pass"})
 
-                assert len(result) == 1
-                content = json.loads(result[0].text)
+                assert len(result.content) == 1
+                assert result.is_error is True
+                content = json.loads(result.content[0].text)
                 assert "error" in content
                 assert content["code"] == "MCP_ADMIN_SECRET_REQUIRED"
 
     @pytest.mark.asyncio
-    async def test_call_tool_allows_read_only_with_secret_configured(self, mock_config):
+    async def test_call_tool_allows_read_only_with_secret_configured(self, mock_config, mcp_call_tool):
         """Test that read-only tools work even with secret configured."""
-        from nanoidp.mcp_server import call_tool
-
         with patch.dict(os.environ, {"NANOIDP_MCP_ADMIN_SECRET": "secret123"}):
             with patch("nanoidp.mcp_server._log_mcp_tool"):
-                result = await call_tool("list_users", {})
+                result = await mcp_call_tool("list_users", {})
 
-                assert len(result) == 1
-                content = json.loads(result[0].text)
+                assert len(result.content) == 1
+                assert result.is_error is False
+                content = json.loads(result.content[0].text)
                 # Should not be an error
                 assert "code" not in content or content.get("code") != "MCP_ADMIN_SECRET_REQUIRED"
 
     @pytest.mark.asyncio
-    async def test_call_tool_logs_all_calls(self, mock_config):
+    async def test_call_tool_logs_all_calls(self, mock_config, mcp_call_tool):
         """Test that all tool calls are logged."""
-        from nanoidp.mcp_server import call_tool
-
         with patch("nanoidp.mcp_server._log_mcp_tool") as mock_log:
             with patch.dict(os.environ, {}, clear=True):
                 os.environ.pop("NANOIDP_MCP_ADMIN_SECRET", None)
 
-                await call_tool("list_users", {})
+                await mcp_call_tool("list_users", {})
 
                 mock_log.assert_called()
 

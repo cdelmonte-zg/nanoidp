@@ -47,9 +47,13 @@ dependencies = [
     "lxml>=6.0.2",
     "signxml>=4.2.0",
     "PyYAML>=6.0",
-    "mcp>=1.0.0",
-    "pydantic>=2.0.0",
+    # <3 is deliberate: mcp 1.x -> 2.0 was a breaking rewrite of the lowlevel Server.
+    "mcp>=2,<3",
+    "pydantic>=2.12",
     "bcrypt>=5.0.0",
+    # Used directly by mcp_server.call_tool() to validate arguments against a
+    # tool's input_schema; mcp 2.0's on_call_tool no longer does this itself.
+    "jsonschema>=4.0.0",
 ]
 
 [project.optional-dependencies]
@@ -61,6 +65,7 @@ dev = [
     "ruff>=0.1.0",
     "mypy>=1.8.0",
     "types-PyYAML",
+    "types-jsonschema",
     "requests>=2.31.0",  # examples/test_agent.py (e2e)
 ]
 
@@ -134,3 +139,6 @@ testpaths = ["tests"]
 pythonpath = ["src"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
+# MCPDeprecationWarning subclasses UserWarning; fail rather than log if we ever
+# start using a deprecated SDK surface.
+filterwarnings = ["error::mcp.MCPDeprecationWarning"]
