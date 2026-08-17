@@ -24,6 +24,30 @@
                     </div>
 
                     <div class="mb-3">
+                        <div class="form-check form-switch">
+                            <input class="form-check-input" type="checkbox" role="switch"
+                                   id="issuer_from_request" name="issuer_from_request" value="true"
+                                   {% if settings.issuer_from_request %}checked{% endif %}>
+                            <label class="form-check-label" for="issuer_from_request">Derive Issuer from Request</label>
+                        </div>
+                        <div class="form-text">Use each request's own Host header instead of the Issuer URL above (discovery, tokens, device flow all agree per-hostname; dev convenience for setups reachable under more than one hostname).</div>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="issuer_allowlist" class="form-label">Issuer Allowlist</label>
+                        <textarea class="form-control" id="issuer_allowlist" name="issuer_allowlist"
+                                  rows="2" placeholder="One origin per line, e.g. http://localhost:8000">{{ settings.issuer_allowlist | join('\n') }}</textarea>
+                        <div class="form-text">Origins allowed to be reflected back by "Derive Issuer from Request". Empty = allow any Host header (dev convenience). A non-matching Host falls back to the Issuer URL above.</div>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="device_verification_base_url" class="form-label">Device Verification Base URL</label>
+                        <input type="url" class="form-control" id="device_verification_base_url" name="device_verification_base_url"
+                               value="{{ settings.device_verification_base_url or '' }}" placeholder="https://idp.example.com (optional)">
+                        <div class="form-text">Overrides the device flow's verification_uri when "Derive Issuer from Request" is on, so a backend/container caller's Host doesn't leak into a URL the human's browser can't reach. Leave blank to keep following the request Host.</div>
+                    </div>
+
+                    <div class="mb-3">
                         <label for="audience" class="form-label">Audience</label>
                         <input type="text" class="form-control" id="audience" name="audience"
                                value="{{ settings.audience }}">
@@ -252,6 +276,10 @@ function updatePreview() {
     const preview = {
         oauth: {
             issuer: document.getElementById('issuer').value,
+            issuer_from_request: document.getElementById('issuer_from_request').checked,
+            issuer_allowlist: document.getElementById('issuer_allowlist').value
+                .split('\n').map(s => s.trim()).filter(s => s),
+            device_verification_base_url: document.getElementById('device_verification_base_url').value.trim(),
             audience: document.getElementById('audience').value,
             token_expiry_minutes: parseInt(document.getElementById('token_expiry_minutes').value) || 60,
             require_pkce: document.getElementById('require_pkce').checked,

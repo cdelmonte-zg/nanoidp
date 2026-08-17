@@ -27,6 +27,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Settings page and the MCP `update_settings` tool, and apply to both the SSO
   assertion and the AttributeQuery endpoint, with one `AttributeValue` per
   entry.
+- **`oauth.issuer_from_request`** (off by default): when enabled, the
+  discovery document's `issuer`, every minted token's `iss`, and the device
+  flow's `verification_uri` are derived from the incoming request's own Host
+  header instead of the fixed `oauth.issuer`. Lets the same NanoIDP be
+  reachable under more than one hostname (e.g. a Docker Compose service name
+  from other containers and `localhost` from the host browser) without a
+  discovery/token issuer mismatch - each hostname advertises and issues
+  tokens against itself. The MCP `get_oidc_discovery`/`get_settings` tools
+  have no request of their own and always report the fixed `issuer`.
+- **`oauth.issuer_allowlist`**: restricts `issuer_from_request` to a list of
+  allowed origins (e.g. `["http://localhost:8000", "http://nanoidp:9900"]`).
+  Empty (default) allows any Host header, unchanged from before; when set, a
+  request whose Host doesn't match falls back to the fixed `oauth.issuer`
+  instead of trusting an arbitrary Host header. Settable from the Settings
+  page and the MCP `update_settings` tool.
+- **`oauth.device_verification_base_url`**: pins the device flow's
+  `verification_uri` to a fixed, human-reachable URL (e.g.
+  `https://idp.example.com`), overriding `issuer_from_request`'s derivation
+  for that field only - discovery's `issuer` and a token's `iss` are
+  unaffected. Fixes a backend/container caller of `/device_authorization`
+  (e.g. `Host: nanoidp:9900`) otherwise leaking its own Host into a URL the
+  end user's browser can't open. Unset by default. Settable from the
+  Settings page and the MCP `update_settings` tool.
+- **`oauth.issuer_from_proxy_headers`** (off by default): trusts
+  `X-Forwarded-Proto`/`X-Forwarded-Host`/`X-Forwarded-For` from a single
+  reverse-proxy hop (via werkzeug's `ProxyFix`), so `issuer_from_request` and
+  rate-limit client IPs see the original scheme/host/client instead of the
+  proxy's own connection when TLS is terminated upstream. Only changes the
+  derived issuer/`iss`/`verification_uri` when `issuer_from_request` is also
+  on; the rate-limit effect applies regardless. Only enable this when
+  NanoIDP is deployed directly behind exactly one trusted proxy - these
+  headers are otherwise spoofable by any client. Readable/settable via the
+  MCP `get_settings`/`update_settings` tools; since `ProxyFix` is wired at
+  app startup, a value changed at runtime only takes effect after a restart.
 
 ### Changed
 - **Migrated the MCP server to the mcp 2.0 SDK** and pinned `mcp>=2,<3`. mcp 2.0

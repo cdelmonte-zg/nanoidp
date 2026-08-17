@@ -128,6 +128,54 @@ class Settings(BaseModel):
 
     # OAuth
     issuer: str = Field(default="http://localhost:8000", description="OAuth issuer URL")
+    issuer_from_request: bool = Field(
+        default=False,
+        description="Derive the issuer (discovery 'issuer', token 'iss', device "
+        "verification_uri) from each request's own Host header instead of the "
+        "fixed 'issuer' above. Lets the same NanoIDP be reachable under more "
+        "than one hostname (e.g. Docker Compose service name vs. localhost) "
+        "without a discovery/token issuer mismatch. Off by default; the MCP "
+        "tools have no request to derive from and always report the fixed "
+        "'issuer'. The Host header is trusted as-is unless 'issuer_allowlist' "
+        "below is non-empty - only enable this on trusted networks. The device "
+        "flow's verification_uri follows the same derivation unless "
+        "'device_verification_base_url' below overrides it - see that field "
+        "when a backend/container Host would otherwise leak into a URL the "
+        "human's own browser can't reach.",
+    )
+    issuer_allowlist: List[str] = Field(
+        default_factory=list,
+        description="Origins (scheme+host[:port], e.g. 'http://localhost:8000') "
+        "allowed to be reflected back by 'issuer_from_request'. Empty (default) "
+        "allows any Host header, matching prior behavior. When non-empty, a "
+        "request whose Host doesn't match falls back to the fixed 'issuer' "
+        "instead of trusting an arbitrary Host header.",
+    )
+    device_verification_base_url: Optional[str] = Field(
+        default=None,
+        description="Fixed base URL for the device flow's verification_uri "
+        "(e.g. 'https://idp.example.com'), used instead of the request-derived "
+        "issuer. Discovery's 'issuer' and a token's 'iss' must match the "
+        "request that fetched/requested them, but the device flow's "
+        "verification_uri is opened by a human, often on a different host "
+        "than whatever backend/container called /device_authorization - set "
+        "this to pin it to a hostname the human can actually reach. Only "
+        "consulted when 'issuer_from_request' is on; ignored otherwise.",
+    )
+    issuer_from_proxy_headers: bool = Field(
+        default=False,
+        description="Trust 'X-Forwarded-Proto'/'X-Forwarded-Host'/'X-Forwarded-For' "
+        "from a single reverse proxy hop in front of NanoIDP (applies werkzeug's "
+        "ProxyFix). Fixes 'request.scheme'/'host_url', which the "
+        "'issuer_from_request' derivation above depends on - has no visible "
+        "effect on the issuer/iss/verification_uri unless 'issuer_from_request' "
+        "is also on. Also affects rate-limit client IPs regardless. Off by "
+        "default; only enable this when NanoIDP is deployed directly behind "
+        "exactly one trusted proxy, since these headers are otherwise trivially "
+        "spoofable by any client. ProxyFix is wired at app startup, so a value "
+        "changed at runtime (e.g. via the MCP update_settings tool) only takes "
+        "effect after the process restarts.",
+    )
     audience: str = Field(default="default", min_length=1, description="OAuth audience")
     token_expiry_minutes: int = Field(default=60, gt=0, le=1440, description="Token expiry in minutes")
     refresh_token_rotation: bool = Field(

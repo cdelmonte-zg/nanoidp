@@ -7,12 +7,14 @@ drift apart (issue #40 - the MCP tool used to return an abbreviated dict that
 omitted ``claims_supported``/``azp`` and the auth-method metadata).
 """
 
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from ..config import Settings
 
 
-def build_discovery_document(settings: Settings) -> Dict[str, Any]:
+def build_discovery_document(
+    settings: Settings, issuer: Optional[str] = None
+) -> Dict[str, Any]:
     """Build the OIDC discovery metadata for the given settings.
 
     Every value advertised here must reflect what the endpoints actually
@@ -20,8 +22,14 @@ def build_discovery_document(settings: Settings) -> Dict[str, Any]:
     entry is worse than a missing feature (see issue #41: ``token`` was
     advertised in ``response_types_supported`` while ``/authorize`` only
     accepts ``code``).
+
+    ``issuer`` lets a caller with a live request override ``settings.issuer``
+    (``issuer_from_request``, so the same NanoIDP can advertise a different,
+    per-request-correct issuer at more than one hostname). Callers with no
+    request of their own - the MCP ``get_oidc_discovery`` tool - omit it and
+    always get the fixed, configured issuer back.
     """
-    issuer = settings.issuer
+    issuer = issuer or settings.issuer
     return {
         "issuer": issuer,
         "authorization_endpoint": f"{issuer}/authorize",

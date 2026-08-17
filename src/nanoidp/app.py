@@ -10,6 +10,7 @@ from flask import Flask, Response, jsonify
 from flask_cors import CORS
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 from . import __version__
 from .config import get_config, init_config
@@ -66,6 +67,14 @@ def create_app(config_dir: Optional[str] = None, profile: Optional[str] = None) 
         static_folder=os.path.join(os.path.dirname(__file__), "static"),
     )
     app.secret_key = settings.secret_key
+
+    # Trust X-Forwarded-Proto/Host/For from a single reverse-proxy hop, so
+    # request.scheme/host_url (and therefore issuer_from_request, rate-limit
+    # client IPs) reflect the original client instead of the proxy.
+    if settings.issuer_from_proxy_headers:
+        app.wsgi_app = ProxyFix(  # type: ignore[method-assign]
+            app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1
+        )
 
     # Configure CORS based on security profile
     if settings.security_profile == "stricter-dev":

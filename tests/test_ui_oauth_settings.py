@@ -59,6 +59,43 @@ class TestOAuthTogglesRoundTrip:
         assert config.settings.require_pkce is False
         assert config.settings.refresh_token_rotation is False
 
+
+class TestIssuerAllowlistRoundTrip:
+    def test_allowlist_persists_as_a_list(self, client, preserve_config_files):
+        with client.session_transaction() as sess:
+            sess["user"] = "admin"
+        config = get_config()
+
+        response = client.post(
+            "/settings",
+            data={
+                **_base_form(config.settings),
+                "issuer_allowlist": "http://localhost:8000\nhttp://nanoidp:9900",
+            },
+            follow_redirects=True,
+        )
+        assert response.status_code == 200
+        config.reload()
+        assert config.settings.issuer_allowlist == [
+            "http://localhost:8000",
+            "http://nanoidp:9900",
+        ]
+
+    def test_blank_allowlist_clears_it(self, client, preserve_config_files):
+        with client.session_transaction() as sess:
+            sess["user"] = "admin"
+        config = get_config()
+        config.settings.issuer_allowlist = ["http://nanoidp:9900"]
+
+        response = client.post(
+            "/settings",
+            data=_base_form(config.settings),  # issuer_allowlist absent
+            follow_redirects=True,
+        )
+        assert response.status_code == 200
+        config.reload()
+        assert config.settings.issuer_allowlist == []
+
     def test_settings_page_renders_the_toggles(self, client):
         with client.session_transaction() as sess:
             sess["user"] = "admin"
@@ -66,3 +103,37 @@ class TestOAuthTogglesRoundTrip:
         assert r.status_code == 200
         assert b'name="require_pkce"' in r.data
         assert b'name="refresh_token_rotation"' in r.data
+
+
+class TestDeviceVerificationBaseUrlRoundTrip:
+    def test_value_persists(self, client, preserve_config_files):
+        with client.session_transaction() as sess:
+            sess["user"] = "admin"
+        config = get_config()
+
+        response = client.post(
+            "/settings",
+            data={
+                **_base_form(config.settings),
+                "device_verification_base_url": "https://idp.example.com",
+            },
+            follow_redirects=True,
+        )
+        assert response.status_code == 200
+        config.reload()
+        assert config.settings.device_verification_base_url == "https://idp.example.com"
+
+    def test_blank_value_clears_it(self, client, preserve_config_files):
+        with client.session_transaction() as sess:
+            sess["user"] = "admin"
+        config = get_config()
+        config.settings.device_verification_base_url = "https://idp.example.com"
+
+        response = client.post(
+            "/settings",
+            data=_base_form(config.settings),  # device_verification_base_url absent
+            follow_redirects=True,
+        )
+        assert response.status_code == 200
+        config.reload()
+        assert config.settings.device_verification_base_url is None
