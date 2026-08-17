@@ -1068,6 +1068,7 @@ def userinfo() -> ResponseReturnValue:
         # returned for a valid token; gating them would be arbitrary and has no
         # spec basis (#102).
         _put("roles")
+        _put("groups")
         _put("tenant")
         _put("identity_class")
         if user.attributes:

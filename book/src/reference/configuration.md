@@ -28,6 +28,9 @@ users:
     roles:
       - "USER"
       - "ADMIN"
+    groups:
+      - "ADMINISTRATORS"
+      - "EVERYONE"
     tenant: "default"
     source_acl:
       - "ACL_READ"
@@ -81,6 +84,7 @@ saml:
 
 authority_prefixes:
   roles: "ROLE_"
+  groups: "GROUP_"
   identity_class: "IDENTITY_"
   entitlements: "ENT_"
 

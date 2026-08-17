@@ -181,6 +181,7 @@ class ConfigManager:
             )],
             authority_prefixes={
                 "roles": "ROLE_",
+                "groups": "GROUP_",
                 "identity_class": "IDENTITY_",
                 "entitlements": "ENT_",
             },
@@ -205,7 +206,7 @@ class ConfigManager:
             # Extract known fields
             known_fields = {
                 "password", "email", "identity_class", "entitlements",
-                "roles", "tenant", "source_acl", "attributes"
+                "roles", "groups", "tenant", "source_acl", "attributes"
             }
 
             # Get explicit attributes or collect unknown fields as attributes
@@ -223,6 +224,7 @@ class ConfigManager:
                 identity_class=user_data.get("identity_class"),
                 entitlements=user_data.get("entitlements", []),
                 roles=user_data.get("roles", ["USER"]),
+                groups=user_data.get("groups", []),
                 tenant=user_data.get("tenant", "default"),
                 source_acl=user_data.get("source_acl", []),
                 attributes=attributes,
