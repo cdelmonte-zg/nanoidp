@@ -697,6 +697,18 @@ def _text_result(payload: dict[str, Any], *, is_error: bool = False) -> CallTool
     )
 
 
+def _reject(name: str, code: str, message: str) -> CallToolResult:
+    """Build a rejection result and its matching audit entry.
+
+    Pins the shape shared by call_tool's early-exit branches (readonly mode,
+    missing/invalid admin secret, unknown tool, bad arguments), which had
+    drifted from each other - e.g. the admin-secret audit entry used to omit
+    `tool`.
+    """
+    _log_mcp_tool(name, success=False, details={"error": code, "tool": name})
+    return _text_result({"error": message, "code": code, "tool": name}, is_error=True)
+
+
 async def call_tool(
     ctx: ServerRequestContext, params: CallToolRequestParams
 ) -> CallToolResult:
@@ -704,10 +716,9 @@ async def call_tool(
 
     The whole body runs under one try/except: the SDK no longer turns a
     handler exception into an is_error result (mcp 1.x's @server.call_tool()
-    did), so anything raised here - including by _ensure_config() or the
-    rejection branches' own _log_mcp_tool calls - would otherwise reach the
-    client as a raw JSON-RPC error instead of this handler's graceful
-    {"error": ..., "tool": ...} payload.
+    did), so an exception raised by _ensure_config() or _execute_tool() would
+    otherwise reach the client as a raw JSON-RPC error instead of this
+    handler's graceful {"error": ..., "tool": ...} payload.
     """
     name = params.name
     try:
@@ -720,44 +731,36 @@ async def call_tool(
         # Check readonly mode first (completely blocks mutating tools)
         allowed, error_msg = _check_readonly_mode(name)
         if not allowed:
-            _log_mcp_tool(name, success=False, details={"error": "readonly_mode", "tool": name})
-            return _text_result({
-                "error": error_msg,
-                "code": "MCP_READONLY_MODE",
-                "tool": name,
-            }, is_error=True)
+            return _reject(name, "MCP_READONLY_MODE", error_msg)
 
         # Check admin secret for mutating operations
         allowed, error_msg = _check_admin_secret(name, arguments)
         if not allowed:
-            _log_mcp_tool(name, success=False, details={"error": "admin_secret_required"})
-            return _text_result({
-                "error": error_msg,
-                "code": "MCP_ADMIN_SECRET_REQUIRED",
-                "tool": name,
-            }, is_error=True)
+            return _reject(name, "MCP_ADMIN_SECRET_REQUIRED", error_msg)
 
         # mcp 1.x's @server.call_tool(validate_input=True) ran this same check
         # before dispatch; the 2.0 on_call_tool path does not, so it is done
         # here to keep required-field/type errors from reaching _execute_tool
         # as bare KeyErrors.
         schema = _TOOL_SCHEMAS.get(name)
-        if schema is not None:
-            try:
-                jsonschema.validate(instance=arguments, schema=schema)
-            except jsonschema.ValidationError as e:
-                _log_mcp_tool(name, success=False, details={"error": "validation_error", "tool": name})
-                field = ".".join(str(p) for p in e.absolute_path)
-                message = f"{field}: {e.message}" if field else e.message
-                return _text_result({
-                    "error": f"Input validation error: {message}",
-                    "code": "MCP_INVALID_ARGUMENTS",
-                    "tool": name,
-                }, is_error=True)
+        if schema is None:
+            return _reject(name, "MCP_UNKNOWN_TOOL", f"Unknown tool: {name}")
+        try:
+            jsonschema.validate(instance=arguments, schema=schema)
+        except jsonschema.ValidationError as e:
+            field = ".".join(str(p) for p in e.absolute_path)
+            message = f"{field}: {e.message}" if field else e.message
+            return _reject(name, "MCP_INVALID_ARGUMENTS", f"Input validation error: {message}")
 
         result = await _execute_tool(name, arguments, config)
-        _log_mcp_tool(name, success=True, details={"tool": name})
-        return _text_result(result)
+        # Domain-level failures ({"success": False, ...} or an "error" key,
+        # e.g. "user not found") are results, not exceptions, so they don't
+        # go through the except branch below - but they still failed and must
+        # be flagged the same way (CHANGELOG: "failed MCP tool calls now set
+        # is_error: true").
+        failed = result.get("success") is False or "error" in result
+        _log_mcp_tool(name, success=not failed, details={"tool": name})
+        return _text_result(result, is_error=failed)
     except Exception as e:
         logger.exception(f"Error executing tool {name}")
         _log_mcp_tool(name, success=False, details={"error": str(e)})

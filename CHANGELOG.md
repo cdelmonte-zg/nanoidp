@@ -18,9 +18,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stdio transport and `nanoidp-mcp` entry point are untouched.
 - **Rejected and failed MCP tool calls now set `is_error: true`.** mcp 2.0 no
   longer converts a handler exception into an error-flagged result, so nanoidp
-  builds it explicitly - and readonly-mode and admin-secret rejections, which
-  previously came back as successful results whose JSON body happened to carry
-  an `error` key, are now flagged too. The response body is unchanged.
+  builds it explicitly for every case that previously came back as a
+  successful result whose JSON body happened to carry an `error` key:
+  readonly-mode and admin-secret rejections, an unknown tool name, arguments
+  that fail schema validation (see below), and tool-level failures such as
+  "user not found" or "client already exists". The response body is
+  unchanged.
+- **Tool arguments are now validated against each tool's schema before
+  dispatch.** mcp 1.x's `@server.call_tool(validate_input=True)` did this
+  automatically; mcp 2.0's `on_call_tool` does not, so nanoidp now runs the
+  same check itself and returns an `is_error: true` result (`code:
+  "MCP_INVALID_ARGUMENTS"`) instead of letting a missing required field reach
+  the tool implementation as a bare `KeyError`.
 
 ## [2.5.0] - 2026-07-19
 

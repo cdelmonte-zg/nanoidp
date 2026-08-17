@@ -253,6 +253,40 @@ class TestMCPHandlerRegistration:
         assert payload["tool"] == "list_users"
         assert "config init failed" in payload["error"]
 
+    @pytest.mark.asyncio
+    async def test_unknown_tool_is_a_clean_error_not_a_success(self, monkeypatch, mcp_call_tool):
+        """A misspelled tool name must not take the success path: without this,
+        _execute_tool's `{"error": "Unknown tool: ..."}` fallback returned
+        is_error=False, so a client gating on isError - and the audit log -
+        would treat it as a successful call."""
+        import nanoidp.mcp_server as mcp
+
+        monkeypatch.setattr(mcp, "_readonly_mode", False)
+        monkeypatch.delenv("NANOIDP_MCP_ADMIN_SECRET", raising=False)
+
+        result = await mcp_call_tool("totally_bogus_tool", {})
+
+        assert result.is_error is True
+        payload = json.loads(result.content[0].text)
+        assert payload["tool"] == "totally_bogus_tool"
+        assert payload["code"] == "MCP_UNKNOWN_TOOL"
+
+    @pytest.mark.asyncio
+    async def test_domain_level_failure_sets_is_error(self, monkeypatch, mcp_call_tool):
+        """A tool-level failure returned as data (e.g. {"success": False, ...})
+        must still be flagged is_error=True - it's a failed call, not an
+        exception, so it doesn't go through call_tool's except branch."""
+        import nanoidp.mcp_server as mcp
+
+        monkeypatch.setattr(mcp, "_readonly_mode", False)
+        monkeypatch.delenv("NANOIDP_MCP_ADMIN_SECRET", raising=False)
+
+        result = await mcp_call_tool("delete_user", {"username": "does-not-exist"})
+
+        assert result.is_error is True
+        payload = json.loads(result.content[0].text)
+        assert payload["success"] is False
+
 
 class TestMCPReadonlyMode:
     """Tests for MCP readonly mode behavior."""
