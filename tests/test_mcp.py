@@ -186,18 +186,72 @@ class TestMCPHandlerRegistration:
             assert tool.input_schema.get("type") == "object", tool.name
 
     @pytest.mark.asyncio
-    async def test_missing_arguments_are_treated_as_empty(self, monkeypatch, mcp_call_tool):
+    async def test_missing_arguments_are_treated_as_empty(self, tmp_path, monkeypatch, mcp_call_tool):
         """params.arguments is None when the call carries none."""
         import nanoidp.mcp_server as mcp
+        from nanoidp.config import ConfigManager
+
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        (config_dir / "settings.yaml").write_text(
+            'oauth:\n'
+            '  issuer: "http://localhost:8000"\n'
+            '  clients:\n'
+            '    - client_id: "test"\n'
+            '      client_secret: "test"\n'
+        )
+        (config_dir / "users.yaml").write_text(
+            'users:\n  admin:\n    password: "admin"\ndefault_user: admin\n'
+        )
 
         monkeypatch.setattr(mcp, "_readonly_mode", False)
+        monkeypatch.setattr(mcp, "_config", ConfigManager(str(config_dir)))
         monkeypatch.delenv("NANOIDP_MCP_ADMIN_SECRET", raising=False)
-        monkeypatch.setenv("NANOIDP_CONFIG_DIR", "./config")
 
         result = await mcp_call_tool("list_users", None)
 
         assert result.is_error is False
         assert "users" in json.loads(result.content[0].text)
+
+    @pytest.mark.asyncio
+    async def test_missing_required_argument_is_a_clean_validation_error(
+        self, monkeypatch, mcp_call_tool
+    ):
+        """The SDK no longer validates arguments against input_schema before
+        dispatch (mcp 1.x's @server.call_tool(validate_input=True) did); a
+        missing required field must come back as an is_error result, not a
+        bare KeyError leaking out of _execute_tool."""
+        import nanoidp.mcp_server as mcp
+
+        monkeypatch.setattr(mcp, "_readonly_mode", False)
+        monkeypatch.delenv("NANOIDP_MCP_ADMIN_SECRET", raising=False)
+
+        result = await mcp_call_tool("create_user", {})
+
+        assert result.is_error is True
+        payload = json.loads(result.content[0].text)
+        assert payload["tool"] == "create_user"
+        assert payload["code"] == "MCP_INVALID_ARGUMENTS"
+        assert "username" in payload["error"]
+
+    @pytest.mark.asyncio
+    async def test_config_init_failure_returns_is_error_result(self, monkeypatch, mcp_call_tool):
+        """_ensure_config() runs before the readonly/admin-secret checks; a
+        failure there must still come back as CallToolResult(is_error=True)
+        instead of escaping call_tool as a raw exception."""
+        import nanoidp.mcp_server as mcp
+
+        def _boom() -> None:
+            raise RuntimeError("config init failed")
+
+        monkeypatch.setattr(mcp, "_ensure_config", _boom)
+
+        result = await mcp_call_tool("list_users", None)
+
+        assert result.is_error is True
+        payload = json.loads(result.content[0].text)
+        assert payload["tool"] == "list_users"
+        assert "config init failed" in payload["error"]
 
 
 class TestMCPReadonlyMode:

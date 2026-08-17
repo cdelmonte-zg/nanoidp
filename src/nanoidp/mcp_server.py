@@ -20,6 +20,7 @@ import logging
 import os
 from typing import Any, Optional, Tuple
 
+import jsonschema
 import jwt as pyjwt
 from mcp.server import Server, ServerRequestContext
 from mcp.server.stdio import stdio_server
@@ -186,494 +187,502 @@ def _normalize_audiences(value: Any) -> list[str]:
 # Tool Definitions
 # =============================================================================
 
+# Tool definitions, also indexed by name in call_tool() to validate arguments
+# against each tool's input_schema before dispatch (the SDK no longer does
+# this itself - see call_tool).
+_TOOLS: list[Tool] = [
+    # User Management
+    Tool(
+        name="list_users",
+        description="List all configured users in NanoIDP",
+        input_schema={
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    ),
+    Tool(
+        name="get_user",
+        description="Get details of a specific user",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "username": {
+                    "type": "string",
+                    "description": "Username to look up",
+                },
+            },
+            "required": ["username"],
+        },
+    ),
+    Tool(
+        name="create_user",
+        description="Create a new user in NanoIDP",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "username": {
+                    "type": "string",
+                    "description": "Username for the new user",
+                },
+                "password": {
+                    "type": "string",
+                    "description": "Password for the new user",
+                },
+                "email": {
+                    "type": "string",
+                    "description": "Email address (optional)",
+                },
+                "roles": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "List of roles (optional, default: ['USER'])",
+                },
+                "tenant": {
+                    "type": "string",
+                    "description": "Tenant identifier (optional, default: 'default')",
+                },
+                "identity_class": {
+                    "type": "string",
+                    "description": "Identity class (e.g., INTERNAL, EXTERNAL)",
+                },
+                "entitlements": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "List of entitlements",
+                },
+                "source_acl": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Source ACL entries for document-level security",
+                },
+            },
+            "required": ["username", "password"],
+        },
+    ),
+    Tool(
+        name="delete_user",
+        description="Delete a user from NanoIDP",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "username": {
+                    "type": "string",
+                    "description": "Username to delete",
+                },
+            },
+            "required": ["username"],
+        },
+    ),
+    Tool(
+        name="update_user",
+        description="Update an existing user's attributes",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "username": {
+                    "type": "string",
+                    "description": "Username to update",
+                },
+                "password": {
+                    "type": "string",
+                    "description": "New password (optional)",
+                },
+                "email": {
+                    "type": "string",
+                    "description": "New email (optional)",
+                },
+                "roles": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "New roles list (optional)",
+                },
+                "tenant": {
+                    "type": "string",
+                    "description": "New tenant (optional)",
+                },
+                "identity_class": {
+                    "type": "string",
+                    "description": "New identity class (optional)",
+                },
+                "entitlements": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "New entitlements list (optional)",
+                },
+                "source_acl": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "New source ACL entries (optional)",
+                },
+            },
+            "required": ["username"],
+        },
+    ),
+
+    # Token Operations
+    Tool(
+        name="generate_token",
+        description="Generate an OAuth2 access token for a user",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "username": {
+                    "type": "string",
+                    "description": "Username to generate token for",
+                },
+                "expires_in_minutes": {
+                    "type": "integer",
+                    "description": "Token expiration in minutes (optional, default: 60)",
+                },
+                "extra_claims": {
+                    "type": "object",
+                    "description": "Additional claims to include in the token",
+                },
+                "scope": {
+                    "type": "string",
+                    "description": (
+                        "Space-separated OAuth scopes (optional). Include "
+                        "'openid' to also receive an ID Token; the scope is "
+                        "persisted in the refresh token so refreshing "
+                        "re-issues an ID Token (OIDC Core §12.2)"
+                    ),
+                },
+                "id_token_claims": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Claim names to embed in the ID Token, mirroring the "
+                        "OIDC `claims` request parameter (§5.5). Requires an "
+                        "'openid' scope. Resolved from the user (e.g. 'email', "
+                        "'preferred_username', or a custom attribute); names "
+                        "nanoidp cannot supply are skipped."
+                    ),
+                },
+                "userinfo_claims": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Claim names /userinfo should return for this access "
+                        "token, mirroring the `userinfo` member of the OIDC "
+                        "`claims` request parameter (§5.5). Stamped on the "
+                        "access token as `req_userinfo_claims` and honoured "
+                        "by /userinfo even under a stricter profile that "
+                        "would scope-gate them out."
+                    ),
+                },
+            },
+            "required": ["username"],
+        },
+    ),
+    Tool(
+        name="decode_token",
+        description="Decode and display the claims in a JWT token (without signature verification)",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "token": {
+                    "type": "string",
+                    "description": "JWT token to decode",
+                },
+            },
+            "required": ["token"],
+        },
+    ),
+    Tool(
+        name="verify_token",
+        description="Verify a JWT token's signature and expiration",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "token": {
+                    "type": "string",
+                    "description": "JWT token to verify",
+                },
+            },
+            "required": ["token"],
+        },
+    ),
+
+    # Client Management
+    Tool(
+        name="list_clients",
+        description="List all configured OAuth clients",
+        input_schema={
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    ),
+    Tool(
+        name="get_client",
+        description="Get details of a specific OAuth client",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "client_id": {
+                    "type": "string",
+                    "description": "Client ID to look up",
+                },
+            },
+            "required": ["client_id"],
+        },
+    ),
+    Tool(
+        name="create_client",
+        description="Create a new OAuth client",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "client_id": {
+                    "type": "string",
+                    "description": "Unique client identifier",
+                },
+                "client_secret": {
+                    "type": "string",
+                    "description": "Client secret for authentication",
+                },
+                "description": {
+                    "type": "string",
+                    "description": "Human-readable description (optional)",
+                },
+                "additional_audiences": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Extra audiences added to the ID Token 'aud' alongside the client_id (optional)",
+                },
+                "redirect_uris": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Registered redirect URIs; when non-empty, /authorize enforces exact matching (optional)",
+                },
+            },
+            "required": ["client_id", "client_secret"],
+        },
+    ),
+    Tool(
+        name="update_client",
+        description="Update an existing OAuth client",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "client_id": {
+                    "type": "string",
+                    "description": "Client ID to update",
+                },
+                "client_secret": {
+                    "type": "string",
+                    "description": "New client secret (optional)",
+                },
+                "description": {
+                    "type": "string",
+                    "description": "New description (optional)",
+                },
+                "additional_audiences": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Replace the client's extra ID Token audiences (optional)",
+                },
+                "redirect_uris": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Replace the client's registered redirect URIs; empty list removes the restriction (optional)",
+                },
+            },
+            "required": ["client_id"],
+        },
+    ),
+    Tool(
+        name="delete_client",
+        description="Delete an OAuth client",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "client_id": {
+                    "type": "string",
+                    "description": "Client ID to delete",
+                },
+            },
+            "required": ["client_id"],
+        },
+    ),
+
+    # Configuration
+    Tool(
+        name="get_settings",
+        description="Get current NanoIDP settings",
+        input_schema={
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    ),
+    Tool(
+        name="reload_config",
+        description="Reload configuration from files",
+        input_schema={
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    ),
+    Tool(
+        name="update_settings",
+        description="Update NanoIDP settings (issuer, audience, token expiry, SAML options, etc.)",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "issuer": {
+                    "type": "string",
+                    "description": "OAuth2/OIDC issuer URL",
+                },
+                "audience": {
+                    "type": "string",
+                    "description": "Default token audience",
+                },
+                "token_expiry_minutes": {
+                    "type": "integer",
+                    "description": "Token expiration in minutes",
+                },
+                "saml_sign_responses": {
+                    "type": "boolean",
+                    "description": "Enable/disable SAML response signing",
+                },
+                "saml_c14n_algorithm": {
+                    "type": "string",
+                    "enum": ["c14n", "c14n11", "exc_c14n"],
+                    "description": "XML canonicalization algorithm: 'c14n' (1.0), 'c14n11' (1.1), or 'exc_c14n' (Exclusive 1.0)",
+                },
+                "saml_want_authn_requests_signed": {
+                    "type": "boolean",
+                    "description": "Require and verify AuthnRequest signatures, both bindings (#69)",
+                },
+                "saml_sp_certificates": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "PEM certificate files of SPs whose AuthnRequest signatures are accepted",
+                },
+                "strict_saml_binding": {
+                    "type": "boolean",
+                    "description": "Enforce strict SAML binding compliance (reject GET with uncompressed data)",
+                },
+                "verbose_logging": {
+                    "type": "boolean",
+                    "description": "Include usernames/client_ids in log messages (dev convenience)",
+                },
+                "refresh_token_rotation": {
+                    "type": "boolean",
+                    "description": "Rotate refresh tokens: each refresh invalidates the consumed refresh token (#46)",
+                },
+                "require_pkce": {
+                    "type": "boolean",
+                    "description": "Reject /authorize requests without a PKCE code_challenge (#47)",
+                },
+            },
+            "required": [],
+        },
+    ),
+    Tool(
+        name="save_config",
+        description="Save current configuration to YAML files (persists changes)",
+        input_schema={
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    ),
+
+    # Discovery
+    Tool(
+        name="get_oidc_discovery",
+        description="Get OIDC discovery document (/.well-known/openid-configuration)",
+        input_schema={
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    ),
+    Tool(
+        name="get_jwks",
+        description="Get JSON Web Key Set for token verification",
+        input_schema={
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    ),
+
+    # Audit log (mirrors /api/audit*, issue #48)
+    Tool(
+        name="get_audit_log",
+        description="Get audit log entries (what the IdP recorded: token requests, logins, SAML flows)",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum entries to return (default: 100)",
+                },
+                "event_type": {
+                    "type": "string",
+                    "description": "Filter by event type (e.g. token_request, authorization_request)",
+                },
+                "username": {
+                    "type": "string",
+                    "description": "Filter by username",
+                },
+            },
+            "required": [],
+        },
+    ),
+    Tool(
+        name="get_audit_stats",
+        description="Get audit log statistics (event counts by type/status)",
+        input_schema={
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    ),
+    Tool(
+        name="clear_audit_log",
+        description="Clear the audit log",
+        input_schema={
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    ),
+
+    # Key management (mirrors /api/keys*, issue #48)
+    Tool(
+        name="get_keys_info",
+        description="Get information about the signing keys (active kid, previous keys)",
+        input_schema={
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    ),
+    Tool(
+        name="rotate_keys",
+        description="Rotate the signing keys: the active key moves to 'previous' (still valid for verification) and a new active key is generated - useful to test clients' JWKS refresh handling",
+        input_schema={
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    ),
+]
+
+_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {tool.name: tool.input_schema for tool in _TOOLS}
+
+
 async def list_tools(
     ctx: ServerRequestContext, params: PaginatedRequestParams | None
 ) -> ListToolsResult:
     """List available MCP tools."""
-    return ListToolsResult(tools=[
-        # User Management
-        Tool(
-            name="list_users",
-            description="List all configured users in NanoIDP",
-            inputSchema={
-                "type": "object",
-                "properties": {},
-                "required": [],
-            },
-        ),
-        Tool(
-            name="get_user",
-            description="Get details of a specific user",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "username": {
-                        "type": "string",
-                        "description": "Username to look up",
-                    },
-                },
-                "required": ["username"],
-            },
-        ),
-        Tool(
-            name="create_user",
-            description="Create a new user in NanoIDP",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "username": {
-                        "type": "string",
-                        "description": "Username for the new user",
-                    },
-                    "password": {
-                        "type": "string",
-                        "description": "Password for the new user",
-                    },
-                    "email": {
-                        "type": "string",
-                        "description": "Email address (optional)",
-                    },
-                    "roles": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "List of roles (optional, default: ['USER'])",
-                    },
-                    "tenant": {
-                        "type": "string",
-                        "description": "Tenant identifier (optional, default: 'default')",
-                    },
-                    "identity_class": {
-                        "type": "string",
-                        "description": "Identity class (e.g., INTERNAL, EXTERNAL)",
-                    },
-                    "entitlements": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "List of entitlements",
-                    },
-                    "source_acl": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Source ACL entries for document-level security",
-                    },
-                },
-                "required": ["username", "password"],
-            },
-        ),
-        Tool(
-            name="delete_user",
-            description="Delete a user from NanoIDP",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "username": {
-                        "type": "string",
-                        "description": "Username to delete",
-                    },
-                },
-                "required": ["username"],
-            },
-        ),
-        Tool(
-            name="update_user",
-            description="Update an existing user's attributes",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "username": {
-                        "type": "string",
-                        "description": "Username to update",
-                    },
-                    "password": {
-                        "type": "string",
-                        "description": "New password (optional)",
-                    },
-                    "email": {
-                        "type": "string",
-                        "description": "New email (optional)",
-                    },
-                    "roles": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "New roles list (optional)",
-                    },
-                    "tenant": {
-                        "type": "string",
-                        "description": "New tenant (optional)",
-                    },
-                    "identity_class": {
-                        "type": "string",
-                        "description": "New identity class (optional)",
-                    },
-                    "entitlements": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "New entitlements list (optional)",
-                    },
-                    "source_acl": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "New source ACL entries (optional)",
-                    },
-                },
-                "required": ["username"],
-            },
-        ),
-
-        # Token Operations
-        Tool(
-            name="generate_token",
-            description="Generate an OAuth2 access token for a user",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "username": {
-                        "type": "string",
-                        "description": "Username to generate token for",
-                    },
-                    "expires_in_minutes": {
-                        "type": "integer",
-                        "description": "Token expiration in minutes (optional, default: 60)",
-                    },
-                    "extra_claims": {
-                        "type": "object",
-                        "description": "Additional claims to include in the token",
-                    },
-                    "scope": {
-                        "type": "string",
-                        "description": (
-                            "Space-separated OAuth scopes (optional). Include "
-                            "'openid' to also receive an ID Token; the scope is "
-                            "persisted in the refresh token so refreshing "
-                            "re-issues an ID Token (OIDC Core §12.2)"
-                        ),
-                    },
-                    "id_token_claims": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": (
-                            "Claim names to embed in the ID Token, mirroring the "
-                            "OIDC `claims` request parameter (§5.5). Requires an "
-                            "'openid' scope. Resolved from the user (e.g. 'email', "
-                            "'preferred_username', or a custom attribute); names "
-                            "nanoidp cannot supply are skipped."
-                        ),
-                    },
-                    "userinfo_claims": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": (
-                            "Claim names /userinfo should return for this access "
-                            "token, mirroring the `userinfo` member of the OIDC "
-                            "`claims` request parameter (§5.5). Stamped on the "
-                            "access token as `req_userinfo_claims` and honoured "
-                            "by /userinfo even under a stricter profile that "
-                            "would scope-gate them out."
-                        ),
-                    },
-                },
-                "required": ["username"],
-            },
-        ),
-        Tool(
-            name="decode_token",
-            description="Decode and display the claims in a JWT token (without signature verification)",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "token": {
-                        "type": "string",
-                        "description": "JWT token to decode",
-                    },
-                },
-                "required": ["token"],
-            },
-        ),
-        Tool(
-            name="verify_token",
-            description="Verify a JWT token's signature and expiration",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "token": {
-                        "type": "string",
-                        "description": "JWT token to verify",
-                    },
-                },
-                "required": ["token"],
-            },
-        ),
-
-        # Client Management
-        Tool(
-            name="list_clients",
-            description="List all configured OAuth clients",
-            inputSchema={
-                "type": "object",
-                "properties": {},
-                "required": [],
-            },
-        ),
-        Tool(
-            name="get_client",
-            description="Get details of a specific OAuth client",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "client_id": {
-                        "type": "string",
-                        "description": "Client ID to look up",
-                    },
-                },
-                "required": ["client_id"],
-            },
-        ),
-        Tool(
-            name="create_client",
-            description="Create a new OAuth client",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "client_id": {
-                        "type": "string",
-                        "description": "Unique client identifier",
-                    },
-                    "client_secret": {
-                        "type": "string",
-                        "description": "Client secret for authentication",
-                    },
-                    "description": {
-                        "type": "string",
-                        "description": "Human-readable description (optional)",
-                    },
-                    "additional_audiences": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Extra audiences added to the ID Token 'aud' alongside the client_id (optional)",
-                    },
-                    "redirect_uris": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Registered redirect URIs; when non-empty, /authorize enforces exact matching (optional)",
-                    },
-                },
-                "required": ["client_id", "client_secret"],
-            },
-        ),
-        Tool(
-            name="update_client",
-            description="Update an existing OAuth client",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "client_id": {
-                        "type": "string",
-                        "description": "Client ID to update",
-                    },
-                    "client_secret": {
-                        "type": "string",
-                        "description": "New client secret (optional)",
-                    },
-                    "description": {
-                        "type": "string",
-                        "description": "New description (optional)",
-                    },
-                    "additional_audiences": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Replace the client's extra ID Token audiences (optional)",
-                    },
-                    "redirect_uris": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Replace the client's registered redirect URIs; empty list removes the restriction (optional)",
-                    },
-                },
-                "required": ["client_id"],
-            },
-        ),
-        Tool(
-            name="delete_client",
-            description="Delete an OAuth client",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "client_id": {
-                        "type": "string",
-                        "description": "Client ID to delete",
-                    },
-                },
-                "required": ["client_id"],
-            },
-        ),
-
-        # Configuration
-        Tool(
-            name="get_settings",
-            description="Get current NanoIDP settings",
-            inputSchema={
-                "type": "object",
-                "properties": {},
-                "required": [],
-            },
-        ),
-        Tool(
-            name="reload_config",
-            description="Reload configuration from files",
-            inputSchema={
-                "type": "object",
-                "properties": {},
-                "required": [],
-            },
-        ),
-        Tool(
-            name="update_settings",
-            description="Update NanoIDP settings (issuer, audience, token expiry, SAML options, etc.)",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "issuer": {
-                        "type": "string",
-                        "description": "OAuth2/OIDC issuer URL",
-                    },
-                    "audience": {
-                        "type": "string",
-                        "description": "Default token audience",
-                    },
-                    "token_expiry_minutes": {
-                        "type": "integer",
-                        "description": "Token expiration in minutes",
-                    },
-                    "saml_sign_responses": {
-                        "type": "boolean",
-                        "description": "Enable/disable SAML response signing",
-                    },
-                    "saml_c14n_algorithm": {
-                        "type": "string",
-                        "enum": ["c14n", "c14n11", "exc_c14n"],
-                        "description": "XML canonicalization algorithm: 'c14n' (1.0), 'c14n11' (1.1), or 'exc_c14n' (Exclusive 1.0)",
-                    },
-                    "saml_want_authn_requests_signed": {
-                        "type": "boolean",
-                        "description": "Require and verify AuthnRequest signatures, both bindings (#69)",
-                    },
-                    "saml_sp_certificates": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "PEM certificate files of SPs whose AuthnRequest signatures are accepted",
-                    },
-                    "strict_saml_binding": {
-                        "type": "boolean",
-                        "description": "Enforce strict SAML binding compliance (reject GET with uncompressed data)",
-                    },
-                    "verbose_logging": {
-                        "type": "boolean",
-                        "description": "Include usernames/client_ids in log messages (dev convenience)",
-                    },
-                    "refresh_token_rotation": {
-                        "type": "boolean",
-                        "description": "Rotate refresh tokens: each refresh invalidates the consumed refresh token (#46)",
-                    },
-                    "require_pkce": {
-                        "type": "boolean",
-                        "description": "Reject /authorize requests without a PKCE code_challenge (#47)",
-                    },
-                },
-                "required": [],
-            },
-        ),
-        Tool(
-            name="save_config",
-            description="Save current configuration to YAML files (persists changes)",
-            inputSchema={
-                "type": "object",
-                "properties": {},
-                "required": [],
-            },
-        ),
-
-        # Discovery
-        Tool(
-            name="get_oidc_discovery",
-            description="Get OIDC discovery document (/.well-known/openid-configuration)",
-            inputSchema={
-                "type": "object",
-                "properties": {},
-                "required": [],
-            },
-        ),
-        Tool(
-            name="get_jwks",
-            description="Get JSON Web Key Set for token verification",
-            inputSchema={
-                "type": "object",
-                "properties": {},
-                "required": [],
-            },
-        ),
-
-        # Audit log (mirrors /api/audit*, issue #48)
-        Tool(
-            name="get_audit_log",
-            description="Get audit log entries (what the IdP recorded: token requests, logins, SAML flows)",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "limit": {
-                        "type": "integer",
-                        "description": "Maximum entries to return (default: 100)",
-                    },
-                    "event_type": {
-                        "type": "string",
-                        "description": "Filter by event type (e.g. token_request, authorization_request)",
-                    },
-                    "username": {
-                        "type": "string",
-                        "description": "Filter by username",
-                    },
-                },
-                "required": [],
-            },
-        ),
-        Tool(
-            name="get_audit_stats",
-            description="Get audit log statistics (event counts by type/status)",
-            inputSchema={
-                "type": "object",
-                "properties": {},
-                "required": [],
-            },
-        ),
-        Tool(
-            name="clear_audit_log",
-            description="Clear the audit log",
-            inputSchema={
-                "type": "object",
-                "properties": {},
-                "required": [],
-            },
-        ),
-
-        # Key management (mirrors /api/keys*, issue #48)
-        Tool(
-            name="get_keys_info",
-            description="Get information about the signing keys (active kid, previous keys)",
-            inputSchema={
-                "type": "object",
-                "properties": {},
-                "required": [],
-            },
-        ),
-        Tool(
-            name="rotate_keys",
-            description="Rotate the signing keys: the active key moves to 'previous' (still valid for verification) and a new active key is generated - useful to test clients' JWKS refresh handling",
-            inputSchema={
-                "type": "object",
-                "properties": {},
-                "required": [],
-            },
-        ),
-    ])
+    return ListToolsResult(tools=_TOOLS)
 
 
 # =============================================================================
@@ -691,40 +700,65 @@ def _text_result(payload: dict[str, Any], *, is_error: bool = False) -> CallTool
 async def call_tool(
     ctx: ServerRequestContext, params: CallToolRequestParams
 ) -> CallToolResult:
-    """Handle tool calls with readonly and admin secret checks, plus audit logging."""
-    config = _ensure_config()
+    """Handle tool calls with readonly and admin secret checks, plus audit logging.
+
+    The whole body runs under one try/except: the SDK no longer turns a
+    handler exception into an is_error result (mcp 1.x's @server.call_tool()
+    did), so anything raised here - including by _ensure_config() or the
+    rejection branches' own _log_mcp_tool calls - would otherwise reach the
+    client as a raw JSON-RPC error instead of this handler's graceful
+    {"error": ..., "tool": ...} payload.
+    """
     name = params.name
-    # Copied because _check_admin_secret pops admin_secret off it, and params is
-    # a validated protocol model. `arguments` is None when the call carried none.
-    arguments = dict(params.arguments or {})
-
-    # Check readonly mode first (completely blocks mutating tools)
-    allowed, error_msg = _check_readonly_mode(name)
-    if not allowed:
-        _log_mcp_tool(name, success=False, details={"error": "readonly_mode", "tool": name})
-        return _text_result({
-            "error": error_msg,
-            "code": "MCP_READONLY_MODE",
-            "tool": name,
-        }, is_error=True)
-
-    # Check admin secret for mutating operations
-    allowed, error_msg = _check_admin_secret(name, arguments)
-    if not allowed:
-        _log_mcp_tool(name, success=False, details={"error": "admin_secret_required"})
-        return _text_result({
-            "error": error_msg,
-            "code": "MCP_ADMIN_SECRET_REQUIRED",
-            "tool": name,
-        }, is_error=True)
-
     try:
+        config = _ensure_config()
+        # Copied because _check_admin_secret pops admin_secret off it, and params
+        # is a validated protocol model. `arguments` is None when the call
+        # carried none.
+        arguments = dict(params.arguments or {})
+
+        # Check readonly mode first (completely blocks mutating tools)
+        allowed, error_msg = _check_readonly_mode(name)
+        if not allowed:
+            _log_mcp_tool(name, success=False, details={"error": "readonly_mode", "tool": name})
+            return _text_result({
+                "error": error_msg,
+                "code": "MCP_READONLY_MODE",
+                "tool": name,
+            }, is_error=True)
+
+        # Check admin secret for mutating operations
+        allowed, error_msg = _check_admin_secret(name, arguments)
+        if not allowed:
+            _log_mcp_tool(name, success=False, details={"error": "admin_secret_required"})
+            return _text_result({
+                "error": error_msg,
+                "code": "MCP_ADMIN_SECRET_REQUIRED",
+                "tool": name,
+            }, is_error=True)
+
+        # mcp 1.x's @server.call_tool(validate_input=True) ran this same check
+        # before dispatch; the 2.0 on_call_tool path does not, so it is done
+        # here to keep required-field/type errors from reaching _execute_tool
+        # as bare KeyErrors.
+        schema = _TOOL_SCHEMAS.get(name)
+        if schema is not None:
+            try:
+                jsonschema.validate(instance=arguments, schema=schema)
+            except jsonschema.ValidationError as e:
+                _log_mcp_tool(name, success=False, details={"error": "validation_error", "tool": name})
+                field = ".".join(str(p) for p in e.absolute_path)
+                message = f"{field}: {e.message}" if field else e.message
+                return _text_result({
+                    "error": f"Input validation error: {message}",
+                    "code": "MCP_INVALID_ARGUMENTS",
+                    "tool": name,
+                }, is_error=True)
+
         result = await _execute_tool(name, arguments, config)
         _log_mcp_tool(name, success=True, details={"tool": name})
         return _text_result(result)
     except Exception as e:
-        # The SDK no longer turns handler exceptions into is_error results, so a
-        # bare raise here would reach the client as a JSON-RPC error instead.
         logger.exception(f"Error executing tool {name}")
         _log_mcp_tool(name, success=False, details={"error": str(e)})
         return _text_result({"error": str(e), "tool": name}, is_error=True)
@@ -819,10 +853,11 @@ async def _execute_tool(name: str, arguments: dict[str, Any], config: ConfigMana
             exp_minutes=arguments.get("expires_in_minutes", config.settings.token_expiry_minutes),
             extra_claims=arguments.get("extra_claims"),
             scope=arguments.get("scope"),
-            # The SDK does not enforce inputSchema types server-side; reject a
-            # non-list with a clean error instead of minting a token whose
-            # malformed claim only misbehaves later at /userinfo (same
-            # precedent as additional_audiences, #37).
+            # _execute_tool is also reachable directly (see tests), bypassing
+            # call_tool's input_schema validation; reject a non-list with a
+            # clean error here too instead of minting a token whose malformed
+            # claim only misbehaves later at /userinfo (same precedent as
+            # additional_audiences, #37).
             id_token_claims=_normalize_str_list(
                 arguments.get("id_token_claims"), "id_token_claims"
             ) or None,

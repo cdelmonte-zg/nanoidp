@@ -51,6 +51,9 @@ dependencies = [
     "mcp>=2,<3",
     "pydantic>=2.12",
     "bcrypt>=5.0.0",
+    # Used directly by mcp_server.call_tool() to validate arguments against a
+    # tool's input_schema; mcp 2.0's on_call_tool no longer does this itself.
+    "jsonschema>=4.0.0",
 ]
 
 [project.optional-dependencies]
@@ -62,6 +65,7 @@ dev = [
     "ruff>=0.1.0",
     "mypy>=1.8.0",
     "types-PyYAML",
+    "types-jsonschema",
     "requests>=2.31.0",  # examples/test_agent.py (e2e)
 ]
 

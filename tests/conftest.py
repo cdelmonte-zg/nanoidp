@@ -8,6 +8,7 @@ from typing import Any, Optional, cast
 import pytest
 
 import nanoidp.config as config_module
+import nanoidp.mcp_server as mcp_server_module
 import nanoidp.services.crypto as crypto_module
 import nanoidp.services.token as token_module
 from nanoidp.app import create_app
@@ -54,16 +55,21 @@ def reset_singletons():
     This ensures test isolation by preventing state leakage between tests.
     The token service is reset too so it never holds a reference to a stale
     config singleton (relevant when a test mutates the active configuration).
+    mcp_server keeps its own separate config singleton (populated via
+    _ensure_config()), which must be reset the same way or a test that drives
+    it caches a ConfigManager into that global for the rest of the session.
     """
     # Reset before test
     crypto_module._crypto_service = None
     config_module._config = None
     token_module._token_service = None
+    mcp_server_module._config = None
     yield
     # Reset after test
     crypto_module._crypto_service = None
     config_module._config = None
     token_module._token_service = None
+    mcp_server_module._config = None
 
 
 @pytest.fixture
