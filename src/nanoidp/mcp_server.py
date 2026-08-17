@@ -548,12 +548,12 @@ _TOOLS: list[Tool] = [
                     "description": "OAuth2/OIDC issuer URL",
                 },
                 "issuer_from_request": {
-                        "type": "boolean",
-                        "description": "Derive the issuer from each request's own Host "
-                        "header instead of the fixed 'issuer' (dev convenience for "
-                        "setups reachable under more than one hostname). MCP tools "
-                        "have no request of their own, so this only affects HTTP "
-                        "discovery/token/device-flow responses, never MCP ones.",
+                    "type": "boolean",
+                    "description": "Derive the issuer from each request's own Host "
+                    "header instead of the fixed 'issuer' (dev convenience for "
+                    "setups reachable under more than one hostname). MCP tools "
+                    "have no request of their own, so this only affects HTTP "
+                    "discovery/token/device-flow responses, never MCP ones.",
                 },
                 "audience": {
                     "type": "string",
