@@ -308,3 +308,43 @@ class TestDeviceVerificationBaseUrl:
         assert get_config().settings.device_verification_base_url is None
 
 
+
+
+class TestApiGenerateTokenIssuer:
+    """``/api/users/<username>/token`` mints real JWTs too, so its ``iss``
+    must follow the same effective-issuer resolution as ``/token`` and
+    discovery (#133): reflected when ``issuer_from_request`` is on (allowlist
+    honoured), fixed otherwise. Before the shared helper it silently kept the
+    fixed issuer, contradicting the discovery its own hostname advertised."""
+
+    def _minted_iss(self, client, host):
+        resp = client.post("/api/users/admin/token", headers={"Host": host})
+        token = json.loads(resp.data)["access_token"]
+        return pyjwt.decode(token, options={"verify_signature": False})["iss"]
+
+    def test_fixed_issuer_when_flag_off(self, client):
+        assert self._minted_iss(client, "nanoidp:9900") == get_config().settings.issuer
+
+    def test_reflects_host_when_enabled(self, app, client):
+        with app.app_context():
+            get_config().settings.issuer_from_request = True
+        assert self._minted_iss(client, "nanoidp:9900") == "http://nanoidp:9900"
+
+    def test_matches_discovery_for_the_same_host(self, app, client):
+        with app.app_context():
+            get_config().settings.issuer_from_request = True
+        doc = json.loads(
+            client.get(
+                "/.well-known/openid-configuration", headers={"Host": "nanoidp:9900"}
+            ).data
+        )
+        assert self._minted_iss(client, "nanoidp:9900") == doc["issuer"]
+
+    def test_allowlist_fallback_applies(self, app, client):
+        with app.app_context():
+            get_config().settings.issuer_from_request = True
+            get_config().settings.issuer_allowlist = ["http://nanoidp:9900"]
+        assert (
+            self._minted_iss(client, "evil.example.com")
+            == get_config().settings.issuer
+        )

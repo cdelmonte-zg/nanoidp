@@ -9,6 +9,7 @@ from flask.typing import ResponseReturnValue
 
 from ..config import get_config
 from ..services import get_audit_log, get_token_service
+from ._issuer import effective_issuer
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +77,14 @@ def generate_token(username: str) -> ResponseReturnValue:
     exp_minutes = request.json.get("exp_minutes", config.settings.token_expiry_minutes) if request.is_json else config.settings.token_expiry_minutes
 
     token_service = get_token_service()
-    token_response = token_service.create_token(user=user, exp_minutes=exp_minutes)
+    # Same effective-issuer resolution as /token and discovery (#133): a
+    # token minted here must verify against the discovery document that the
+    # requesting hostname was just served.
+    token_response = token_service.create_token(
+        user=user,
+        exp_minutes=exp_minutes,
+        issuer=effective_issuer(config.settings),
+    )
 
     return jsonify(token_response)
 
