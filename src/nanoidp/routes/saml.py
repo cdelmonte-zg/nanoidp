@@ -154,6 +154,21 @@ def _parse_saml_request(
         return None
 
 
+def _add_export_attr(attrs: dict, name: str, values: list) -> None:
+    """Add an exported roles/groups attribute, merging on a name collision.
+
+    ``saml_roles_attr_name`` and ``saml_groups_attr_name`` are configured
+    independently, so both exports can target the same attribute (e.g.
+    ``memberOf``). Plain assignment would let the second list silently replace
+    the first (#134); merging keeps both, roles first, deduplicated.
+    """
+    existing = attrs.get(name)
+    if isinstance(existing, (list, tuple)):
+        attrs[name] = list(existing) + [v for v in values if v not in existing]
+    else:
+        attrs[name] = list(values)
+
+
 def _build_saml_response(
     acs_url: str,
     issuer: str,
@@ -512,9 +527,11 @@ def sso() -> ResponseReturnValue:
     # Roles/groups are opt-in: they have no standard SAML attribute name, so the
     # SP-specific name is configured alongside the switch.
     if config.settings.saml_export_roles and user.roles:
-        saml_attrs[config.settings.saml_roles_attr_name] = user.roles
+        _add_export_attr(saml_attrs, config.settings.saml_roles_attr_name, user.roles)
     if config.settings.saml_export_groups and user.groups:
-        saml_attrs[config.settings.saml_groups_attr_name] = user.groups
+        _add_export_attr(
+            saml_attrs, config.settings.saml_groups_attr_name, user.groups
+        )
     # Add custom attributes
     if user.attributes:
         saml_attrs.update(user.attributes)
@@ -747,20 +764,24 @@ def attribute_query() -> ResponseReturnValue:
             if user.identity_class:
                 attributes["identity_class"] = user.identity_class
             if user.entitlements:
-                # Convert list to comma-separated for SAML
-                if isinstance(user.entitlements, list):
-                    attributes["entitlements"] = ",".join(user.entitlements)
-                else:
-                    attributes["entitlements"] = user.entitlements
+                # Passed as a list: the response builder emits one
+                # AttributeValue per entry, and a comma-bearing entitlement
+                # stays a single value instead of being split (#134).
+                attributes["entitlements"] = user.entitlements
             # Add source_acl for data source authorization
             if user.source_acl:
                 attributes["source_acl"] = user.source_acl  # List for multiple values
 
-            # Roles/groups only when explicitly enabled (see /saml/sso)
+            # Roles/groups only when explicitly enabled (see /saml/sso).
+            # Lists, not ",".join: same reason as entitlements above (#134).
             if config.settings.saml_export_roles and user.roles:
-                attributes[config.settings.saml_roles_attr_name] = ",".join(user.roles)
+                _add_export_attr(
+                    attributes, config.settings.saml_roles_attr_name, user.roles
+                )
             if config.settings.saml_export_groups and user.groups:
-                attributes[config.settings.saml_groups_attr_name] = ",".join(user.groups)
+                _add_export_attr(
+                    attributes, config.settings.saml_groups_attr_name, user.groups
+                )
 
             # Add custom attributes
             if user.attributes:
