@@ -763,8 +763,13 @@ _TOOLS: list[Tool] = [
 ]
 
 _TOOL_SCHEMAS: dict[str, dict[str, Any]] = {tool.name: tool.input_schema for tool in _TOOLS}
-# Compile each tool's schema once at import (surfacing a malformed schema here
-# rather than on the first tools/call) instead of recompiling on every call.
+# Compile each tool's schema once at import instead of recompiling on every
+# call. check_schema() comes first because the constructor assumes its schema
+# is already valid (per the jsonschema docs); only the explicit check makes a
+# malformed tool schema fail here, at import, rather than behave undefined on
+# the first tools/call.
+for _schema in _TOOL_SCHEMAS.values():
+    Draft202012Validator.check_schema(_schema)
 _TOOL_VALIDATORS: dict[str, Draft202012Validator] = {
     name: Draft202012Validator(schema) for name, schema in _TOOL_SCHEMAS.items()
 }
