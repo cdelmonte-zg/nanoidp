@@ -390,9 +390,14 @@ class NanoIDPTestAgent:
             ).json()
             observed_issuer = discovery.get("issuer")
 
-            allowlisted = not issuer_allowlist or f"http://{custom_host}" in issuer_allowlist
+            # The server reflects the request's real scheme (request.host_url),
+            # so derive it from base_url instead of hardcoding http - against
+            # an https deployment the reflected issuer is https://... too.
+            scheme = urlparse(self.base_url).scheme or "http"
+            candidate_issuer = f"{scheme}://{custom_host}"
+            allowlisted = not issuer_allowlist or candidate_issuer in issuer_allowlist
             expected_issuer = (
-                f"http://{custom_host}" if issuer_from_request and allowlisted else fixed_issuer
+                candidate_issuer if issuer_from_request and allowlisted else fixed_issuer
             )
             discovery_ok = observed_issuer == expected_issuer
 
