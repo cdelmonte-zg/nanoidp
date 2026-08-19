@@ -21,7 +21,7 @@ oauth:
     - urn:service:billing
   - client_id: registered-client
     client_secret: registered-secret
-    description: Client with registered redirect URIs (exact matching, issue #67)
+    description: 'Client with registered redirect URIs (exact matching, issue #67)'
     redirect_uris:
     - http://localhost:3000/callback
   issuer_from_request: false

@@ -85,8 +85,9 @@ def preserve_config_files():
 
     A few tests exercise code paths that persist settings to the real config
     directory (e.g. POST ``/settings`` goes through the YAML writer). Without
-    this, those tests leave the repo's ``config/settings.yaml`` modified - with
-    env-var placeholders resolved and unrelated values flipped. Restoring the
+    this, those tests leave the repo's ``config/settings.yaml`` modified with
+    whatever fields they genuinely changed (unrelated fields, ``${VAR}``
+    placeholders and comments are left untouched since #127). Restoring the
     exact bytes keeps the working tree clean.
     """
     import pathlib
