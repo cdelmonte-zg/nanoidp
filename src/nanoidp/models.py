@@ -10,7 +10,19 @@ which re-exports everything here for compatibility.
 
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
+
+_SAML_ATTR_NAME_DEFAULTS = {
+    "saml_roles_attr_name": "roles",
+    "saml_groups_attr_name": "groups",
+}
+
+
+def normalize_saml_attr_name(field_name: str, v: Any) -> str:
+    """Missing or blank falls back to the default name; the export flags,
+    not the name, decide whether the attribute is emitted."""
+    name = (v or "").strip() if isinstance(v, (str, type(None))) else v
+    return name or _SAML_ATTR_NAME_DEFAULTS[field_name]
 
 
 def _coerce_client_str_list(raw: Any, client_id: str, field: str) -> List[str]:
@@ -130,6 +142,22 @@ class Settings(BaseModel):
     saml_sso_url: str = Field(default="http://localhost:8000/saml/sso", description="SAML SSO URL")
     default_acs_url: str = Field(default="http://localhost:8080/login/saml2/sso/samlIdp", description="Default ACS URL")
     saml_sign_responses: bool = Field(default=True, description="Sign SAML responses (set to false for testing unsigned flows)")
+    saml_export_roles: bool = Field(
+        default=False,
+        description="Emit the user's roles as a SAML attribute (off by default)",
+    )
+    saml_export_groups: bool = Field(
+        default=False,
+        description="Emit the user's groups as a SAML attribute (off by default)",
+    )
+    saml_roles_attr_name: str = Field(
+        default="roles",
+        description="SAML attribute name carrying the roles when saml_export_roles is on",
+    )
+    saml_groups_attr_name: str = Field(
+        default="groups",
+        description="SAML attribute name carrying the groups when saml_export_groups is on",
+    )
     saml_c14n_algorithm: str = Field(
         default="exc_c14n",
         description="XML canonicalization algorithm: 'exc_c14n' (Exclusive 1.0, default), 'c14n' (1.0), or 'c14n11' (1.1)"
@@ -187,6 +215,11 @@ class Settings(BaseModel):
     external_public_key: Optional[str] = Field(default=None, description="Path to external public PEM key")
     external_key_id: Optional[str] = Field(default=None, description="Key ID for external keys")
     max_previous_keys: int = Field(default=2, ge=0, le=10, description="Max previous keys to keep in JWKS")
+
+    @field_validator("saml_roles_attr_name", "saml_groups_attr_name", mode="before")
+    @classmethod
+    def _validate_saml_attr_name(cls, v: Any, info: ValidationInfo) -> str:
+        return normalize_saml_attr_name(str(info.field_name), v)
 
     @field_validator("security_profile")
     @classmethod

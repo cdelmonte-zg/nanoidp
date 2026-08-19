@@ -525,6 +525,10 @@ def settings() -> ResponseReturnValue:
                 request.form.get("saml_sp_certificates", "")
             ),
             c14n_algorithm=request.form.get("saml_c14n_algorithm"),
+            export_roles=request.form.get("saml_export_roles") == "true",
+            export_groups=request.form.get("saml_export_groups") == "true",
+            roles_attr_name=request.form.get("saml_roles_attr_name", "").strip(),
+            groups_attr_name=request.form.get("saml_groups_attr_name", "").strip(),
         )
 
         # Identity classes

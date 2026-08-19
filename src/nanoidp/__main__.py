@@ -70,6 +70,11 @@ saml:
   entity_id: "http://localhost:8000/saml"
   sso_url: "http://localhost:8000/saml/sso"
   default_acs_url: "http://localhost:8080/login/saml2/sso/nanoidp"
+  # Roles/groups are not standard SAML attributes; enable and name them here.
+  export_roles: false
+  export_groups: false
+  roles_attr_name: "roles"
+  groups_attr_name: "groups"
 
 # Authority prefixes for JWT claims
 authority_prefixes:

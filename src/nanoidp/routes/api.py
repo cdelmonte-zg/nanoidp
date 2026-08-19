@@ -136,6 +136,10 @@ def get_configuration() -> ResponseReturnValue:
             "sign_responses": settings.saml_sign_responses,
             "c14n_algorithm": settings.saml_c14n_algorithm,
             "strict_binding": settings.strict_saml_binding,
+            "export_roles": settings.saml_export_roles,
+            "export_groups": settings.saml_export_groups,
+            "roles_attr_name": settings.saml_roles_attr_name,
+            "groups_attr_name": settings.saml_groups_attr_name,
         },
         "logging": {
             "verbose_logging": settings.verbose_logging,

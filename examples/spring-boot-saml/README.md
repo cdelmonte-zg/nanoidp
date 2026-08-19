@@ -51,7 +51,8 @@ NanoIDP sends these SAML attributes:
 | Attribute | Description |
 |-----------|-------------|
 | `email` | User's email address |
-| `roles` | Comma-separated list of roles |
+| `roles` | User's roles, one `AttributeValue` each; requires `saml.export_roles: true` (set in this example) |
+| `groups` | User's groups, one `AttributeValue` each; requires `saml.export_groups: true` (set in this example) |
 | `tenant` | User's tenant |
 | `authorities` | All Spring GrantedAuthorities |
 

@@ -134,6 +134,40 @@
                         </select>
                         <div class="form-text">XML canonicalization algorithm for SAML signatures</div>
                     </div>
+
+                    <div class="mb-3">
+                        <div class="form-check form-switch">
+                            <input class="form-check-input" type="checkbox" role="switch"
+                                   id="saml_export_roles" name="saml_export_roles" value="true"
+                                   {% if settings.saml_export_roles %}checked{% endif %}>
+                            <label class="form-check-label" for="saml_export_roles">Export Roles Attribute</label>
+                        </div>
+                        <div class="form-text">Include the user's roles in SAML assertions and AttributeQuery responses. Off by default.</div>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="saml_roles_attr_name" class="form-label">Roles Attribute Name</label>
+                        <input type="text" class="form-control" id="saml_roles_attr_name" name="saml_roles_attr_name"
+                               value="{{ settings.saml_roles_attr_name }}" placeholder="roles">
+                        <div class="form-text">Name used when the export above is on. Common values: <code>roles</code>, <code>Role</code>, <code>http://schemas.microsoft.com/ws/2008/06/identity/claims/role</code>.</div>
+                    </div>
+
+                    <div class="mb-3">
+                        <div class="form-check form-switch">
+                            <input class="form-check-input" type="checkbox" role="switch"
+                                   id="saml_export_groups" name="saml_export_groups" value="true"
+                                   {% if settings.saml_export_groups %}checked{% endif %}>
+                            <label class="form-check-label" for="saml_export_groups">Export Groups Attribute</label>
+                        </div>
+                        <div class="form-text">Include the user's groups in SAML assertions and AttributeQuery responses. Off by default.</div>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="saml_groups_attr_name" class="form-label">Groups Attribute Name</label>
+                        <input type="text" class="form-control" id="saml_groups_attr_name" name="saml_groups_attr_name"
+                               value="{{ settings.saml_groups_attr_name }}" placeholder="groups">
+                        <div class="form-text">Name used when the export above is on. Common values: <code>groups</code>, <code>memberOf</code>.</div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -232,7 +266,11 @@ function updatePreview() {
             want_authn_requests_signed: document.getElementById('saml_want_authn_requests_signed').checked,
             sp_certificates: document.getElementById('saml_sp_certificates').value
                 .split('\n').map(s => s.trim()).filter(s => s),
-            c14n_algorithm: document.getElementById('saml_c14n_algorithm').value
+            c14n_algorithm: document.getElementById('saml_c14n_algorithm').value,
+            export_roles: document.getElementById('saml_export_roles').checked,
+            export_groups: document.getElementById('saml_export_groups').checked,
+            roles_attr_name: document.getElementById('saml_roles_attr_name').value.trim() || 'roles',
+            groups_attr_name: document.getElementById('saml_groups_attr_name').value.trim() || 'groups'
         },
         allowed_identity_classes: document.getElementById('allowed_identity_classes').value
             .split('\n')

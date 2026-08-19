@@ -35,6 +35,7 @@ from mcp.types import (
 
 from . import __version__
 from .config import ConfigManager, OAuthClient, User, init_config
+from .models import normalize_saml_attr_name
 from .services import (
     build_discovery_document,
     get_audit_log,
@@ -559,6 +560,22 @@ _TOOLS: list[Tool] = [
                     "type": "boolean",
                     "description": "Enable/disable SAML response signing",
                 },
+                "saml_export_roles": {
+                    "type": "boolean",
+                    "description": "Emit the user's roles as a SAML attribute (off by default)",
+                },
+                "saml_export_groups": {
+                    "type": "boolean",
+                    "description": "Emit the user's groups as a SAML attribute (off by default)",
+                },
+                "saml_roles_attr_name": {
+                    "type": "string",
+                    "description": "SAML attribute name for the roles (default: 'roles')",
+                },
+                "saml_groups_attr_name": {
+                    "type": "string",
+                    "description": "SAML attribute name for the groups (default: 'groups')",
+                },
                 "saml_c14n_algorithm": {
                     "type": "string",
                     "enum": ["c14n", "c14n11", "exc_c14n"],
@@ -1001,6 +1018,10 @@ async def _execute_tool(name: str, arguments: dict[str, Any], config: ConfigMana
                     settings.saml_want_authn_requests_signed
                 ),
                 "sp_certificates": settings.saml_sp_certificates,
+                "export_roles": settings.saml_export_roles,
+                "export_groups": settings.saml_export_groups,
+                "roles_attr_name": settings.saml_roles_attr_name,
+                "groups_attr_name": settings.saml_groups_attr_name,
             },
             "logging": {
                 "verbose_logging": settings.verbose_logging,
@@ -1028,6 +1049,22 @@ async def _execute_tool(name: str, arguments: dict[str, Any], config: ConfigMana
         if "saml_sign_responses" in arguments:
             settings.saml_sign_responses = arguments["saml_sign_responses"]
             updated.append("saml_sign_responses")
+        if "saml_export_roles" in arguments:
+            settings.saml_export_roles = arguments["saml_export_roles"]
+            updated.append("saml_export_roles")
+        if "saml_export_groups" in arguments:
+            settings.saml_export_groups = arguments["saml_export_groups"]
+            updated.append("saml_export_groups")
+        if "saml_roles_attr_name" in arguments:
+            settings.saml_roles_attr_name = normalize_saml_attr_name(
+                "saml_roles_attr_name", arguments["saml_roles_attr_name"]
+            )
+            updated.append("saml_roles_attr_name")
+        if "saml_groups_attr_name" in arguments:
+            settings.saml_groups_attr_name = normalize_saml_attr_name(
+                "saml_groups_attr_name", arguments["saml_groups_attr_name"]
+            )
+            updated.append("saml_groups_attr_name")
         if "saml_c14n_algorithm" in arguments:
             settings.saml_c14n_algorithm = arguments["saml_c14n_algorithm"]
             updated.append("saml_c14n_algorithm")
@@ -1070,6 +1107,10 @@ async def _execute_tool(name: str, arguments: dict[str, Any], config: ConfigMana
                     settings.saml_want_authn_requests_signed
                 ),
                 "saml_sp_certificates": settings.saml_sp_certificates,
+                "saml_export_roles": settings.saml_export_roles,
+                "saml_export_groups": settings.saml_export_groups,
+                "saml_roles_attr_name": settings.saml_roles_attr_name,
+                "saml_groups_attr_name": settings.saml_groups_attr_name,
                 "verbose_logging": settings.verbose_logging,
             },
         }

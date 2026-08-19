@@ -18,6 +18,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and user detail pages, exposed by `/api/users`, and settable through the MCP
   `create_user` / `update_user` tools. Users without groups behave exactly as
   before: no claim, no authorities, nothing written to YAML.
+- **Optional SAML export of roles and groups**: new `saml.export_roles` /
+  `saml.export_groups` toggles (both off by default, so the previous behaviour
+  is preserved) with companion `saml.roles_attr_name` / `saml.groups_attr_name`
+  settings defaulting to `roles` and `groups`. Roles and groups are not
+  standard SAML attributes and every SP expects a different name, so the name
+  is configurable; blanking it restores the default. Both toggles are on the
+  Settings page and the MCP `update_settings` tool, and apply to both the SSO
+  assertion and the AttributeQuery endpoint, with one `AttributeValue` per
+  entry.
 
 ### Changed
 - **Migrated the MCP server to the mcp 2.0 SDK** and pinned `mcp>=2,<3`. mcp 2.0
