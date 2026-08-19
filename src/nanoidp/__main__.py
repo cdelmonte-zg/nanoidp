@@ -54,7 +54,7 @@ DEFAULT_SETTINGS_YAML = """# NanoIDP Settings Configuration
 # Documentation: https://github.com/cdelmonte-zg/nanoidp
 
 server:
-  host: "0.0.0.0"
+  host: "127.0.0.1"
   port: 8000
 
 oauth:
@@ -165,7 +165,7 @@ def main() -> None:
     parser.add_argument(
         "--host",
         default=None,
-        help="Host to bind to (default: from config or 0.0.0.0)",
+        help="Host to bind to (default: from config or 127.0.0.1)",
     )
     parser.add_argument(
         "--port",

@@ -46,7 +46,7 @@ mapping below, is described in [Tokens and claims](tokens.md).
 
 ```yaml
 server:
-  host: "0.0.0.0"
+  host: "127.0.0.1"        # loopback by default; set 0.0.0.0 to expose on a network
   port: 8000
 
 oauth:

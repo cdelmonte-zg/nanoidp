@@ -85,7 +85,7 @@ def run_wizard(config_dir: str = "./config") -> bool:
 
     # Server configuration
     _print_header("Server Configuration")
-    host = _prompt("Host", "0.0.0.0")
+    host = _prompt("Host", "127.0.0.1")
     port = _prompt("Port", "8000")
     issuer = _prompt("Issuer URL", f"http://localhost:{port}")
     audience = _prompt("Audience", "my-app")

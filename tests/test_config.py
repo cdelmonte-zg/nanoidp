@@ -506,7 +506,7 @@ class TestSettingsPydanticValidation:
         """Test that Settings has sensible defaults."""
         settings = Settings()
 
-        assert settings.host == "0.0.0.0"
+        assert settings.host == "127.0.0.1"
         assert settings.port == 8000
         assert settings.debug is False
         assert settings.issuer == "http://localhost:8000"

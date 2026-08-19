@@ -122,7 +122,7 @@ class OAuthClient(BaseModel):
 class Settings(BaseModel):
     """Application settings with validation."""
     # Server
-    host: str = Field(default="0.0.0.0", description="Server host address")
+    host: str = Field(default="127.0.0.1", description="Server host address")
     port: int = Field(default=8000, ge=1, le=65535, description="Server port")
     debug: bool = Field(default=False, description="Enable debug mode")
 
