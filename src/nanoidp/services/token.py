@@ -216,6 +216,7 @@ class TokenService:
         refresh_family: Optional[str] = None,
         id_token_claims: Optional[List[str]] = None,
         userinfo_claims: Optional[List[str]] = None,
+        issuer: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Create a JWT token for a user.
 
@@ -231,8 +232,15 @@ class TokenService:
         are stamped on the access token so ``/userinfo`` can honour them. Both
         lists are also persisted in the refresh token (like ``scope`` and
         ``auth_time``), so refreshed tokens keep honouring the request (#112).
+
+        ``issuer`` overrides ``settings.issuer`` for the ``iss`` claim on every
+        token minted here (access, ID, refresh), so it must be whatever the
+        caller's own discovery document just advertised (``issuer_from_request``)
+        - a token whose ``iss`` doesn't match what discovery said is rejected by
+        any spec-compliant client.
         """
         settings = self.config.settings
+        effective_issuer = issuer or settings.issuer
 
         if exp_minutes is None:
             exp_minutes = settings.token_expiry_minutes
@@ -299,7 +307,7 @@ class TokenService:
         # Create access token JWT
         token = self.crypto.create_jwt(
             sub=user.username,
-            issuer=settings.issuer,
+            issuer=effective_issuer,
             audience=settings.audience,
             roles=user.roles,
             tenant=user.tenant,
@@ -341,7 +349,7 @@ class TokenService:
                     id_extra.setdefault(claim_name, value)
             id_token = self.crypto.create_jwt(
                 sub=user.username,
-                issuer=settings.issuer,
+                issuer=effective_issuer,
                 audience=id_aud,
                 exp_minutes=exp_minutes,
                 nonce=nonce,
@@ -376,7 +384,7 @@ class TokenService:
         refresh_extra["rt_family"] = refresh_family or str(uuid.uuid4())
         refresh_token = self.crypto.create_jwt(
             sub=user.username,
-            issuer=settings.issuer,
+            issuer=effective_issuer,
             audience=settings.audience,
             roles=user.roles,
             tenant=user.tenant,

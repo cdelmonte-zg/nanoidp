@@ -156,6 +156,9 @@ class YamlWriter:
     def update_oauth_settings(
         self,
         issuer: Optional[str] = None,
+        issuer_from_request: Optional[bool] = None,
+        issuer_allowlist: Optional[List[str]] = None,
+        device_verification_base_url: Optional[str] = None,
         audience: Optional[str] = None,
         token_expiry_minutes: Optional[int] = None,
         require_pkce: Optional[bool] = None,
@@ -167,6 +170,18 @@ class YamlWriter:
 
         if issuer is not None:
             oauth["issuer"] = issuer
+        if issuer_from_request is not None:
+            oauth["issuer_from_request"] = issuer_from_request
+        if issuer_allowlist is not None:
+            if issuer_allowlist:
+                oauth["issuer_allowlist"] = issuer_allowlist
+            else:
+                oauth.pop("issuer_allowlist", None)
+        if device_verification_base_url is not None:
+            if device_verification_base_url:
+                oauth["device_verification_base_url"] = device_verification_base_url
+            else:
+                oauth.pop("device_verification_base_url", None)
         if audience is not None:
             oauth["audience"] = audience
         if token_expiry_minutes is not None:

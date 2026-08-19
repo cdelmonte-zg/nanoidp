@@ -24,6 +24,8 @@ oauth:
     description: Client with registered redirect URIs (exact matching, issue #67)
     redirect_uris:
     - http://localhost:3000/callback
+  issuer_from_request: false
+  issuer_from_proxy_headers: false
 saml:
   entity_id: http://localhost:${PORT:8000}/saml
   sso_url: http://localhost:${PORT:8000}/saml/sso

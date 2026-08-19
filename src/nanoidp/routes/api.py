@@ -126,6 +126,7 @@ def get_configuration() -> ResponseReturnValue:
         },
         "oauth": {
             "issuer": settings.issuer,
+            "issuer_from_request": settings.issuer_from_request,
             "audience": settings.audience,
             "token_expiry_minutes": settings.token_expiry_minutes,
             "clients_count": len(settings.clients),

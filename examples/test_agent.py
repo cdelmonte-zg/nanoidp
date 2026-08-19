@@ -351,6 +351,75 @@ class NanoIDPTestAgent:
         except Exception as e:
             return self._add_result("Client Credentials", TestCategory.OAUTH, False, str(e))
 
+    def test_issuer_from_request(self) -> TestResult:
+        """Discovery/token issuer parity for oauth.issuer_from_request.
+
+        issuer_from_request defaults to off, so discovery must keep reporting
+        the fixed issuer regardless of the Host header used. If an operator's
+        config has it on (and the Host is allowlisted, or no allowlist is
+        set), discovery must reflect that Host instead - and a token minted
+        for the same Host must report the exact same value as `iss`, since
+        OIDC Discovery and ID Token validation both require an exact match.
+        Mirrors test_saml_signing_config's pattern of reading /api/config
+        first and asserting the toggle is honoured either way.
+        """
+        try:
+            config_response = self.session.get(f"{self.base_url}/api/config", timeout=5)
+            issuer_from_request = False
+            issuer_allowlist: List[str] = []
+            if config_response.status_code == 200:
+                oauth_config = config_response.json().get("oauth", {})
+                issuer_from_request = oauth_config.get("issuer_from_request", False)
+                issuer_allowlist = oauth_config.get("issuer_allowlist", []) or []
+
+            fixed_issuer = self.session.get(
+                f"{self.base_url}/.well-known/openid-configuration", timeout=5
+            ).json().get("issuer")
+
+            custom_host = "test-agent-issuer-check:9999"
+            discovery = self.session.get(
+                f"{self.base_url}/.well-known/openid-configuration",
+                headers={"Host": custom_host},
+                timeout=5,
+            ).json()
+            observed_issuer = discovery.get("issuer")
+
+            allowlisted = not issuer_allowlist or f"http://{custom_host}" in issuer_allowlist
+            expected_issuer = (
+                f"http://{custom_host}" if issuer_from_request and allowlisted else fixed_issuer
+            )
+            discovery_ok = observed_issuer == expected_issuer
+
+            token_response = self.session.post(
+                f"{self.base_url}/token",
+                data={"grant_type": "client_credentials"},
+                headers={"Host": custom_host},
+                timeout=5,
+            )
+            token_iss = None
+            if token_response.status_code == 200 and jwt:
+                access_token = token_response.json().get("access_token")
+                token_iss = jwt.decode(access_token, options={"verify_signature": False}).get("iss")
+
+            iss_matches_discovery = token_iss == observed_issuer
+
+            return self._add_result(
+                "Issuer From Request",
+                TestCategory.OAUTH,
+                discovery_ok and iss_matches_discovery,
+                f"issuer_from_request={issuer_from_request}, discovery_issuer={observed_issuer}, "
+                f"token_iss={token_iss}",
+                {
+                    "issuer_from_request": issuer_from_request,
+                    "issuer_allowlist": issuer_allowlist,
+                    "expected_issuer": expected_issuer,
+                    "discovery_issuer": observed_issuer,
+                    "token_iss": token_iss,
+                },
+            )
+        except Exception as e:
+            return self._add_result("Issuer From Request", TestCategory.OAUTH, False, str(e))
+
     def test_authorization_code_pkce(self) -> TestResult:
         """Authorization Code Flow with PKCE (simulated)."""
         try:
@@ -3033,6 +3102,7 @@ class NanoIDPTestAgent:
                 self.test_jwks,
                 self.test_password_grant,
                 self.test_client_credentials,
+                self.test_issuer_from_request,
                 self.test_authorization_code_pkce,
                 self.test_redirect_uri_exact_matching,
                 self.test_id_token_audience,

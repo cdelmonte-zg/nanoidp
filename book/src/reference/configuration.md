@@ -51,6 +51,33 @@ server:
 
 oauth:
   issuer: "http://localhost:8000"
+  issuer_from_request: false    # true: derive issuer/iss/verification_uri from
+                                 # each request's own Host header instead of the
+                                 # fixed issuer above - lets the same NanoIDP be
+                                 # reachable under more than one hostname (e.g. a
+                                 # Docker Compose service name vs. localhost) without
+                                 # a discovery/token issuer mismatch. MCP tools have
+                                 # no request of their own and always report the
+                                 # fixed issuer.
+  issuer_allowlist: []          # origins allowed to be reflected by issuer_from_request,
+                                 # e.g. ["http://localhost:8000", "http://nanoidp:9900"].
+                                 # Empty (default) allows any Host header; a non-matching
+                                 # Host falls back to the fixed issuer above.
+  device_verification_base_url: null  # fixed, human-reachable URL (e.g.
+                                 # "https://idp.example.com") for the device flow's
+                                 # verification_uri, overriding issuer_from_request's
+                                 # derivation there - use this when a backend/container
+                                 # calls /device_authorization so the returned URL is
+                                 # still one a human's browser can open. Discovery's
+                                 # issuer and a token's iss are unaffected.
+  issuer_from_proxy_headers: false  # true: trust X-Forwarded-Proto/Host/For from a
+                                 # single reverse-proxy hop in front of NanoIDP
+                                 # (applies werkzeug's ProxyFix). Only affects the
+                                 # issuer_from_request derivation above - has no
+                                 # visible effect unless that's also on - but always
+                                 # affects rate-limit client IP attribution. Only
+                                 # enable behind exactly one trusted proxy - these
+                                 # headers are otherwise spoofable.
   audience: "my-app"            # access token "aud" (resource audience, RFC 9068)
   token_expiry_minutes: 60
   refresh_token_rotation: false # true: each refresh invalidates the used refresh token

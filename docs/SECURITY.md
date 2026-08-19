@@ -202,6 +202,37 @@ All MCP tool calls are logged to the audit log, including:
 
 ---
 
+## Multi-hostname Issuer (`issuer_from_request`)
+
+`oauth.issuer_from_request` (off by default) reflects each request's own
+Host header as the discovery `issuer`, token `iss`, and device flow
+`verification_uri`, so the same NanoIDP can be reached under more than one
+hostname (e.g. a Docker Compose service name vs. `localhost`) without a
+discovery/token issuer mismatch.
+
+**Trust caveats:**
+- The Host header is trusted as-is unless `oauth.issuer_allowlist` is set to
+  a non-empty list of allowed origins; a non-matching Host then falls back to
+  the fixed `issuer` instead. Only enable `issuer_from_request` without an
+  allowlist on trusted networks.
+- Behind a TLS-terminating reverse proxy, also enable
+  `oauth.issuer_from_proxy_headers` so `request.scheme`/`host_url` reflect
+  `X-Forwarded-Proto`/`X-Forwarded-Host` instead of the proxy's own HTTP
+  connection - this only changes the derived issuer when `issuer_from_request`
+  is also on (it always affects rate-limit client IP attribution regardless).
+  Only enable this when NanoIDP sits directly behind exactly one trusted proxy
+  - these headers are otherwise spoofable by any client.
+- By default, the device flow's `verification_uri` reflects whichever Host
+  called `/device_authorization`. If that caller is a backend/container
+  (e.g. `Host: nanoidp:9900`) rather than the end user's own browser, the
+  returned URL may not be reachable from the user's machine. Set
+  `oauth.device_verification_base_url` to a fixed, human-reachable URL (e.g.
+  `https://idp.example.com`) to pin `verification_uri` regardless of the
+  calling Host; discovery's `issuer` and a token's `iss` are unaffected and
+  keep following the request that fetched/requested them.
+
+---
+
 ## Environment Variables
 
 | Variable | Description | Default |

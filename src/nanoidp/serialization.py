@@ -96,6 +96,16 @@ def apply_settings_document(
 
     oauth = document.setdefault("oauth", {})
     oauth["issuer"] = settings.issuer
+    oauth["issuer_from_request"] = settings.issuer_from_request
+    if settings.issuer_allowlist:
+        oauth["issuer_allowlist"] = settings.issuer_allowlist
+    else:
+        oauth.pop("issuer_allowlist", None)
+    if settings.device_verification_base_url:
+        oauth["device_verification_base_url"] = settings.device_verification_base_url
+    else:
+        oauth.pop("device_verification_base_url", None)
+    oauth["issuer_from_proxy_headers"] = settings.issuer_from_proxy_headers
     oauth["audience"] = settings.audience
     oauth["token_expiry_minutes"] = settings.token_expiry_minutes
     oauth["refresh_token_rotation"] = settings.refresh_token_rotation

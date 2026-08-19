@@ -12,7 +12,7 @@ import jwt as pyjwt
 from flask import Blueprint, abort, jsonify, redirect, render_template, request, session
 from flask.typing import ResponseReturnValue
 
-from ..config import ConfigManager, User, get_config
+from ..config import ConfigManager, Settings, User, get_config
 from ..services import (
     DevicePollOutcome,
     DeviceVerifyOutcome,
@@ -66,11 +66,39 @@ def _parse_claims_parameter(raw: Optional[str]) -> Optional[Dict[str, list]]:
 
 
 
+def _effective_issuer(settings: Settings) -> str:
+    """The issuer for the current request: fixed, unless opted into reflecting
+    how this request actually reached NanoIDP.
+
+    Docker Compose / multi-hostname dev setups often make the same NanoIDP
+    reachable at more than one hostname (e.g. ``nanoidp:9900`` from other
+    containers, ``localhost:9900`` from the host browser), each of which must
+    see a matching issuer: OIDC Discovery requires the document's ``issuer``
+    to exactly equal the URL it was fetched from, and a token's ``iss`` must
+    match what discovery advertised. Off by default, so every existing
+    deployment keeps its fixed, configured issuer.
+
+    When ``issuer_allowlist`` is non-empty, a request whose Host doesn't match
+    any allowed origin falls back to the fixed ``issuer`` rather than
+    reflecting an arbitrary Host header.
+    """
+    if not settings.issuer_from_request:
+        return settings.issuer
+    candidate = request.host_url.rstrip("/")
+    if settings.issuer_allowlist and candidate not in settings.issuer_allowlist:
+        return settings.issuer
+    return candidate
+
+
 @oauth_bp.route("/.well-known/openid-configuration")
 def oidc_config() -> ResponseReturnValue:
     """OIDC Discovery endpoint."""
     config = get_config()
-    return jsonify(build_discovery_document(config.settings))
+    return jsonify(
+        build_discovery_document(
+            config.settings, issuer=_effective_issuer(config.settings)
+        )
+    )
 
 
 @oauth_bp.route("/.well-known/jwks.json")
@@ -950,6 +978,7 @@ def token() -> ResponseReturnValue:
         refresh_family=result.refresh_family,
         id_token_claims=result.id_token_claims,
         userinfo_claims=result.userinfo_claims,
+        issuer=_effective_issuer(config.settings),
     )
 
     # Audit log
@@ -1368,8 +1397,17 @@ def device_authorization() -> ResponseReturnValue:
 
     logger.info(f"Device authorization initiated, user_code: {user_code}")
 
-    # Build verification URI
-    verification_uri = f"{config.settings.issuer}/device"
+    # Build verification URI. device_verification_base_url overrides the
+    # request-derived issuer here so a backend/container caller's Host
+    # doesn't leak into a URL the human's own browser can't reach.
+    settings = config.settings
+    verification_base = settings.issuer
+    if settings.issuer_from_request:
+        verification_base = (
+            settings.device_verification_base_url
+            or _effective_issuer(settings)
+        )
+    verification_uri = f"{verification_base}/device"
     verification_uri_complete = f"{verification_uri}?user_code={user_code}"
 
     return jsonify({

@@ -137,6 +137,10 @@ class ConfigManager:
             debug=server.get("debug", False),
             # OAuth
             issuer=oauth.get("issuer", "http://localhost:8000"),
+            issuer_from_request=oauth.get("issuer_from_request", False),
+            issuer_allowlist=oauth.get("issuer_allowlist", []) or [],
+            device_verification_base_url=oauth.get("device_verification_base_url"),
+            issuer_from_proxy_headers=oauth.get("issuer_from_proxy_headers", False),
             audience=oauth.get("audience", "default"),
             token_expiry_minutes=oauth.get("token_expiry_minutes", 60),
             refresh_token_rotation=oauth.get("refresh_token_rotation", False),

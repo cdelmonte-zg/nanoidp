@@ -548,6 +548,43 @@ _TOOLS: list[Tool] = [
                     "type": "string",
                     "description": "OAuth2/OIDC issuer URL",
                 },
+                "issuer_from_request": {
+                    "type": "boolean",
+                    "description": "Derive the issuer from each request's own Host "
+                    "header instead of the fixed 'issuer' (dev convenience for "
+                    "setups reachable under more than one hostname). MCP tools "
+                    "have no request of their own, so this only affects HTTP "
+                    "discovery/token/device-flow responses, never MCP ones.",
+                },
+                "issuer_allowlist": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Origins (e.g. 'http://localhost:8000') allowed "
+                    "to be reflected back by 'issuer_from_request'. Empty (default) "
+                    "allows any Host header. A non-matching Host falls back to the "
+                    "fixed 'issuer'.",
+                },
+                "device_verification_base_url": {
+                    "type": "string",
+                    "description": "Fixed base URL for the device flow's "
+                    "verification_uri (e.g. 'https://idp.example.com'), used "
+                    "instead of the request-derived issuer so a backend/container "
+                    "caller's Host doesn't leak into a URL a human's browser can't "
+                    "reach. Only consulted when 'issuer_from_request' is on; empty "
+                    "string clears it back to following the request Host.",
+                },
+                "issuer_from_proxy_headers": {
+                    "type": "boolean",
+                    "description": "Trust 'X-Forwarded-Proto'/'X-Forwarded-Host'/"
+                    "'X-Forwarded-For' from a single reverse-proxy hop in front of "
+                    "NanoIDP (applies werkzeug's ProxyFix). Only affects the "
+                    "'issuer_from_request' derivation - and only when that toggle "
+                    "is also on; it always affects rate-limit client IP "
+                    "attribution regardless. Only enable this when NanoIDP is "
+                    "deployed directly behind exactly one trusted proxy - these "
+                    "headers are otherwise spoofable by any client. Takes effect "
+                    "on the next app restart, not the running process.",
+                },
                 "audience": {
                     "type": "string",
                     "description": "Default token audience",
@@ -1002,6 +1039,10 @@ async def _execute_tool(name: str, arguments: dict[str, Any], config: ConfigMana
         settings = config.settings
         return {
             "issuer": settings.issuer,
+            "issuer_from_request": settings.issuer_from_request,
+            "issuer_allowlist": settings.issuer_allowlist,
+            "device_verification_base_url": settings.device_verification_base_url,
+            "issuer_from_proxy_headers": settings.issuer_from_proxy_headers,
             "audience": settings.audience,
             "token_expiry_minutes": settings.token_expiry_minutes,
             "security_profile": settings.security_profile,
@@ -1040,6 +1081,22 @@ async def _execute_tool(name: str, arguments: dict[str, Any], config: ConfigMana
         if "issuer" in arguments:
             settings.issuer = arguments["issuer"]
             updated.append("issuer")
+        if "issuer_from_request" in arguments:
+            settings.issuer_from_request = arguments["issuer_from_request"]
+            updated.append("issuer_from_request")
+        if "issuer_allowlist" in arguments:
+            settings.issuer_allowlist = _normalize_str_list(
+                arguments["issuer_allowlist"], "issuer_allowlist"
+            )
+            updated.append("issuer_allowlist")
+        if "device_verification_base_url" in arguments:
+            settings.device_verification_base_url = (
+                arguments["device_verification_base_url"] or None
+            )
+            updated.append("device_verification_base_url")
+        if "issuer_from_proxy_headers" in arguments:
+            settings.issuer_from_proxy_headers = arguments["issuer_from_proxy_headers"]
+            updated.append("issuer_from_proxy_headers")
         if "audience" in arguments:
             settings.audience = arguments["audience"]
             updated.append("audience")
@@ -1096,6 +1153,10 @@ async def _execute_tool(name: str, arguments: dict[str, Any], config: ConfigMana
             "updated_fields": updated,
             "current_settings": {
                 "issuer": settings.issuer,
+                "issuer_from_request": settings.issuer_from_request,
+                "issuer_allowlist": settings.issuer_allowlist,
+                "device_verification_base_url": settings.device_verification_base_url,
+                "issuer_from_proxy_headers": settings.issuer_from_proxy_headers,
                 "audience": settings.audience,
                 "token_expiry_minutes": settings.token_expiry_minutes,
                 "refresh_token_rotation": settings.refresh_token_rotation,
