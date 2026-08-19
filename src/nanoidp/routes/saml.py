@@ -16,6 +16,7 @@ from lxml import etree
 
 from ..config import get_config
 from ..exceptions import SAMLSignatureError
+from ..models import Settings, User
 from ..services import get_crypto_service
 from ..services.saml_verification import (
     load_sp_certificates,
@@ -154,7 +155,7 @@ def _parse_saml_request(
         return None
 
 
-def _build_roles_groups_attrs(settings, user) -> Dict[str, List[str]]:
+def _build_roles_groups_attrs(settings: Settings, user: User) -> Dict[str, List[str]]:
     """
     Build the roles/groups SAML attribute(s) for a user.
 
