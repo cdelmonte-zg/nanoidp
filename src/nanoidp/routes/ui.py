@@ -510,6 +510,7 @@ def settings() -> ResponseReturnValue:
             device_verification_base_url=request.form.get(
                 "device_verification_base_url", ""
             ).strip(),
+            issuer_from_proxy_headers=request.form.get("issuer_from_proxy_headers") == "true",
             audience=request.form.get("audience"),
             token_expiry_minutes=int(request.form.get("token_expiry_minutes", 60)),
             require_pkce=request.form.get("require_pkce") == "true",

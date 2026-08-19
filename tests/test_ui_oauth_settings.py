@@ -137,3 +137,41 @@ class TestDeviceVerificationBaseUrlRoundTrip:
         assert response.status_code == 200
         config.reload()
         assert config.settings.device_verification_base_url is None
+
+
+class TestIssuerFromProxyHeadersRoundTrip:
+    def test_toggle_enables_and_persists(self, client, preserve_config_files):
+        with client.session_transaction() as sess:
+            sess["user"] = "admin"
+        config = get_config()
+
+        response = client.post(
+            "/settings",
+            data={**_base_form(config.settings), "issuer_from_proxy_headers": "true"},
+            follow_redirects=True,
+        )
+        assert response.status_code == 200
+        config.reload()
+        assert config.settings.issuer_from_proxy_headers is True
+
+    def test_unchecked_toggle_disables(self, client, preserve_config_files):
+        with client.session_transaction() as sess:
+            sess["user"] = "admin"
+        config = get_config()
+        config.settings.issuer_from_proxy_headers = True
+
+        response = client.post(
+            "/settings",
+            data=_base_form(config.settings),  # issuer_from_proxy_headers absent
+            follow_redirects=True,
+        )
+        assert response.status_code == 200
+        config.reload()
+        assert config.settings.issuer_from_proxy_headers is False
+
+    def test_settings_page_renders_the_toggle(self, client):
+        with client.session_transaction() as sess:
+            sess["user"] = "admin"
+        r = client.get("/settings")
+        assert r.status_code == 200
+        assert b'name="issuer_from_proxy_headers"' in r.data
