@@ -35,6 +35,7 @@ from mcp.types import (
 
 from . import __version__
 from .config import ConfigManager, OAuthClient, User, init_config
+from .models import normalize_saml_attr_name
 from .services import (
     build_discovery_document,
     get_audit_log,
@@ -1055,10 +1056,14 @@ async def _execute_tool(name: str, arguments: dict[str, Any], config: ConfigMana
             settings.saml_export_groups = arguments["saml_export_groups"]
             updated.append("saml_export_groups")
         if "saml_roles_attr_name" in arguments:
-            settings.saml_roles_attr_name = arguments["saml_roles_attr_name"]
+            settings.saml_roles_attr_name = normalize_saml_attr_name(
+                "saml_roles_attr_name", arguments["saml_roles_attr_name"]
+            )
             updated.append("saml_roles_attr_name")
         if "saml_groups_attr_name" in arguments:
-            settings.saml_groups_attr_name = arguments["saml_groups_attr_name"]
+            settings.saml_groups_attr_name = normalize_saml_attr_name(
+                "saml_groups_attr_name", arguments["saml_groups_attr_name"]
+            )
             updated.append("saml_groups_attr_name")
         if "saml_c14n_algorithm" in arguments:
             settings.saml_c14n_algorithm = arguments["saml_c14n_algorithm"]

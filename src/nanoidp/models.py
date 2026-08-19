@@ -18,6 +18,13 @@ _SAML_ATTR_NAME_DEFAULTS = {
 }
 
 
+def normalize_saml_attr_name(field_name: str, v: Any) -> str:
+    """Missing or blank falls back to the default name; the export flags,
+    not the name, decide whether the attribute is emitted."""
+    name = (v or "").strip() if isinstance(v, (str, type(None))) else v
+    return name or _SAML_ATTR_NAME_DEFAULTS[field_name]
+
+
 def _coerce_client_str_list(raw: Any, client_id: str, field: str) -> List[str]:
     """Coerce a client's list-of-strings YAML value into a clean list.
 
@@ -211,11 +218,8 @@ class Settings(BaseModel):
 
     @field_validator("saml_roles_attr_name", "saml_groups_attr_name", mode="before")
     @classmethod
-    def normalize_saml_attr_name(cls, v: Any, info: ValidationInfo) -> str:
-        """Missing or blank falls back to the default name; the export flags,
-        not the name, decide whether the attribute is emitted."""
-        name = (v or "").strip() if isinstance(v, (str, type(None))) else v
-        return name or _SAML_ATTR_NAME_DEFAULTS[str(info.field_name)]
+    def _validate_saml_attr_name(cls, v: Any, info: ValidationInfo) -> str:
+        return normalize_saml_attr_name(str(info.field_name), v)
 
     @field_validator("security_profile")
     @classmethod
