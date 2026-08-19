@@ -8,7 +8,7 @@ import uuid
 import zlib
 from base64 import b64decode, b64encode
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from flask import Blueprint, Response, abort, render_template, request, session
 from flask.typing import ResponseReturnValue
@@ -152,6 +152,32 @@ def _parse_saml_request(
     except Exception as e:
         logger.warning(f"Failed to parse SAMLRequest: {e}")
         return None
+
+
+def _build_roles_groups_attrs(settings, user) -> Dict[str, List[str]]:
+    """
+    Build the roles/groups SAML attribute(s) for a user.
+
+    Roles/groups are opt-in: they have no standard SAML attribute name, so the
+    SP-specific name is configured alongside the switch. If both exports are
+    enabled and configured with the same attribute name, the two lists are
+    merged into that single shared attribute instead of groups silently
+    overwriting roles (e.g. both mapped to a shared "memberOf").
+    """
+    export_roles = settings.saml_export_roles and user.roles
+    export_groups = settings.saml_export_groups and user.groups
+    roles_name = settings.saml_roles_attr_name
+    groups_name = settings.saml_groups_attr_name
+
+    if export_roles and export_groups and roles_name == groups_name:
+        return {roles_name: list(user.roles) + list(user.groups)}
+
+    attrs: Dict[str, List[str]] = {}
+    if export_roles:
+        attrs[roles_name] = user.roles
+    if export_groups:
+        attrs[groups_name] = user.groups
+    return attrs
 
 
 def _build_saml_response(
@@ -509,12 +535,7 @@ def sso() -> ResponseReturnValue:
         "entitlements": user.entitlements,
         "email": user.email,
     }
-    # Roles/groups are opt-in: they have no standard SAML attribute name, so the
-    # SP-specific name is configured alongside the switch.
-    if config.settings.saml_export_roles and user.roles:
-        saml_attrs[config.settings.saml_roles_attr_name] = user.roles
-    if config.settings.saml_export_groups and user.groups:
-        saml_attrs[config.settings.saml_groups_attr_name] = user.groups
+    saml_attrs.update(_build_roles_groups_attrs(config.settings, user))
     # Add custom attributes
     if user.attributes:
         saml_attrs.update(user.attributes)
@@ -747,20 +768,16 @@ def attribute_query() -> ResponseReturnValue:
             if user.identity_class:
                 attributes["identity_class"] = user.identity_class
             if user.entitlements:
-                # Convert list to comma-separated for SAML
-                if isinstance(user.entitlements, list):
-                    attributes["entitlements"] = ",".join(user.entitlements)
-                else:
-                    attributes["entitlements"] = user.entitlements
+                # Pass through as-is; the response builder expands list/tuple to one
+                # AttributeValue per entry, matching the SSO assertion (avoids splitting
+                # comma-bearing values like "Finance, EMEA").
+                attributes["entitlements"] = user.entitlements
             # Add source_acl for data source authorization
             if user.source_acl:
                 attributes["source_acl"] = user.source_acl  # List for multiple values
 
             # Roles/groups only when explicitly enabled (see /saml/sso)
-            if config.settings.saml_export_roles and user.roles:
-                attributes[config.settings.saml_roles_attr_name] = ",".join(user.roles)
-            if config.settings.saml_export_groups and user.groups:
-                attributes[config.settings.saml_groups_attr_name] = ",".join(user.groups)
+            attributes.update(_build_roles_groups_attrs(config.settings, user))
 
             # Add custom attributes
             if user.attributes:
