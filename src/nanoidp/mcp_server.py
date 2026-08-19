@@ -11,6 +11,27 @@ Security Note:
       the admin_secret parameter to match.
     - When --readonly flag or NANOIDP_MCP_READONLY=true, mutating tools
       are completely disabled.
+
+isError contract:
+    A tool result is flagged ``is_error=True`` only when the call failed. A
+    query that answers negatively is NOT a failure. call_tool applies this
+    once, via ``failed = result.get("success") is False or "error" in result``.
+
+    | Outcome                                    | key           | is_error |
+    |--------------------------------------------|---------------|----------|
+    | success                                    | success/data  | False    |
+    | negative query (get_user/get_client miss)  | found: False  | False    |
+    | negative query (verify_token invalid)      | valid: False  | False    |
+    |                                            | (+ ``reason``)|          |
+    | mutation failure (not found / exists / IO) | success: False| True     |
+    |                                            | (+ ``error``) |          |
+    | guard rejection (readonly/secret/unknown/  | error + code  | True     |
+    |   bad args), via _reject                   | + tool        |          |
+    | uncaught exception                         | error + code  | True     |
+    |                                            | + tool        |          |
+
+    Negative queries must therefore avoid the top-level ``error`` key (use
+    ``reason`` / ``found``) so the heuristic does not misclassify them.
 """
 
 import argparse
@@ -20,8 +41,9 @@ import logging
 import os
 from typing import Any, Optional, Tuple
 
-import jsonschema
 import jwt as pyjwt
+from jsonschema import Draft202012Validator
+from jsonschema.exceptions import best_match
 from mcp.server import Server, ServerRequestContext
 from mcp.server.stdio import stdio_server
 from mcp.types import (
@@ -741,6 +763,11 @@ _TOOLS: list[Tool] = [
 ]
 
 _TOOL_SCHEMAS: dict[str, dict[str, Any]] = {tool.name: tool.input_schema for tool in _TOOLS}
+# Compile each tool's schema once at import (surfacing a malformed schema here
+# rather than on the first tools/call) instead of recompiling on every call.
+_TOOL_VALIDATORS: dict[str, Draft202012Validator] = {
+    name: Draft202012Validator(schema) for name, schema in _TOOL_SCHEMAS.items()
+}
 
 
 async def list_tools(
@@ -807,14 +834,13 @@ async def call_tool(
         # before dispatch; the 2.0 on_call_tool path does not, so it is done
         # here to keep required-field/type errors from reaching _execute_tool
         # as bare KeyErrors.
-        schema = _TOOL_SCHEMAS.get(name)
-        if schema is None:
+        validator = _TOOL_VALIDATORS.get(name)
+        if validator is None:
             return _reject(name, "MCP_UNKNOWN_TOOL", f"Unknown tool: {name}")
-        try:
-            jsonschema.validate(instance=arguments, schema=schema)
-        except jsonschema.ValidationError as e:
-            field = ".".join(str(p) for p in e.absolute_path)
-            message = f"{field}: {e.message}" if field else e.message
+        error = best_match(validator.iter_errors(arguments))
+        if error is not None:
+            field = ".".join(str(p) for p in error.absolute_path)
+            message = f"{field}: {error.message}" if field else error.message
             return _reject(name, "MCP_INVALID_ARGUMENTS", f"Input validation error: {message}")
 
         result = await _execute_tool(name, arguments, config)
@@ -822,14 +848,20 @@ async def call_tool(
         # e.g. "user not found") are results, not exceptions, so they don't
         # go through the except branch below - but they still failed and must
         # be flagged the same way (CHANGELOG: "failed MCP tool calls now set
-        # is_error: true").
+        # is_error: true"). See the isError contract in the module docstring.
         failed = result.get("success") is False or "error" in result
-        _log_mcp_tool(name, success=not failed, details={"tool": name})
+        details = {"tool": name}
+        if failed:
+            details["error"] = result.get("error") or "tool reported failure"
+        _log_mcp_tool(name, success=not failed, details=details)
         return _text_result(result, is_error=failed)
     except Exception as e:
         logger.exception(f"Error executing tool {name}")
-        _log_mcp_tool(name, success=False, details={"error": str(e)})
-        return _text_result({"error": str(e), "tool": name}, is_error=True)
+        _log_mcp_tool(name, success=False, details={"error": str(e), "tool": name})
+        return _text_result(
+            {"error": str(e), "code": "MCP_INTERNAL_ERROR", "tool": name},
+            is_error=True,
+        )
 
 
 server = Server(
@@ -962,7 +994,10 @@ async def _execute_tool(name: str, arguments: dict[str, Any], config: ConfigMana
             payload = crypto.verify_jwt(token, config.settings.audience)
             return {"valid": True, "claims": payload}
         except Exception as e:
-            return {"valid": False, "error": str(e)}
+            # A rejected token is verify_token's designed answer, not a tool
+            # failure: use "reason" (not "error") so call_tool does not flag
+            # the result is_error (see the isError contract in the docstring).
+            return {"valid": False, "reason": str(e)}
 
     # Client Management
     elif name == "list_clients":
@@ -1233,8 +1268,10 @@ async def _execute_tool(name: str, arguments: dict[str, Any], config: ConfigMana
         )
         return {"success": True, **result}
 
-    else:
-        return {"error": f"Unknown tool: {name}"}
+    # Unreachable on the protocol path: call_tool rejects an unknown name with
+    # MCP_UNKNOWN_TOOL before dispatching here. Raising (rather than returning a
+    # divergent {"error": ...} shape) makes a direct mis-call a clear bug.
+    raise ValueError(f"Unknown tool: {name}")
 
 
 # =============================================================================

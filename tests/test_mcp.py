@@ -287,6 +287,24 @@ class TestMCPHandlerRegistration:
         payload = json.loads(result.content[0].text)
         assert payload["success"] is False
 
+    @pytest.mark.asyncio
+    async def test_verify_token_invalid_is_not_an_error(self, monkeypatch, mcp_call_tool):
+        """An invalid/expired token is verify_token's designed answer, not a
+        failed call: the result reports valid=False with a `reason` (not an
+        `error` key) and is not flagged is_error (isError contract)."""
+        import nanoidp.mcp_server as mcp
+
+        monkeypatch.setattr(mcp, "_readonly_mode", False)
+        monkeypatch.delenv("NANOIDP_MCP_ADMIN_SECRET", raising=False)
+
+        result = await mcp_call_tool("verify_token", {"token": "not-a-real-jwt"})
+
+        assert result.is_error is False
+        payload = json.loads(result.content[0].text)
+        assert payload["valid"] is False
+        assert "reason" in payload
+        assert "error" not in payload
+
 
 class TestMCPReadonlyMode:
     """Tests for MCP readonly mode behavior."""
@@ -600,8 +618,12 @@ class TestMCPClientAdditionalAudiences:
 
     @pytest.mark.asyncio
     async def test_call_tool_returns_clean_error_for_bad_audiences(self, tmp_path, monkeypatch, mcp_call_tool):
-        """The public call_tool handler turns the ValueError into a readable error
-        response (not a crash) - closing the raise/handle loop end to end."""
+        """A non-string entry in additional_audiences is caught by the schema
+        pre-check before dispatch, so call_tool returns a clean
+        MCP_INVALID_ARGUMENTS error naming the field (not a crash). The
+        _normalize_str_list ValueError path this used to exercise is now
+        unreachable via call_tool; it still guards direct _execute_tool callers
+        (see TestGenerateTokenClaims), so its isinstance branch stays."""
         import nanoidp.mcp_server as mcp
 
         monkeypatch.setattr(mcp, "_config", self._config(tmp_path))
@@ -617,6 +639,7 @@ class TestMCPClientAdditionalAudiences:
         assert result.is_error is True
         payload = json.loads(result.content[0].text)
         assert payload["tool"] == "create_client"
+        assert payload["code"] == "MCP_INVALID_ARGUMENTS"
         assert "additional_audiences" in payload["error"]
 
 
