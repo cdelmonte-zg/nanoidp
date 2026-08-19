@@ -402,7 +402,7 @@ function displayAuthorityMapping(payload) {
             mappings.push({
                 source: 'roles',
                 value: role,
-                authority: `ROLE_${role}`,
+                authority: `ROLE_${role.toUpperCase()}`,
                 badgeClass: 'bg-primary'
             });
         });
@@ -414,7 +414,7 @@ function displayAuthorityMapping(payload) {
             mappings.push({
                 source: 'groups',
                 value: group,
-                authority: `GROUP_${group}`,
+                authority: `GROUP_${group.toUpperCase()}`,
                 badgeClass: 'bg-secondary'
             });
         });
