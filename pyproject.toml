@@ -53,7 +53,7 @@ dependencies = [
     "bcrypt>=5.0.0",
     # Used directly by mcp_server.call_tool() to validate arguments against a
     # tool's input_schema; mcp 2.0's on_call_tool no longer does this itself.
-    "jsonschema>=4.0.0",
+    "jsonschema>=4.20.0",
 ]
 
 [project.optional-dependencies]

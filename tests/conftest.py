@@ -3,7 +3,7 @@ Pytest configuration and shared fixtures for NanoIDP tests.
 """
 
 import base64
-from typing import Any, Optional, cast
+from typing import Optional
 
 import pytest
 
@@ -16,24 +16,31 @@ from nanoidp.config import OAuthClient, User
 
 
 async def call_mcp_tool(name: str, arguments: Optional[dict] = None):
-    """Drive the lowlevel MCP tool handler, which takes (ctx, params).
+    """Drive tools/call through the mcp 2.0 in-memory client.
 
-    ``ctx`` is None because nanoidp's handler never reads it.
+    The client speaks the real protocol to nanoidp's ``server`` over an
+    in-memory transport - SDK dispatch, argument delivery and result
+    serialization included - instead of invoking the lowlevel handler with a
+    fake ``ctx``. Wire-level regressions (isError aliasing, result-schema
+    validation) therefore fail the suite instead of only breaking a real
+    client (#122).
     """
-    from mcp.types import CallToolRequestParams
+    from mcp import Client
 
-    from nanoidp.mcp_server import call_tool
+    from nanoidp.mcp_server import server
 
-    return await call_tool(
-        cast(Any, None), CallToolRequestParams(name=name, arguments=arguments)
-    )
+    async with Client(server) as client:
+        return await client.call_tool(name, arguments)
 
 
 async def list_mcp_tools():
-    """Drive the lowlevel MCP tools/list handler and return its Tool list."""
-    from nanoidp.mcp_server import list_tools
+    """Drive tools/list through the mcp 2.0 in-memory client (see call_mcp_tool)."""
+    from mcp import Client
 
-    return (await list_tools(cast(Any, None), None)).tools
+    from nanoidp.mcp_server import server
+
+    async with Client(server) as client:
+        return (await client.list_tools()).tools
 
 
 @pytest.fixture

@@ -85,6 +85,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   same check itself and returns an `is_error: true` result (`code:
   "MCP_INVALID_ARGUMENTS"`) instead of letting a missing required field reach
   the tool implementation as a bare `KeyError`.
+- **Consolidated the MCP `isError` contract** (#120): the rule is now written
+  once as a table in the `mcp_server` module docstring (a negative query answer
+  is not a failure) and the code follows it. `verify_token` on an invalid token
+  returns `{"valid": false, "reason": ...}` (was `error`) so a rejected token,
+  the tool's designed answer, is no longer flagged `is_error`. A domain-failure
+  audit entry now records the failure reason instead of only the tool name; the
+  uncaught-exception path now carries a `code` (`MCP_INTERNAL_ERROR`) and `tool`
+  like the guard rejections; and `_execute_tool`'s unreachable unknown-tool
+  fallback now raises rather than returning a divergent shape. The MCP audit
+  `details` codes are namespaced (`MCP_READONLY_MODE`,
+  `MCP_ADMIN_SECRET_REQUIRED`, `MCP_UNKNOWN_TOOL`, `MCP_INVALID_ARGUMENTS`),
+  observable via `get_audit_log` and `/api/audit`.
+- **Precompiled MCP tool-argument validators** (#121): each tool's JSON Schema
+  is compiled once at import (`Draft202012Validator`) instead of being
+  recompiled on every `tools/call`, which also surfaces a malformed schema at
+  import time. The direct `jsonschema` floor is raised to `>=4.20.0` to match
+  what mcp 2.0 already resolves.
+- **MCP tests drive the real protocol** (#122): the test harness now calls
+  tools through the mcp 2.0 in-memory client (real SDK dispatch and result
+  serialization) instead of invoking the lowlevel handlers with a fake request
+  context, so wire-level regressions fail the suite instead of only breaking a
+  real client.
 
 ## [2.5.0] - 2026-07-19
 
