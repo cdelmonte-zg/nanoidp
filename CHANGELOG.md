@@ -122,6 +122,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   names**: it now reads `saml.roles_attr_name` / `saml.groups_attr_name` from
   `/api/config` instead of assuming the default `roles` / `groups` names, so it
   no longer fails on servers exporting under custom names.
+- **`POST /settings` no longer resets settings that were not on the submitted
+  form** (#131). Previously every checkbox absent from the form was stored as
+  `false` and every absent text field was cleared, so any partial form (a
+  stale tab, a script, the e2e agent's c14n round-trip) silently wiped
+  unrelated configuration - observed live as `issuer_from_request`,
+  `issuer_from_proxy_headers` and the SAML export toggles flipping off and the
+  allowlist, device verification URL and attribute names being deleted
+  mid-test-run. The handler now follows an "absent = unchanged" contract: text
+  fields and textareas are only applied when present (present-but-blank still
+  clears), and each checkbox is paired with a hidden `__on_form` marker so
+  "rendered but unchecked" (persist `false`) is distinguishable from "not on
+  this form" (leave unchanged).
 
 ## [2.5.0] - 2026-07-19
 

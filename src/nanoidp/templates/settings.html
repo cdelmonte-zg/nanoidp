@@ -8,6 +8,19 @@
 </div>
 
 <form method="post">
+    {# An unchecked checkbox never submits, so on its own it looks identical to
+       a checkbox that was never on the form. These markers let the server
+       apply "absent = unchanged" (#131): a checkbox is only interpreted when
+       its marker is present. One marker per checkbox rendered below. #}
+    <input type="hidden" name="issuer_from_request__on_form" value="1">
+    <input type="hidden" name="issuer_from_proxy_headers__on_form" value="1">
+    <input type="hidden" name="require_pkce__on_form" value="1">
+    <input type="hidden" name="refresh_token_rotation__on_form" value="1">
+    <input type="hidden" name="saml_sign_responses__on_form" value="1">
+    <input type="hidden" name="strict_saml_binding__on_form" value="1">
+    <input type="hidden" name="saml_want_authn_requests_signed__on_form" value="1">
+    <input type="hidden" name="saml_export_roles__on_form" value="1">
+    <input type="hidden" name="saml_export_groups__on_form" value="1">
     <div class="row g-4">
         <!-- OAuth Settings -->
         <div class="col-md-6">
