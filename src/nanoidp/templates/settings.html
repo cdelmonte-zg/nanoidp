@@ -48,6 +48,16 @@
                     </div>
 
                     <div class="mb-3">
+                        <div class="form-check form-switch">
+                            <input class="form-check-input" type="checkbox" role="switch"
+                                   id="issuer_from_proxy_headers" name="issuer_from_proxy_headers" value="true"
+                                   {% if settings.issuer_from_proxy_headers %}checked{% endif %}>
+                            <label class="form-check-label" for="issuer_from_proxy_headers">Trust Proxy Headers</label>
+                        </div>
+                        <div class="form-text">Trust X-Forwarded-Proto/Host/For from a single reverse-proxy hop in front of NanoIDP (applies ProxyFix). Only changes the derived issuer above when "Derive Issuer from Request" is also on; always affects rate-limit client IP attribution. Only enable this behind exactly one trusted proxy - these headers are otherwise spoofable. Takes effect on the next app restart.</div>
+                    </div>
+
+                    <div class="mb-3">
                         <label for="audience" class="form-label">Audience</label>
                         <input type="text" class="form-control" id="audience" name="audience"
                                value="{{ settings.audience }}">
@@ -280,6 +290,7 @@ function updatePreview() {
             issuer_allowlist: document.getElementById('issuer_allowlist').value
                 .split('\n').map(s => s.trim()).filter(s => s),
             device_verification_base_url: document.getElementById('device_verification_base_url').value.trim(),
+            issuer_from_proxy_headers: document.getElementById('issuer_from_proxy_headers').checked,
             audience: document.getElementById('audience').value,
             token_expiry_minutes: parseInt(document.getElementById('token_expiry_minutes').value) || 60,
             require_pkce: document.getElementById('require_pkce').checked,

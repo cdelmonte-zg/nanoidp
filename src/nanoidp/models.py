@@ -173,8 +173,8 @@ class Settings(BaseModel):
         "default; only enable this when NanoIDP is deployed directly behind "
         "exactly one trusted proxy, since these headers are otherwise trivially "
         "spoofable by any client. ProxyFix is wired at app startup, so a value "
-        "changed at runtime (e.g. via the MCP update_settings tool) only takes "
-        "effect after the process restarts.",
+        "changed at runtime (e.g. via the Settings page or the MCP "
+        "update_settings tool) only takes effect after the process restarts.",
     )
     audience: str = Field(default="default", min_length=1, description="OAuth audience")
     token_expiry_minutes: int = Field(default=60, gt=0, le=1440, description="Token expiry in minutes")

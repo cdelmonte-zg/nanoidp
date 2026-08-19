@@ -159,6 +159,7 @@ class YamlWriter:
         issuer_from_request: Optional[bool] = None,
         issuer_allowlist: Optional[List[str]] = None,
         device_verification_base_url: Optional[str] = None,
+        issuer_from_proxy_headers: Optional[bool] = None,
         audience: Optional[str] = None,
         token_expiry_minutes: Optional[int] = None,
         require_pkce: Optional[bool] = None,
@@ -182,6 +183,8 @@ class YamlWriter:
                 oauth["device_verification_base_url"] = device_verification_base_url
             else:
                 oauth.pop("device_verification_base_url", None)
+        if issuer_from_proxy_headers is not None:
+            oauth["issuer_from_proxy_headers"] = issuer_from_proxy_headers
         if audience is not None:
             oauth["audience"] = audience
         if token_expiry_minutes is not None:

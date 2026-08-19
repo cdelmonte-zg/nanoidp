@@ -26,6 +26,8 @@ oauth:
     - http://localhost:3000/callback
   issuer_from_request: false
   issuer_from_proxy_headers: false
+  require_pkce: false
+  refresh_token_rotation: false
 saml:
   entity_id: http://localhost:${PORT:8000}/saml
   sso_url: http://localhost:${PORT:8000}/saml/sso
@@ -33,11 +35,11 @@ saml:
   sign_responses: true
   c14n_algorithm: exc_c14n
   strict_binding: false
-  # Roles/groups are not standard SAML attributes; enable and name them here.
   export_roles: false
   export_groups: false
   roles_attr_name: roles
   groups_attr_name: groups
+  want_authn_requests_signed: false
 jwt:
   algorithm: RS256
   keys_dir: ./keys
