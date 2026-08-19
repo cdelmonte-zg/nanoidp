@@ -67,6 +67,8 @@ def user_to_yaml(user: User) -> Dict[str, Any]:
         entry["entitlements"] = user.entitlements
     if user.roles:
         entry["roles"] = user.roles
+    if user.groups:
+        entry["groups"] = user.groups
     if user.tenant and user.tenant != "default":
         entry["tenant"] = user.tenant
     if user.source_acl:

@@ -155,6 +155,7 @@ def user_create() -> ResponseReturnValue:
 
         # Parse roles and entitlements
         roles = [r.strip() for r in request.form.get("roles", "").split(",") if r.strip()]
+        groups = [g.strip() for g in request.form.get("groups", "").split(",") if g.strip()]
         entitlements = [e.strip() for e in request.form.get("entitlements", "").split("\n") if e.strip()]
         source_acl = [a.strip() for a in request.form.get("source_acl", "").split("\n") if a.strip()]
 
@@ -175,6 +176,7 @@ def user_create() -> ResponseReturnValue:
             identity_class=request.form.get("identity_class") or None,
             entitlements=entitlements,
             roles=roles,
+            groups=groups,
             tenant=request.form.get("tenant", "default"),
             source_acl=source_acl,
             attributes=attributes,
@@ -243,6 +245,7 @@ def user_edit(username: str) -> ResponseReturnValue:
 
         # Parse roles and entitlements
         roles = [r.strip() for r in request.form.get("roles", "").split(",") if r.strip()]
+        groups = [g.strip() for g in request.form.get("groups", "").split(",") if g.strip()]
         entitlements = [e.strip() for e in request.form.get("entitlements", "").split("\n") if e.strip()]
         source_acl = [a.strip() for a in request.form.get("source_acl", "").split("\n") if a.strip()]
 
@@ -263,6 +266,7 @@ def user_edit(username: str) -> ResponseReturnValue:
             identity_class=request.form.get("identity_class") or None,
             entitlements=entitlements,
             roles=roles,
+            groups=groups,
             tenant=request.form.get("tenant", "default"),
             source_acl=source_acl,
             attributes=attributes,
@@ -644,7 +648,7 @@ def claims() -> ResponseReturnValue:
         prefixes = {}
 
         # Core prefixes
-        for key in ["roles", "identity_class", "entitlements"]:
+        for key in ["roles", "groups", "identity_class", "entitlements"]:
             value = request.form.get(f"prefix_{key}", "").strip()
             if value:
                 prefixes[key] = value
@@ -688,6 +692,7 @@ def claims_preview(username: str) -> ResponseReturnValue:
             "identity_class": user.identity_class,
             "entitlements": user.entitlements,
             "roles": user.roles,
+            "groups": user.groups,
             "tenant": user.tenant,
             "source_acl": user.source_acl,
             "attributes": user.attributes,

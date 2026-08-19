@@ -56,6 +56,7 @@ class User(BaseModel):
     identity_class: Optional[str] = Field(default=None, description="Identity classification")
     entitlements: List[str] = Field(default_factory=list, description="User entitlements")
     roles: List[str] = Field(default_factory=list, description="User roles")
+    groups: List[str] = Field(default_factory=list, description="User groups")
     tenant: str = Field(default="default", description="User tenant")
     source_acl: List[str] = Field(default_factory=list, description="Source ACL list")
     attributes: Dict[str, Any] = Field(default_factory=dict, description="Custom attributes")
@@ -76,6 +77,7 @@ class User(BaseModel):
             "identity_class": self.identity_class,
             "entitlements": self.entitlements,
             "roles": self.roles,
+            "groups": self.groups,
             "tenant": self.tenant,
             "source_acl": self.source_acl,
             "attributes": self.attributes,

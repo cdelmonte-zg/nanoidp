@@ -23,6 +23,7 @@ saml:
 # Authority prefix mapping for Spring Security GrantedAuthority
 authority_prefixes:
   roles: "ROLE_"
+  groups: "GROUP_"
   identity_class: "IDENTITY_"
   entitlements: "ENT_"
 
