@@ -1647,10 +1647,72 @@ class TestSAMLRolesGroupsExport:
         assert response.status_code == 200
 
         root = etree.fromstring(response.data)
-        # The route comma-joins, then the response builder splits back out into
-        # one AttributeValue per entry (same handling as entitlements).
+        # Lists go straight to the response builder, which emits one
+        # AttributeValue per entry (#134: no more comma-join round-trip).
         assert self._attribute_values(root, "roles") == ["USER", "ADMIN"]
         assert self._attribute_values(root, "groups") == ["ADMINISTRATORS", "EVERYONE"]
+
+    _ATTRIBUTE_QUERY = """<?xml version="1.0" encoding="UTF-8"?>
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+    <soap:Body>
+        <saml2p:AttributeQuery
+            xmlns:saml2p="urn:oasis:names:tc:SAML:2.0:protocol"
+            xmlns:saml2="urn:oasis:names:tc:SAML:2.0:assertion"
+            ID="_req134"
+            Version="2.0"
+            IssueInstant="2025-01-01T00:00:00Z">
+            <saml2:Issuer>http://sp.example.com</saml2:Issuer>
+            <saml2:Subject>
+                <saml2:NameID>admin</saml2:NameID>
+            </saml2:Subject>
+        </saml2p:AttributeQuery>
+    </soap:Body>
+</soap:Envelope>"""
+
+    def _attribute_query_root(self, client):
+        response = client.post(
+            '/saml/attribute-query', data=self._ATTRIBUTE_QUERY,
+            content_type='text/xml'
+        )
+        assert response.status_code == 200
+        return etree.fromstring(response.data)
+
+    def test_colliding_attr_names_merge_in_sso(self, client, saml_settings):
+        """#134: both exports targeting the same attribute name merge into one
+        attribute (roles first, deduplicated) instead of the groups list
+        silently replacing the roles list."""
+        saml_settings.saml_export_roles = True
+        saml_settings.saml_export_groups = True
+        saml_settings.saml_roles_attr_name = "memberOf"
+        saml_settings.saml_groups_attr_name = "memberOf"
+
+        root = self._sso_assertion(client)
+        assert self._attribute_values(root, "memberOf") == [
+            "USER", "ADMIN", "ADMINISTRATORS", "EVERYONE",
+        ]
+
+    def test_colliding_attr_names_merge_in_attribute_query(self, client, saml_settings):
+        saml_settings.saml_export_roles = True
+        saml_settings.saml_export_groups = True
+        saml_settings.saml_roles_attr_name = "memberOf"
+        saml_settings.saml_groups_attr_name = "memberOf"
+
+        root = self._attribute_query_root(client)
+        assert self._attribute_values(root, "memberOf") == [
+            "USER", "ADMIN", "ADMINISTRATORS", "EVERYONE",
+        ]
+
+    def test_comma_bearing_group_stays_one_attribute_value(self, client, saml_settings):
+        """#134: a legitimate value containing a comma is one AttributeValue in
+        the AttributeQuery response, as it already was in the SSO assertion
+        (previously the ",".join / re-split round-trip split it in two)."""
+        from nanoidp.config import get_config
+
+        saml_settings.saml_export_groups = True
+        get_config().get_user("admin").groups = ["Finance, EMEA"]
+
+        root = self._attribute_query_root(client)
+        assert self._attribute_values(root, "groups") == ["Finance, EMEA"]
 
 
 class TestSAMLAttributeNameSettingsUI:

@@ -78,6 +78,12 @@ saml:
 Attribute"** / **"Export Groups Attribute"** and set the matching attribute
 name → Save Settings. Clearing a name field restores its default.
 
+Each entry becomes its own `AttributeValue`, in both the SSO assertion and
+the AttributeQuery response, so a value containing a comma stays a single
+value. Configuring the same name for both exports (e.g. `memberOf` for roles
+and groups alike) is supported: the two lists are merged into that one
+attribute, roles first, deduplicated.
+
 Any name works, including the URIs SPs commonly expect:
 
 | SP | Typical roles attribute name |

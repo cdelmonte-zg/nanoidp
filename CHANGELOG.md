@@ -123,6 +123,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   names**: it now reads `saml.roles_attr_name` / `saml.groups_attr_name` from
   `/api/config` instead of assuming the default `roles` / `groups` names, so it
   no longer fails on servers exporting under custom names.
+- **SAML export: colliding attribute names merge instead of overwriting, and
+  values are passed as lists** (#134). With both exports enabled and
+  `saml_roles_attr_name` equal to `saml_groups_attr_name` (e.g. both
+  `memberOf`), the groups list silently replaced the roles list; the two are
+  now merged into the single shared attribute, roles first, deduplicated. The
+  AttributeQuery path also passes roles/groups (and entitlements) to the
+  response builder as lists instead of comma-joined strings, so a legitimate
+  comma-bearing value like `"Finance, EMEA"` stays one `AttributeValue`, as it
+  already did in the SSO assertion.
 - **`/api/users/<username>/token` now honours `issuer_from_request`** (#133):
   the endpoint mints real JWTs but kept using the fixed `settings.issuer`,
   so with the flag on its tokens carried an `iss` that failed validation
