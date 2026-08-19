@@ -367,14 +367,20 @@ class NanoIDPTestAgent:
             config_response = self.session.get(f"{self.base_url}/api/config", timeout=5)
             issuer_from_request = False
             issuer_allowlist: List[str] = []
+            fixed_issuer = None
             if config_response.status_code == 200:
                 oauth_config = config_response.json().get("oauth", {})
                 issuer_from_request = oauth_config.get("issuer_from_request", False)
                 issuer_allowlist = oauth_config.get("issuer_allowlist", []) or []
-
-            fixed_issuer = self.session.get(
-                f"{self.base_url}/.well-known/openid-configuration", timeout=5
-            ).json().get("issuer")
+                # The configured issuer is the fallback baseline. A plain
+                # discovery response is NOT: with the flag on it reflects this
+                # request's own Host, so it only equals the fixed issuer when
+                # the flag is off (or the test's host happens to match).
+                fixed_issuer = oauth_config.get("issuer")
+            if not fixed_issuer:
+                fixed_issuer = self.session.get(
+                    f"{self.base_url}/.well-known/openid-configuration", timeout=5
+                ).json().get("issuer")
 
             custom_host = "test-agent-issuer-check:9999"
             discovery = self.session.get(
@@ -384,9 +390,14 @@ class NanoIDPTestAgent:
             ).json()
             observed_issuer = discovery.get("issuer")
 
-            allowlisted = not issuer_allowlist or f"http://{custom_host}" in issuer_allowlist
+            # The server reflects the request's real scheme (request.host_url),
+            # so derive it from base_url instead of hardcoding http - against
+            # an https deployment the reflected issuer is https://... too.
+            scheme = urlparse(self.base_url).scheme or "http"
+            candidate_issuer = f"{scheme}://{custom_host}"
+            allowlisted = not issuer_allowlist or candidate_issuer in issuer_allowlist
             expected_issuer = (
-                f"http://{custom_host}" if issuer_from_request and allowlisted else fixed_issuer
+                candidate_issuer if issuer_from_request and allowlisted else fixed_issuer
             )
             discovery_ok = observed_issuer == expected_issuer
 
@@ -2199,10 +2210,17 @@ class NanoIDPTestAgent:
 
             export_roles = False
             export_groups = False
+            roles_attr_name = "roles"
+            groups_attr_name = "groups"
             if config_response.status_code == 200:
                 saml_config = config_response.json().get("saml", {})
                 export_roles = saml_config.get("export_roles", False)
                 export_groups = saml_config.get("export_groups", False)
+                # The exported attribute names are configurable; honour them
+                # instead of assuming the defaults, or the check fails on any
+                # server with custom saml.roles_attr_name/groups_attr_name.
+                roles_attr_name = saml_config.get("roles_attr_name") or "roles"
+                groups_attr_name = saml_config.get("groups_attr_name") or "groups"
 
             attr_query = f"""
             <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
@@ -2228,8 +2246,8 @@ class NanoIDPTestAgent:
 
             if response.status_code == 200:
                 saml_response = response.text
-                has_roles = 'Name="roles"' in saml_response
-                has_groups = 'Name="groups"' in saml_response
+                has_roles = f'Name="{roles_attr_name}"' in saml_response
+                has_groups = f'Name="{groups_attr_name}"' in saml_response
 
                 roles_respected = has_roles == export_roles
                 groups_respected = has_groups == export_groups

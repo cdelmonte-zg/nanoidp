@@ -127,6 +127,12 @@ def get_configuration() -> ResponseReturnValue:
         "oauth": {
             "issuer": settings.issuer,
             "issuer_from_request": settings.issuer_from_request,
+            # Companions of issuer_from_request: exposed so a config-agnostic
+            # client (examples/test_agent.py) can predict the effective issuer
+            # instead of assuming an empty allowlist.
+            "issuer_allowlist": settings.issuer_allowlist,
+            "device_verification_base_url": settings.device_verification_base_url,
+            "issuer_from_proxy_headers": settings.issuer_from_proxy_headers,
             "audience": settings.audience,
             "token_expiry_minutes": settings.token_expiry_minutes,
             "clients_count": len(settings.clients),

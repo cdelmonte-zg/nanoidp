@@ -59,8 +59,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on; the rate-limit effect applies regardless. Only enable this when
   NanoIDP is deployed directly behind exactly one trusted proxy - these
   headers are otherwise spoofable by any client. Readable/settable via the
-  MCP `get_settings`/`update_settings` tools; since `ProxyFix` is wired at
-  app startup, a value changed at runtime only takes effect after a restart.
+  Settings page and the MCP `get_settings`/`update_settings` tools; since
+  `ProxyFix` is wired at app startup, a value changed at runtime only takes
+  effect after a restart.
 
 ### Changed
 - **Migrated the MCP server to the mcp 2.0 SDK** and pinned `mcp>=2,<3`. mcp 2.0
@@ -107,6 +108,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   serialization) instead of invoking the lowlevel handlers with a fake request
   context, so wire-level regressions fail the suite instead of only breaking a
   real client.
+
+### Fixed
+- **`/api/config` now exposes `issuer_allowlist`, `device_verification_base_url`
+  and `issuer_from_proxy_headers`** alongside `issuer_from_request`. The
+  config-agnostic e2e agent reads the allowlist from `/api/config` to predict
+  the effective issuer; without the exposure it assumed an empty allowlist and
+  failed on any server with one configured. The agent also takes its
+  fixed-issuer baseline from `/api/config`'s `oauth.issuer` now: a plain
+  discovery response reflects the request's own Host when the flag is on, so
+  it is only a valid baseline when the flag is off.
+- **`examples/test_agent.py` SAML export check honours the configured attribute
+  names**: it now reads `saml.roles_attr_name` / `saml.groups_attr_name` from
+  `/api/config` instead of assuming the default `roles` / `groups` names, so it
+  no longer fails on servers exporting under custom names.
 
 ## [2.5.0] - 2026-07-19
 
