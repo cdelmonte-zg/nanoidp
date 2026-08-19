@@ -67,7 +67,7 @@
                                    {% if settings.issuer_from_proxy_headers %}checked{% endif %}>
                             <label class="form-check-label" for="issuer_from_proxy_headers">Trust Proxy Headers</label>
                         </div>
-                        <div class="form-text">Trust X-Forwarded-Proto/Host/For from a single reverse-proxy hop in front of NanoIDP (applies ProxyFix). Only changes the derived issuer above when "Derive Issuer from Request" is also on; always affects rate-limit client IP attribution. Only enable this behind exactly one trusted proxy - these headers are otherwise spoofable. Takes effect on the next app restart.</div>
+                        <div class="form-text">Trust X-Forwarded-Proto/Host/For from a single reverse-proxy hop in front of NanoIDP (applies ProxyFix). Only changes the derived issuer above when "Derive Issuer from Request" is also on; always affects rate-limit and audit-log client IP attribution. Only enable this behind exactly one trusted proxy - these headers are otherwise spoofable. Takes effect on the next app restart.</div>
                     </div>
 
                     <div class="mb-3">

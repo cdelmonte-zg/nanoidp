@@ -53,7 +53,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`oauth.issuer_from_proxy_headers`** (off by default): trusts
   `X-Forwarded-Proto`/`X-Forwarded-Host`/`X-Forwarded-For` from a single
   reverse-proxy hop (via werkzeug's `ProxyFix`), so `issuer_from_request` and
-  rate-limit client IPs see the original scheme/host/client instead of the
+  rate-limit and audit-log client IPs see the original scheme/host/client
+  instead of the
   proxy's own connection when TLS is terminated upstream. Only changes the
   derived issuer/`iss`/`verification_uri` when `issuer_from_request` is also
   on; the rate-limit effect applies regardless. Only enable this when
@@ -122,6 +123,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   names**: it now reads `saml.roles_attr_name` / `saml.groups_attr_name` from
   `/api/config` instead of assuming the default `roles` / `groups` names, so it
   no longer fails on servers exporting under custom names.
+- **`/api/users/<username>/token` now honours `issuer_from_request`** (#133):
+  the endpoint mints real JWTs but kept using the fixed `settings.issuer`,
+  so with the flag on its tokens carried an `iss` that failed validation
+  against the discovery document the same hostname had just advertised. The
+  effective-issuer resolution (including the allowlist fallback) now lives in
+  a shared routes helper used by discovery, `/token`, the device flow and the
+  API token endpoint alike; the MCP tools remain the documented exception.
+  Also clarified in the setting descriptions that `issuer_from_proxy_headers`
+  affects the audit log's recorded client IP as well as the rate limiter's.
 - **`POST /settings` no longer resets settings that were not on the submitted
   form** (#131). Previously every checkbox absent from the form was stored as
   `false` and every absent text field was cleared, so any partial form (a
