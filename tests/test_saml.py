@@ -838,7 +838,9 @@ class TestSAMLSigningUI:
         original_value = config.settings.saml_sign_responses
 
         try:
-            # POST without sign_responses (unchecked checkbox)
+            # POST without sign_responses (unchecked checkbox). The __on_form
+            # marker is what marks it as rendered-but-unchecked; without the
+            # marker an absent checkbox means "unchanged" (#131).
             response = client.post('/settings', data={
                 'issuer': config.settings.issuer,
                 'audience': config.settings.audience,
@@ -846,7 +848,7 @@ class TestSAMLSigningUI:
                 'saml_entity_id': config.settings.saml_entity_id,
                 'saml_sso_url': config.settings.saml_sso_url,
                 'default_acs_url': config.settings.default_acs_url,
-                # saml_sign_responses NOT included = unchecked
+                'saml_sign_responses__on_form': '1',
                 'allowed_identity_classes': 'INTERNAL\nEXTERNAL',
             }, follow_redirects=True)
 
@@ -1655,6 +1657,9 @@ class TestSAMLAttributeNameSettingsUI:
     """The export toggles and attribute names are editable from the settings page."""
 
     def _base_form(self, settings) -> dict:
+        # Mimics the full settings form, marker per checkbox included, so a
+        # checkbox absent from this dict reads as "rendered but unchecked"
+        # rather than "not on this form = unchanged" (#131).
         return {
             "issuer": settings.issuer,
             "audience": settings.audience,
@@ -1664,6 +1669,10 @@ class TestSAMLAttributeNameSettingsUI:
             "default_acs_url": settings.default_acs_url,
             "saml_sign_responses": "true",
             "allowed_identity_classes": "INTERNAL\nEXTERNAL",
+            "saml_sign_responses__on_form": "1",
+            "strict_saml_binding__on_form": "1",
+            "saml_export_roles__on_form": "1",
+            "saml_export_groups__on_form": "1",
         }
 
     def test_settings_page_renders_the_fields(self, client):

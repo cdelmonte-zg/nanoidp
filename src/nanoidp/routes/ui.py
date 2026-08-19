@@ -484,6 +484,35 @@ def client_regenerate_secret(client_id: str) -> ResponseReturnValue:
 
 # ==================== Settings ====================
 
+def _form_bool(name: str) -> bool | None:
+    """Checkbox value under the "absent = unchanged" contract (#131).
+
+    An unchecked checkbox never appears in a submitted form, so on its own it
+    is indistinguishable from a field that was not on the form at all. The
+    settings template therefore carries a hidden ``<name>__on_form`` marker for
+    every checkbox it renders. Name present -> its submitted state; marker
+    alone -> the box was rendered and left unchecked (False); neither -> the
+    field was not part of this form, leave the setting unchanged (None).
+    """
+    if name in request.form:
+        return request.form.get(name) == "true"
+    if f"{name}__on_form" in request.form:
+        return False
+    return None
+
+
+def _form_text(name: str) -> str | None:
+    """Text field: absent from the form means unchanged, blank means clear."""
+    value = request.form.get(name)
+    return value.strip() if value is not None else None
+
+
+def _form_textarea_list(name: str) -> list[str] | None:
+    """Textarea list: absent from the form means unchanged, blank means clear."""
+    raw = request.form.get(name)
+    return _parse_textarea_list(raw) if raw is not None else None
+
+
 @ui_bp.route("/settings", methods=["GET", "POST"])
 def settings() -> ResponseReturnValue:
     """IdP settings configuration page."""
@@ -500,43 +529,40 @@ def settings() -> ResponseReturnValue:
     try:
         yaml_writer = get_yaml_writer()
 
+        # Every value follows the "absent = unchanged" contract (#131): a field
+        # missing from the submitted form is passed as None and the YAML writer
+        # leaves it alone, so a partial form (a stale tab, a script, the e2e
+        # agent's c14n round-trip) can no longer silently reset settings it
+        # never carried. Present-but-blank still means "clear".
+        expiry_raw = request.form.get("token_expiry_minutes")
+
         # OAuth settings
         yaml_writer.update_oauth_settings(
-            issuer=request.form.get("issuer"),
-            issuer_from_request=request.form.get("issuer_from_request") == "true",
-            issuer_allowlist=_parse_textarea_list(
-                request.form.get("issuer_allowlist", "")
-            ),
-            device_verification_base_url=request.form.get(
-                "device_verification_base_url", ""
-            ).strip(),
-            issuer_from_proxy_headers=request.form.get("issuer_from_proxy_headers") == "true",
-            audience=request.form.get("audience"),
-            token_expiry_minutes=int(request.form.get("token_expiry_minutes", 60)),
-            require_pkce=request.form.get("require_pkce") == "true",
-            refresh_token_rotation=(
-                request.form.get("refresh_token_rotation") == "true"
-            ),
+            issuer=_form_text("issuer"),
+            issuer_from_request=_form_bool("issuer_from_request"),
+            issuer_allowlist=_form_textarea_list("issuer_allowlist"),
+            device_verification_base_url=_form_text("device_verification_base_url"),
+            issuer_from_proxy_headers=_form_bool("issuer_from_proxy_headers"),
+            audience=_form_text("audience"),
+            token_expiry_minutes=int(expiry_raw) if expiry_raw else None,
+            require_pkce=_form_bool("require_pkce"),
+            refresh_token_rotation=_form_bool("refresh_token_rotation"),
         )
 
         # SAML settings
         yaml_writer.update_saml_settings(
-            entity_id=request.form.get("saml_entity_id"),
-            sso_url=request.form.get("saml_sso_url"),
-            default_acs_url=request.form.get("default_acs_url"),
-            sign_responses=request.form.get("saml_sign_responses") == "true",
-            strict_binding=request.form.get("strict_saml_binding") == "true",
-            want_authn_requests_signed=(
-                request.form.get("saml_want_authn_requests_signed") == "true"
-            ),
-            sp_certificates=_parse_textarea_list(
-                request.form.get("saml_sp_certificates", "")
-            ),
-            c14n_algorithm=request.form.get("saml_c14n_algorithm"),
-            export_roles=request.form.get("saml_export_roles") == "true",
-            export_groups=request.form.get("saml_export_groups") == "true",
-            roles_attr_name=request.form.get("saml_roles_attr_name", "").strip(),
-            groups_attr_name=request.form.get("saml_groups_attr_name", "").strip(),
+            entity_id=_form_text("saml_entity_id"),
+            sso_url=_form_text("saml_sso_url"),
+            default_acs_url=_form_text("default_acs_url"),
+            sign_responses=_form_bool("saml_sign_responses"),
+            strict_binding=_form_bool("strict_saml_binding"),
+            want_authn_requests_signed=_form_bool("saml_want_authn_requests_signed"),
+            sp_certificates=_form_textarea_list("saml_sp_certificates"),
+            c14n_algorithm=_form_text("saml_c14n_algorithm"),
+            export_roles=_form_bool("saml_export_roles"),
+            export_groups=_form_bool("saml_export_groups"),
+            roles_attr_name=_form_text("saml_roles_attr_name"),
+            groups_attr_name=_form_text("saml_groups_attr_name"),
         )
 
         # Identity classes
