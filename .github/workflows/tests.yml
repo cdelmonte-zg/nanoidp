@@ -45,3 +45,37 @@ jobs:
           # Threshold ratchets upward only (#71); 70 at introduction (73%
           # measured), 75 after #72 covered the wizard (78% measured).
           pytest tests/ --cov=nanoidp --cov-report=term-missing --cov-fail-under=75
+
+  license-check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install runtime dependencies only
+        run: |
+          python -m pip install --upgrade pip
+          # Only the redistributed closure: dev tools (black, mypy, pytest) are
+          # not shipped, so their licenses are out of scope for redistribution.
+          pip install -e .
+          pip install pip-licenses
+
+      - name: List dependency licenses
+        run: pip-licenses --with-authors --with-urls --format=markdown
+
+      - name: Fail on copyleft licenses incompatible with MIT redistribution
+        run: |
+          # nanoidp ships under MIT. Strong/network copyleft (GPL, LGPL, AGPL,
+          # SSPL, EUPL) is incompatible with redistributing the combined work
+          # under MIT, so any dependency carrying one must be reviewed by a
+          # human before it can ship. Weak per-file copyleft (MPL-2.0, already
+          # present via certifi) is allowed and intentionally not listed.
+          # "General Public License" catches the GPL/LGPL/AGPL full names;
+          # "GPL" catches their acronym spellings. --partial-match is required:
+          # without it --fail-on only matches a license string in full.
+          pip-licenses --partial-match --fail-on="General Public License;GPL;SSPL;Server Side Public License;EUPL;European Union Public Licence"
