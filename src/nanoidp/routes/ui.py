@@ -588,6 +588,9 @@ def settings() -> ResponseReturnValue:
         if identity_classes:
             yaml_writer.update_allowed_identity_classes(identity_classes)
 
+        # Login mode (persona login, local dev convenience)
+        yaml_writer.update_login_settings(mode=_form_text("login_mode"))
+
         flash("Settings updated successfully", "success")
         return redirect(url_for("ui.settings"))
 

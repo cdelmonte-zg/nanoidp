@@ -215,3 +215,74 @@ class TestUserCreatePasswordOptional:
         )
 
         assert get_config().get_user("regular-frank").password == "secret"
+
+
+class TestSettingsUiLoginMode:
+    """The '/settings' dashboard page persists 'login_mode' via a select
+    field, following the same omit-at-default convention as security_profile."""
+
+    def _login_as_admin(self, client) -> None:
+        with client.session_transaction() as sess:
+            sess["user"] = "admin"
+
+    def _base_form(self, settings) -> dict:
+        """Minimal settings form: every other field is 'absent = unchanged'
+        (#131) for text/select fields, so only fields relevant to this test
+        need to be included."""
+        return {
+            "issuer": settings.issuer,
+            "audience": settings.audience,
+            "token_expiry_minutes": settings.token_expiry_minutes,
+            "saml_entity_id": settings.saml_entity_id,
+            "saml_sso_url": settings.saml_sso_url,
+            "default_acs_url": settings.default_acs_url,
+            "allowed_identity_classes": "",
+        }
+
+    def test_settings_page_shows_login_mode_select(self, client):
+        self._login_as_admin(client)
+
+        response = client.get("/settings")
+
+        assert response.status_code == 200
+        assert b'name="login_mode"' in response.data
+        assert b'value="persona"' in response.data
+
+    def test_switching_to_persona_persists(self, client, preserve_config_files):
+        self._login_as_admin(client)
+        config = get_config()
+
+        response = client.post(
+            "/settings",
+            data={**self._base_form(config.settings), "login_mode": "persona"},
+            follow_redirects=True,
+        )
+
+        assert response.status_code == 200
+        config.reload()
+        assert config.settings.login_mode == "persona"
+        assert config.settings.persona_mode_enabled is True
+
+    def test_switching_back_to_password_persists_and_omits_section(self, client, preserve_config_files):
+        self._login_as_admin(client)
+        config = get_config()
+        client.post(
+            "/settings",
+            data={**self._base_form(config.settings), "login_mode": "persona"},
+            follow_redirects=True,
+        )
+
+        response = client.post(
+            "/settings",
+            data={**self._base_form(config.settings), "login_mode": "password"},
+            follow_redirects=True,
+        )
+
+        assert response.status_code == 200
+        config.reload()
+        assert config.settings.login_mode == "password"
+
+        import yaml
+        with open(config.config_dir / "settings.yaml") as f:
+            doc = yaml.safe_load(f)
+        assert "login" not in doc

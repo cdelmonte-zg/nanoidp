@@ -312,6 +312,29 @@ class YamlWriter:
         self._atomic_write(self.settings_file, data)
         get_config().reload()
 
+    def update_login_settings(self, mode: Optional[str] = None) -> None:
+        """Update the 'login' section (persona login mode, local dev
+        convenience). 'password' is the default and is never persisted -
+        the 'login' section is omitted entirely at the default, same as
+        'security_profile' at 'dev' (#83/#87 read-modify-write conventions).
+        """
+        data = self._load_settings_yaml()
+        login_mode_default = "password"
+
+        if mode is not None:
+            login_section = data.get("login") or {}
+            current_mode = login_section.get("mode", login_mode_default)
+            if not is_unchanged(current_mode, mode):
+                if mode != login_mode_default:
+                    data.setdefault("login", {})["mode"] = mode
+                elif "login" in data:
+                    data["login"].pop("mode", None)
+                    if not data["login"]:
+                        data.pop("login", None)
+
+        self._atomic_write(self.settings_file, data)
+        get_config().reload()
+
 
 # Global instance
 _yaml_writer: Optional[YamlWriter] = None

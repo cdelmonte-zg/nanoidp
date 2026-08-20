@@ -147,8 +147,19 @@ template genuinely need code changes:
       tools tables, `book/src/reference/mcp.md` tool list.
 
 ### 6. Settings UI persistence
-- [ ] [`templates/settings.html`](../../src/nanoidp/templates/settings.html)
-      + save route: `login_mode` toggle in the dashboard.
+- [x] [`templates/settings.html`](../../src/nanoidp/templates/settings.html):
+      new "Login Mode" card, a `<select>` (`password`/`persona`), following
+      the `saml_c14n_algorithm` select pattern; included in the JS preview.
+- [x] [`services/yaml_writer.py`](../../src/nanoidp/services/yaml_writer.py):
+      new `update_login_settings(mode=...)`, omits the `login:` section
+      entirely at the `password` default (mirrors `security_profile`'s
+      omit-at-default convention).
+- [x] [`routes/ui.py`](../../src/nanoidp/routes/ui.py) `settings()`: wires
+      the form's `login_mode` field (via `_form_text`, "absent = unchanged")
+      to the new writer method.
+- [x] Tests: `TestSettingsUiLoginMode` in `tests/test_persona_login.py`
+      (select rendered, switch to persona persists, switch back to
+      password omits the `login:` section from disk).
 
 ### 7. E2E coverage + docs (last)
 - [ ] [`examples/test_agent.py`](../../examples/test_agent.py): persona-mode
