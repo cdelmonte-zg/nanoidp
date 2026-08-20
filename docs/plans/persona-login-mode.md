@@ -29,49 +29,6 @@ relevant bits into `docs/` / `book/` once the feature ships.
 8. Local dev convenience only — disabled by default, not an auth mode for
    deployed environments.
 
-## Not "just a UI change" — scope clarification
-
-Passwords never appear in issued tokens/assertions
-([`User.to_dict()`](../../src/nanoidp/models.py#L92) excludes `password`), so
-persona mode has **no token-payload impact**. But two things beyond the login
-template genuinely need code changes:
-
-- The "username and password required" check lives server-side in each of
-  the 4 route handlers, not just in the HTML form. In `persona` mode the fix
-  isn't to drop that check — it's to skip `authenticate()` entirely and go
-  straight to `config.get_user(username)` (pure identity selection, no
-  credential check), gated on `login_mode`. That's 4 separate call sites:
-  [`routes/ui.py`](../../src/nanoidp/routes/ui.py#L71-L76),
-  [`routes/oauth.py`](../../src/nanoidp/routes/oauth.py#L298-L301),
-  [`routes/saml.py`](../../src/nanoidp/routes/saml.py#L450-L453),
-  [`device_code.py verify()`](../../src/nanoidp/services/device_code.py#L176-L178).
-
-  The common shape for all 4 (the `password`-mode branch is byte-for-byte
-  today's existing code, so backward compatibility is trivially provable):
-
-  ```python
-  if config.settings.persona_mode_enabled:
-      # persona: identity only, no credential check
-      if not username:
-          return redirect(url_for("ui.login", error="Select a user"))
-      user = config.get_user(username)
-  else:
-      # existing behavior, unchanged
-      if not username or not password:
-          return redirect(url_for("ui.login", error="Username and password required"))
-      user = config.authenticate(username, password)
-  ```
-- SAML's `AuthnContextClassRef` is hardcoded to `PasswordProtectedTransport`
-  at [`routes/saml.py`](../../src/nanoidp/routes/saml.py#L267) regardless of
-  how the user authenticated. This isn't about the password value — it's a
-  claim to the SP about the *authentication method*, which SPs may use for
-  step-up-auth decisions. A persona login must not claim
-  `PasswordProtectedTransport`; this requires threading an auth-method
-  signal (e.g. `session["auth_method"]`) from login time through to the
-  assertion builder. (For comparison: OIDC ID tokens here don't emit
-  `acr`/`amr` claims at all, so there's no equivalent false-claim risk on
-  that side.)
-
 ## Breakdown into commits (single feature branch / PR)
 
 ### 1. Data model + config plumbing (no behavior change)
