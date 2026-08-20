@@ -6,10 +6,9 @@ Uses Pydantic for validation and schema enforcement.
 
 import logging
 import os
-import re
 import threading
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Dict, Optional
 
 import yaml
 
@@ -26,34 +25,11 @@ from .serialization import (
     apply_settings_document,
     apply_users_document,
     atomic_write_yaml,
+    load_yaml_document,
 )
+from .serialization import expand_env_vars as _expand_env_vars
 
 logger = logging.getLogger(__name__)
-
-
-_ENV_VAR_RE = re.compile(r'\$\{([A-Za-z_][A-Za-z0-9_]*)(?::([^}]*))?\}')
-
-
-def _expand_env_vars(value: Any) -> Any:
-    """Recursively expand ${NAME} / ${NAME:default} placeholders in YAML values.
-
-    - ${NAME}          → os.environ[NAME] (empty string if not set)
-    - ${NAME:default}  → os.environ.get(NAME, 'default')
-
-    Only string leaf values are processed; dicts/lists are traversed recursively.
-    """
-    if isinstance(value, str):
-        def _replace(m: re.Match) -> str:
-            var_name, default = m.group(1), m.group(2)
-            if default is None:
-                return os.environ.get(var_name, "")
-            return os.environ.get(var_name, default)
-        return _ENV_VAR_RE.sub(_replace, value)
-    if isinstance(value, dict):
-        return {k: _expand_env_vars(v) for k, v in value.items()}
-    if isinstance(value, list):
-        return [_expand_env_vars(item) for item in value]
-    return value
 
 
 class ConfigManager:
@@ -318,12 +294,7 @@ class ConfigManager:
     def _save_users(self) -> None:
         """Save users to users.yaml (shared builder, read-modify-write, #83)."""
         users_file = self.config_dir / "users.yaml"
-
-        document: Dict[str, Any] = {}
-        if users_file.exists():
-            with open(users_file, "r") as f:
-                document = yaml.safe_load(f) or {}
-
+        document = load_yaml_document(users_file)
         apply_users_document(document, self.users, self.default_user)
         atomic_write_yaml(users_file, document)
 
@@ -334,12 +305,7 @@ class ConfigManager:
         logging.level, custom keys) are preserved instead of deleted (#87).
         """
         settings_file = self.config_dir / "settings.yaml"
-
-        document: Dict[str, Any] = {}
-        if settings_file.exists():
-            with open(settings_file, "r") as f:
-                document = yaml.safe_load(f) or {}
-
+        document = load_yaml_document(settings_file)
         apply_settings_document(document, self.settings)
         atomic_write_yaml(settings_file, document)
 

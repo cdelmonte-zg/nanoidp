@@ -7,10 +7,14 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-import yaml
-
 from ..config import OAuthClient, User, get_config
-from ..serialization import atomic_write_yaml, client_to_yaml, user_to_yaml
+from ..serialization import (
+    atomic_write_yaml,
+    client_to_yaml,
+    is_unchanged,
+    load_yaml_document,
+    user_to_yaml,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -32,17 +36,11 @@ class YamlWriter:
         """Load the current users.yaml content."""
         if not self.users_file.exists():
             return {"users": {}, "default_user": "admin"}
-
-        with open(self.users_file, "r") as f:
-            return yaml.safe_load(f) or {"users": {}, "default_user": "admin"}
+        return load_yaml_document(self.users_file)
 
     def _load_settings_yaml(self) -> Dict[str, Any]:
         """Load the current settings.yaml content."""
-        if not self.settings_file.exists():
-            return {}
-
-        with open(self.settings_file, "r") as f:
-            return yaml.safe_load(f) or {}
+        return load_yaml_document(self.settings_file)
 
     # ==================== User Operations ====================
 
@@ -126,12 +124,33 @@ class YamlWriter:
         if is_new and existing_idx is not None:
             raise ValueError(f"Client '{client.client_id}' already exists")
 
-        client_data = client_to_yaml(client)
-
         if existing_idx is not None:
-            clients[existing_idx] = client_data
+            raw_entry = clients[existing_idx]
+            updated_entry = raw_entry.copy()
+            for field_name, new_value in (
+                ("client_id", client.client_id),
+                ("client_secret", client.client_secret),
+                ("description", client.description),
+            ):
+                if not is_unchanged(raw_entry.get(field_name), new_value):
+                    if field_name in {"client_secret", "description"}:
+                        updated_entry[field_name] = client_to_yaml(client)[field_name]
+                    else:
+                        updated_entry[field_name] = new_value
+
+            for field_name, new_list_value in (
+                ("additional_audiences", client.additional_audiences),
+                ("redirect_uris", client.redirect_uris),
+            ):
+                if not is_unchanged(raw_entry.get(field_name), new_list_value):
+                    if new_list_value:
+                        updated_entry[field_name] = new_list_value
+                    else:
+                        updated_entry.pop(field_name, None)
+
+            clients[existing_idx] = updated_entry
         else:
-            clients.append(client_data)
+            clients.append(client_to_yaml(client))
 
         self._atomic_write(self.settings_file, data)
         get_config().reload()
@@ -165,33 +184,54 @@ class YamlWriter:
         require_pkce: Optional[bool] = None,
         refresh_token_rotation: Optional[bool] = None,
     ) -> None:
-        """Update OAuth settings."""
+        """Update OAuth settings.
+
+        Skips writing a field whose expanded on-disk value already matches
+        what's being submitted, so unchanged ``${VAR}`` placeholders and
+        comments survive a form save that only changed other fields (#127).
+        """
         data = self._load_settings_yaml()
         oauth = data.setdefault("oauth", {})
 
-        if issuer is not None:
+        if issuer is not None and not is_unchanged(oauth.get("issuer"), issuer):
             oauth["issuer"] = issuer
-        if issuer_from_request is not None:
+        if issuer_from_request is not None and not is_unchanged(
+            oauth.get("issuer_from_request"), issuer_from_request
+        ):
             oauth["issuer_from_request"] = issuer_from_request
         if issuer_allowlist is not None:
             if issuer_allowlist:
-                oauth["issuer_allowlist"] = issuer_allowlist
+                if not is_unchanged(oauth.get("issuer_allowlist"), issuer_allowlist):
+                    oauth["issuer_allowlist"] = issuer_allowlist
             else:
                 oauth.pop("issuer_allowlist", None)
         if device_verification_base_url is not None:
-            if device_verification_base_url:
-                oauth["device_verification_base_url"] = device_verification_base_url
-            else:
-                oauth.pop("device_verification_base_url", None)
-        if issuer_from_proxy_headers is not None:
+            next_url = device_verification_base_url or ""
+            if not is_unchanged(
+                oauth.get("device_verification_base_url"),
+                next_url,
+            ):
+                if device_verification_base_url:
+                    oauth["device_verification_base_url"] = device_verification_base_url
+                else:
+                    oauth.pop("device_verification_base_url", None)
+        if issuer_from_proxy_headers is not None and not is_unchanged(
+            oauth.get("issuer_from_proxy_headers"), issuer_from_proxy_headers
+        ):
             oauth["issuer_from_proxy_headers"] = issuer_from_proxy_headers
-        if audience is not None:
+        if audience is not None and not is_unchanged(oauth.get("audience"), audience):
             oauth["audience"] = audience
-        if token_expiry_minutes is not None:
+        if token_expiry_minutes is not None and not is_unchanged(
+            oauth.get("token_expiry_minutes"), token_expiry_minutes
+        ):
             oauth["token_expiry_minutes"] = token_expiry_minutes
-        if require_pkce is not None:
+        if require_pkce is not None and not is_unchanged(
+            oauth.get("require_pkce"), require_pkce
+        ):
             oauth["require_pkce"] = require_pkce
-        if refresh_token_rotation is not None:
+        if refresh_token_rotation is not None and not is_unchanged(
+            oauth.get("refresh_token_rotation"), refresh_token_rotation
+        ):
             oauth["refresh_token_rotation"] = refresh_token_rotation
 
         self._atomic_write(self.settings_file, data)
@@ -212,42 +252,59 @@ class YamlWriter:
         roles_attr_name: Optional[str] = None,
         groups_attr_name: Optional[str] = None,
     ) -> None:
-        """Update SAML settings."""
+        """Update SAML settings (same unchanged-field guard as #127 above)."""
         data = self._load_settings_yaml()
         saml = data.setdefault("saml", {})
 
-        if entity_id is not None:
+        if entity_id is not None and not is_unchanged(saml.get("entity_id"), entity_id):
             saml["entity_id"] = entity_id
-        if sso_url is not None:
+        if sso_url is not None and not is_unchanged(saml.get("sso_url"), sso_url):
             saml["sso_url"] = sso_url
-        if default_acs_url is not None:
+        if default_acs_url is not None and not is_unchanged(
+            saml.get("default_acs_url"), default_acs_url
+        ):
             saml["default_acs_url"] = default_acs_url
-        if sign_responses is not None:
+        if sign_responses is not None and not is_unchanged(
+            saml.get("sign_responses"), sign_responses
+        ):
             saml["sign_responses"] = sign_responses
-        if strict_binding is not None:
+        if strict_binding is not None and not is_unchanged(
+            saml.get("strict_binding"), strict_binding
+        ):
             saml["strict_binding"] = strict_binding
-        if want_authn_requests_signed is not None:
+        if want_authn_requests_signed is not None and not is_unchanged(
+            saml.get("want_authn_requests_signed"), want_authn_requests_signed
+        ):
             saml["want_authn_requests_signed"] = want_authn_requests_signed
         if sp_certificates is not None:
             if sp_certificates:
-                saml["sp_certificates"] = sp_certificates
+                if not is_unchanged(saml.get("sp_certificates"), sp_certificates):
+                    saml["sp_certificates"] = sp_certificates
             else:
                 saml.pop("sp_certificates", None)
-        if c14n_algorithm is not None:
+        if c14n_algorithm is not None and not is_unchanged(
+            saml.get("c14n_algorithm"), c14n_algorithm
+        ):
             saml["c14n_algorithm"] = c14n_algorithm
-        if export_roles is not None:
+        if export_roles is not None and not is_unchanged(
+            saml.get("export_roles"), export_roles
+        ):
             saml["export_roles"] = export_roles
-        if export_groups is not None:
+        if export_groups is not None and not is_unchanged(
+            saml.get("export_groups"), export_groups
+        ):
             saml["export_groups"] = export_groups
         # Empty string drops the key so the default name applies again.
         if roles_attr_name is not None:
             if roles_attr_name:
-                saml["roles_attr_name"] = roles_attr_name
+                if not is_unchanged(saml.get("roles_attr_name"), roles_attr_name):
+                    saml["roles_attr_name"] = roles_attr_name
             else:
                 saml.pop("roles_attr_name", None)
         if groups_attr_name is not None:
             if groups_attr_name:
-                saml["groups_attr_name"] = groups_attr_name
+                if not is_unchanged(saml.get("groups_attr_name"), groups_attr_name):
+                    saml["groups_attr_name"] = groups_attr_name
             else:
                 saml.pop("groups_attr_name", None)
 
@@ -257,7 +314,8 @@ class YamlWriter:
     def update_authority_prefixes(self, prefixes: Dict[str, str]) -> None:
         """Update authority prefix mappings."""
         data = self._load_settings_yaml()
-        data["authority_prefixes"] = prefixes
+        if not is_unchanged(data.get("authority_prefixes"), prefixes):
+            data["authority_prefixes"] = prefixes
 
         self._atomic_write(self.settings_file, data)
         get_config().reload()
@@ -265,7 +323,8 @@ class YamlWriter:
     def update_allowed_identity_classes(self, classes: List[str]) -> None:
         """Update allowed identity classes."""
         data = self._load_settings_yaml()
-        data["allowed_identity_classes"] = classes
+        if not is_unchanged(data.get("allowed_identity_classes"), classes):
+            data["allowed_identity_classes"] = classes
 
         self._atomic_write(self.settings_file, data)
         get_config().reload()

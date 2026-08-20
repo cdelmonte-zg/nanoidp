@@ -86,7 +86,7 @@ The test agent covers:
 - **Key Management**: Key info, rotation, post-rotation token validation
 - **REST API**: Users, config, audit log
 
-**Caution:** a run against a live server persists configuration changes back to that server's `config/settings.yaml` (resolved `${PORT}` placeholders, cleared `default_acs_url`). If the server runs from a git checkout, restore the file before committing: `git checkout -- config/settings.yaml`.
+**Caution:** a run against a live server persists configuration changes back to that server's `config/settings.yaml`. Since #127, unrelated fields (e.g. `${PORT}` placeholders, comments) are left untouched, but any value the run genuinely changes (e.g. `default_acs_url`) is still written for real. If the server runs from a git checkout, restore the file before committing: `git checkout -- config/settings.yaml`.
 
 ## Code Quality
 

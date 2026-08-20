@@ -47,6 +47,8 @@ dependencies = [
     "lxml>=6.0.2",
     "signxml>=4.2.0",
     "PyYAML>=6.0",
+    # Comment/quote-preserving round-trip YAML, used only on the config write path.
+    "ruamel.yaml>=0.18",
     # <3 is deliberate: mcp 1.x -> 2.0 was a breaking rewrite of the lowlevel Server.
     "mcp>=2,<3",
     "pydantic>=2.12",

@@ -111,6 +111,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   real client.
 
 ### Fixed
+- **Saving settings no longer discards comments, inline `#` text or `${VAR:default}`
+  placeholders in `settings.yaml`** (#127): the settings writer now round-trips
+  the file with `ruamel.yaml` (comments and quote style survive) and only
+  rewrites a field when its expanded on-disk value actually differs from the
+  new one, so an untouched `${PORT:8000}`-style placeholder is no longer
+  replaced by its resolved value on the next save. Free-form text
+  (`description`, `client_secret`, `password`, attribute values) is now quoted
+  on write so an embedded `#` can't be mistaken for a comment. Applies to both
+  the web UI settings form and the MCP `save_config` tool.
+- **Env-backed client secrets and empty optional placeholders are preserved when
+  unrelated settings change.** The OAuth client merge now updates entries by
+  `client_id` field-by-field instead of rewriting the whole list, so an
+  unchanged `${APP1_SECRET:dev}` secret stays in the raw file even when a
+  sibling client is edited. Empty optional values such as
+  `${DEVICE_URL:}` are also treated as unchanged when they still expand to an
+  empty string, instead of being popped out of the YAML on a save that changed
+  some other field.
 - **`/api/config` now exposes `issuer_allowlist`, `device_verification_base_url`
   and `issuer_from_proxy_headers`** alongside `issuer_from_request`. The
   config-agnostic e2e agent reads the allowlist from `/api/config` to predict
