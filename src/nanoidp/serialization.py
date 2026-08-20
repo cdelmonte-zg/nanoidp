@@ -106,6 +106,23 @@ def _quoted(value: str) -> SingleQuotedScalarString:
     return SingleQuotedScalarString(value)
 
 
+def client_id_matches(raw_entry: Any, client_id: str) -> bool:
+    """True if a raw settings.yaml client entry identifies the in-memory client
+    with ``client_id``.
+
+    ``client_id`` itself can be an env placeholder (``client_id: ${CLIENT_ID:app1}``),
+    which is expanded to its resolved value in the loaded ``Settings`` (#127).
+    Comparing the raw ``${CLIENT_ID:app1}`` against the expanded ``app1`` with
+    ``==`` would miss the entry, so the merge would treat it as a brand-new
+    client and rewrite it from expanded values - materializing any env-backed
+    secret in the process. Match through ``is_unchanged`` so the placeholder
+    expands before the comparison.
+    """
+    if not isinstance(raw_entry, dict):
+        return False
+    return is_unchanged(raw_entry.get("client_id"), client_id)
+
+
 def load_yaml_document(file_path: Path) -> Dict[str, Any]:
     """Load a YAML document preserving comments/quote style for a later
     round-trip write. Returns an empty ``CommentedMap`` if the file is
@@ -180,18 +197,18 @@ def merge_oauth_clients(
     still unchanged, but genuine edits replace the matching fields without
     rebuilding the whole list. Added clients are appended; removed ones drop out.
     """
-    raw_by_id = {}
-    if isinstance(raw_clients, list):
-        for raw in raw_clients:
-            if isinstance(raw, dict):
-                client_id = raw.get("client_id")
-                if client_id is not None:
-                    raw_by_id[client_id] = raw
+    raw_entries = [r for r in raw_clients if isinstance(r, dict)] if isinstance(
+        raw_clients, list
+    ) else []
 
     merged: list[Dict[str, Any]] = []
 
     for client in settings_clients:
-        raw_entry = raw_by_id.get(client.client_id)
+        # Match by expanded client_id so a raw ``${CLIENT_ID:app1}`` entry is
+        # recognised as the same client and its placeholders are preserved (#127).
+        raw_entry = next(
+            (r for r in raw_entries if client_id_matches(r, client.client_id)), None
+        )
         if raw_entry is None:
             merged.append(client_to_yaml(client))
         else:
