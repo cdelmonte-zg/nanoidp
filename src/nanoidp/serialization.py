@@ -136,6 +136,40 @@ def client_to_yaml(client: OAuthClient) -> Dict[str, Any]:
     return entry
 
 
+def merge_client_entry(raw_entry: Dict[str, Any], client: OAuthClient) -> Dict[str, Any]:
+    """Update a single raw settings.yaml client entry from ``client``, field by
+    field, guarded by ``is_unchanged()`` (#127/#138).
+
+    Shared by ``merge_oauth_clients()`` (full-list merge) and
+    ``YamlWriter.save_client()`` (single-entry update) so the merge rules -
+    which fields are quoted, when an emptied optional list field is dropped -
+    only exist once. Returns a new dict; ``raw_entry`` is not mutated.
+    """
+    updated = raw_entry.copy()
+    for field_name, new_value in (
+        ("client_id", client.client_id),
+        ("client_secret", client.client_secret),
+        ("description", client.description),
+    ):
+        if not is_unchanged(raw_entry.get(field_name), new_value):
+            if field_name in {"client_secret", "description"}:
+                updated[field_name] = _quoted(str(new_value))
+            else:
+                updated[field_name] = new_value
+
+    for field_name, new_list_value in (
+        ("additional_audiences", client.additional_audiences),
+        ("redirect_uris", client.redirect_uris),
+    ):
+        if not is_unchanged(raw_entry.get(field_name), new_list_value):
+            if new_list_value:
+                updated[field_name] = new_list_value
+            else:
+                updated.pop(field_name, None)
+
+    return updated
+
+
 def merge_oauth_clients(
     raw_clients: Any, settings_clients: list["OAuthClient"]
 ) -> list[Dict[str, Any]]:
@@ -155,39 +189,13 @@ def merge_oauth_clients(
                     raw_by_id[client_id] = raw
 
     merged: list[Dict[str, Any]] = []
-    seen: set[str] = set()
 
     for client in settings_clients:
-        client_id = client.client_id
-        seen.add(client_id)
-        raw_entry = raw_by_id.get(client_id)
+        raw_entry = raw_by_id.get(client.client_id)
         if raw_entry is None:
             merged.append(client_to_yaml(client))
-            continue
-
-        updated = raw_entry.copy()
-        for field_name, new_value in (
-            ("client_id", client.client_id),
-            ("client_secret", client.client_secret),
-            ("description", client.description),
-        ):
-            if not is_unchanged(raw_entry.get(field_name), new_value):
-                if field_name in {"client_secret", "description"}:
-                    updated[field_name] = _quoted(str(new_value))
-                else:
-                    updated[field_name] = new_value
-
-        for field_name, new_list_value in (
-            ("additional_audiences", client.additional_audiences),
-            ("redirect_uris", client.redirect_uris),
-        ):
-            if not is_unchanged(raw_entry.get(field_name), new_list_value):
-                if new_list_value:
-                    updated[field_name] = new_list_value
-                else:
-                    updated.pop(field_name, None)
-
-        merged.append(updated)
+        else:
+            merged.append(merge_client_entry(raw_entry, client))
 
     return merged
 

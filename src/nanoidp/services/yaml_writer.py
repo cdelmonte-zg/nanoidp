@@ -13,6 +13,7 @@ from ..serialization import (
     client_to_yaml,
     is_unchanged,
     load_yaml_document,
+    merge_client_entry,
     user_to_yaml,
 )
 
@@ -125,30 +126,7 @@ class YamlWriter:
             raise ValueError(f"Client '{client.client_id}' already exists")
 
         if existing_idx is not None:
-            raw_entry = clients[existing_idx]
-            updated_entry = raw_entry.copy()
-            for field_name, new_value in (
-                ("client_id", client.client_id),
-                ("client_secret", client.client_secret),
-                ("description", client.description),
-            ):
-                if not is_unchanged(raw_entry.get(field_name), new_value):
-                    if field_name in {"client_secret", "description"}:
-                        updated_entry[field_name] = client_to_yaml(client)[field_name]
-                    else:
-                        updated_entry[field_name] = new_value
-
-            for field_name, new_list_value in (
-                ("additional_audiences", client.additional_audiences),
-                ("redirect_uris", client.redirect_uris),
-            ):
-                if not is_unchanged(raw_entry.get(field_name), new_list_value):
-                    if new_list_value:
-                        updated_entry[field_name] = new_list_value
-                    else:
-                        updated_entry.pop(field_name, None)
-
-            clients[existing_idx] = updated_entry
+            clients[existing_idx] = merge_client_entry(clients[existing_idx], client)
         else:
             clients.append(client_to_yaml(client))
 
