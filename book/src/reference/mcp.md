@@ -14,6 +14,7 @@ readonly mode, and the exposure warnings, see the
 | `list_users` | List all configured users |
 | `get_user` | Get details of a specific user |
 | `create_user` | Create a new user |
+| `create_persona_user` | Create a password-less user for persona login mode (local dev/testing convenience) |
 | `update_user` | Update an existing user (password, email, roles, …) |
 | `delete_user` | Delete a user |
 | `generate_token` | Generate OAuth2 tokens for a user (pass `scope` with `openid` to also get an ID Token; `id_token_claims`/`userinfo_claims` mirror the OIDC `claims` request parameter) |

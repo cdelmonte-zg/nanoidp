@@ -643,6 +643,121 @@ class TestMCPClientAdditionalAudiences:
         assert "additional_audiences" in payload["error"]
 
 
+class TestMCPPersonaLogin:
+    """MCP exposure of persona login mode: `create_persona_user` and the
+    `login_mode` setting on `get_settings`/`update_settings`."""
+
+    def _config(self, tmp_path):
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        (config_dir / "settings.yaml").write_text(
+            'oauth:\n'
+            '  issuer: "http://localhost:8000"\n'
+            '  clients:\n'
+            '    - client_id: "test"\n'
+            '      client_secret: "test"\n'
+        )
+        (config_dir / "users.yaml").write_text(
+            'users:\n  admin:\n    password: "admin"\ndefault_user: admin\n'
+        )
+        from nanoidp.config import ConfigManager
+        return ConfigManager(str(config_dir))
+
+    @pytest.mark.asyncio
+    async def test_create_persona_user_has_no_password(self, tmp_path):
+        from nanoidp.mcp_server import _execute_tool
+        config = self._config(tmp_path)
+
+        result = await _execute_tool(
+            "create_persona_user", {"username": "alice", "email": "a@example.org"}, config
+        )
+
+        assert result["success"] is True
+        assert config.get_user("alice").password is None
+        assert result["user"]["username"] == "alice"
+
+    @pytest.mark.asyncio
+    async def test_create_persona_user_rejects_duplicate(self, tmp_path):
+        from nanoidp.mcp_server import _execute_tool
+        config = self._config(tmp_path)
+        await _execute_tool("create_persona_user", {"username": "alice"}, config)
+
+        result = await _execute_tool("create_persona_user", {"username": "alice"}, config)
+
+        assert result["success"] is False
+        assert "already exists" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_create_user_contract_is_unchanged(self, monkeypatch, mcp_call_tool, tmp_path):
+        """Regression: adding create_persona_user must not loosen create_user -
+        it still requires a password argument."""
+        import nanoidp.mcp_server as mcp
+
+        monkeypatch.setattr(mcp, "_config", self._config(tmp_path))
+        monkeypatch.setattr(mcp, "_readonly_mode", False)
+        monkeypatch.delenv("NANOIDP_MCP_ADMIN_SECRET", raising=False)
+
+        result = await mcp_call_tool("create_user", {"username": "bob"})
+
+        assert result.is_error is True
+        payload = json.loads(result.content[0].text)
+        assert payload["code"] == "MCP_INVALID_ARGUMENTS"
+        assert "password" in payload["error"]
+
+    @pytest.mark.asyncio
+    async def test_create_persona_user_schema_has_no_password_property(self, mcp_list_tools):
+        tools = await mcp_list_tools()
+        tool = next(t for t in tools if t.name == "create_persona_user")
+
+        assert "password" not in tool.input_schema["properties"]
+        assert tool.input_schema["required"] == ["username"]
+
+    def test_create_persona_user_is_a_mutating_tool(self):
+        from nanoidp.mcp_server import MUTATING_TOOLS
+        assert "create_persona_user" in MUTATING_TOOLS
+
+    @pytest.mark.asyncio
+    async def test_get_settings_includes_login_mode(self, tmp_path):
+        from nanoidp.mcp_server import _execute_tool
+        config = self._config(tmp_path)
+
+        result = await _execute_tool("get_settings", {}, config)
+
+        assert result["login_mode"] == "password"
+
+    @pytest.mark.asyncio
+    async def test_update_settings_can_switch_to_persona(self, tmp_path):
+        from nanoidp.mcp_server import _execute_tool
+        config = self._config(tmp_path)
+
+        result = await _execute_tool(
+            "update_settings", {"login_mode": "persona"}, config
+        )
+
+        assert result["success"] is True
+        assert "login_mode" in result["updated_fields"]
+        assert result["current_settings"]["login_mode"] == "persona"
+        assert config.settings.login_mode == "persona"
+        assert config.settings.persona_mode_enabled is True
+
+    @pytest.mark.asyncio
+    async def test_update_settings_rejects_invalid_login_mode(self, monkeypatch, mcp_call_tool, tmp_path):
+        """Invalid login_mode is caught by the schema's "enum" constraint
+        before dispatch, as a clean MCP_INVALID_ARGUMENTS error."""
+        import nanoidp.mcp_server as mcp
+
+        monkeypatch.setattr(mcp, "_config", self._config(tmp_path))
+        monkeypatch.setattr(mcp, "_readonly_mode", False)
+        monkeypatch.delenv("NANOIDP_MCP_ADMIN_SECRET", raising=False)
+
+        result = await mcp_call_tool("update_settings", {"login_mode": "bogus"})
+
+        assert result.is_error is True
+        payload = json.loads(result.content[0].text)
+        assert payload["code"] == "MCP_INVALID_ARGUMENTS"
+        assert "login_mode" in payload["error"]
+
+
 class TestGenerateTokenClaims:
     """MCP ``generate_token`` claims arguments (#104/#113, parity #112).
 

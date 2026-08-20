@@ -130,13 +130,27 @@ template genuinely need code changes:
       regressions + persona-mode picker/selection/rejection for all three
       surfaces, plus the AuthnContextClassRef checks).
 
-### 5. MCP + Settings UI persistence
-- [ ] [`mcp_server.py`](../../src/nanoidp/mcp_server.py): expose
-      `login_mode` in `get_settings`/`update_settings` (~line 1078-1118).
-- [ ] [`templates/settings.html`](../../src/nanoidp/templates/settings.html)
-      + save route: mode toggle in dashboard.
+### 5. MCP exposure
+- [x] [`mcp_server.py`](../../src/nanoidp/mcp_server.py): expose
+      `login_mode` in `get_settings`/`update_settings` (enum-validated by
+      the tool's `input_schema`, so an invalid value never reaches the
+      handler).
+- [x] New `create_persona_user` MCP tool (separate from `create_user`,
+      whose contract - password required - stays unchanged) for creating a
+      password-less user; shares field-mapping with `create_user` via
+      `_build_user_from_arguments()`. Added to `MUTATING_TOOLS`.
+- [x] Tests: `TestMCPPersonaLogin` in `tests/test_mcp.py`; updated
+      `test_mutating_tools_count` in `tests/test_mcp_security.py` (11 → 12);
+      bumped `EXPECTED_TOOLS` (24 → 25) in `examples/mcp_smoke_test.py`,
+      verified live against the real stdio server.
+- [x] Docs: `docs/SECURITY.md` + `book/src/guides/SECURITY.md` mutating
+      tools tables, `book/src/reference/mcp.md` tool list.
 
-### 6. E2E coverage + docs (last)
+### 6. Settings UI persistence
+- [ ] [`templates/settings.html`](../../src/nanoidp/templates/settings.html)
+      + save route: `login_mode` toggle in the dashboard.
+
+### 7. E2E coverage + docs (last)
 - [ ] [`examples/test_agent.py`](../../examples/test_agent.py): persona-mode
       scenario across all 4 surfaces.
 - [ ] Docs together: `book/src/reference/configuration.md`,
@@ -147,7 +161,7 @@ template genuinely need code changes:
 Steps 1-2 are safe standalone (password-less users just can't log in yet —
 no UI exposes it). Step 3 delivers one working vertical slice
 (nanoidp `/login`) to validate the pattern before repeating it 3x in step 4.
-Steps 5-6 close out the "ships whole" checklist last, once behavior is
+Steps 5-7 close out the "ships whole" checklist last, once behavior is
 stable.
 
 ## How this gets tested
@@ -184,7 +198,8 @@ layered:
    the real `nanoidp-mcp` stdio server end-to-end.
 3. **Unit/integration suite** (bulk of coverage, no live server): `pytest`
    against `tests/*.py` using Flask's test client — this is where most of
-   steps 1-4 get verified (form posts, session state, SAML assertion XML).
+   steps 1-5 get verified (form posts, session state, SAML assertion XML,
+   MCP tool dispatch).
 
 ## To be mentioned when submitting the PR
 

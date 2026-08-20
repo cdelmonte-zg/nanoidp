@@ -303,11 +303,11 @@ class TestMCPSecurityDocumentation:
 
     def test_mutating_tools_count(self):
         """Test that we have the expected number of mutating tools."""
-        # From README: create_user, update_user, delete_user,
-        #              create_client, update_client, delete_client,
-        #              generate_token, update_settings, save_config,
-        #              clear_audit_log, rotate_keys (#48)
-        expected_count = 11
+        # From README: create_user, create_persona_user, update_user,
+        #              delete_user, create_client, update_client,
+        #              delete_client, generate_token, update_settings,
+        #              save_config, clear_audit_log, rotate_keys (#48)
+        expected_count = 12
         assert len(MUTATING_TOOLS) == expected_count
 
     def test_mcp_server_has_security_docstring(self):

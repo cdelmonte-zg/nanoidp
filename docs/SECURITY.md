@@ -156,6 +156,7 @@ The following MCP tools modify configuration and require extra caution:
 | Tool | Description |
 |------|-------------|
 | `create_user` | Create a new user |
+| `create_persona_user` | Create a password-less user (persona login mode) |
 | `update_user` | Modify user attributes |
 | `delete_user` | Remove a user |
 | `create_client` | Create OAuth client |

@@ -24,7 +24,7 @@ from mcp.client.stdio import stdio_client
 
 # Deliberately a hard number: the docs advertise the tool count, so growing or
 # shrinking the MCP surface must consciously update both (metadata never lies).
-EXPECTED_TOOLS = 24
+EXPECTED_TOOLS = 25
 
 
 async def run(config_dir: str) -> int:
