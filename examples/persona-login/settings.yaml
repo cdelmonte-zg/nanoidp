@@ -1,0 +1,33 @@
+# NanoIDP Settings - Persona Login (passwordless local dev convenience)
+# Copy this file to your config directory
+
+server:
+  host: "0.0.0.0"
+  port: 8000
+
+oauth:
+  issuer: "http://localhost:8000"
+  audience: "my-app"
+  token_expiry_minutes: 60
+  clients:
+    - client_id: "demo-client"
+      client_secret: "demo-secret"
+      description: "Default demo client for development"
+
+# Persona login: interactive logins (/login, /authorize, /saml/sso, and the
+# device flow's verification page) list the users below instead of
+# prompting for a password. Opt-in, off by default ('password') - a local
+# development/testing convenience only, not an authentication mode for
+# deployed environments. The OAuth password grant (grant_type=password) is
+# unaffected either way.
+login:
+  mode: persona
+
+authority_prefixes:
+  roles: "ROLE_"
+  identity_class: "IDENTITY_"
+  entitlements: "ENT_"
+
+allowed_identity_classes:
+  - "INTERNAL"
+  - "EXTERNAL"

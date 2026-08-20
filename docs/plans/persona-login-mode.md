@@ -104,6 +104,11 @@ template genuinely need code changes:
       persona branch — dropdown/buttons over `config.users.keys()` (reuse
       existing quick-fill user list).
 - [x] Tests: `tests/test_persona_login.py`.
+- [x] Example preset: [`examples/persona-login/`](../../examples/persona-login/)
+      (`settings.yaml`, `users.yaml`, `README.md`), listed in
+      [`examples/README.md`](../../examples/README.md). Verified live in a
+      browser: `/login` renders the picker, selecting `alice` (password-less)
+      logs in and lands on the dashboard.
 
 ### 4. Extend persona login to remaining interactive surfaces
 - [ ] OIDC `/authorize` inline login —

@@ -1,0 +1,35 @@
+# NanoIDP Users - Persona Login
+# Copy this file to your config directory
+#
+# 'alice' and 'bob' have no 'password' field: they authenticate only via
+# persona-mode interactive login (this preset's login.mode: persona), never
+# via password-mode login or the OAuth password grant. 'admin' still has a
+# password and remains selectable in the persona picker too - persona mode
+# changes the login UI, not what an individual user is configured with.
+
+users:
+  admin:
+    password: 'admin'
+    email: admin@example.org
+    identity_class: INTERNAL
+    entitlements:
+    - ADMIN_ACCESS
+    roles:
+    - ADMIN
+    - USER
+  alice:
+    email: alice@example.org
+    identity_class: INTERNAL
+    entitlements:
+    - BASIC_ACCESS
+    roles:
+    - USER
+
+  bob:
+    email: "bob@example.org"
+    identity_class: "EXTERNAL"
+    roles:
+    - "USER"
+    tenant: "default"
+
+default_user: "admin"

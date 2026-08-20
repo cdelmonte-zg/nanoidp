@@ -10,6 +10,7 @@ This directory contains ready-to-use configuration presets for common integratio
 | [react-spa-pkce](./react-spa-pkce/) | Single Page Applications | Authorization Code + PKCE |
 | [microservices-client-credentials](./microservices-client-credentials/) | Service-to-service auth | Client Credentials |
 | [cli-device-flow](./cli-device-flow/) | CLI tools and IoT devices | Device Authorization |
+| [persona-login](./persona-login/) | Local dev/testing convenience - pick a user, no password | N/A (interactive login only) |
 
 ## How to Use
 
