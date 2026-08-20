@@ -72,6 +72,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   effect after a restart.
 
 ### Changed
+- **Lowered the `cryptography` floor from `>=46.0.3` to `>=45.0.0`** (#140). The
+  previous floor came from a generic dependency bump, not a real requirement:
+  our own API usage needs nothing newer than ~3.1. The effective minimum is set
+  by `signxml`, which imports `x509.verification.ExtensionPolicy` (added in
+  cryptography 45.0.0) at load time. This unblocks installs on environments
+  pinned to a `cryptography` between 45 and 46.
 - **Consolidated the OAuth client YAML merge logic** into a single
   `serialization.merge_client_entry()` helper, shared by the settings save
   path (`merge_oauth_clients()`) and `YamlWriter.save_client()`'s web UI

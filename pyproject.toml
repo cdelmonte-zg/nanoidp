@@ -43,7 +43,10 @@ dependencies = [
     "Flask-Cors>=6.0.2",
     "Flask-Limiter>=4.1.1",
     "PyJWT>=2.8.0",
-    "cryptography>=46.0.3",
+    # Floor is set by signxml: signxml 4.2.2 imports x509.verification.ExtensionPolicy
+    # (added in cryptography 45.0.0) at module load, though it only declares >=43.
+    # Our own API usage would be happy far lower - do not raise without a real reason.
+    "cryptography>=45.0.0",
     "lxml>=6.0.2",
     "signxml>=4.2.0",
     "PyYAML>=6.0",
