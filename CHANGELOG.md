@@ -65,6 +65,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   effect after a restart.
 
 ### Changed
+- **Consolidated the OAuth client YAML merge logic** into a single
+  `serialization.merge_client_entry()` helper, shared by the settings save
+  path (`merge_oauth_clients()`) and `YamlWriter.save_client()`'s web UI
+  edit path, which previously duplicated the same field-by-field merge
+  rules. Internal cleanup, no behavior change.
 - **Migrated the MCP server to the mcp 2.0 SDK** and pinned `mcp>=2,<3`. mcp 2.0
   replaced the lowlevel `Server` decorators (`@server.list_tools()` /
   `@server.call_tool()`) with `on_*` constructor parameters, so a fresh install
