@@ -431,6 +431,133 @@ class NanoIDPTestAgent:
         except Exception as e:
             return self._add_result("Issuer From Request", TestCategory.OAUTH, False, str(e))
 
+    def test_issuer_from_proxy_headers(self) -> TestResult:
+        """oauth.issuer_from_proxy_headers: X-Forwarded-* is honoured only when on.
+
+        Defaults to off, so forwarded headers must be ignored and discovery
+        keeps the real Host (or the fixed issuer when issuer_from_request is
+        also off). With it on behind issuer_from_request, discovery must
+        reflect the forwarded scheme+host (subject to the allowlist). Reads
+        /api/config first and asserts the toggle is honoured either way, like
+        test_issuer_from_request.
+        """
+        try:
+            config_response = self.session.get(f"{self.base_url}/api/config", timeout=5)
+            issuer_from_request = False
+            issuer_from_proxy_headers = False
+            issuer_allowlist: List[str] = []
+            fixed_issuer = None
+            if config_response.status_code == 200:
+                oauth_config = config_response.json().get("oauth", {})
+                issuer_from_request = oauth_config.get("issuer_from_request", False)
+                issuer_from_proxy_headers = oauth_config.get(
+                    "issuer_from_proxy_headers", False
+                )
+                issuer_allowlist = oauth_config.get("issuer_allowlist", []) or []
+                fixed_issuer = oauth_config.get("issuer")
+            if not fixed_issuer:
+                fixed_issuer = self.session.get(
+                    f"{self.base_url}/.well-known/openid-configuration", timeout=5
+                ).json().get("issuer")
+
+            fwd_host = "test-agent-proxy-check:8443"
+            fwd_origin = f"https://{fwd_host}"
+            real = urlparse(self.base_url)
+            real_origin = f"{real.scheme or 'http'}://{real.netloc}"
+
+            discovery = self.session.get(
+                f"{self.base_url}/.well-known/openid-configuration",
+                headers={"X-Forwarded-Host": fwd_host, "X-Forwarded-Proto": "https"},
+                timeout=5,
+            ).json()
+            observed_issuer = discovery.get("issuer")
+
+            if not issuer_from_request:
+                # No request-derived issuer at all: forwarded headers can't move it.
+                expected_issuer = fixed_issuer
+            else:
+                # issuer_from_request on: reflect the forwarded origin only when
+                # proxy headers are trusted, otherwise the real connection's.
+                reflected = fwd_origin if issuer_from_proxy_headers else real_origin
+                allowlisted = not issuer_allowlist or reflected in issuer_allowlist
+                expected_issuer = reflected if allowlisted else fixed_issuer
+
+            success = observed_issuer == expected_issuer
+            return self._add_result(
+                "Issuer From Proxy Headers",
+                TestCategory.OAUTH,
+                success,
+                f"issuer_from_proxy_headers={issuer_from_proxy_headers}, "
+                f"issuer_from_request={issuer_from_request}, "
+                f"discovery_issuer={observed_issuer}",
+                {
+                    "issuer_from_proxy_headers": issuer_from_proxy_headers,
+                    "issuer_from_request": issuer_from_request,
+                    "expected_issuer": expected_issuer,
+                    "discovery_issuer": observed_issuer,
+                },
+            )
+        except Exception as e:
+            return self._add_result(
+                "Issuer From Proxy Headers", TestCategory.OAUTH, False, str(e)
+            )
+
+    def test_device_verification_base_url(self) -> TestResult:
+        """oauth.device_verification_base_url pins the device flow's
+        verification_uri to a fixed human-reachable URL.
+
+        Unset by default, so verification_uri stays under the serving host.
+        When set, verification_uri must start with the configured base URL
+        (discovery's issuer and a token's iss are unaffected - not checked
+        here). Reads /api/config first and asserts either way.
+        """
+        try:
+            config_response = self.session.get(f"{self.base_url}/api/config", timeout=5)
+            base_url_override = None
+            if config_response.status_code == 200:
+                base_url_override = config_response.json().get("oauth", {}).get(
+                    "device_verification_base_url"
+                )
+
+            response = self.session.post(
+                f"{self.base_url}/device_authorization",
+                data={"scope": "openid"},
+                timeout=5,
+            )
+            if response.status_code != 200:
+                return self._add_result(
+                    "Device Verification Base URL",
+                    TestCategory.OAUTH,
+                    False,
+                    f"Device auth failed: {response.status_code}",
+                )
+            verification_uri = response.json().get("verification_uri", "")
+
+            if base_url_override:
+                success = verification_uri.startswith(base_url_override)
+                detail = (
+                    f"override={base_url_override}, verification_uri={verification_uri}"
+                )
+            else:
+                # No override: a normal, non-empty device URL under the server.
+                success = bool(verification_uri) and "/device" in verification_uri
+                detail = f"no override, verification_uri={verification_uri}"
+
+            return self._add_result(
+                "Device Verification Base URL",
+                TestCategory.OAUTH,
+                success,
+                detail,
+                {
+                    "device_verification_base_url": base_url_override,
+                    "verification_uri": verification_uri,
+                },
+            )
+        except Exception as e:
+            return self._add_result(
+                "Device Verification Base URL", TestCategory.OAUTH, False, str(e)
+            )
+
     def test_authorization_code_pkce(self) -> TestResult:
         """Authorization Code Flow with PKCE (simulated)."""
         try:
@@ -3121,6 +3248,7 @@ class NanoIDPTestAgent:
                 self.test_password_grant,
                 self.test_client_credentials,
                 self.test_issuer_from_request,
+                self.test_issuer_from_proxy_headers,
                 self.test_authorization_code_pkce,
                 self.test_redirect_uri_exact_matching,
                 self.test_id_token_audience,
@@ -3128,6 +3256,7 @@ class NanoIDPTestAgent:
                 self.test_id_token_audience_array,
                 self.test_id_token_not_accepted_as_access_token,
                 self.test_device_flow,
+                self.test_device_verification_base_url,
                 self.test_token_decode,
                 self.test_introspection,
                 self.test_userinfo,
