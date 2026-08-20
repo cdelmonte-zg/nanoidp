@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+- **New guide: [Running behind a TLS-terminating reverse proxy](book/src/guides/reverse-proxy.md)**,
+  walking through composing `oauth.issuer`, `issuer_from_request`,
+  `issuer_from_proxy_headers`, `issuer_allowlist`, `device_verification_base_url`
+  and `POST /api/config/reload` for a proxied/containerized deployment, with
+  the security caveats inline.
+
 ### Added
 - **First-class group support**: users gain a `groups` list alongside `roles`,
   modelled exactly the same way. It is loaded from and persisted to
