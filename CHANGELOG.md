@@ -77,8 +77,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   are affected by CVE-2026-48525 (unbounded Base64URL decoding of a `b64=false`
   detached JWS payload, a DoS vector).
 - **Added a CI license gate** (#148): the build fails if a dependency in the
-  redistributed closure carries a GPL/LGPL/AGPL/SSPL/EUPL license incompatible
-  with MIT redistribution.
+  redistributed closure carries a GPL/LGPL/AGPL/SSPL/EUPL license, which the
+  project's dependency-license policy blocks from redistribution without
+  explicit review.
 - **Lowered the `cryptography` floor from `>=46.0.3` to `>=45.0.0`** (#140). The
   previous floor came from a generic dependency bump, not a real requirement:
   our own API usage needs nothing newer than ~3.1. The effective minimum is set
