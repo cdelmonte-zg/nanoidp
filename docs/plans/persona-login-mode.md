@@ -97,13 +97,13 @@ template genuinely need code changes:
       `login_mode` or supplied password (including empty string).
 
 ### 3. Interactive login UI — nanoidp `/login`
-- [ ] [`routes/ui.py` `login()`](../../src/nanoidp/routes/ui.py): branch on
+- [x] [`routes/ui.py` `login()`](../../src/nanoidp/routes/ui.py): branch on
       `login_mode`; persona GET renders picker, POST takes just `username`
       via `config.get_user` (no password check).
-- [ ] [`templates/login.html`](../../src/nanoidp/templates/login.html):
+- [x] [`templates/login.html`](../../src/nanoidp/templates/login.html):
       persona branch — dropdown/buttons over `config.users.keys()` (reuse
       existing quick-fill user list).
-- [ ] Tests: new/extended UI login test.
+- [x] Tests: `tests/test_persona_login.py`.
 
 ### 4. Extend persona login to remaining interactive surfaces
 - [ ] OIDC `/authorize` inline login —

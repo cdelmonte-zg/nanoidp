@@ -57,6 +57,7 @@ def login() -> ResponseReturnValue:
     This endpoint is for direct web UI access only.
     """
     config = get_config()
+    persona_mode = config.settings.persona_mode_enabled
 
     if request.method == "GET":
         error = request.args.get("error")
@@ -64,16 +65,23 @@ def login() -> ResponseReturnValue:
             "login.html",
             error=error,
             users=list(config.users.keys()),
+            persona_mode=persona_mode,
         )
 
-    # POST: validate credentials
+    # POST: persona mode selects a user by identity, no password prompt;
+    # password mode is unchanged.
     username = request.form.get("username", "").strip()
-    password = request.form.get("password", "")
 
-    if not username or not password:
-        return redirect(url_for("ui.login", error="Username and password required"))
+    if persona_mode:
+        if not username:
+            return redirect(url_for("ui.login", error="Select a user"))
+        user = config.get_user(username)
+    else:
+        password = request.form.get("password", "")
+        if not username or not password:
+            return redirect(url_for("ui.login", error="Username and password required"))
+        user = config.authenticate(username, password)
 
-    user = config.authenticate(username, password)
     if not user:
         audit_event(
             "login",
