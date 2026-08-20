@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 from ..config import OAuthClient, User, get_config
 from ..serialization import (
     atomic_write_yaml,
+    client_id_matches,
     client_to_yaml,
     is_unchanged,
     load_yaml_document,
@@ -115,10 +116,12 @@ class YamlWriter:
 
         clients = data.setdefault("oauth", {}).setdefault("clients", [])
 
-        # Check if client exists
+        # Check if client exists. Match through client_id_matches so a raw
+        # ${CLIENT_ID:...} placeholder entry is recognised as the same client
+        # instead of being appended as a duplicate (#127).
         existing_idx = None
         for idx, c in enumerate(clients):
-            if c.get("client_id") == client.client_id:
+            if client_id_matches(c, client.client_id):
                 existing_idx = idx
                 break
 
@@ -138,7 +141,9 @@ class YamlWriter:
         data = self._load_settings_yaml()
 
         clients = data.get("oauth", {}).get("clients", [])
-        new_clients = [c for c in clients if c.get("client_id") != client_id]
+        # Match through client_id_matches so a client whose id is an env
+        # placeholder can still be deleted (#127).
+        new_clients = [c for c in clients if not client_id_matches(c, client_id)]
 
         if len(new_clients) == len(clients):
             raise ValueError(f"Client '{client_id}' not found")

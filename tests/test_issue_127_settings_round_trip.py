@@ -235,3 +235,78 @@ oauth:
         assert "device_verification_base_url: ''" not in raw
         parsed = _parsed(config_dir)
         assert parsed["oauth"]["audience"] == "changed-audience"
+
+
+class TestEnvBackedClientId:
+    """A client_id can itself be an env placeholder; the merge must still match
+    the raw entry by its expanded id, or it rewrites the client from expanded
+    values and materializes the secret (#127)."""
+
+    _SETTINGS = """\
+server:
+  host: 0.0.0.0
+  port: 8000
+oauth:
+  audience: my-app
+  clients:
+  - client_id: ${CLIENT_ID:app1}
+    client_secret: ${APP1_SECRET:dev}
+    description: first
+"""
+
+    def test_env_backed_client_id_survives_config_manager_save(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("CLIENT_ID", "app1")
+        monkeypatch.setenv("APP1_SECRET", "SUPERSECRET")
+        config_dir = _seed_custom_settings(tmp_path, self._SETTINGS)
+        manager = ConfigManager(str(config_dir))
+        assert manager.settings.clients[0].client_id == "app1"  # expanded
+
+        manager.settings.clients[0].description = "first EDITED"
+        manager.save()
+
+        raw = _raw(config_dir)
+        assert "client_id: ${CLIENT_ID:app1}" in raw
+        assert "client_secret: ${APP1_SECRET:dev}" in raw
+        assert "SUPERSECRET" not in raw
+        assert raw.count("client_id") == 1  # not duplicated as a "new" client
+
+    def test_env_backed_client_id_survives_ui_save_client(
+        self, tmp_path, monkeypatch
+    ):
+        from nanoidp.config import OAuthClient
+
+        monkeypatch.setenv("CLIENT_ID", "app1")
+        monkeypatch.setenv("APP1_SECRET", "SUPERSECRET")
+        config_dir = _seed_custom_settings(tmp_path, self._SETTINGS)
+        ConfigManager(str(config_dir))
+        writer = YamlWriter(str(config_dir))
+
+        existing = writer._load_settings_yaml()["oauth"]["clients"][0]
+        # UI edit leaving the secret blank keeps the already-expanded value.
+        writer.save_client(
+            OAuthClient(
+                client_id="app1",
+                client_secret="SUPERSECRET",
+                description="edited via UI",
+            )
+        )
+
+        raw = _raw(config_dir)
+        assert "client_secret: ${APP1_SECRET:dev}" in raw
+        assert "SUPERSECRET" not in raw
+        assert raw.count("client_id") == 1  # updated in place, not appended
+        assert existing["client_id"] == "${CLIENT_ID:app1}"
+
+    def test_env_backed_client_id_can_be_deleted(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("CLIENT_ID", "app1")
+        monkeypatch.setenv("APP1_SECRET", "SUPERSECRET")
+        config_dir = _seed_custom_settings(tmp_path, self._SETTINGS)
+        ConfigManager(str(config_dir))
+        writer = YamlWriter(str(config_dir))
+
+        writer.delete_client("app1")  # expanded id, raw is ${CLIENT_ID:app1}
+
+        parsed = _parsed(config_dir)
+        assert parsed["oauth"]["clients"] == []
