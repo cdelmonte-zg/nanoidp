@@ -161,18 +161,29 @@ template genuinely need code changes:
       (select rendered, switch to persona persists, switch back to
       password omits the `login:` section from disk).
 
-### 7. E2E coverage + docs (last)
-- [ ] [`examples/test_agent.py`](../../examples/test_agent.py): persona-mode
-      scenario across all 4 surfaces.
-- [ ] Docs together: `book/src/reference/configuration.md`,
-      `docs/SECURITY.md`, `README.md`, `CHANGELOG.md`.
+### 7. E2E coverage
+- [x] [`examples/test_agent.py`](../../examples/test_agent.py):
+      `test_persona_login_mode()` (new `TestCategory.PERSONA`) - toggles
+      the running server into persona mode via `/settings`, creates a
+      password-less test user via `/users/create`, exercises `/login`,
+      `/authorize`, the device flow, and `/saml/sso` (asserting
+      `AuthnContextClassRef` is `unspecified`) by identity selection, then
+      restores `login_mode` and deletes the test user. Verified live
+      against `nanoidp --debug`: all 6 sub-checks pass.
+
+### 8. Docs (last)
+- [ ] `book/src/reference/configuration.md` - document `login.mode`.
+- [ ] `docs/SECURITY.md` (+ `book/src/guides/SECURITY.md`) - persona login
+      mode section: local dev/testing convenience, off by default.
+- [ ] `README.md` - feature mention.
+- [ ] `CHANGELOG.md` - entry for the whole feature.
 
 ## Sequencing rationale
 
 Steps 1-2 are safe standalone (password-less users just can't log in yet —
 no UI exposes it). Step 3 delivers one working vertical slice
 (nanoidp `/login`) to validate the pattern before repeating it 3x in step 4.
-Steps 5-7 close out the "ships whole" checklist last, once behavior is
+Steps 5-8 close out the "ships whole" checklist last, once behavior is
 stable.
 
 ## How this gets tested
@@ -220,3 +231,18 @@ layered:
   `AttributeError` on `None.encode()` for a password-less user. Fixed with an
   explicit `user.password is None` short-circuit before the hashing branch —
   worth flagging as a deliberate fix, not an oversight.
+
+- **Possible pre-existing bug, unrelated to this feature**: while writing
+  `test_persona_login_mode()`'s cleanup step in
+  [`examples/test_agent.py`](../../examples/test_agent.py) (delete the
+  temporary test user via `POST /users/<username>/delete`), a live run
+  against `nanoidp --debug` showed `GET /api/users` continuing to return an
+  already-deleted user. The write itself is correct - `config/users.yaml`
+  on disk no longer contains the deleted entry - but the in-memory
+  `config.users` a subsequent request sees still does, even though
+  [`YamlWriter.delete_user()`](../../src/nanoidp/services/yaml_writer.py)
+  calls `get_config().reload()` right after writing. Reproduced with a
+  plain password-protected user too (`create` then `delete` via the
+  dashboard forms, no persona mode involved), so this looks unrelated to
+  `login_mode`/persona work - not something to fix as part of this PR, but
+  worth flagging to the maintainer / filing as a separate issue.
