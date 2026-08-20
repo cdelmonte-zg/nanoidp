@@ -4,14 +4,27 @@ OAuth2/OIDC routes for token endpoint and discovery.
 
 import json
 import logging
+import os
 from dataclasses import dataclass
 from typing import Callable, Dict, Optional, Union
 from urllib.parse import urlencode, urlparse
 
 import jwt as pyjwt
-from flask import Blueprint, abort, jsonify, redirect, render_template, request, session
+from flask import (
+    Blueprint,
+    abort,
+    current_app,
+    jsonify,
+    redirect,
+    render_template,
+    request,
+    send_from_directory,
+    session,
+    url_for,
+)
 from flask.typing import ResponseReturnValue
 
+from ..branding import effective_logos_dir, resolve_client_logo
 from ..config import ConfigManager, User, get_config
 from ..services import (
     DevicePollOutcome,
@@ -358,12 +371,39 @@ def authorize() -> ResponseReturnValue:
             error_msg = "Username and password are required"
 
     # Show login page (GET or failed POST)
+    logo_url = None
+    if client:
+        logos_dir = effective_logos_dir(config.settings.logos_dir, current_app.static_folder)
+        if resolve_client_logo(logos_dir, client.client_id):
+            logo_url = url_for("oauth.client_logo", client_id=client.client_id)
+
     return render_template(
         "authorize.html",
         client_id=client_id,
+        client=client,
+        logo_url=logo_url,
         scope=scope,
         error=error_msg,
     )
+
+
+@oauth_bp.route("/client-logos/<client_id>")
+def client_logo(client_id: str) -> ResponseReturnValue:
+    """Serve a per-client logo file for the /authorize login page.
+
+    A dedicated route rather than Flask's built-in static handler, which only
+    ever serves the app's own static/ folder - so a configured 'logos_dir'
+    override actually takes effect instead of silently only working for the
+    default location (#150 review). resolve_client_logo() re-validates
+    client_id against the charset whitelist, so this is as path-traversal-safe
+    as the default case.
+    """
+    config = get_config()
+    logos_dir = effective_logos_dir(config.settings.logos_dir, current_app.static_folder)
+    filename = resolve_client_logo(logos_dir, client_id)
+    if not filename:
+        abort(404)
+    return send_from_directory(os.path.abspath(logos_dir), filename)
 
 
 # ============================================================================

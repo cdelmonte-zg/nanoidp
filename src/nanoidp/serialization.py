@@ -146,6 +146,16 @@ def client_to_yaml(client: OAuthClient) -> Dict[str, Any]:
         "client_secret": _quoted(client.client_secret),
         "description": _quoted(client.description),
     }
+    if client.background_color:
+        entry["background_color"] = client.background_color
+    if client.header_color:
+        entry["header_color"] = client.header_color
+    if client.footer_color:
+        entry["footer_color"] = client.footer_color
+    if not client.show_client_id:
+        entry["show_client_id"] = False
+    if client.show_description:
+        entry["show_description"] = True
     if client.additional_audiences:
         entry["additional_audiences"] = client.additional_audiences
     if client.redirect_uris:
@@ -167,12 +177,27 @@ def merge_client_entry(raw_entry: Dict[str, Any], client: OAuthClient) -> Dict[s
         ("client_id", client.client_id),
         ("client_secret", client.client_secret),
         ("description", client.description),
+        ("background_color", client.background_color),
+        ("header_color", client.header_color),
+        ("footer_color", client.footer_color),
     ):
         if not is_unchanged(raw_entry.get(field_name), new_value):
             if field_name in {"client_secret", "description"}:
                 updated[field_name] = _quoted(str(new_value))
             else:
-                updated[field_name] = new_value
+                updated[field_name] = new_value if new_value else None
+                if updated[field_name] is None:
+                    updated.pop(field_name, None)
+
+    for field_name, new_bool_value, default_value in (
+        ("show_client_id", client.show_client_id, True),
+        ("show_description", client.show_description, False),
+    ):
+        if not is_unchanged(raw_entry.get(field_name), new_bool_value):
+            if new_bool_value != default_value:
+                updated[field_name] = new_bool_value
+            else:
+                updated.pop(field_name, None)
 
     for field_name, new_list_value in (
         ("additional_audiences", client.additional_audiences),
@@ -304,6 +329,12 @@ def apply_settings_document(
         oauth["refresh_token_rotation"] = settings.refresh_token_rotation
     if not is_unchanged(oauth.get("require_pkce"), settings.require_pkce):
         oauth["require_pkce"] = settings.require_pkce
+    logos_dir = settings.logos_dir or ""
+    if not is_unchanged(oauth.get("logos_dir"), logos_dir):
+        if settings.logos_dir:
+            oauth["logos_dir"] = settings.logos_dir
+        else:
+            oauth.pop("logos_dir", None)
     new_clients = merge_oauth_clients(oauth.get("clients", []), settings.clients)
     if new_clients != oauth.get("clients", []):
         if new_clients:

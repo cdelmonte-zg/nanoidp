@@ -39,6 +39,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 from typing import Any, Optional, Tuple
 
 import jwt as pyjwt
@@ -57,7 +58,7 @@ from mcp.types import (
 
 from . import __version__
 from .config import ConfigManager, OAuthClient, User, init_config
-from .models import normalize_saml_attr_name
+from .models import HEX_COLOR_PATTERN, normalize_saml_attr_name
 from .services import (
     build_discovery_document,
     get_audit_log,
@@ -183,6 +184,11 @@ def _client_to_dict(client: OAuthClient) -> dict[str, Any]:
     return {
         "client_id": client.client_id,
         "description": client.description,
+        "background_color": client.background_color,
+        "header_color": client.header_color,
+        "footer_color": client.footer_color,
+        "show_client_id": client.show_client_id,
+        "show_description": client.show_description,
         "additional_audiences": client.additional_audiences,
         "redirect_uris": client.redirect_uris,
     }
@@ -205,6 +211,21 @@ def _normalize_str_list(value: Any, field: str) -> list[str]:
 def _normalize_audiences(value: Any) -> list[str]:
     """Coerce a raw audiences argument (see ``_normalize_str_list``)."""
     return _normalize_str_list(value, "additional_audiences")
+
+
+_HEX_COLOR_RE = re.compile(HEX_COLOR_PATTERN)
+
+
+def _normalize_hex_color(value: Any, field: str) -> Optional[str]:
+    """Coerce a raw color argument: falsy (omitted/empty) clears it, otherwise
+    it must match OAuthClient's own hex pattern - checked here too so a bad
+    value is caught before any other field on the client is mutated (#37).
+    """
+    if not value:
+        return None
+    if not isinstance(value, str) or not _HEX_COLOR_RE.match(value):
+        raise ValueError(f"{field} must be a hex color like '#1a1a2e'")
+    return value
 
 
 # =============================================================================
@@ -480,6 +501,26 @@ _TOOLS: list[Tool] = [
                     "type": "string",
                     "description": "Human-readable description (optional)",
                 },
+                "background_color": {
+                    "type": "string",
+                    "description": "Hex color (e.g. '#1a1a2e') behind the /authorize login card (optional)",
+                },
+                "header_color": {
+                    "type": "string",
+                    "description": "Hex color (e.g. '#0d6efd') for the /authorize login card header band (optional)",
+                },
+                "footer_color": {
+                    "type": "string",
+                    "description": "Hex color (e.g. '#ffffff') for the /authorize login card footer band (optional)",
+                },
+                "show_client_id": {
+                    "type": "boolean",
+                    "description": "Show client_id on the /authorize login page (optional, default true)",
+                },
+                "show_description": {
+                    "type": "boolean",
+                    "description": "Show description on the /authorize login page (optional, default false)",
+                },
                 "additional_audiences": {
                     "type": "array",
                     "items": {"type": "string"},
@@ -511,6 +552,26 @@ _TOOLS: list[Tool] = [
                 "description": {
                     "type": "string",
                     "description": "New description (optional)",
+                },
+                "background_color": {
+                    "type": "string",
+                    "description": "New hex color (e.g. '#1a1a2e') behind the /authorize login card; empty string clears it (optional)",
+                },
+                "header_color": {
+                    "type": "string",
+                    "description": "New hex color (e.g. '#0d6efd') for the /authorize login card header band; empty string clears it (optional)",
+                },
+                "footer_color": {
+                    "type": "string",
+                    "description": "New hex color (e.g. '#ffffff') for the /authorize login card footer band; empty string clears it (optional)",
+                },
+                "show_client_id": {
+                    "type": "boolean",
+                    "description": "Show client_id on the /authorize login page (optional)",
+                },
+                "show_description": {
+                    "type": "boolean",
+                    "description": "Show description on the /authorize login page (optional)",
                 },
                 "additional_audiences": {
                     "type": "array",
@@ -1026,6 +1087,13 @@ async def _execute_tool(name: str, arguments: dict[str, Any], config: ConfigMana
             client_id=client_id,
             client_secret=arguments["client_secret"],
             description=arguments.get("description", ""),
+            background_color=_normalize_hex_color(
+                arguments.get("background_color"), "background_color"
+            ),
+            header_color=_normalize_hex_color(arguments.get("header_color"), "header_color"),
+            footer_color=_normalize_hex_color(arguments.get("footer_color"), "footer_color"),
+            show_client_id=arguments.get("show_client_id", True),
+            show_description=arguments.get("show_description", False),
             additional_audiences=_normalize_audiences(arguments.get("additional_audiences")),
             redirect_uris=_normalize_str_list(
                 arguments.get("redirect_uris"), "redirect_uris"
@@ -1053,11 +1121,36 @@ async def _execute_tool(name: str, arguments: dict[str, Any], config: ConfigMana
             if "redirect_uris" in arguments
             else None
         )
+        new_background_color = (
+            _normalize_hex_color(arguments["background_color"], "background_color")
+            if "background_color" in arguments
+            else None
+        )
+        new_header_color = (
+            _normalize_hex_color(arguments["header_color"], "header_color")
+            if "header_color" in arguments
+            else None
+        )
+        new_footer_color = (
+            _normalize_hex_color(arguments["footer_color"], "footer_color")
+            if "footer_color" in arguments
+            else None
+        )
 
         if "client_secret" in arguments:
             client.client_secret = arguments["client_secret"]
         if "description" in arguments:
             client.description = arguments["description"]
+        if "background_color" in arguments:
+            client.background_color = new_background_color
+        if "header_color" in arguments:
+            client.header_color = new_header_color
+        if "footer_color" in arguments:
+            client.footer_color = new_footer_color
+        if "show_client_id" in arguments:
+            client.show_client_id = arguments["show_client_id"]
+        if "show_description" in arguments:
+            client.show_description = arguments["show_description"]
         if new_audiences is not None:
             client.additional_audiences = new_audiences
         if new_redirect_uris is not None:
