@@ -146,6 +146,7 @@ def user_create() -> ResponseReturnValue:
             "users_form.html",
             user=None,
             allowed_identity_classes=config.settings.allowed_identity_classes,
+            persona_mode=config.settings.persona_mode_enabled,
             current_user=session.get("user"),
         )
 
@@ -156,8 +157,12 @@ def user_create() -> ResponseReturnValue:
             flash("Username is required", "error")
             return redirect(url_for("ui.user_create"))
 
-        password = request.form.get("password", "")
-        if not password:
+        # A password-less user only makes sense in persona mode - in the
+        # default 'password' mode it would just be an unusable, confusing
+        # dead-end account, so keep requiring a password there (unchanged
+        # behavior). Persona mode allows a blank password (persona-only user).
+        password = request.form.get("password", "").strip() or None
+        if password is None and not config.settings.persona_mode_enabled:
             flash("Password is required for new users", "error")
             return redirect(url_for("ui.user_create"))
 
@@ -241,6 +246,7 @@ def user_edit(username: str) -> ResponseReturnValue:
             "users_form.html",
             user=user,
             allowed_identity_classes=config.settings.allowed_identity_classes,
+            persona_mode=config.settings.persona_mode_enabled,
             current_user=session.get("user"),
         )
 

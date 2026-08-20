@@ -8,7 +8,18 @@ check and authenticates by identity selection instead (design contract
 point 1/3, see docs/plans/persona-login-mode.md).
 """
 
+import re
+
 from nanoidp.config import User, get_config
+
+
+def _password_field_is_required(html: bytes) -> bool:
+    """Whether the '/users/create'|'/users/.../edit' password <input> tag
+    carries the 'required' attribute, regardless of exact template whitespace.
+    """
+    match = re.search(rb'<input[^>]*id="password"[^>]*>', html)
+    assert match, "password input not found in rendered form"
+    return b"required" in match.group(0)
 
 
 def _enable_persona_mode(app) -> None:
@@ -109,3 +120,98 @@ class TestPersonaLoginPost:
         assert response.status_code == 302
         with client.session_transaction() as sess:
             assert sess["user"] == "persona-bob"
+
+
+class TestUserCreatePasswordOptional:
+    """The '/users/create' admin UI form only relaxes the password
+    requirement in persona mode - a password-less user in the default
+    'password' mode would just be an unusable, confusing dead-end account,
+    so that mode must keep requiring a password exactly as before."""
+
+    def _login_as_admin(self, client) -> None:
+        with client.session_transaction() as sess:
+            sess["user"] = "admin"
+
+    def test_password_mode_still_requires_a_password_on_the_form(self, client):
+        """Regression: default mode's password field stays required."""
+        self._login_as_admin(client)
+
+        response = client.get("/users/create")
+
+        assert response.status_code == 200
+        assert _password_field_is_required(response.data) is True
+
+    def test_password_mode_rejects_blank_password(self, client, preserve_config_files):
+        """Regression: default mode still refuses to create a password-less user."""
+        self._login_as_admin(client)
+
+        response = client.post(
+            "/users/create",
+            data={"username": "should-not-exist", "email": "x@example.org"},
+            follow_redirects=True,
+        )
+
+        assert response.status_code == 200
+        assert get_config().get_user("should-not-exist") is None
+
+    def test_password_mode_create_with_password_still_works(self, client, preserve_config_files):
+        """Regression: supplying a password still creates a normal user."""
+        self._login_as_admin(client)
+
+        client.post(
+            "/users/create",
+            data={"username": "regular-erin", "password": "secret", "email": "erin@example.org"},
+            follow_redirects=True,
+        )
+
+        assert get_config().get_user("regular-erin").password == "secret"
+
+    def test_persona_mode_form_password_field_not_required(self, app, client):
+        _enable_persona_mode(app)
+        self._login_as_admin(client)
+
+        response = client.get("/users/create")
+
+        assert response.status_code == 200
+        assert b'name="password"' in response.data
+        assert _password_field_is_required(response.data) is False
+
+    def test_persona_mode_create_user_without_password_succeeds(self, app, client, preserve_config_files):
+        _enable_persona_mode(app)
+        self._login_as_admin(client)
+
+        response = client.post(
+            "/users/create",
+            data={"username": "persona-charlie", "email": "charlie@example.org"},
+            follow_redirects=True,
+        )
+
+        assert response.status_code == 200
+        user = get_config().get_user("persona-charlie")
+        assert user is not None
+        assert user.password is None
+
+    def test_persona_mode_create_user_with_blank_password_is_password_none(self, app, client, preserve_config_files):
+        _enable_persona_mode(app)
+        self._login_as_admin(client)
+
+        client.post(
+            "/users/create",
+            data={"username": "persona-dana", "password": "   ", "email": "dana@example.org"},
+            follow_redirects=True,
+        )
+
+        assert get_config().get_user("persona-dana").password is None
+
+    def test_persona_mode_create_with_password_still_works(self, app, client, preserve_config_files):
+        """Persona mode never forces a password to be blank either."""
+        _enable_persona_mode(app)
+        self._login_as_admin(client)
+
+        client.post(
+            "/users/create",
+            data={"username": "regular-frank", "password": "secret", "email": "frank@example.org"},
+            follow_redirects=True,
+        )
+
+        assert get_config().get_user("regular-frank").password == "secret"
