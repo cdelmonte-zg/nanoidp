@@ -68,13 +68,15 @@ jobs:
       - name: List dependency licenses
         run: pip-licenses --with-authors --with-urls --format=markdown
 
-      - name: Fail on copyleft licenses incompatible with MIT redistribution
+      - name: Fail on copyleft licenses blocked by the dependency-license policy
         run: |
-          # nanoidp ships under MIT. Strong/network copyleft (GPL, LGPL, AGPL,
-          # SSPL, EUPL) is incompatible with redistributing the combined work
-          # under MIT, so any dependency carrying one must be reviewed by a
-          # human before it can ship. Weak per-file copyleft (MPL-2.0, already
-          # present via certifi) is allowed and intentionally not listed.
+          # nanoidp ships under MIT. The project's dependency-license policy
+          # blocks strong/network copyleft (GPL, LGPL, AGPL, SSPL, EUPL) from
+          # shipping without explicit human review: redistributing such a
+          # dependency in an MIT work carries conditions that need a conscious
+          # decision, so the gate stops the build until someone makes it. Weak
+          # per-file copyleft (MPL-2.0, already present via certifi) is allowed
+          # and intentionally not listed.
           # "General Public License" catches the GPL/LGPL/AGPL full names;
           # "GPL" catches their acronym spellings. --partial-match is required:
           # without it --fail-on only matches a license string in full.
