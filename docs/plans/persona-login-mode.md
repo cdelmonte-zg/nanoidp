@@ -172,56 +172,44 @@ template genuinely need code changes:
       against `nanoidp --debug`: all 6 sub-checks pass.
 
 ### 8. Docs (last)
-- [ ] `book/src/reference/configuration.md` - document `login.mode`.
-- [ ] `docs/SECURITY.md` (+ `book/src/guides/SECURITY.md`) - persona login
-      mode section: local dev/testing convenience, off by default.
-- [ ] `README.md` - feature mention.
-- [ ] `CHANGELOG.md` - entry for the whole feature.
+- [x] `book/src/reference/configuration.md` - new "Login mode (persona
+      login)" section (after Users) + a commented `login:` block in the
+      settings.yaml example.
+- [x] `docs/SECURITY.md` - new "Persona Login Mode" section, after Security
+      Profiles. (`book/src/guides/SECURITY.md` is a **symlink** to this same
+      file, not a separate copy - one edit covers both; same for
+      `book/src/project/changelog.md` -> `CHANGELOG.md`.)
+- [x] `README.md` + `book/src/introduction.md` - feature mention (feature
+      bullet list and "What it is for", respectively).
+- [ ] `CHANGELOG.md` - **left to the maintainer** rather than edited
+      directly here (their call how/when to log it); see the proposed entry
+      text below.
 
-## Sequencing rationale
+## Proposed CHANGELOG entry (for the maintainer)
 
-Steps 1-2 are safe standalone (password-less users just can't log in yet —
-no UI exposes it). Step 3 delivers one working vertical slice
-(nanoidp `/login`) to validate the pattern before repeating it 3x in step 4.
-Steps 5-8 close out the "ships whole" checklist last, once behavior is
-stable.
+Drafted and verified to fit the existing `[Unreleased]` / `### Added`
+format and tone, then deliberately **not** committed to `CHANGELOG.md` -
+left for the maintainer to add on their own terms:
 
-## How this gets tested
-
-No dedicated interactive test harness exists for this repo — testing is
-layered:
-
-1. **Manual/interactive**: run `nanoidp --debug` (or `docker-compose up`),
-   configure a password-less user + `login.mode: persona` in
-   `config/users.yaml` / `config/settings.yaml`. There's no admin-UI nav
-   link to the login page ([`base.html`](../../src/nanoidp/templates/base.html#L284)
-   only shows a "Logout" button once authenticated), so each surface needs
-   reaching directly:
-   - `/login` — browse to it directly, no setup needed.
-   - `/authorize` — hand-craft a URL, e.g.
-     `http://localhost:8000/authorize?response_type=code&client_id=demo-client&redirect_uri=http://localhost:9999/cb&scope=openid&state=x`
-     (`redirect_uri` doesn't need to resolve to anything for a visual check).
-   - `/device` — `curl -X POST localhost:8000/device_authorization -d client_id=demo-client`
-     for a `user_code`, then browse to `/device?user_code=XXXX-XXXX`.
-   - `/saml/sso` — `SAMLRequest` is DEFLATE-compressed + base64, impractical
-     to hand-type. Reuse the AuthnRequest-building code already in
-     `test_saml_sso_redirect_binding`
-     ([`examples/test_agent.py`](../../examples/test_agent.py#L1670-L1712))
-     in a throwaway script that prints a ready-to-open URL, instead of
-     standing up the full `examples/spring-boot-saml` sample.
-   The dashboard's `/test` "Token Tester" page
-   ([`templates/test.html`](../../src/nanoidp/templates/test.html)) is also
-   useful for manually generating tokens for a selected user.
-2. **Scripted e2e against a running server** (not interactive, but
-   end-to-end): [`examples/test_agent.py`](../../examples/test_agent.py)
-   drives every OAuth/OIDC/SAML/device flow over HTTP; extended in step 6
-   with a persona-mode scenario.
-   [`examples/mcp_smoke_test.py`](../../examples/mcp_smoke_test.py) exercises
-   the real `nanoidp-mcp` stdio server end-to-end.
-3. **Unit/integration suite** (bulk of coverage, no live server): `pytest`
-   against `tests/*.py` using Flask's test client — this is where most of
-   steps 1-5 get verified (form posts, session state, SAML assertion XML,
-   MCP tool dispatch).
+```markdown
+- **Persona login mode** (opt-in, off by default): `login.mode: persona`
+  (default `password`) lets every interactive login surface - the
+  dashboard's `/login`, OIDC's `/authorize`, SAML's `/saml/sso`, and the
+  device flow's `/device` - authenticate by picking a configured user from a
+  list instead of typing a password. `User.password` is now optional; a
+  password-less user only works in persona mode and is rejected by
+  password-mode login and the OAuth `password` grant alike (a missing
+  password is never treated as an empty credential). SAML sessions
+  authenticated this way emit `AuthnContextClassRef: unspecified` instead of
+  the always-on `PasswordProtectedTransport`, since no password was used.
+  `security_profile` is unaffected and stays orthogonal. Ships with a new
+  `examples/persona-login` preset, a Settings page toggle, a dedicated
+  `create_persona_user` MCP tool (`create_user`'s password requirement is
+  unchanged) plus `login_mode` on `get_settings`/`update_settings`, and an
+  `examples/test_agent.py` scenario covering all four surfaces. Like the
+  rest of NanoIDP, a local development/testing convenience only - not an
+  authentication mode for deployed environments.
+```
 
 ## To be mentioned when submitting the PR
 

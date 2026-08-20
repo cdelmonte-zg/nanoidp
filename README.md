@@ -30,6 +30,7 @@
 - **SAML 2.0** - SSO and AttributeQuery endpoints with configurable signed assertions and opt-in verification of signed AuthnRequests
 - **MCP Server** - Model Context Protocol integration for Claude Code
 - **Web UI** - Full configuration interface for users, clients, settings, and more
+- **Persona Login Mode** - Passwordless interactive login: pick a configured user from a list instead of typing a password (`login.mode: persona`), opt-in and off by default, for quick local testing
 - **YAML Configuration** - File-based configuration, no database required
 - **Attribute-based Access Control** - Flexible authority prefixes and claims mapping
 - **Audit Logging** - Track all authentication events
