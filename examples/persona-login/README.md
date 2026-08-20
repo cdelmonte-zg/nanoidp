@@ -5,12 +5,6 @@ configured users instead of prompting for a password. It's a local
 development/testing convenience, off by default, and not intended as an
 authentication mode for deployed environments.
 
-> **Implementation status**: `/login` (the nanoidp dashboard) supports
-> persona mode today. OIDC `/authorize`, SAML `/saml/sso`, and the device
-> flow's verification page are being extended to match - see
-> [`docs/plans/persona-login-mode.md`](../../docs/plans/persona-login-mode.md).
-> Remove this note once all four surfaces ship.
-
 ## Quick Start
 
 1. Copy configuration files:

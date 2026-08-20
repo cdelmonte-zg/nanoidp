@@ -111,15 +111,24 @@ template genuinely need code changes:
       logs in and lands on the dashboard.
 
 ### 4. Extend persona login to remaining interactive surfaces
-- [ ] OIDC `/authorize` inline login —
-      [`routes/oauth.py`](../../src/nanoidp/routes/oauth.py) (~line 298).
-- [ ] SAML `/saml/sso` inline login —
-      [`routes/saml.py`](../../src/nanoidp/routes/saml.py) (~line 441-474) +
-      `AuthnContextClassRef` switch (~line 267). Needs an auth-method flag
-      (e.g. `session["auth_method"]`) threaded to `build_saml_response`.
-- [ ] Device authorization `/device` —
+- [x] OIDC `/authorize` inline login —
+      [`routes/oauth.py`](../../src/nanoidp/routes/oauth.py) `authorize()` +
+      [`templates/authorize.html`](../../src/nanoidp/templates/authorize.html).
+- [x] SAML `/saml/sso` inline login —
+      [`routes/saml.py`](../../src/nanoidp/routes/saml.py) `sso()` +
+      `AuthnContextClassRef` switch in `_build_saml_response()` (new
+      `authn_context` param, default unchanged). Auth method recorded in
+      `session["auth_method"]` by both `ui.py login()` and `saml.py sso()`'s
+      own inline login, so a session authenticated via the dashboard and
+      later reused by SAML still reports the correct context.
+- [x] Device authorization `/device` —
       [`services/device_code.py` `verify()`](../../src/nanoidp/services/device_code.py)
-      + `templates/device.html`.
+      (new `persona_mode`/`get_user` params, default unchanged) +
+      [`routes/oauth.py`](../../src/nanoidp/routes/oauth.py) `device_verify()`
+      + [`templates/device.html`](../../src/nanoidp/templates/device.html).
+- [x] Tests: `tests/test_persona_login_flows.py` (16 tests: password-mode
+      regressions + persona-mode picker/selection/rejection for all three
+      surfaces, plus the AuthnContextClassRef checks).
 
 ### 5. MCP + Settings UI persistence
 - [ ] [`mcp_server.py`](../../src/nanoidp/mcp_server.py): expose

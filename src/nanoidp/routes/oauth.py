@@ -291,71 +291,78 @@ def authorize() -> ResponseReturnValue:
             }), 400
 
     error_msg = None
+    persona_mode = config.settings.persona_mode_enabled
 
     # Handle POST (login form submission)
     if request.method == "POST":
         username = request.form.get("username", "").strip()
         password = request.form.get("password", "")
 
-        if username and password:
-            user = config.authenticate(username, password)
-            if user:
-                # Authentication successful - generate authorization code
-                auth_code_store = get_auth_code_store()
-                code = auth_code_store.create_code(
-                    client_id=client_id,
-                    redirect_uri=redirect_uri,
-                    username=user.username,
-                    scope=scope,
-                    code_challenge=code_challenge if code_challenge else None,
-                    code_challenge_method=code_challenge_method if code_challenge_method else None,
-                    nonce=nonce if nonce else None,
-                    state=state if state else None,
-                    claims=_parse_claims_parameter(claims_param),
-                )
-
-                # Clear OAuth session data
-                for key in list(session.keys()):
-                    if key.startswith("oauth_"):
-                        session.pop(key, None)
-
-                # Build redirect URL with code
-                redirect_params = {"code": code}
-                if state:
-                    redirect_params["state"] = state
-
-                callback_url = f"{redirect_uri}?{urlencode(redirect_params)}"
-
-                audit_event(
-                    "authorization_request",
-                    "success",
-                    endpoint="/authorize",
-                    username=user.username,
-                    client_id=client_id,
-                    details={
-                        "scope": scope,
-                        "pkce": bool(code_challenge),
-                    },
-                )
-
-                if config.settings.verbose_logging:
-                    logger.info(f"Authorization code issued for user '{user.username}', client '{client_id}'")
-                else:
-                    logger.info("Authorization code issued")
-
-                return redirect(callback_url)
-            else:
-                error_msg = "Invalid username or password"
-                audit_event(
-                    "authorization_request",
-                    "failed",
-                    endpoint="/authorize",
-                    username=username,
-                    client_id=client_id,
-                    details={"reason": "Invalid credentials"},
-                )
+        # Persona mode: identity selection only, no credential check.
+        # Password mode: unchanged from before.
+        if persona_mode:
+            user = config.get_user(username) if username else None
         else:
-            error_msg = "Username and password are required"
+            user = config.authenticate(username, password) if username and password else None
+
+        if user:
+            # Authentication successful - generate authorization code
+            auth_code_store = get_auth_code_store()
+            code = auth_code_store.create_code(
+                client_id=client_id,
+                redirect_uri=redirect_uri,
+                username=user.username,
+                scope=scope,
+                code_challenge=code_challenge if code_challenge else None,
+                code_challenge_method=code_challenge_method if code_challenge_method else None,
+                nonce=nonce if nonce else None,
+                state=state if state else None,
+                claims=_parse_claims_parameter(claims_param),
+            )
+
+            # Clear OAuth session data
+            for key in list(session.keys()):
+                if key.startswith("oauth_"):
+                    session.pop(key, None)
+
+            # Build redirect URL with code
+            redirect_params = {"code": code}
+            if state:
+                redirect_params["state"] = state
+
+            callback_url = f"{redirect_uri}?{urlencode(redirect_params)}"
+
+            audit_event(
+                "authorization_request",
+                "success",
+                endpoint="/authorize",
+                username=user.username,
+                client_id=client_id,
+                details={
+                    "scope": scope,
+                    "pkce": bool(code_challenge),
+                },
+            )
+
+            if config.settings.verbose_logging:
+                logger.info(f"Authorization code issued for user '{user.username}', client '{client_id}'")
+            else:
+                logger.info("Authorization code issued")
+
+            return redirect(callback_url)
+        elif (persona_mode and username) or (not persona_mode and username and password):
+            # A real (failed) selection/login attempt, not just missing input
+            error_msg = "Invalid username or password"
+            audit_event(
+                "authorization_request",
+                "failed",
+                endpoint="/authorize",
+                username=username,
+                client_id=client_id,
+                details={"reason": "Invalid credentials"},
+            )
+        else:
+            error_msg = "Select a user" if persona_mode else "Username and password are required"
 
     # Show login page (GET or failed POST)
     return render_template(
@@ -363,6 +370,8 @@ def authorize() -> ResponseReturnValue:
         client_id=client_id,
         scope=scope,
         error=error_msg,
+        persona_mode=persona_mode,
+        users=list(config.users.keys()),
     )
 
 
@@ -1407,6 +1416,7 @@ def device_verify() -> ResponseReturnValue:
     POST: Process user_code and login
     """
     config = get_config()
+    persona_mode = config.settings.persona_mode_enabled
 
     error_msg = None
     success_msg = None
@@ -1421,9 +1431,16 @@ def device_verify() -> ResponseReturnValue:
         # The store runs check-status + transition atomically so two
         # concurrent verifications can't both claim the same pending code
         # (issue #43); credential validation happens inside its lock, as
-        # it did when this logic lived here.
+        # it did when this logic lived here. Persona mode authenticates by
+        # identity selection only; password mode is unchanged.
         outcome, user = get_device_code_store().verify(
-            user_code, action, username, password, config.authenticate
+            user_code,
+            action,
+            username,
+            password,
+            config.authenticate,
+            persona_mode=persona_mode,
+            get_user=config.get_user,
         )
 
         if outcome is DeviceVerifyOutcome.INVALID_CODE:
@@ -1442,7 +1459,7 @@ def device_verify() -> ResponseReturnValue:
                 details={"user_code": user_code},
             )
         elif outcome is DeviceVerifyOutcome.MISSING_CREDENTIALS:
-            error_msg = "Username and password are required"
+            error_msg = "Select a user" if persona_mode else "Username and password are required"
         elif outcome is DeviceVerifyOutcome.INVALID_CREDENTIALS:
             error_msg = "Invalid username or password"
             audit_event(
@@ -1468,4 +1485,6 @@ def device_verify() -> ResponseReturnValue:
         user_code=user_code,
         error=error_msg,
         success=success_msg,
+        persona_mode=persona_mode,
+        users=list(config.users.keys()),
     )

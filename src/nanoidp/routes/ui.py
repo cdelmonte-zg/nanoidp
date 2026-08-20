@@ -94,6 +94,10 @@ def login() -> ResponseReturnValue:
 
     # Create session
     session["user"] = username
+    # Recorded so a session authenticated here and later reused by SAML SSO
+    # reports the correct AuthnContextClassRef (persona logins must not
+    # claim PasswordProtectedTransport).
+    session["auth_method"] = "persona" if persona_mode else "password"
     session.permanent = True
 
     audit_event(

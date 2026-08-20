@@ -154,11 +154,16 @@ class DeviceCodeStore:
         username: str,
         password: str,
         authenticate: Callable[[str, str], Optional["User"]],
+        persona_mode: bool = False,
+        get_user: Optional[Callable[[str], Optional["User"]]] = None,
     ) -> Tuple[DeviceVerifyOutcome, Optional["User"]]:
         """User verification at /device: atomic check-status + transition (#43).
 
         The credential check runs inside the lock, as it always did, so two
         concurrent verifications cannot both claim the same pending code.
+        ``persona_mode`` authenticates by identity selection via ``get_user``
+        instead - no password check at all; ``password``-mode behavior via
+        ``authenticate`` is unchanged.
         """
         with self._lock:
             device_code = self._by_user_code.get(user_code)
@@ -173,9 +178,16 @@ class DeviceCodeStore:
             if action == "deny":
                 grant.status = "denied"
                 return DeviceVerifyOutcome.DENIED, None
-            if not username or not password:
-                return DeviceVerifyOutcome.MISSING_CREDENTIALS, None
-            user = authenticate(username, password)
+
+            if persona_mode:
+                if not username:
+                    return DeviceVerifyOutcome.MISSING_CREDENTIALS, None
+                user = get_user(username) if get_user else None
+            else:
+                if not username or not password:
+                    return DeviceVerifyOutcome.MISSING_CREDENTIALS, None
+                user = authenticate(username, password)
+
             if not user:
                 return DeviceVerifyOutcome.INVALID_CREDENTIALS, None
             grant.status = "authorized"
