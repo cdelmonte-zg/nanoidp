@@ -71,16 +71,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ProxyFix` is wired at app startup, a value changed at runtime only takes
   effect after a restart.
 
-### Fixed
-- **Env-backed `client_id` placeholders are preserved on save** (#127). When a
-  client's `client_id` was itself a placeholder (`client_id: ${CLIENT_ID:app1}`),
-  the settings save matched the raw entry against the expanded id, missed it,
-  and rewrote the client from expanded values - losing the placeholders and
-  materializing the client secret; the web UI path appended a duplicate entry,
-  and `delete_client` could not find the client at all. Client matching now
-  expands the placeholder before comparing (`client_id_matches()`), used by the
-  settings save, `save_client()` and `delete_client()`.
-
 ### Changed
 - **Lowered the `cryptography` floor from `>=46.0.3` to `>=45.0.0`** (#140). The
   previous floor came from a generic dependency bump, not a real requirement:
@@ -139,6 +129,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   real client.
 
 ### Fixed
+- **Env-backed `client_id` placeholders are preserved on save** (#127). When a
+  client's `client_id` was itself a placeholder (`client_id: ${CLIENT_ID:app1}`),
+  the settings save matched the raw entry against the expanded id, missed it,
+  and rewrote the client from expanded values - losing the placeholders and
+  materializing the client secret; the web UI path appended a duplicate entry,
+  and `delete_client` could not find the client at all. Client matching now
+  expands the placeholder before comparing (`client_id_matches()`), used by the
+  settings save, `save_client()` and `delete_client()`.
 - **Saving settings no longer discards comments, inline `#` text or `${VAR:default}`
   placeholders in `settings.yaml`** (#127): the settings writer now round-trips
   the file with `ruamel.yaml` (comments and quote style survive) and only
