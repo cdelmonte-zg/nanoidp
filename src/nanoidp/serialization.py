@@ -223,12 +223,14 @@ def user_to_yaml(user: User) -> Dict[str, Any]:
     Canonical form is sparse: optional fields and model defaults
     (``tenant: default``, empty lists) are omitted and restored by the loader's
     defaults on the next read. Free-form text is quoted so it round-trips
-    safely even if it contains ``#`` (#127).
+    safely even if it contains ``#`` (#127). ``password`` is omitted entirely
+    when ``None`` - a persona-mode-only user, as opposed to an empty-string
+    password (which the model rejects outright).
     """
-    entry: Dict[str, Any] = {
-        "password": _quoted(user.password),
-        "email": user.email,
-    }
+    entry: Dict[str, Any] = {}
+    if user.password is not None:
+        entry["password"] = _quoted(user.password)
+    entry["email"] = user.email
     if user.identity_class:
         entry["identity_class"] = user.identity_class
     if user.entitlements:
@@ -364,6 +366,17 @@ def apply_settings_document(
             document["security_profile"] = settings.security_profile
         else:
             document.pop("security_profile", None)
+
+    login_mode_default = "password"
+    login_section = document.get("login") or {}
+    current_login_mode = login_section.get("mode", login_mode_default)
+    if not is_unchanged(current_login_mode, settings.login_mode):
+        if settings.login_mode != login_mode_default:
+            document.setdefault("login", {})["mode"] = settings.login_mode
+        elif "login" in document:
+            document["login"].pop("mode", None)
+            if not document["login"]:
+                document.pop("login", None)
 
     return document
 

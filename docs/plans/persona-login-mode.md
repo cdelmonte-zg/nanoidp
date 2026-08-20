@@ -75,25 +75,25 @@ template genuinely need code changes:
 ## Breakdown into commits (single feature branch / PR)
 
 ### 1. Data model + config plumbing (no behavior change)
-- [ ] [`models.py`](../../src/nanoidp/models.py): `User.password` →
+- [x] [`models.py`](../../src/nanoidp/models.py): `User.password` →
       `Optional[str] = None`.
-- [ ] [`models.py`](../../src/nanoidp/models.py): `Settings.login_mode: str
+- [x] [`models.py`](../../src/nanoidp/models.py): `Settings.login_mode: str
       = "password"` with validator `{"password", "persona"}` + derived
       property `persona_mode_enabled` (mirrors `pkce_required` /
       `password_grant_enabled` pattern).
-- [ ] [`config.py`](../../src/nanoidp/config.py): load new `login: {mode:
+- [x] [`config.py`](../../src/nanoidp/config.py): load new `login: {mode:
       ...}` top-level YAML section (mirrors `oauth`/`saml`/`session`).
-- [ ] [`serialization.py`](../../src/nanoidp/serialization.py): round-trip
+- [x] [`serialization.py`](../../src/nanoidp/serialization.py): round-trip
       `login.mode` and password-less users on save.
-- [ ] Tests: extend `tests/test_config.py`,
+- [x] Tests: extend `tests/test_config.py`,
       `tests/test_persistence_unification.py`.
 
 ### 2. Authentication semantics
-- [ ] [`config.py` `authenticate()`](../../src/nanoidp/config.py):
+- [x] [`config.py` `authenticate()`](../../src/nanoidp/config.py):
       short-circuit to `None` when `user.password is None`, before
       hashing/plaintext branches. Single choke point — password grant,
       device `verify()`, and UI login all route through this.
-- [ ] Test: `authenticate()` rejects password-less users regardless of
+- [x] Test: `authenticate()` rejects password-less users regardless of
       `login_mode` or supplied password (including empty string).
 
 ### 3. Interactive login UI — nanoidp `/login`
@@ -171,3 +171,12 @@ layered:
 3. **Unit/integration suite** (bulk of coverage, no live server): `pytest`
    against `tests/*.py` using Flask's test client — this is where most of
    steps 1-4 get verified (form posts, session state, SAML assertion XML).
+
+## To be mentioned when submitting the PR
+
+- `authenticate()` ([`config.py`](../../src/nanoidp/config.py)) previously
+  assumed `user.password` was always a string. With `password` now optional,
+  the bcrypt path (`password_hashing: true`) would have raised
+  `AttributeError` on `None.encode()` for a password-less user. Fixed with an
+  explicit `user.password is None` short-circuit before the hashing branch —
+  worth flagging as a deliberate fix, not an oversight.
