@@ -12,6 +12,10 @@ The product is **confidence**: the behaviors nanoidp advertises and
 implements are grounded in the relevant specifications, so clients can
 test against them without depending on accidental or invented semantics.
 
+A secondary, supported use is running local demos and prototyping a
+client's login experience; it stays a dev tool for local use, not a
+hosted product serving real end users.
+
 ## Principles
 
 These are the criteria every change is judged by. They have been applied
@@ -45,6 +49,17 @@ implicitly throughout the project's history; this writes them down.
 6. **RFC-citable behavior.** Token and protocol behaviors reference the
    spec paragraph that justifies them, in code comments and changelog
    entries alike. When a reviewer disagrees, the RFC arbitrates.
+7. **Presentation is data, not code.** Because nanoidp is also used for
+   local demos and prototyping a login experience, some per-client
+   presentation - the client's id and description, a logo - is in scope.
+   But anything a user can set that ends up rendered in a page must be
+   structured data or an operator-provided local asset, never free-form
+   markup, CSS, or a remote URL fetched into the page. This rules out
+   arbitrary per-client CSS (an injection surface on the auth UI) and
+   remote logo URLs (attribute-injection plus a third-party beacon that
+   sees every visitor), while allowing a client's id, description, or a
+   locally-served logo file. Cosmetic customization must never become an
+   injection or tracking vector on the authentication UI.
 
 ## Non-goals
 
