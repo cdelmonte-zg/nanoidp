@@ -72,6 +72,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   effect after a restart.
 
 ### Changed
+- **Raised the `PyJWT` floor to `>=2.13.0`** (was `>=2.8.0`). `/userinfo` and
+  `/introspect` pass a client-supplied token to `jwt.decode()`, and 2.8.0-2.12.1
+  are affected by CVE-2026-48525 (unbounded Base64URL decoding of a `b64=false`
+  detached JWS payload, a DoS vector).
+- **Added a CI license gate** (#148): the build fails if a dependency in the
+  redistributed closure carries a GPL/LGPL/AGPL/SSPL/EUPL license incompatible
+  with MIT redistribution.
 - **Lowered the `cryptography` floor from `>=46.0.3` to `>=45.0.0`** (#140). The
   previous floor came from a generic dependency bump, not a real requirement:
   our own API usage needs nothing newer than ~3.1. The effective minimum is set
@@ -129,6 +136,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   real client.
 
 ### Fixed
+- **Duplicate OAuth `client_id`s are rejected at load** (#127). Two clients
+  that resolve to the same effective id (including two `${VAR}` placeholders
+  expanding to the same value) made client lookup ambiguous and caused the
+  save-merge to match the wrong raw entry, materializing a secret; the loader
+  now fails fast with a clear error instead.
+- **Import no longer crashes when package metadata is absent** (#139). Running
+  from an uninstalled source tree (vendored, or copied into an image without
+  `pip install`) raised `PackageNotFoundError`; the version now falls back to
+  reading `pyproject.toml`, then to a static string.
+- **Default admin user's `identity_class` is `INTERNAL`, not `INTERN`**. The
+  no-`users.yaml` fallback used a typo'd class that didn't match the generated
+  template or the default allowed classes.
 - **Env-backed `client_id` placeholders are preserved on save** (#127). When a
   client's `client_id` was itself a placeholder (`client_id: ${CLIENT_ID:app1}`),
   the settings save matched the raw entry against the expanded id, missed it,

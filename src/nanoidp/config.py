@@ -106,6 +106,21 @@ class ConfigManager:
                 ),
             ))
 
+        # A client_id must be unique. Duplicates - including two ${VAR}
+        # placeholders that expand to the same value - make client lookup
+        # ambiguous and cause the settings-save merge to match the wrong raw
+        # entry, which can materialize an env-backed secret (#127/#151). Fail
+        # fast rather than silently corrupt settings.yaml on the next save.
+        seen_client_ids: set[str] = set()
+        for parsed_client in clients:
+            if parsed_client.client_id in seen_client_ids:
+                raise ValueError(
+                    f"Duplicate OAuth client_id '{parsed_client.client_id}' in "
+                    "settings.yaml; client ids must be unique (check for env "
+                    "placeholders that expand to the same value)"
+                )
+            seen_client_ids.add(parsed_client.client_id)
+
         self.settings = Settings(
             # Server
             host=server.get("host", "0.0.0.0"),
@@ -221,7 +236,7 @@ class ConfigManager:
                 username="admin",
                 password="admin",
                 email="admin@example.org",
-                identity_class="INTERN",
+                identity_class="INTERNAL",
                 roles=["USER", "ADMIN"],
                 tenant="default",
             ),

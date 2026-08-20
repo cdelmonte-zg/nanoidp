@@ -310,3 +310,34 @@ oauth:
 
         parsed = _parsed(config_dir)
         assert parsed["oauth"]["clients"] == []
+
+
+class TestDuplicateClientIdFailsFast:
+    """Two clients that resolve to the same effective client_id would make the
+    save-merge match the wrong raw entry and materialize a secret (#127/#151);
+    the loader rejects them instead."""
+
+    def test_duplicate_effective_client_id_is_rejected(self, tmp_path, monkeypatch):
+        import pytest
+
+        monkeypatch.setenv("CLIENT_A", "foo")
+        monkeypatch.setenv("CLIENT_B", "foo")
+        config_dir = _seed_custom_settings(
+            tmp_path,
+            """\
+server:
+  host: 127.0.0.1
+  port: 8000
+oauth:
+  audience: my-app
+  clients:
+  - client_id: ${CLIENT_A:foo}
+    client_secret: sa
+    description: A
+  - client_id: ${CLIENT_B:foo}
+    client_secret: sb
+    description: B
+""",
+        )
+        with pytest.raises(ValueError, match="Duplicate OAuth client_id 'foo'"):
+            ConfigManager(str(config_dir))

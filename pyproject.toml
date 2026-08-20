@@ -42,7 +42,10 @@ dependencies = [
     "Flask>=3.0.0",
     "Flask-Cors>=6.0.2",
     "Flask-Limiter>=4.1.1",
-    "PyJWT>=2.8.0",
+    # >=2.13.0: /userinfo and /introspect pass a client-supplied token to
+    # jwt.decode(), and 2.8.0-2.12.1 are affected by CVE-2026-48525 (unbounded
+    # Base64URL decode of a b64=false detached JWS payload -> DoS).
+    "PyJWT>=2.13.0",
     # Floor is set by signxml: signxml 4.2.2 imports x509.verification.ExtensionPolicy
     # (added in cryptography 45.0.0) at module load, though it only declares >=43.
     # Our own API usage would be happy far lower - do not raise without a real reason.
