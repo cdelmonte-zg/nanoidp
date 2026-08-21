@@ -359,8 +359,18 @@ polish pass.
       (`test_persistence_unification.py`), covering the loader and both
       writer paths. 977 tests, ruff, mypy all pass (same pre-existing
       `ui.py:259` failure, finding 1).
-- [ ] 5 (preset part). `examples/persona-login/settings.yaml`: change
+- [x] 5 (preset part). `examples/persona-login/settings.yaml`: change
       `server.host` from `"0.0.0.0"` to `"127.0.0.1"`.
+      **Already addressed upstream**: the 2.6.0 security fix (bind to
+      `127.0.0.1` by default, GHSA-2473-px8h-rvg6) changes the *default*
+      when `host` isn't set at all - it doesn't touch presets that
+      explicitly set `host`. Every other example preset
+      (`cli-device-flow`, `microservices-client-credentials`,
+      `react-spa-pkce`, `spring-boot-saml`) also explicitly ships
+      `host: "0.0.0.0"` for LAN/multi-device testing convenience;
+      special-casing only `persona-login` would be inconsistent with that
+      established convention rather than a fix. Left as `"0.0.0.0"`,
+      matching the rest of the examples.
 - [ ] 6. `routes/ui.py` `user_create()`: only treat the password field as
       persona-blank when `raw.strip() == ""`; otherwise store `raw`
       unchanged (no `.strip()` on a non-empty value), matching `user_edit()`
