@@ -221,6 +221,21 @@ class TestDevicePersonaMode:
         assert b'name="password"' not in response.data
         assert b"admin" in response.data
 
+    def test_persona_mode_picker_buttons_not_implicit_submit(self, app, client, auth_header):
+        """Regression for the maintainer-reported bug: the per-user picker
+        buttons must not be submit controls, so implicit form submission
+        (pressing Enter in the device code field) can't silently authorize
+        whichever user happens to be listed first."""
+        _enable_persona_mode(app)
+        _, user_code = self._get_device_code(client, auth_header)
+
+        response = client.get(f"/device?user_code={user_code}")
+
+        assert response.status_code == 200
+        assert b'type="submit" value="admin"' not in response.data
+        assert b'type="submit" name="username"' not in response.data
+        assert b'type="button" value="admin"' in response.data
+
     def test_persona_mode_selecting_user_authorizes_device(self, app, client, auth_header):
         _enable_persona_mode(app)
         device_code, user_code = self._get_device_code(client, auth_header)

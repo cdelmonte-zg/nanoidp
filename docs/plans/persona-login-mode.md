@@ -283,7 +283,7 @@ polish pass.
       polling), so there's nothing to record it on. 971 tests, ruff, mypy
       all pass on the touched files (pre-existing mypy failure in
       `ui.py:259`, finding 1, deliberately left for its own fix).
-- [ ] 2. Device flow persona form: give each per-user submit button an
+- [x] 2. Device flow persona form: give each per-user submit button an
       explicit `value` distinguishing it from `deny` (e.g. keep
       `name="username"` but also set `name="action" value="authorize"`
       isn't possible on one button with two names - use a hidden marker or
@@ -293,6 +293,25 @@ polish pass.
       username was actually submitted; a bare Enter with no explicit
       selection re-renders the form with an error instead of authorizing
       the first listed user.
+      **Done**: per-user picker buttons in `device.html` changed from
+      `type="submit" name="username"` to `type="button"` (plain, non-submit)
+      plus a `persona-user-btn` class; a small guarded (`{% if persona_mode
+      %}`) inline script attaches a click listener per button that appends a
+      hidden `username` input and submits the form explicitly. This removes
+      every user-selection button from HTML's implicit-submission
+      candidacy entirely (the browser's "default button" for an Enter
+      keypress is only ever a real `type="submit"` control), so pressing
+      Enter in the device-code field can no longer "click" and authorize
+      whichever user is listed first - `Deny` remains the only actual
+      submit control, which is a safe default (it can't authorize as
+      anyone). Keyboard accessibility is preserved: Tab-focusing a picker
+      button and pressing Enter/Space still fires a real `click` event,
+      handled the same as a mouse click. No other markup/formatting touched
+      in the diff (double-checked - previous editor reformatting was not
+      repeated). Added
+      `test_persona_mode_picker_buttons_not_implicit_submit` to
+      `tests/test_persona_login_flows.py` asserting the rendered markup has
+      no submit-type picker button. 972 tests, ruff pass.
 - [ ] 3. `services/yaml_writer.py` `update_login_settings()`: validate
       `mode` against `{"password", "persona"}` (reuse
       `Settings.validate_login_mode` or the same literal set) *before*

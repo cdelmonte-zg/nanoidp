@@ -104,7 +104,7 @@
                     {% if users %}
                     <div class="list-group mb-3">
                         {% for user in users %}
-                        <button type="submit" name="username" value="{{ user }}" class="list-group-item list-group-item-action d-flex align-items-center">
+                        <button type="button" value="{{ user }}" class="list-group-item list-group-item-action d-flex align-items-center persona-user-btn">
                             <i class="bi bi-person-circle me-2"></i>{{ user }}
                         </button>
                         {% endfor %}
@@ -167,6 +167,23 @@
         document.getElementById('user_code')?.addEventListener('input', function(e) {
             e.target.value = e.target.value.toUpperCase();
         });
+
+        {% if persona_mode %}
+        // Persona picker buttons are type=button, not submit: pressing Enter
+        // in the device code field can no longer implicitly "click" (and
+        // thus authorize as) whichever user happens to be listed first -
+        // only an explicit click/keyboard-activation on a picker button submits.
+        document.querySelectorAll('.persona-user-btn').forEach(function(btn) {
+            btn.addEventListener('click', function() {
+                var hidden = document.createElement('input');
+                hidden.type = 'hidden';
+                hidden.name = 'username';
+                hidden.value = btn.value;
+                btn.form.appendChild(hidden);
+                btn.form.submit();
+            });
+        });
+        {% endif %}
     </script>
 </body>
 </html>
