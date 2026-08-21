@@ -332,13 +332,33 @@ polish pass.
       `settings.yaml` is byte-for-byte unchanged on disk after a rejected
       `banana` value) and `test_blank_login_mode_treated_as_unchanged` to
       `tests/test_persona_login.py`. 974 tests, ruff, mypy all pass.
-- [ ] 4. Normalize every `login:` section read as `data.get("login") or {}`
+- [x] 4. Normalize every `login:` section read as `data.get("login") or {}`
       (not `data.get("login", {})`) in `config.py`, `serialization.py`, and
       `services/yaml_writer.py`, so a bare `login:\n` (YAML null) can't crash
       the loader or either writer. While there, extract the shared
       omit-at-default merge logic (currently duplicated between
       `serialization.apply_settings_document` and
       `yaml_writer.update_login_settings`) into one helper.
+      **Done**: `config.py`'s loader was the only remaining `data.get("login",
+      {})` (`serialization.py` and `yaml_writer.py` already used `or {}` from
+      earlier work) - fixed to `or {}`. Found and fixed a second half of this
+      bug on the *write* side too: the write branch used
+      `document.setdefault(section_key, {})[field_key] = value`, but
+      `setdefault` only fills in a *missing* key - with a bare `login:` line
+      the key is present with value `None`, so it would hand back that
+      `None` and the subscript assignment would raise `TypeError`. Extracted
+      `serialization.merge_optional_nested_field(document, section_key,
+      field_key, value, default)` - handles both the null-section read and
+      the null-section write correctly - and both
+      `apply_settings_document`'s and `YamlWriter.update_login_settings`'s
+      `login.mode` merges now call it instead of duplicating the
+      read-compare-write logic. Added
+      `test_bare_login_section_does_not_crash` (`test_config.py`) and
+      `test_bare_login_section_survives_config_manager_save` /
+      `test_bare_login_section_survives_yaml_writer_update`
+      (`test_persistence_unification.py`), covering the loader and both
+      writer paths. 977 tests, ruff, mypy all pass (same pre-existing
+      `ui.py:259` failure, finding 1).
 - [ ] 5 (preset part). `examples/persona-login/settings.yaml`: change
       `server.host` from `"0.0.0.0"` to `"127.0.0.1"`.
 - [ ] 6. `routes/ui.py` `user_create()`: only treat the password field as

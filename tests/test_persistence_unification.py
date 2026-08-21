@@ -143,6 +143,27 @@ class TestSaveIsNotLossy:
         doc = _read(config_dir / "settings.yaml")
         assert "login" not in doc
 
+    def test_bare_login_section_survives_config_manager_save(self, tmp_path):
+        """Regression: a bare 'login:' line parses to {"login": None} (YAML
+        null), not a missing key - ConfigManager.save() must not crash on it."""
+        config_dir = _seed(tmp_path, BASE_SETTINGS + "login:\n")
+        manager = ConfigManager(str(config_dir))
+        manager.settings.login_mode = "persona"
+        manager.save()
+
+        doc = _read(config_dir / "settings.yaml")
+        assert doc["login"]["mode"] == "persona"
+
+    def test_bare_login_section_survives_yaml_writer_update(self, tmp_path):
+        """Same regression via the YamlWriter path (used by the Settings UI)."""
+        config_dir = _seed(tmp_path, BASE_SETTINGS + "login:\n")
+        ConfigManager(str(config_dir))
+        writer = YamlWriter(str(config_dir))
+        writer.update_login_settings(mode="persona")
+
+        doc = _read(config_dir / "settings.yaml")
+        assert doc["login"]["mode"] == "persona"
+
     def test_save_creates_backup(self, tmp_path):
         config_dir = _seed(tmp_path, BASE_SETTINGS)
         ConfigManager(str(config_dir)).save()

@@ -382,6 +382,21 @@ class TestLoginMode:
 
         assert manager.settings.login_mode == "password"
 
+    def test_bare_login_section_does_not_crash(self, tmp_path):
+        """Regression: 'login:' with nothing under it parses to
+        {"login": None} (YAML null), not a missing key - must not crash
+        the loader (previously `data.get("login", {})` returned None)."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        (config_dir / "settings.yaml").write_text("login:\n")
+        (config_dir / "users.yaml").write_text(
+            'users:\n  admin:\n    password: "admin"\ndefault_user: admin\n'
+        )
+
+        manager = ConfigManager(str(config_dir))
+
+        assert manager.settings.login_mode == "password"
+
 
 class TestUsersYamlPasswordOptional:
     """Tests for loading users without a password from users.yaml."""

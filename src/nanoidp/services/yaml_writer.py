@@ -15,6 +15,7 @@ from ..serialization import (
     is_unchanged,
     load_yaml_document,
     merge_client_entry,
+    merge_optional_nested_field,
     user_to_yaml,
 )
 
@@ -331,15 +332,7 @@ class YamlWriter:
 
         if mode:
             Settings.validate_login_mode(mode)
-            login_section = data.get("login") or {}
-            current_mode = login_section.get("mode", login_mode_default)
-            if not is_unchanged(current_mode, mode):
-                if mode != login_mode_default:
-                    data.setdefault("login", {})["mode"] = mode
-                elif "login" in data:
-                    data["login"].pop("mode", None)
-                    if not data["login"]:
-                        data.pop("login", None)
+            merge_optional_nested_field(data, "login", "mode", mode, login_mode_default)
 
         self._atomic_write(self.settings_file, data)
         get_config().reload()

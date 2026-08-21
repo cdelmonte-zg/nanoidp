@@ -89,7 +89,9 @@ class ConfigManager:
         jwt_config = data.get("jwt", {})
         session = data.get("session", {})
         logging_config = data.get("logging", {})
-        login = data.get("login", {})
+        # `or {}` (not the `, {}` default) because a bare `login:` line in
+        # YAML parses to `{"login": None}`, not a missing key.
+        login = data.get("login") or {}
 
         # Parse OAuth clients
         clients = []
