@@ -312,13 +312,26 @@ polish pass.
       `test_persona_mode_picker_buttons_not_implicit_submit` to
       `tests/test_persona_login_flows.py` asserting the rendered markup has
       no submit-type picker button. 972 tests, ruff pass.
-- [ ] 3. `services/yaml_writer.py` `update_login_settings()`: validate
+- [x] 3. `services/yaml_writer.py` `update_login_settings()`: validate
       `mode` against `{"password", "persona"}` (reuse
       `Settings.validate_login_mode` or the same literal set) *before*
       writing anything; treat blank/missing as "unchanged" (no-op), matching
       the `_form_text` "absent = unchanged" convention used elsewhere. Reject
       (flash an error, don't write) an unrecognized value instead of
       persisting it.
+      **Done**: `update_login_settings()` now calls
+      `Settings.validate_login_mode(mode)` (reused directly, confirmed
+      callable outside the pydantic pipeline) before touching `data`/writing
+      anything, so an invalid value raises `ValueError` and nothing reaches
+      disk; `routes/ui.py settings()`'s existing try/except catches it and
+      flashes the message. A blank submitted value (`_form_text` returns
+      `""`) is now treated the same as absent - unchanged - rather than
+      "clear", since unlike other text fields there's no sensible cleared
+      login mode. Added
+      `test_invalid_login_mode_rejected_without_writing` (asserts
+      `settings.yaml` is byte-for-byte unchanged on disk after a rejected
+      `banana` value) and `test_blank_login_mode_treated_as_unchanged` to
+      `tests/test_persona_login.py`. 974 tests, ruff, mypy all pass.
 - [ ] 4. Normalize every `login:` section read as `data.get("login") or {}`
       (not `data.get("login", {})`) in `config.py`, `serialization.py`, and
       `services/yaml_writer.py`, so a bare `login:\n` (YAML null) can't crash

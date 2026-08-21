@@ -286,3 +286,52 @@ class TestSettingsUiLoginMode:
         with open(config.config_dir / "settings.yaml") as f:
             doc = yaml.safe_load(f)
         assert "login" not in doc
+
+    def test_invalid_login_mode_rejected_without_writing(self, client, preserve_config_files):
+        """Regression: an invalid value must not reach disk (it would brick
+        the next startup with a ValidationError until hand-edited)."""
+        self._login_as_admin(client)
+        config = get_config()
+
+        import yaml
+        with open(config.config_dir / "settings.yaml") as f:
+            before = yaml.safe_load(f)
+
+        response = client.post(
+            "/settings",
+            data={**self._base_form(config.settings), "login_mode": "banana"},
+            follow_redirects=True,
+        )
+
+        assert response.status_code == 200
+        assert b"Login mode must be one of" in response.data
+
+        with open(config.config_dir / "settings.yaml") as f:
+            after = yaml.safe_load(f)
+        assert after == before
+
+        config.reload()
+        assert config.settings.login_mode == "password"
+
+    def test_blank_login_mode_treated_as_unchanged(self, client, preserve_config_files):
+        """A blank submitted value (unlike other text fields' 'blank =
+        clear' convention) must not reset login_mode - there's no sensible
+        'cleared' mode."""
+        self._login_as_admin(client)
+        config = get_config()
+        client.post(
+            "/settings",
+            data={**self._base_form(config.settings), "login_mode": "persona"},
+            follow_redirects=True,
+        )
+
+        response = client.post(
+            "/settings",
+            data={**self._base_form(config.settings), "login_mode": ""},
+            follow_redirects=True,
+        )
+
+        assert response.status_code == 200
+        config.reload()
+        assert config.settings.login_mode == "persona"
+

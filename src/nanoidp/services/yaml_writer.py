@@ -7,7 +7,7 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from ..config import OAuthClient, User, get_config
+from ..config import OAuthClient, Settings, User, get_config
 from ..serialization import (
     atomic_write_yaml,
     client_id_matches,
@@ -317,11 +317,20 @@ class YamlWriter:
         convenience). 'password' is the default and is never persisted -
         the 'login' section is omitted entirely at the default, same as
         'security_profile' at 'dev' (#83/#87 read-modify-write conventions).
+
+        Unlike other text fields' "absent = unchanged, blank = clear"
+        convention (#131), there is no sensible "cleared" login mode, so a
+        blank value is treated the same as absent: left unchanged, not
+        written to disk. A present, non-blank value is validated against
+        the same `{"password", "persona"}` set as ``Settings.login_mode``
+        *before* anything is written, so an invalid value (e.g. a typo)
+        raises instead of persisting a mode the server can't start with.
         """
         data = self._load_settings_yaml()
         login_mode_default = "password"
 
-        if mode is not None:
+        if mode:
+            Settings.validate_login_mode(mode)
             login_section = data.get("login") or {}
             current_mode = login_section.get("mode", login_mode_default)
             if not is_unchanged(current_mode, mode):
