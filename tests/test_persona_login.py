@@ -166,6 +166,34 @@ class TestUserCreatePasswordOptional:
 
         assert get_config().get_user("regular-erin").password == "secret"
 
+    def test_password_with_meaningful_whitespace_stored_verbatim(self, client, preserve_config_files):
+        """Regression: a password like ' secret ' must not be silently
+        trimmed to 'secret' - that would desync the stored hash/plaintext
+        from what the user actually typed and later fails authenticate()."""
+        self._login_as_admin(client)
+
+        client.post(
+            "/users/create",
+            data={"username": "regular-frank", "password": " secret ", "email": "frank@example.org"},
+            follow_redirects=True,
+        )
+
+        assert get_config().get_user("regular-frank").password == " secret "
+
+    def test_whitespace_only_password_rejected_in_password_mode(self, client, preserve_config_files):
+        """Regression: a whitespace-only password must still be treated as
+        'no password supplied' (Password is required), not stored verbatim."""
+        self._login_as_admin(client)
+
+        response = client.post(
+            "/users/create",
+            data={"username": "should-not-exist-2", "password": "   ", "email": "x@example.org"},
+            follow_redirects=True,
+        )
+
+        assert response.status_code == 200
+        assert get_config().get_user("should-not-exist-2") is None
+
     def test_persona_mode_form_password_field_not_required(self, app, client):
         _enable_persona_mode(app)
         self._login_as_admin(client)

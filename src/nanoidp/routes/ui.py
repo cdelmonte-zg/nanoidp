@@ -158,11 +158,10 @@ def user_create() -> ResponseReturnValue:
             flash("Username is required", "error")
             return redirect(url_for("ui.user_create"))
 
-        # A password-less user only makes sense in persona mode - in the
-        # default 'password' mode it would just be an unusable, confusing
-        # dead-end account, so keep requiring a password there (unchanged
-        # behavior). Persona mode allows a blank password (persona-only user).
-        password = request.form.get("password", "").strip() or None
+        # A password-less user only makes sense in persona mode; only the
+        # blank-check is stripped, the stored value is kept verbatim.
+        raw_password = request.form.get("password", "")
+        password = None if not raw_password.strip() else raw_password
         if password is None and not config.settings.persona_mode_enabled:
             flash("Password is required for new users", "error")
             return redirect(url_for("ui.user_create"))
@@ -253,8 +252,10 @@ def user_edit(username: str) -> ResponseReturnValue:
 
     # POST: Update user
     try:
-        # Get password - keep existing if not provided
-        password = request.form.get("password", "")
+        # Get password - keep existing if not provided. user.password is
+        # Optional[str] (a persona-mode-only user has none), hence the
+        # annotation - without it mypy infers plain str from request.form.get().
+        password: str | None = request.form.get("password", "")
         if not password:
             password = user.password
 

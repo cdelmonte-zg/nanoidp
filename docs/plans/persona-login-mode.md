@@ -371,12 +371,22 @@ polish pass.
       special-casing only `persona-login` would be inconsistent with that
       established convention rather than a fix. Left as `"0.0.0.0"`,
       matching the rest of the examples.
-- [ ] 6. `routes/ui.py` `user_create()`: only treat the password field as
+- [x] 6. `routes/ui.py` `user_create()`: only treat the password field as
       persona-blank when `raw.strip() == ""`; otherwise store `raw`
       unchanged (no `.strip()` on a non-empty value), matching `user_edit()`
       and preserving default-mode's stored-verbatim behavior. Also fixes
       finding 1 (mypy): annotate/narrow so `user.password` assignment from
       `request.form.get(...)` type-checks as `Optional[str]`.
+      **Done**: `user_create()` now blank-checks via `raw_password.strip()`
+      but stores `raw_password` verbatim when non-blank, matching
+      `user_edit()`. `user_edit()`'s `password` local is now annotated
+      `str | None` so the later `password = user.password` (which can be
+      `None`) type-checks - `mypy src/nanoidp/` is fully clean (0 errors,
+      finding 1 resolved). Added regression tests to
+      `tests/test_persona_login.py`: a password with meaningful
+      leading/trailing whitespace is stored verbatim, and a whitespace-only
+      password is still rejected as "no password supplied". 979 tests,
+      ruff, mypy all pass.
 
 ### Cleanups
 
