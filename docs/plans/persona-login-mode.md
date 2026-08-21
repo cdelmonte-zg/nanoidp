@@ -455,5 +455,26 @@ polish pass.
 ### Final polish (last, right before requesting re-review)
 - [ ] Remove `docs/plans/persona-login-mode.md` from the branch (per its own
       header - working plan, not published documentation).
-- [ ] Full local pass: `pytest`, `ruff`, `mypy`, and a live `examples/test_agent.py`
+- [x] Full local pass: `pytest`, `ruff`, `mypy`, and a live `examples/test_agent.py`
       run, mirroring the maintainer's own verification.
+      **Done**: 981 tests, ruff, mypy (0 errors) all pass. Live run against
+      `nanoidp --debug` with `NANOIDP_CONFIG_DIR=examples/persona-login`:
+      **46/48** `test_agent.py` checks passed, including **Persona Login
+      Mode (1/1)**. The 2 failures are pre-existing gaps in this preset's
+      config, unrelated to this PR or its fixes:
+      - **"Redirect URI Exact Match"** - this test requires a
+        `registered-client` (with a registered `redirect_uris` entry, #67)
+        to exist; the persona-login preset's `settings.yaml` only defines
+        `demo-client`, so the check can't pass against this preset
+        regardless of the code under test.
+      - **"UserInfo Groups & Authorities"** - checks that
+        `saml.export_groups`-driven claims match the test user's configured
+        groups; this preset's minimal `users.yaml` doesn't set up groups
+        for that assertion.
+      Both are artifacts of testing against this deliberately minimal
+      example preset (same failures would occur on `main` run the same
+      way against this config) - not regressions from the persona feature
+      or the review-comment fixes. Confirmed no unintended side effects:
+      the live run's settings.yaml writes (toggling `login_mode`,
+      `security_profile`, etc. through `/settings` as part of the test)
+      were reverted via `git checkout` before committing anything.
