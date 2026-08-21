@@ -9,9 +9,9 @@
 
 <form method="post">
     {# An unchecked checkbox never submits, so on its own it looks identical to
-    a checkbox that was never on the form. These markers let the server
-    apply "absent = unchanged" (#131): a checkbox is only interpreted when
-    its marker is present. One marker per checkbox rendered below. #}
+       a checkbox that was never on the form. These markers let the server
+       apply "absent = unchanged" (#131): a checkbox is only interpreted when
+       its marker is present. One marker per checkbox rendered below. #}
     <input type="hidden" name="issuer_from_request__on_form" value="1">
     <input type="hidden" name="issuer_from_proxy_headers__on_form" value="1">
     <input type="hidden" name="require_pkce__on_form" value="1">
@@ -31,90 +31,77 @@
                 <div class="card-body">
                     <div class="mb-3">
                         <label for="issuer" class="form-label">Issuer URL</label>
-                        <input type="url" class="form-control" id="issuer" name="issuer" value="{{ settings.issuer }}">
+                        <input type="url" class="form-control" id="issuer" name="issuer"
+                               value="{{ settings.issuer }}">
                         <div class="form-text">Base URL used in JWT "iss" claim</div>
                     </div>
 
                     <div class="mb-3">
                         <div class="form-check form-switch">
-                            <input class="form-check-input" type="checkbox" role="switch" id="issuer_from_request"
-                                name="issuer_from_request" value="true" {% if settings.issuer_from_request %}checked{%
-                                endif %}>
+                            <input class="form-check-input" type="checkbox" role="switch"
+                                   id="issuer_from_request" name="issuer_from_request" value="true"
+                                   {% if settings.issuer_from_request %}checked{% endif %}>
                             <label class="form-check-label" for="issuer_from_request">Derive Issuer from Request</label>
                         </div>
-                        <div class="form-text">Use each request's own Host header instead of the Issuer URL above
-                            (discovery, tokens, device flow all agree per-hostname; dev convenience for setups reachable
-                            under more than one hostname).</div>
+                        <div class="form-text">Use each request's own Host header instead of the Issuer URL above (discovery, tokens, device flow all agree per-hostname; dev convenience for setups reachable under more than one hostname).</div>
                     </div>
 
                     <div class="mb-3">
                         <label for="issuer_allowlist" class="form-label">Issuer Allowlist</label>
-                        <textarea class="form-control" id="issuer_allowlist" name="issuer_allowlist" rows="2"
-                            placeholder="One origin per line, e.g. http://localhost:8000">{{ settings.issuer_allowlist | join('\n') }}</textarea>
-                        <div class="form-text">Origins allowed to be reflected back by "Derive Issuer from Request".
-                            Empty = allow any Host header (dev convenience). A non-matching Host falls back to the
-                            Issuer URL above.</div>
+                        <textarea class="form-control" id="issuer_allowlist" name="issuer_allowlist"
+                                  rows="2" placeholder="One origin per line, e.g. http://localhost:8000">{{ settings.issuer_allowlist | join('\n') }}</textarea>
+                        <div class="form-text">Origins allowed to be reflected back by "Derive Issuer from Request". Empty = allow any Host header (dev convenience). A non-matching Host falls back to the Issuer URL above.</div>
                     </div>
 
                     <div class="mb-3">
-                        <label for="device_verification_base_url" class="form-label">Device Verification Base
-                            URL</label>
-                        <input type="url" class="form-control" id="device_verification_base_url"
-                            name="device_verification_base_url"
-                            value="{{ settings.device_verification_base_url or '' }}"
-                            placeholder="https://idp.example.com (optional)">
-                        <div class="form-text">Overrides the device flow's verification_uri when "Derive Issuer from
-                            Request" is on, so a backend/container caller's Host doesn't leak into a URL the human's
-                            browser can't reach. Leave blank to keep following the request Host.</div>
+                        <label for="device_verification_base_url" class="form-label">Device Verification Base URL</label>
+                        <input type="url" class="form-control" id="device_verification_base_url" name="device_verification_base_url"
+                               value="{{ settings.device_verification_base_url or '' }}" placeholder="https://idp.example.com (optional)">
+                        <div class="form-text">Overrides the device flow's verification_uri when "Derive Issuer from Request" is on, so a backend/container caller's Host doesn't leak into a URL the human's browser can't reach. Leave blank to keep following the request Host.</div>
                     </div>
 
                     <div class="mb-3">
                         <div class="form-check form-switch">
-                            <input class="form-check-input" type="checkbox" role="switch" id="issuer_from_proxy_headers"
-                                name="issuer_from_proxy_headers" value="true" {% if settings.issuer_from_proxy_headers
-                                %}checked{% endif %}>
+                            <input class="form-check-input" type="checkbox" role="switch"
+                                   id="issuer_from_proxy_headers" name="issuer_from_proxy_headers" value="true"
+                                   {% if settings.issuer_from_proxy_headers %}checked{% endif %}>
                             <label class="form-check-label" for="issuer_from_proxy_headers">Trust Proxy Headers</label>
                         </div>
-                        <div class="form-text">Trust X-Forwarded-Proto/Host/For from a single reverse-proxy hop in front
-                            of NanoIDP (applies ProxyFix). Only changes the derived issuer above when "Derive Issuer
-                            from Request" is also on; always affects rate-limit and audit-log client IP attribution.
-                            Only enable this behind exactly one trusted proxy - these headers are otherwise spoofable.
-                            Takes effect on the next app restart.</div>
+                        <div class="form-text">Trust X-Forwarded-Proto/Host/For from a single reverse-proxy hop in front of NanoIDP (applies ProxyFix). Only changes the derived issuer above when "Derive Issuer from Request" is also on; always affects rate-limit and audit-log client IP attribution. Only enable this behind exactly one trusted proxy - these headers are otherwise spoofable. Takes effect on the next app restart.</div>
                     </div>
 
                     <div class="mb-3">
                         <label for="audience" class="form-label">Audience</label>
                         <input type="text" class="form-control" id="audience" name="audience"
-                            value="{{ settings.audience }}">
+                               value="{{ settings.audience }}">
                         <div class="form-text">Default audience for JWT "aud" claim</div>
                     </div>
 
                     <div class="mb-3">
                         <label for="token_expiry_minutes" class="form-label">Token Expiry (minutes)</label>
                         <input type="number" class="form-control" id="token_expiry_minutes" name="token_expiry_minutes"
-                            value="{{ settings.token_expiry_minutes }}" min="1" max="525600">
+                               value="{{ settings.token_expiry_minutes }}" min="1" max="525600">
                         <div class="form-text">How long tokens are valid (default: 60 minutes)</div>
                     </div>
 
                     <div class="mb-3">
                         <div class="form-check form-switch">
-                            <input class="form-check-input" type="checkbox" role="switch" id="require_pkce"
-                                name="require_pkce" value="true" {% if settings.require_pkce %}checked{% endif %}>
+                            <input class="form-check-input" type="checkbox" role="switch"
+                                   id="require_pkce" name="require_pkce" value="true"
+                                   {% if settings.require_pkce %}checked{% endif %}>
                             <label class="form-check-label" for="require_pkce">Require PKCE</label>
                         </div>
-                        <div class="form-text">Reject <code>/authorize</code> requests without a PKCE
-                            <code>code_challenge</code> (on by default in stricter-dev and implied by oauth21).</div>
+                        <div class="form-text">Reject <code>/authorize</code> requests without a PKCE <code>code_challenge</code> (on by default in stricter-dev and implied by oauth21).</div>
                     </div>
 
                     <div class="mb-3">
                         <div class="form-check form-switch">
-                            <input class="form-check-input" type="checkbox" role="switch" id="refresh_token_rotation"
-                                name="refresh_token_rotation" value="true" {% if settings.refresh_token_rotation
-                                %}checked{% endif %}>
+                            <input class="form-check-input" type="checkbox" role="switch"
+                                   id="refresh_token_rotation" name="refresh_token_rotation" value="true"
+                                   {% if settings.refresh_token_rotation %}checked{% endif %}>
                             <label class="form-check-label" for="refresh_token_rotation">Refresh Token Rotation</label>
                         </div>
-                        <div class="form-text">Each refresh invalidates the used refresh token; reuse revokes its
-                            rotation family (forced on by oauth21).</div>
+                        <div class="form-text">Each refresh invalidates the used refresh token; reuse revokes its rotation family (forced on by oauth21).</div>
                     </div>
                 </div>
             </div>
@@ -130,116 +117,103 @@
                     <div class="mb-3">
                         <label for="saml_entity_id" class="form-label">Entity ID</label>
                         <input type="text" class="form-control" id="saml_entity_id" name="saml_entity_id"
-                            value="{{ settings.saml_entity_id }}">
+                               value="{{ settings.saml_entity_id }}">
                         <div class="form-text">SAML IdP Entity ID</div>
                     </div>
 
                     <div class="mb-3">
                         <label for="saml_sso_url" class="form-label">SSO URL</label>
                         <input type="url" class="form-control" id="saml_sso_url" name="saml_sso_url"
-                            value="{{ settings.saml_sso_url }}">
+                               value="{{ settings.saml_sso_url }}">
                         <div class="form-text">SAML Single Sign-On endpoint</div>
                     </div>
 
                     <div class="mb-3">
                         <label for="default_acs_url" class="form-label">Default ACS URL</label>
                         <input type="url" class="form-control" id="default_acs_url" name="default_acs_url"
-                            value="{{ settings.default_acs_url }}">
+                               value="{{ settings.default_acs_url }}">
                         <div class="form-text">Default Assertion Consumer Service URL</div>
                     </div>
 
                     <div class="mb-3">
                         <div class="form-check form-switch">
-                            <input class="form-check-input" type="checkbox" role="switch" id="saml_sign_responses"
-                                name="saml_sign_responses" value="true" {% if settings.saml_sign_responses %}checked{%
-                                endif %}>
+                            <input class="form-check-input" type="checkbox" role="switch"
+                                   id="saml_sign_responses" name="saml_sign_responses" value="true"
+                                   {% if settings.saml_sign_responses %}checked{% endif %}>
                             <label class="form-check-label" for="saml_sign_responses">Sign SAML Responses</label>
                         </div>
-                        <div class="form-text">Enable XML signature on SAML responses. Disable for testing unsigned
-                            flows.</div>
-                    </div>
-
-                    <div class="mb-3">
-                        <div class="form-check form-switch">
-                            <input class="form-check-input" type="checkbox" role="switch" id="strict_saml_binding"
-                                name="strict_saml_binding" value="true" {% if settings.strict_saml_binding %}checked{%
-                                endif %}>
-                            <label class="form-check-label" for="strict_saml_binding">Strict SAML Binding</label>
-                        </div>
-                        <div class="form-text">Enforce SAML 2.0 binding compliance. When enabled, rejects GET requests
-                            with uncompressed data.</div>
+                        <div class="form-text">Enable XML signature on SAML responses. Disable for testing unsigned flows.</div>
                     </div>
 
                     <div class="mb-3">
                         <div class="form-check form-switch">
                             <input class="form-check-input" type="checkbox" role="switch"
-                                id="saml_want_authn_requests_signed" name="saml_want_authn_requests_signed" value="true"
-                                {% if settings.saml_want_authn_requests_signed %}checked{% endif %}>
-                            <label class="form-check-label" for="saml_want_authn_requests_signed">Require Signed
-                                AuthnRequests</label>
+                                   id="strict_saml_binding" name="strict_saml_binding" value="true"
+                                   {% if settings.strict_saml_binding %}checked{% endif %}>
+                            <label class="form-check-label" for="strict_saml_binding">Strict SAML Binding</label>
                         </div>
-                        <div class="form-text">Verify AuthnRequest signatures (both bindings) against the registered SP
-                            certificates; advertised as <code>WantAuthnRequestsSigned</code> in metadata.</div>
+                        <div class="form-text">Enforce SAML 2.0 binding compliance. When enabled, rejects GET requests with uncompressed data.</div>
+                    </div>
+
+                    <div class="mb-3">
+                        <div class="form-check form-switch">
+                            <input class="form-check-input" type="checkbox" role="switch"
+                                   id="saml_want_authn_requests_signed" name="saml_want_authn_requests_signed" value="true"
+                                   {% if settings.saml_want_authn_requests_signed %}checked{% endif %}>
+                            <label class="form-check-label" for="saml_want_authn_requests_signed">Require Signed AuthnRequests</label>
+                        </div>
+                        <div class="form-text">Verify AuthnRequest signatures (both bindings) against the registered SP certificates; advertised as <code>WantAuthnRequestsSigned</code> in metadata.</div>
                     </div>
 
                     <div class="mb-3">
                         <label for="saml_sp_certificates" class="form-label">SP Certificates</label>
-                        <textarea class="form-control" id="saml_sp_certificates" name="saml_sp_certificates" rows="2"
-                            placeholder="One PEM file path per line">{{ settings.saml_sp_certificates | join('\n') }}</textarea>
-                        <div class="form-text">PEM certificate files of SPs whose AuthnRequest signatures are accepted.
-                        </div>
+                        <textarea class="form-control" id="saml_sp_certificates" name="saml_sp_certificates"
+                                  rows="2" placeholder="One PEM file path per line">{{ settings.saml_sp_certificates | join('\n') }}</textarea>
+                        <div class="form-text">PEM certificate files of SPs whose AuthnRequest signatures are accepted.</div>
                     </div>
 
                     <div class="mb-3">
                         <label for="saml_c14n_algorithm" class="form-label">Canonicalization Algorithm</label>
                         <select class="form-select" id="saml_c14n_algorithm" name="saml_c14n_algorithm">
-                            <option value="exc_c14n" {% if settings.saml_c14n_algorithm=='exc_c14n' %}selected{% endif
-                                %}>Exclusive C14N 1.0 (default)</option>
-                            <option value="c14n" {% if settings.saml_c14n_algorithm=='c14n' %}selected{% endif %}>C14N
-                                1.0</option>
-                            <option value="c14n11" {% if settings.saml_c14n_algorithm=='c14n11' %}selected{% endif %}>
-                                C14N 1.1</option>
+                            <option value="exc_c14n" {% if settings.saml_c14n_algorithm == 'exc_c14n' %}selected{% endif %}>Exclusive C14N 1.0 (default)</option>
+                            <option value="c14n" {% if settings.saml_c14n_algorithm == 'c14n' %}selected{% endif %}>C14N 1.0</option>
+                            <option value="c14n11" {% if settings.saml_c14n_algorithm == 'c14n11' %}selected{% endif %}>C14N 1.1</option>
                         </select>
                         <div class="form-text">XML canonicalization algorithm for SAML signatures</div>
                     </div>
 
                     <div class="mb-3">
                         <div class="form-check form-switch">
-                            <input class="form-check-input" type="checkbox" role="switch" id="saml_export_roles"
-                                name="saml_export_roles" value="true" {% if settings.saml_export_roles %}checked{% endif
-                                %}>
+                            <input class="form-check-input" type="checkbox" role="switch"
+                                   id="saml_export_roles" name="saml_export_roles" value="true"
+                                   {% if settings.saml_export_roles %}checked{% endif %}>
                             <label class="form-check-label" for="saml_export_roles">Export Roles Attribute</label>
                         </div>
-                        <div class="form-text">Include the user's roles in SAML assertions and AttributeQuery responses.
-                            Off by default.</div>
+                        <div class="form-text">Include the user's roles in SAML assertions and AttributeQuery responses. Off by default.</div>
                     </div>
 
                     <div class="mb-3">
                         <label for="saml_roles_attr_name" class="form-label">Roles Attribute Name</label>
                         <input type="text" class="form-control" id="saml_roles_attr_name" name="saml_roles_attr_name"
-                            value="{{ settings.saml_roles_attr_name }}" placeholder="roles">
-                        <div class="form-text">Name used when the export above is on. Common values: <code>roles</code>,
-                            <code>Role</code>,
-                            <code>http://schemas.microsoft.com/ws/2008/06/identity/claims/role</code>.</div>
+                               value="{{ settings.saml_roles_attr_name }}" placeholder="roles">
+                        <div class="form-text">Name used when the export above is on. Common values: <code>roles</code>, <code>Role</code>, <code>http://schemas.microsoft.com/ws/2008/06/identity/claims/role</code>.</div>
                     </div>
 
                     <div class="mb-3">
                         <div class="form-check form-switch">
-                            <input class="form-check-input" type="checkbox" role="switch" id="saml_export_groups"
-                                name="saml_export_groups" value="true" {% if settings.saml_export_groups %}checked{%
-                                endif %}>
+                            <input class="form-check-input" type="checkbox" role="switch"
+                                   id="saml_export_groups" name="saml_export_groups" value="true"
+                                   {% if settings.saml_export_groups %}checked{% endif %}>
                             <label class="form-check-label" for="saml_export_groups">Export Groups Attribute</label>
                         </div>
-                        <div class="form-text">Include the user's groups in SAML assertions and AttributeQuery
-                            responses. Off by default.</div>
+                        <div class="form-text">Include the user's groups in SAML assertions and AttributeQuery responses. Off by default.</div>
                     </div>
 
                     <div class="mb-3">
                         <label for="saml_groups_attr_name" class="form-label">Groups Attribute Name</label>
                         <input type="text" class="form-control" id="saml_groups_attr_name" name="saml_groups_attr_name"
-                            value="{{ settings.saml_groups_attr_name }}" placeholder="groups">
-                        <div class="form-text">Name used when the export above is on. Common values:
-                            <code>groups</code>, <code>memberOf</code>.</div>
+                               value="{{ settings.saml_groups_attr_name }}" placeholder="groups">
+                        <div class="form-text">Name used when the export above is on. Common values: <code>groups</code>, <code>memberOf</code>.</div>
                     </div>
                 </div>
             </div>
@@ -255,16 +229,10 @@
                     <div class="mb-3">
                         <label for="login_mode" class="form-label">Interactive Login Mode</label>
                         <select class="form-select" id="login_mode" name="login_mode">
-                            <option value="password" {% if settings.login_mode=='password' %}selected{% endif %}>
-                                Password (default)</option>
-                            <option value="persona" {% if settings.login_mode=='persona' %}selected{% endif %}>Persona
-                                (passwordless)</option>
+                            <option value="password" {% if settings.login_mode == 'password' %}selected{% endif %}>Password (default)</option>
+                            <option value="persona" {% if settings.login_mode == 'persona' %}selected{% endif %}>Persona (passwordless)</option>
                         </select>
-                        <div class="form-text">"Password" requires the configured password on /login, /authorize,
-                            /saml/sso and the device flow. "Persona" lists the configured users and logs in by selecting
-                            one instead - a local development/testing convenience, off by default, not intended for
-                            deployed environments. Unrelated to the OAuth password grant, which always still requires a
-                            password.</div>
+                        <div class="form-text">"Password" requires the configured password on /login, /authorize, /saml/sso and the device flow. "Persona" lists the configured users and logs in by selecting one instead - a local development/testing convenience, off by default, not intended for deployed environments. Unrelated to the OAuth password grant, which always still requires a password.</div>
                     </div>
                 </div>
             </div>
@@ -279,10 +247,8 @@
                 <div class="card-body">
                     <div class="mb-3">
                         <label for="allowed_identity_classes" class="form-label">Identity Classes</label>
-                        <textarea class="form-control" id="allowed_identity_classes" name="allowed_identity_classes"
-                            rows="4">{{ settings.allowed_identity_classes|join('\n') }}</textarea>
-                        <div class="form-text">One identity class per line (e.g., INTERNAL, EXTERNAL, PARTNER, SERVICE)
-                        </div>
+                        <textarea class="form-control" id="allowed_identity_classes" name="allowed_identity_classes" rows="4">{{ settings.allowed_identity_classes|join('\n') }}</textarea>
+                        <div class="form-text">One identity class per line (e.g., INTERNAL, EXTERNAL, PARTNER, SERVICE)</div>
                     </div>
                 </div>
             </div>
@@ -298,8 +264,7 @@
             </button>
         </div>
         <div class="card-body">
-            <pre id="settingsPreview" class="json mb-0"
-                style="max-height: 200px;">Click "Refresh" to preview changes</pre>
+            <pre id="settingsPreview" class="json mb-0" style="max-height: 200px;">Click "Refresh" to preview changes</pre>
         </div>
     </div>
 
@@ -323,8 +288,7 @@
             <tbody>
                 <tr>
                     <td class="text-muted" style="width: 200px;">OIDC Discovery</td>
-                    <td><a href="/.well-known/openid-configuration"
-                            target="_blank">/.well-known/openid-configuration</a></td>
+                    <td><a href="/.well-known/openid-configuration" target="_blank">/.well-known/openid-configuration</a></td>
                 </tr>
                 <tr>
                     <td class="text-muted">JWKS Endpoint</td>
@@ -350,54 +314,54 @@
 
 {% block extra_js %}
 <script>
-    function updatePreview() {
-        const preview = {
-            oauth: {
-                issuer: document.getElementById('issuer').value,
-                issuer_from_request: document.getElementById('issuer_from_request').checked,
-                issuer_allowlist: document.getElementById('issuer_allowlist').value
-                    .split('\n').map(s => s.trim()).filter(s => s),
-                device_verification_base_url: document.getElementById('device_verification_base_url').value.trim(),
-                issuer_from_proxy_headers: document.getElementById('issuer_from_proxy_headers').checked,
-                audience: document.getElementById('audience').value,
-                token_expiry_minutes: parseInt(document.getElementById('token_expiry_minutes').value) || 60,
-                require_pkce: document.getElementById('require_pkce').checked,
-                refresh_token_rotation: document.getElementById('refresh_token_rotation').checked
-            },
-            saml: {
-                entity_id: document.getElementById('saml_entity_id').value,
-                sso_url: document.getElementById('saml_sso_url').value,
-                default_acs_url: document.getElementById('default_acs_url').value,
-                sign_responses: document.getElementById('saml_sign_responses').checked,
-                strict_binding: document.getElementById('strict_saml_binding').checked,
-                want_authn_requests_signed: document.getElementById('saml_want_authn_requests_signed').checked,
-                sp_certificates: document.getElementById('saml_sp_certificates').value
-                    .split('\n').map(s => s.trim()).filter(s => s),
-                c14n_algorithm: document.getElementById('saml_c14n_algorithm').value,
-                export_roles: document.getElementById('saml_export_roles').checked,
-                export_groups: document.getElementById('saml_export_groups').checked,
-                roles_attr_name: document.getElementById('saml_roles_attr_name').value.trim() || 'roles',
-                groups_attr_name: document.getElementById('saml_groups_attr_name').value.trim() || 'groups'
-            },
-            allowed_identity_classes: document.getElementById('allowed_identity_classes').value
-                .split('\n')
-                .map(s => s.trim())
-                .filter(s => s),
-            login: {
-                mode: document.getElementById('login_mode').value
-            }
-        };
+function updatePreview() {
+    const preview = {
+        oauth: {
+            issuer: document.getElementById('issuer').value,
+            issuer_from_request: document.getElementById('issuer_from_request').checked,
+            issuer_allowlist: document.getElementById('issuer_allowlist').value
+                .split('\n').map(s => s.trim()).filter(s => s),
+            device_verification_base_url: document.getElementById('device_verification_base_url').value.trim(),
+            issuer_from_proxy_headers: document.getElementById('issuer_from_proxy_headers').checked,
+            audience: document.getElementById('audience').value,
+            token_expiry_minutes: parseInt(document.getElementById('token_expiry_minutes').value) || 60,
+            require_pkce: document.getElementById('require_pkce').checked,
+            refresh_token_rotation: document.getElementById('refresh_token_rotation').checked
+        },
+        saml: {
+            entity_id: document.getElementById('saml_entity_id').value,
+            sso_url: document.getElementById('saml_sso_url').value,
+            default_acs_url: document.getElementById('default_acs_url').value,
+            sign_responses: document.getElementById('saml_sign_responses').checked,
+            strict_binding: document.getElementById('strict_saml_binding').checked,
+            want_authn_requests_signed: document.getElementById('saml_want_authn_requests_signed').checked,
+            sp_certificates: document.getElementById('saml_sp_certificates').value
+                .split('\n').map(s => s.trim()).filter(s => s),
+            c14n_algorithm: document.getElementById('saml_c14n_algorithm').value,
+            export_roles: document.getElementById('saml_export_roles').checked,
+            export_groups: document.getElementById('saml_export_groups').checked,
+            roles_attr_name: document.getElementById('saml_roles_attr_name').value.trim() || 'roles',
+            groups_attr_name: document.getElementById('saml_groups_attr_name').value.trim() || 'groups'
+        },
+        allowed_identity_classes: document.getElementById('allowed_identity_classes').value
+            .split('\n')
+            .map(s => s.trim())
+            .filter(s => s),
+        login: {
+            mode: document.getElementById('login_mode').value
+        }
+    };
 
-        document.getElementById('settingsPreview').textContent = JSON.stringify(preview, null, 2);
-    }
+    document.getElementById('settingsPreview').textContent = JSON.stringify(preview, null, 2);
+}
 
-    // Auto-update preview on input change
-    document.querySelectorAll('input, textarea, select').forEach(el => {
-        el.addEventListener('input', updatePreview);
-        el.addEventListener('change', updatePreview);
-    });
+// Auto-update preview on input change
+document.querySelectorAll('input, textarea, select').forEach(el => {
+    el.addEventListener('input', updatePreview);
+    el.addEventListener('change', updatePreview);
+});
 
-    // Initial preview
-    updatePreview();
+// Initial preview
+updatePreview();
 </script>
 {% endblock %}
