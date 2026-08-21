@@ -172,6 +172,16 @@ oauth:
   device_verification_base_url: "https://idp.example.com"
 ```
 
+> **Note on `host: "0.0.0.0"`.** Since 2.6.0 the default bind address is
+> `127.0.0.1` ([GHSA-2473-px8h-rvg6](https://github.com/cdelmonte-zg/nanoidp/security/advisories/GHSA-2473-px8h-rvg6)):
+> the `/api/*` management API is unauthenticated by design, so NanoIDP no
+> longer listens on all interfaces unless you ask it to. Behind a reverse
+> proxy you *do* want `0.0.0.0` - the proxy must reach NanoIDP over the
+> container or host network - so setting it here is a deliberate opt-in.
+> Only do this on a trusted network (for example a private Docker Compose
+> network that publishes just the proxy's port), and expect a startup
+> warning reminding you the management API is exposed to that network.
+
 And the corresponding environment for the container:
 
 ```yaml
