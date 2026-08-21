@@ -712,6 +712,21 @@ class TestMCPPersonaLogin:
         assert "password" not in tool.input_schema["properties"]
         assert tool.input_schema["required"] == ["username"]
 
+    @pytest.mark.asyncio
+    async def test_create_user_and_create_persona_user_schemas_share_common_properties(self, mcp_list_tools):
+        """Regression: the two tools' non-username/password properties must
+        stay identical (a shared dict, not hand-copied) so they can't drift,
+        and both must declare 'attributes' - the shared handler-side builder
+        reads it from either tool."""
+        tools = await mcp_list_tools()
+        create_user = next(t for t in tools if t.name == "create_user")
+        create_persona_user = next(t for t in tools if t.name == "create_persona_user")
+
+        common_keys = set(create_persona_user.input_schema["properties"]) - {"username"}
+        assert "attributes" in common_keys
+        for key in common_keys:
+            assert create_user.input_schema["properties"][key] == create_persona_user.input_schema["properties"][key]
+
     def test_create_persona_user_is_a_mutating_tool(self):
         from nanoidp.mcp_server import MUTATING_TOOLS
         assert "create_persona_user" in MUTATING_TOOLS

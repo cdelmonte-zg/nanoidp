@@ -416,10 +416,21 @@ polish pass.
       the `<hr>` divider) above the `{% if persona_mode %}` branch, which
       now only wraps the two forms' differing credential block; re-verified
       with the full suite (979 passed) and ruff.
-- [ ] 10. Factor `create_user`'s and `create_persona_user`'s MCP
+- [x] 10. Factor `create_user`'s and `create_persona_user`'s MCP
       `input_schema` `properties` dicts into one shared dict (in
       `mcp_server.py`) spread into both tool schemas, including the missing
       `attributes` property on `create_persona_user`.
+      **Done**: extracted `_USER_COMMON_PROPERTIES` (every field but
+      `username`/`password`) and spread it (`**_USER_COMMON_PROPERTIES`)
+      into both tools' schemas. Turned out **neither** tool declared
+      `attributes` before (not just `create_persona_user` as the finding's
+      wording suggested) even though `_build_user_from_arguments()` reads
+      it from both - added it to the shared dict, fixing both at once.
+      Added `test_create_user_and_create_persona_user_schemas_share_common_
+      properties` to `tests/test_mcp.py`, asserting `attributes` is present
+      and every shared property is byte-identical between the two schemas.
+      99 MCP tests, ruff, mypy all pass (scoped to `mcp_server.py`/
+      `test_mcp.py` - no other files touched).
 - [ ] 11. Sweep the em dash out of the three new UI strings
       (`login.html:78`, `authorize.html:110`, `device.html:110`) in favor of
       plain `" - "`, matching the rest of the project.

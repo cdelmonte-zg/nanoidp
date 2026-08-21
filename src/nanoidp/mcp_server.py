@@ -231,6 +231,50 @@ def _normalize_audiences(value: Any) -> list[str]:
     return _normalize_str_list(value, "additional_audiences")
 
 
+# Shared by create_user's and create_persona_user's input_schema (#10): every
+# field but username/password is identical between the two tools, and
+# _build_user_from_arguments() reads all of these from either one - a
+# property missing here would be silently ignored on that tool alone.
+_USER_COMMON_PROPERTIES: dict[str, Any] = {
+    "email": {
+        "type": "string",
+        "description": "Email address (optional)",
+    },
+    "roles": {
+        "type": "array",
+        "items": {"type": "string"},
+        "description": "List of roles (optional, default: ['USER'])",
+    },
+    "groups": {
+        "type": "array",
+        "items": {"type": "string"},
+        "description": "List of groups (optional)",
+    },
+    "tenant": {
+        "type": "string",
+        "description": "Tenant identifier (optional, default: 'default')",
+    },
+    "identity_class": {
+        "type": "string",
+        "description": "Identity class (e.g., INTERNAL, EXTERNAL)",
+    },
+    "entitlements": {
+        "type": "array",
+        "items": {"type": "string"},
+        "description": "List of entitlements",
+    },
+    "source_acl": {
+        "type": "array",
+        "items": {"type": "string"},
+        "description": "Source ACL entries for document-level security",
+    },
+    "attributes": {
+        "type": "object",
+        "description": "Custom key-value attributes (optional)",
+    },
+}
+
+
 # =============================================================================
 # Tool Definitions
 # =============================================================================
@@ -277,38 +321,7 @@ _TOOLS: list[Tool] = [
                     "type": "string",
                     "description": "Password for the new user",
                 },
-                "email": {
-                    "type": "string",
-                    "description": "Email address (optional)",
-                },
-                "roles": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "List of roles (optional, default: ['USER'])",
-                },
-                "groups": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "List of groups (optional)",
-                },
-                "tenant": {
-                    "type": "string",
-                    "description": "Tenant identifier (optional, default: 'default')",
-                },
-                "identity_class": {
-                    "type": "string",
-                    "description": "Identity class (e.g., INTERNAL, EXTERNAL)",
-                },
-                "entitlements": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "List of entitlements",
-                },
-                "source_acl": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Source ACL entries for document-level security",
-                },
+                **_USER_COMMON_PROPERTIES,
             },
             "required": ["username", "password"],
         },
@@ -331,38 +344,7 @@ _TOOLS: list[Tool] = [
                     "type": "string",
                     "description": "Username for the new persona-mode-only user",
                 },
-                "email": {
-                    "type": "string",
-                    "description": "Email address (optional)",
-                },
-                "roles": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "List of roles (optional, default: ['USER'])",
-                },
-                "groups": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "List of groups (optional)",
-                },
-                "tenant": {
-                    "type": "string",
-                    "description": "Tenant identifier (optional, default: 'default')",
-                },
-                "identity_class": {
-                    "type": "string",
-                    "description": "Identity class (e.g., INTERNAL, EXTERNAL)",
-                },
-                "entitlements": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "List of entitlements",
-                },
-                "source_acl": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Source ACL entries for document-level security",
-                },
+                **_USER_COMMON_PROPERTIES,
             },
             "required": ["username"],
         },
