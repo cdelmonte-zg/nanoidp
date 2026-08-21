@@ -1,0 +1,31 @@
+{# Shared persona login picker, used by login.html, authorize.html and
+   device.html so the markup (and any future fix to it, e.g. the device
+   flow's implicit-submission fix) exists in one place instead of three.
+
+   js_submit=True renders non-submit buttons with a `persona-user-btn` class
+   instead, for surfaces (device.html) where a text input shares the form
+   and implicit Enter-submission must not silently pick a user; the caller
+   is then responsible for the click handler that actually submits. #}
+{% macro persona_picker(users, prompt, js_submit=false) %}
+<p class="text-muted small mb-3">
+    <i class="bi bi-people me-1"></i>{{ prompt }}
+    No password required (local development convenience).
+</p>
+{% if users %}
+<div class="list-group mb-3">
+    {% for user in users %}
+    {% if js_submit %}
+    <button type="button" value="{{ user }}" class="list-group-item list-group-item-action d-flex align-items-center persona-user-btn">
+        <i class="bi bi-person-circle me-2"></i>{{ user }}
+    </button>
+    {% else %}
+    <button type="submit" name="username" value="{{ user }}" class="list-group-item list-group-item-action d-flex align-items-center">
+        <i class="bi bi-person-circle me-2"></i>{{ user }}
+    </button>
+    {% endif %}
+    {% endfor %}
+</div>
+{% else %}
+<p class="text-muted text-center">No users configured.</p>
+{% endif %}
+{% endmacro %}

@@ -390,12 +390,32 @@ polish pass.
 
 ### Cleanups
 
-- [ ] 8. Add `templates/_macros.html` with a shared persona-picker macro
+- [x] 8. Add `templates/_macros.html` with a shared persona-picker macro
       (imported by `login.html`, `authorize.html`, `device.html`); only the
       per-surface credential block stays templated per file. `device.html`'s
       persona branch also stops duplicating the whole form (`user_code`
       input included) once the shared piece is factored out - folds in the
       item-2 fix at the same time, so it lands once instead of three times.
+      **Done**: `persona_picker(users, prompt, js_submit=false)` macro
+      extracted, covering the intro paragraph + "no users configured"
+      fallback + the per-user button list. `js_submit=true` (used only by
+      `device.html`) renders the non-submit, JS-driven buttons from the
+      item-2 fix; `login.html`/`authorize.html` use the plain-submit
+      default, since they have no competing text field for Enter to
+      implicitly trigger. Each template still owns its surrounding `<form>`
+      and surface-specific bits (SAML's hidden fields, the device code
+      input, the Deny button) - only the picker markup itself moved.
+      979 tests, ruff, mypy all pass; no behavioral/markup regressions
+      (picker button type/class per surface unchanged from before the
+      refactor, verified by the existing `test_persona_mode_picker_buttons_
+      not_implicit_submit` assertion). Follow-up: the maintainer's
+      parenthetical ("`user_code` input included") flagged a second,
+      separate duplication inside `device.html` itself - its persona/else
+      branches each had their own byte-identical copy of the `user_code`
+      field, even though it doesn't vary by mode at all. Hoisted it (and
+      the `<hr>` divider) above the `{% if persona_mode %}` branch, which
+      now only wraps the two forms' differing credential block; re-verified
+      with the full suite (979 passed) and ruff.
 - [ ] 10. Factor `create_user`'s and `create_persona_user`'s MCP
       `input_schema` `properties` dicts into one shared dict (in
       `mcp_server.py`) spread into both tool schemas, including the missing
