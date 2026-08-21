@@ -159,8 +159,23 @@ def run_app(
         )
         effective_debug = False
 
+    effective_host = host or settings.host
+    # NanoIDP is a dev/test IdP whose management API (/api/*) is unauthenticated
+    # by design; binding to all interfaces exposes admin token minting and key
+    # rotation to any network-reachable host. The default is 127.0.0.1; warn
+    # loudly when that safe default is overridden.
+    if effective_host in ("0.0.0.0", "::", ""):
+        logging.getLogger(__name__).warning(
+            "Binding to %s exposes NanoIDP on all network interfaces. The "
+            "/api/* management endpoints are unauthenticated by design, so any "
+            "reachable host can mint admin tokens and rotate signing keys. Use "
+            "127.0.0.1 unless you intend network exposure (e.g. inside a "
+            "container).",
+            effective_host,
+        )
+
     app.run(
-        host=host or settings.host,
+        host=effective_host,
         port=port or settings.port,
         debug=effective_debug,
     )

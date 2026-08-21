@@ -217,6 +217,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   "rendered but unchecked" (persist `false`) is distinguishable from "not on
   this form" (leave unchanged).
 
+### Security
+- **Default server bind address is now `127.0.0.1` (loopback) instead of
+  `0.0.0.0`** (GHSA-2473-px8h-rvg6, CWE-306). The unauthenticated `/api/*`
+  management API (which can mint admin tokens, rotate signing keys and clear
+  the audit log) is a deliberate dev-tool convenience, but the previous
+  all-interfaces default exposed it to any network-reachable host without the
+  operator choosing to. The out-of-the-box experience is unchanged for local
+  development (clients still reach `localhost:8000`). To expose NanoIDP on a
+  network, set `server.host` (or `--host 0.0.0.0`) explicitly; a startup
+  warning is logged whenever the bind address covers all interfaces. This
+  aligns `nanoidp init` with the value `nanoidp wizard` already wrote, and the
+  bundled Docker image is unaffected (its entrypoint already passes
+  `--host 0.0.0.0`).
+
 ## [2.5.0] - 2026-07-19
 
 ### Added

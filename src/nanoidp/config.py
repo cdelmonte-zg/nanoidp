@@ -123,7 +123,7 @@ class ConfigManager:
 
         self.settings = Settings(
             # Server
-            host=server.get("host", "0.0.0.0"),
+            host=server.get("host", "127.0.0.1"),
             port=server.get("port", 8000),
             debug=server.get("debug", False),
             # OAuth

@@ -10,6 +10,29 @@ By design, NanoIDP prioritizes developer convenience over security hardening. It
 
 ---
 
+## Network Binding
+
+NanoIDP binds to `127.0.0.1` (loopback only) by default, so out of the box it is reachable only from the local machine.
+
+This matters because the management API (`/api/*`) is **unauthenticated by design** (see [MCP Server Security](#mcp-server-security) for the equivalent concern on the MCP side). Those endpoints can mint a validly signed access token for any user, including `admin`, rotate the signing keys, and clear the audit log. Loopback binding keeps that surface off the network.
+
+### Exposing on a network
+
+If you deliberately need NanoIDP reachable from other hosts or containers, set the host explicitly:
+
+```bash
+# CLI flag
+python -m nanoidp --host 0.0.0.0
+
+# or in settings.yaml
+server:
+  host: "0.0.0.0"
+```
+
+The bundled Docker image already sets `--host 0.0.0.0`, because inside a container the isolation boundary is the container network rather than the host loopback. When you bind to all interfaces, NanoIDP logs a startup warning, since the unauthenticated management API then becomes reachable by any host that can route to the port. Only do this on a trusted, isolated network.
+
+---
+
 ## Security Profiles
 
 NanoIDP supports three security profiles to balance convenience with basic security controls:
@@ -250,7 +273,8 @@ discovery/token issuer mismatch.
 2. **Enable readonly mode** for MCP when only introspection is needed
 3. **Set MCP admin secret** if multiple developers share the same NanoIDP instance
 4. **Rotate keys periodically** to test token validation with multiple keys
-5. **Never expose NanoIDP to public networks**: it's designed for local/isolated use only
+5. **Keep the default `127.0.0.1` binding** unless you specifically need network access; only override it on a trusted, isolated network (see [Network Binding](#network-binding))
+6. **Never expose NanoIDP to public networks**: it's designed for local/isolated use only
 
 ---
 
