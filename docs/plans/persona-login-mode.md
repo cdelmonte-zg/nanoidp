@@ -431,9 +431,16 @@ polish pass.
       and every shared property is byte-identical between the two schemas.
       99 MCP tests, ruff, mypy all pass (scoped to `mcp_server.py`/
       `test_mcp.py` - no other files touched).
-- [ ] 11. Sweep the em dash out of the three new UI strings
+- [x] 11. Sweep the em dash out of the three new UI strings
       (`login.html:78`, `authorize.html:110`, `device.html:110`) in favor of
       plain `" - "`, matching the rest of the project.
+      **Done**: all three replaced with plain `" - "` (now in `_macros.html`
+      call sites in `login.html`/`authorize.html`/`device.html` after the
+      item-8 macro extraction moved the strings). No test asserted the em
+      dash itself, only the surrounding "Persona login" substring - 40
+      persona tests still pass. (Doc's own em dashes intentionally left
+      alone - the file is dropped before merge per finding 11 and its own
+      header.)
 - [ ] 12. Add a test asserting persona mode still authenticates under
       `security_profile: oauth21` (orthogonality regression guard).
 
