@@ -71,16 +71,13 @@ def login() -> ResponseReturnValue:
     # POST: persona mode selects a user by identity, no password prompt;
     # password mode is unchanged.
     username = request.form.get("username", "").strip()
+    password = request.form.get("password", "")
 
-    if persona_mode:
-        if not username:
-            return redirect(url_for("ui.login", error="Select a user"))
-        user = config.get_user(username)
-    else:
-        password = request.form.get("password", "")
-        if not username or not password:
-            return redirect(url_for("ui.login", error="Username and password required"))
-        user = config.authenticate(username, password)
+    if (persona_mode and not username) or (not persona_mode and (not username or not password)):
+        error = "Select a user" if persona_mode else "Username and password required"
+        return redirect(url_for("ui.login", error=error))
+
+    user = config.interactive_authenticate(username, password)
 
     if not user:
         audit_event(

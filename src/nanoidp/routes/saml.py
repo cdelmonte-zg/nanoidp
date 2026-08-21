@@ -460,14 +460,7 @@ def sso() -> ResponseReturnValue:
         form_username = request.form.get("username", "").strip()
         form_password = request.form.get("password", "")
 
-        if persona_mode:
-            user = config.get_user(form_username) if form_username else None
-        else:
-            user = (
-                config.authenticate(form_username, form_password)
-                if form_username and form_password
-                else None
-            )
+        user = config.interactive_authenticate(form_username, form_password)
 
         if user:
             session["user"] = form_username

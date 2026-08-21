@@ -298,12 +298,7 @@ def authorize() -> ResponseReturnValue:
         username = request.form.get("username", "").strip()
         password = request.form.get("password", "")
 
-        # Persona mode: identity selection only, no credential check.
-        # Password mode: unchanged from before.
-        if persona_mode:
-            user = config.get_user(username) if username else None
-        else:
-            user = config.authenticate(username, password) if username and password else None
+        user = config.interactive_authenticate(username, password)
 
         if user:
             # Authentication successful - generate authorization code
@@ -1428,20 +1423,27 @@ def device_verify() -> ResponseReturnValue:
         password = request.form.get("password", "")
         action = request.form.get("action", "authorize")
 
+        # Message-only: whether this is a "nothing filled in" attempt rather
+        # than a wrong selection/credential, so the two outcomes get distinct
+        # copy below. The actual auth decision lives in interactive_authenticate().
+        missing_input = action != "deny" and (
+            (persona_mode and not username) or (not persona_mode and (not username or not password))
+        )
+
         # The store runs check-status + transition atomically so two
         # concurrent verifications can't both claim the same pending code
         # (issue #43); credential validation happens inside its lock, as
-        # it did when this logic lived here. Persona mode authenticates by
-        # identity selection only; password mode is unchanged.
+        # it did when this logic lived here. Persona vs. password login is
+        # decided once in interactive_authenticate(), not here.
         outcome, user = get_device_code_store().verify(
             user_code,
             action,
             username,
             password,
-            config.authenticate,
-            persona_mode=persona_mode,
-            get_user=config.get_user,
+            config.interactive_authenticate,
         )
+        if outcome is DeviceVerifyOutcome.INVALID_CREDENTIALS and missing_input:
+            outcome = DeviceVerifyOutcome.MISSING_CREDENTIALS
 
         if outcome is DeviceVerifyOutcome.INVALID_CODE:
             error_msg = "Invalid or expired user code"

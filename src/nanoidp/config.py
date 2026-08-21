@@ -279,6 +279,20 @@ class ConfigManager:
 
         return None
 
+    def interactive_authenticate(self, username: str, password: str) -> Optional[User]:
+        """Single choke point for the four interactive login surfaces (UI
+        ``/login``, OIDC ``/authorize``, SAML ``/saml/sso``, device
+        ``/device``): consults ``persona_mode_enabled`` so the persona/
+        password branch isn't hand-copied at each call site.
+
+        Persona mode: identity selection only, a non-empty ``username``
+        selects the user - no credential check. Password mode: unchanged,
+        delegates to ``authenticate()`` and requires both fields.
+        """
+        if self.settings.persona_mode_enabled:
+            return self.get_user(username) if username else None
+        return self.authenticate(username, password) if username and password else None
+
     def hash_password(self, password: str) -> str:
         """Hash a password using bcrypt."""
         import bcrypt

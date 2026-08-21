@@ -260,7 +260,7 @@ polish pass.
 
 ### Blocking
 
-- [ ] 7 (pulled forward). Add `ConfigManager.interactive_authenticate(username,
+- [x] 7 (pulled forward). Add `ConfigManager.interactive_authenticate(username,
       password)` in `config.py` next to `authenticate()`: consults
       `settings.persona_mode_enabled`, looks up the user, and returns it
       (persona: identity-only; password: delegates to `authenticate()`) or
@@ -270,6 +270,19 @@ polish pass.
       `session["auth_method"]` from its result. `DeviceCodeStore.verify()`
       goes back to taking a single `authenticate` callable (drop the
       `persona_mode`/`get_user` parameter pair).
+      **Done**: `interactive_authenticate()` added; all four call sites
+      switched over. `DeviceCodeStore.verify()` now takes a single
+      `authenticate` callable - the missing-vs-invalid-credentials message
+      distinction (persona/password-aware) moved to `device_verify()`'s
+      route layer instead, computed before calling `verify()` and used to
+      relabel its `INVALID_CREDENTIALS` outcome, since that's inherently
+      mode-aware messaging, not part of the auth decision itself. Note:
+      `authorize()`/`device_verify()` don't set `session["auth_method"]` -
+      unlike `ui.py login()`/`saml.py sso()` they don't create a login
+      session at all (stateless per-request auth code issuance / device
+      polling), so there's nothing to record it on. 971 tests, ruff, mypy
+      all pass on the touched files (pre-existing mypy failure in
+      `ui.py:259`, finding 1, deliberately left for its own fix).
 - [ ] 2. Device flow persona form: give each per-user submit button an
       explicit `value` distinguishing it from `deny` (e.g. keep
       `name="username"` but also set `name="action" value="authorize"`
