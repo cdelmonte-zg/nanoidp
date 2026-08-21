@@ -441,8 +441,16 @@ polish pass.
       persona tests still pass. (Doc's own em dashes intentionally left
       alone - the file is dropped before merge per finding 11 and its own
       header.)
-- [ ] 12. Add a test asserting persona mode still authenticates under
+- [x] 12. Add a test asserting persona mode still authenticates under
       `security_profile: oauth21` (orthogonality regression guard).
+      **Done**: added `TestPersonaModeOrthogonalToOauth21` to
+      `tests/test_persona_login_flows.py` - enables persona mode and the
+      `oauth21` profile together, then drives `/authorize` end-to-end
+      against `registered-client` (oauth21 mandates registered redirect
+      URIs) with a PKCE S256 challenge (oauth21 mandates PKCE): picker
+      shown with no password field, selecting `admin` still issues a real
+      authorization code and redirects to the callback. 981 tests, ruff
+      all pass.
 
 ### Final polish (last, right before requesting re-review)
 - [ ] Remove `docs/plans/persona-login-mode.md` from the branch (per its own

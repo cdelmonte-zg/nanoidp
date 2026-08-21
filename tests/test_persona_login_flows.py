@@ -10,8 +10,10 @@ docs/plans/persona-login-mode.md.
 """
 
 import base64
+import hashlib
 import json
 import re
+import secrets
 
 import pytest
 from lxml import etree
@@ -92,6 +94,47 @@ class TestAuthorizePersonaMode:
 
         assert response.status_code == 200
         assert b"Invalid username or password" in response.data
+
+
+class TestPersonaModeOrthogonalToOauth21:
+    """#12: 'oauth21' governs protocol strictness (PKCE, registered redirect
+    URIs), persona login governs resource owner authentication - the two
+    are independent and persona selection must still work with oauth21 on."""
+
+    def _s256_challenge(self) -> str:
+        verifier = secrets.token_urlsafe(32)
+        return (
+            base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest())
+            .decode()
+            .rstrip("=")
+        )
+
+    def test_persona_selection_completes_authorize_under_oauth21(self, app, client):
+        _enable_persona_mode(app)
+        with app.app_context():
+            get_config().settings.security_profile = "oauth21"
+        try:
+            qs = (
+                "response_type=code&client_id=registered-client"
+                "&redirect_uri=http://localhost:3000/callback&scope=openid"
+                f"&code_challenge={self._s256_challenge()}&code_challenge_method=S256"
+            )
+            response = client.get(f"/authorize?{qs}")
+            assert response.status_code == 200
+            assert b'name="password"' not in response.data
+            assert b"admin" in response.data
+
+            client.get(f"/authorize?{qs}")
+            response = client.post(
+                "/authorize", data={"username": "admin"}, follow_redirects=False
+            )
+            assert response.status_code == 302
+            assert response.headers["Location"].startswith(
+                "http://localhost:3000/callback?code="
+            )
+        finally:
+            with app.app_context():
+                get_config().settings.security_profile = "dev"
 
 
 class TestSamlSsoPersonaMode:
