@@ -33,6 +33,47 @@ The bundled Docker image already sets `--host 0.0.0.0`, because inside a contain
 
 ---
 
+## Config UI Login Gate
+
+`/login` and `/logout` exist on the web UI, but by default they don't gate
+anything - every dashboard page (users, clients, settings, keys, claims,
+audit log, token tester) is reachable without a session, same as the rest of
+the unauthenticated management surface described above. `require_ui_login`
+makes `/login` real:
+
+```yaml
+session:
+  require_ui_login: true   # default: false
+```
+
+| Setting | Behavior |
+|---------|----------|
+| `false` (default) | The config web UI is unauthenticated, like today |
+| `true` | Every web UI page except `/login` itself redirects to `/login` until a session exists |
+
+**What it does not protect**: the separate management API (`/api/*`) stays
+unauthenticated regardless of this setting - it's a distinct Flask blueprint
+that a UI-only login gate structurally cannot reach. If you enable
+`require_ui_login` because the dashboard is reachable by more than just you,
+also keep `/api/*` off the network (see [Network Binding](#network-binding)
+above) or in front of your own auth layer; this setting does nothing for it.
+
+**Persona mode interaction**: logging in via `/login` or via the SAML SSO
+inline login at `/saml/sso` both satisfy this gate - they authenticate
+through the same `interactive_authenticate()` call and set the same session.
+If [Persona Login Mode](#persona-login-mode) is also enabled
+(`login.mode: persona`), that call is identity selection only, with no
+credential check. In that combination, `require_ui_login` confirms a user
+was picked from a list, not that anyone was verified - it is not protection
+against anyone who can reach the port.
+
+**YAML-only**: like `secret_key` and `security_profile`, this is not exposed
+on the Settings page or the MCP `update_settings` tool. It's a fixed operator
+decision about the trust boundary of the surface itself, not something meant
+to be flipped from inside the surface it protects.
+
+---
+
 ## Security Profiles
 
 NanoIDP supports three security profiles to balance convenience with basic security controls:
@@ -70,6 +111,27 @@ python -m nanoidp --profile oauth21
 | Refresh token rotation | Setting (`off`) | Setting (`off`) | Forced on |
 | `password` grant | Enabled | Enabled | Removed (and not advertised) |
 | Redirect URIs at `/authorize` | Any valid URI, or exact match if registered | Same as `dev` | Registration mandatory, exact match |
+
+### Invalid bcrypt hash fallback
+
+When `password_hashing` is on, a stored `users.yaml` password that isn't a
+valid bcrypt hash is *not* rejected by default - `authenticate()` catches the
+format error and falls back to a plain string comparison, only logging a
+warning. This exists so turning on `stricter-dev`/`password_hashing` doesn't
+immediately lock out every user until each one is manually re-hashed.
+
+To close that gap, opt in to:
+
+```yaml
+session:
+  enforce_password_check: true   # default: false
+```
+
+With this on, a user whose `users.yaml` password isn't already a bcrypt hash
+simply can't log in - no plaintext fallback, no warning-and-continue. Has no
+effect when `password_hashing` is off (that path is intentionally plaintext,
+dev mode). Like `secret_key` and `require_ui_login`, this is YAML-only - not
+on the Settings page or the MCP `update_settings` tool.
 
 ---
 

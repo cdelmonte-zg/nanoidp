@@ -288,6 +288,45 @@
     </div>
 </form>
 
+<!-- YAML-only Security Settings (read-only status) -->
+<div class="card mt-4">
+    <div class="card-header">
+        <i class="bi bi-shield-lock me-2"></i>Security Settings (YAML-only)
+    </div>
+    <div class="card-body">
+        <p class="text-muted small mb-3">
+            These are fixed operator decisions set directly in <code>settings.yaml</code>'s
+            <code>session:</code> section - not editable from this page or the MCP
+            <code>update_settings</code> tool. See the Security guide
+            (<code>docs/SECURITY.md</code>) for details.
+        </p>
+        <table class="table table-sm mb-0">
+            <tbody>
+                <tr>
+                    <td class="text-muted" style="width: 320px;">Config UI Login Gate (<code>require_ui_login</code>)</td>
+                    <td>
+                        {% if settings.require_ui_login %}
+                        <span class="badge bg-success"><i class="bi bi-lock-fill me-1"></i>Enabled</span>
+                        {% else %}
+                        <span class="badge bg-secondary"><i class="bi bi-unlock me-1"></i>Disabled</span>
+                        {% endif %}
+                    </td>
+                </tr>
+                <tr>
+                    <td class="text-muted">Invalid Bcrypt Hash Rejected (<code>enforce_password_check</code>)</td>
+                    <td>
+                        {% if settings.enforce_password_check %}
+                        <span class="badge bg-success"><i class="bi bi-shield-check me-1"></i>Enabled</span>
+                        {% else %}
+                        <span class="badge bg-secondary"><i class="bi bi-shield-exclamation me-1"></i>Disabled (plaintext fallback active)</span>
+                        {% endif %}
+                    </td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
 <!-- Endpoints Reference -->
 <div class="card mt-4">
     <div class="card-header">

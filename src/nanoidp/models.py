@@ -271,6 +271,35 @@ class Settings(BaseModel):
 
     # Session
     secret_key: str = Field(default="dev-secret-key-change-in-production", description="Flask secret key")
+    require_ui_login: bool = Field(
+        default=False,
+        description="Require a logged-in session (via /login) to use the config "
+        "web UI - dashboard, users, clients, settings, keys, claims, audit log "
+        "and token tester. Off by default: the whole management surface is "
+        "unauthenticated by design for local dev use (see docs/SECURITY.md), and "
+        "/login existing today does not by itself enforce anything - this setting "
+        "is what makes it real. Does not affect the separate /api/* management "
+        "API, which stays unauthenticated by design regardless. Satisfied by "
+        "logging in via /login or via the SAML SSO inline login at /saml/sso - "
+        "both authenticate through interactive_authenticate() and set the same "
+        "session. With login_mode: persona (see 'login_mode' above), that "
+        "authentication is identity selection only, not a credential check - so "
+        "this gate then confirms a user was chosen, not that anyone was "
+        "verified, and is not protection against anyone who can reach the port.",
+    )
+    enforce_password_check: bool = Field(
+        default=False,
+        description="When password_hashing is on, reject login for a user whose "
+        "stored users.yaml password isn't a valid bcrypt hash, instead of "
+        "silently falling back to plaintext comparison. Off by default: the "
+        "plaintext fallback exists so stricter-dev/password_hashing can be "
+        "turned on without instantly locking out every user until each one is "
+        "re-hashed. Turning this on closes that gap - a user whose password "
+        "field isn't already a bcrypt hash simply can't log in, rather than "
+        "being protected only by a plaintext comparison. No effect when "
+        "password_hashing is off (that path is intentionally plaintext, dev "
+        "mode). YAML-only, like require_ui_login and secret_key.",
+    )
 
     # Logging
     log_level: str = Field(default="INFO", description="Logging level")

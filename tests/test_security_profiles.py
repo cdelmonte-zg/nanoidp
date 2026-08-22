@@ -96,6 +96,27 @@ class TestPasswordHashing:
         config = ConfigManager()
         assert config.authenticate("nonexistent", "password") is None
 
+    def test_enforce_password_check_disabled_by_default(self):
+        """Test that enforce_password_check defaults to False."""
+        settings = Settings()
+        assert settings.enforce_password_check is False
+
+    def test_authenticate_bcrypt_invalid_hash_blocked_when_enforced(self):
+        """Test that enforce_password_check rejects an invalid bcrypt hash instead of falling back."""
+        config = ConfigManager()
+        config.settings.password_hashing = True
+        config.settings.enforce_password_check = True
+
+        # User with plaintext password (not a valid bcrypt hash)
+        config.users["plainuser"] = User(
+            username="plainuser",
+            password="notahash",
+            email="plain@example.org",
+        )
+
+        # Should be rejected, not fall back to plaintext comparison
+        assert config.authenticate("plainuser", "notahash") is None
+
 
 class TestSecurityProfileSettings:
     """Tests for security profile configuration."""

@@ -164,6 +164,29 @@ class TestSaveIsNotLossy:
         doc = _read(config_dir / "settings.yaml")
         assert doc["login"]["mode"] == "persona"
 
+    def test_require_ui_login_survives_save(self, tmp_path):
+        """require_ui_login in session: section passes through untouched."""
+        config_dir = _seed(
+            tmp_path,
+            BASE_SETTINGS + "session:\n  secret_key: x\n  require_ui_login: true\n",
+        )
+        manager = ConfigManager(str(config_dir))
+        manager.save()
+
+        doc = _read(config_dir / "settings.yaml")
+        assert doc["session"] == {"secret_key": "x", "require_ui_login": True}
+
+    def test_enforce_password_check_survives_save(self, tmp_path):
+        config_dir = _seed(
+            tmp_path,
+            BASE_SETTINGS + "session:\n  secret_key: x\n  enforce_password_check: true\n",
+        )
+        manager = ConfigManager(str(config_dir))
+        manager.save()
+
+        doc = _read(config_dir / "settings.yaml")
+        assert doc["session"] == {"secret_key": "x", "enforce_password_check": True}
+
     def test_save_creates_backup(self, tmp_path):
         config_dir = _seed(tmp_path, BASE_SETTINGS)
         ConfigManager(str(config_dir)).save()

@@ -174,6 +174,8 @@ class ConfigManager:
             allowed_identity_classes=data.get("allowed_identity_classes", []),
             # Session
             secret_key=session.get("secret_key", "dev-secret-key-change-in-production"),
+            require_ui_login=session.get("require_ui_login", False),
+            enforce_password_check=session.get("enforce_password_check", False),
             # Logging
             log_level=logging_config.get("level", "INFO"),
             log_token_requests=logging_config.get("log_token_requests", True),
@@ -264,6 +266,9 @@ class ConfigManager:
         """Authenticate a user. Supports bcrypt when password_hashing is enabled.
 
         A password-less user (``password is None``) never authenticates here.
+        A stored password that isn't valid bcrypt-hash format falls back to
+        plaintext comparison unless enforce_password_check is on, in which
+        case it's rejected outright (see Settings.enforce_password_check).
         """
         user = self.get_user(username)
         if not user or user.password is None:
@@ -276,7 +281,14 @@ class ConfigManager:
                 if bcrypt.checkpw(password.encode("utf-8"), user.password.encode("utf-8")):
                     return user
             except (ValueError, TypeError):
-                # Invalid hash format - fall back to plaintext comparison
+                # Invalid hash format
+                if self.settings.enforce_password_check:
+                    logger.warning(
+                        f"Invalid bcrypt hash for user {username}, rejecting login "
+                        "(enforce_password_check)"
+                    )
+                    return None
+                # Fall back to plaintext comparison
                 logger.warning(f"Invalid bcrypt hash for user {username}, falling back to plaintext")
                 if user.password == password:
                     return user
