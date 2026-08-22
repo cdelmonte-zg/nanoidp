@@ -23,11 +23,19 @@ def resolve_client_logo(logos_dir: str, client_id: str) -> Optional[str]:
     """
     if not _SAFE_CLIENT_ID.fullmatch(client_id):
         return None
-    logos_path = os.path.abspath(logos_dir)
+    # realpath (not abspath) so a symlinked logos_dir still contains its own
+    # files after resolution.
+    logos_root = os.path.realpath(logos_dir)
     for ext in _LOGO_EXTENSIONS:
         filename = f"{client_id}{ext}"
-        path = os.path.join(logos_path, filename)
-        if os.path.isfile(path):
+        resolved = os.path.realpath(os.path.join(logos_root, filename))
+        # The charset whitelist above already excludes every traversal
+        # character; this containment check is defense-in-depth, and holds
+        # even if the whitelist ever loosens (a logo that is itself a
+        # symlink escaping the directory is rejected too).
+        if not resolved.startswith(logos_root + os.sep):
+            return None
+        if os.path.isfile(resolved):
             return filename
     return None
 

@@ -129,3 +129,27 @@ class TestResolveClientLogo:
         monkeypatch.chdir(str(tmp_path.parent))
         result = resolve_client_logo(str(logos_dir.relative_to(tmp_path.parent)), "my-client")
         assert result == "my-client.png"
+
+    def test_resolve_client_logo_through_symlinked_dir(self, tmp_path):
+        """A logos_dir that is itself a symlink still resolves its own files
+        (the containment check compares against the resolved root)."""
+        real_dir = tmp_path / "real-logos"
+        real_dir.mkdir()
+        (real_dir / "my-client.svg").touch()
+        link_dir = tmp_path / "logos-link"
+        link_dir.symlink_to(real_dir)
+
+        result = resolve_client_logo(str(link_dir), "my-client")
+        assert result == "my-client.svg"
+
+    def test_resolve_client_logo_rejects_symlink_escaping_dir(self, tmp_path):
+        """A logo that is a symlink pointing outside logos_dir is rejected
+        (defense-in-depth containment, CodeQL alert 23)."""
+        logos_dir = tmp_path / "logos"
+        logos_dir.mkdir()
+        outside = tmp_path / "outside.svg"
+        outside.touch()
+        (logos_dir / "my-client.svg").symlink_to(outside)
+
+        result = resolve_client_logo(str(logos_dir), "my-client")
+        assert result is None
