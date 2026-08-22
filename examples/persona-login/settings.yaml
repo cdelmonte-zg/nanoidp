@@ -2,7 +2,8 @@
 # Copy this file to your config directory
 
 server:
-  host: "0.0.0.0"
+  host: "127.0.0.1"
+  # host: "0.0.0.0"  # LAN access is intentionally opt-in
   port: 8000
 
 oauth:
