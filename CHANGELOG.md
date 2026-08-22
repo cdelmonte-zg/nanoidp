@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Persona login mode** (#156): opt-in `login.mode: persona` lists the
+  configured users on every interactive login surface (`/login`,
+  `/authorize`, `/saml/sso` and the device flow's verification page) and
+  signs in by selecting one, with no password prompt - a local
+  development/testing convenience, off by default. `User.password` is now
+  optional: a password-less user can only authenticate via persona-mode
+  interactive login, never via password-mode login or the OAuth password
+  grant. Persona-authenticated sessions emit SAML
+  `AuthnContextClassRef: unspecified` instead of falsely claiming
+  `PasswordProtectedTransport`. New MCP tool `create_persona_user`, a
+  `persona-login` example preset, settings-UI persistence and e2e coverage.
+- **Per-client login page branding**: optional per-client colors (background,
+  header, footer, all as validated hex values), show/hide client_id and
+  description on the `/authorize` login page, and per-client logo images
+  stored locally in `static/logos/` keyed by client ID (no YAML config needed
+  for logos; place the image file and it's served automatically; the
+  directory is overridable via `oauth.logos_dir`). Colours and toggles are
+  editable from the OAuth client form in the UI and from the MCP
+  `create_client`/`update_client`/`get_client` tools, descriptions are
+  already supported, and logos are deployed by the operator to the server
+  filesystem. Designed for demos and prototyping; colours are structured
+  (not free-form CSS) to prevent stored-XSS on the auth UI, and logos are
+  local files only (no remote URLs) to avoid beacons.
+
+### Fixed
+- **`/api/config` now exposes `saml.default_acs_url`** (#165). The e2e agent
+  rebuilds the settings form from that document, so the missing field was
+  posted back blank on every run and the "present-but-blank = clear"
+  contract (#131) silently wiped `default_acs_url` from `settings.yaml`.
+
 ### Security
 - **Opt-in login gate for the config web UI**: new `session.require_ui_login`
   setting (off by default) makes `/login` actually enforce a logged-in
@@ -35,18 +66,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the security caveats inline.
 
 ### Added
-- **Per-client login page branding**: optional per-client colors (background,
-  header, footer, all as validated hex values), show/hide client_id and
-  description on the `/authorize` login page, and per-client logo images
-  stored locally in `static/logos/` keyed by client ID (no YAML config needed
-  for logos; place the image file and it's served automatically; the
-  directory is overridable via `oauth.logos_dir`). Colours and toggles are
-  editable from the OAuth client form in the UI and from the MCP
-  `create_client`/`update_client`/`get_client` tools, descriptions are
-  already supported, and logos are deployed by the operator to the server
-  filesystem. Designed for demos and prototyping; colours are structured
-  (not free-form CSS) to prevent stored-XSS on the auth UI, and logos are
-  local files only (no remote URLs) to avoid beacons.
 - **First-class group support**: users gain a `groups` list alongside `roles`,
   modelled exactly the same way. It is loaded from and persisted to
   `users.yaml` (omitted when empty), emitted as a `groups` claim on the access

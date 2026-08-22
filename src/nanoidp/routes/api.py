@@ -148,6 +148,11 @@ def get_configuration() -> ResponseReturnValue:
         "saml": {
             "entity_id": settings.saml_entity_id,
             "sso_url": settings.saml_sso_url,
+            # The e2e agent rebuilds the /settings form from this document, so
+            # every form-editable SAML field must appear here - omitting one
+            # makes the round-trip post it blank and the "blank = clear"
+            # contract (#131) wipes it from settings.yaml (#165).
+            "default_acs_url": settings.default_acs_url,
             "sign_responses": settings.saml_sign_responses,
             "c14n_algorithm": settings.saml_c14n_algorithm,
             "strict_binding": settings.strict_saml_binding,
