@@ -144,6 +144,12 @@
         });
 
         {% if persona_mode %}
+        document.getElementById('user_code')?.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+            }
+        });
+
         // Persona picker buttons are type=button, not submit: pressing Enter
         // in the device code field can no longer implicitly "click" (and
         // thus authorize as) whichever user happens to be listed first -
