@@ -69,8 +69,10 @@ jobs:
     needs: publish-testpypi
     runs-on: ubuntu-latest
     environment: pypi
-    # Only publish to PyPI for non-prerelease tags
-    if: ${{ !contains(github.ref, '-') }}
+    # Pre-release tags publish to PyPI too: pip only installs pre-releases
+    # with an explicit --pre (or an exact ==2.7.0rc1 pin), so plain
+    # `pip install nanoidp` keeps resolving to the latest final release.
+    # TestPyPI above stays as the rehearsal step for every tag.
     permissions:
       id-token: write
     steps:
