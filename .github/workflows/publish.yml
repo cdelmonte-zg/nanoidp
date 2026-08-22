@@ -47,8 +47,47 @@ jobs:
           name: dist
           path: dist/
 
-  publish-testpypi:
+  # Install and exercise the BUILT wheel before anything is published: the
+  # test job above runs against `pip install -e .`, which does not catch
+  # packaging defects (missing package data, broken entry points, metadata
+  # fallbacks) in the artifact actually being shipped.
+  wheel-smoke:
     needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Install the wheel in a clean venv
+        run: |
+          python -m venv smoke
+          smoke/bin/pip install --quiet dist/*.whl
+
+      - name: Smoke test the installed wheel
+        run: |
+          smoke/bin/python -c "import nanoidp; print('version:', nanoidp.__version__)"
+          smoke/bin/nanoidp --help > /dev/null
+          command -v smoke/bin/nanoidp-mcp > /dev/null
+          mkdir smoke-cfg && cd smoke-cfg
+          ../smoke/bin/nanoidp init
+          grep -q '127.0.0.1' config/settings.yaml
+          ../smoke/bin/nanoidp --port 8765 &
+          SERVER=$!
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:8765/api/health > /dev/null && break; sleep 1; done
+          curl -sf http://127.0.0.1:8765/api/health | grep -q ok
+          curl -sf http://127.0.0.1:8765/.well-known/openid-configuration > /dev/null
+          kill $SERVER
+
+  publish-testpypi:
+    needs: wheel-smoke
     runs-on: ubuntu-latest
     environment: testpypi
     permissions:
