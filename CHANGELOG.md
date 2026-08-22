@@ -33,6 +33,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   local files only (no remote URLs) to avoid beacons.
 
 ### Fixed
+- **Example presets now bind to `127.0.0.1`** (#164). All four pre-2.6.0
+  presets (`cli-device-flow`, `microservices-client-credentials`,
+  `react-spa-pkce`, `spring-boot-saml`) still shipped an explicit
+  `host: "0.0.0.0"`, overriding the loopback default introduced with
+  GHSA-2473-px8h-rvg6 for anyone who copied them. Each now ships loopback
+  with a commented `# host: "0.0.0.0"` opt-in line, matching the
+  `persona-login` preset and the reverse-proxy guide's framing.
 - **`/api/config` now exposes `saml.default_acs_url`** (#165). The e2e agent
   rebuilds the settings form from that document, so the missing field was
   posted back blank on every run and the "present-but-blank = clear"
