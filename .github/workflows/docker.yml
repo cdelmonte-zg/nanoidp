@@ -32,6 +32,13 @@ jobs:
         uses: docker/metadata-action@v6
         with:
           images: ghcr.io/${{ github.repository }}
+          # latest=false: the metadata-action's default 'latest=auto' flavor
+          # adds :latest on ANY tag push, ignoring the enable= guard on the
+          # raw rule below - that is exactly how v2.7.0-rc1 briefly captured
+          # :latest. With auto disabled, the guarded raw rule is the only
+          # source of :latest, so hyphenated pre-release tags never move it.
+          flavor: |
+            latest=false
           tags: |
             type=ref,event=tag
             type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
