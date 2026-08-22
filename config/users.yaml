@@ -21,8 +21,7 @@ users:
   #  ADMIN USER - Full access
   # ============================================================
   admin:
-    # password: "admin"
-    password: "$2y$10$8Dog2MPyKiYQ.Sgb/.upfeg0U/HDls5Fwk/hxnUiVLG61/ffoHn8O"
+    password: "admin"
     email: "admin@example.org"
     identity_class: "INTERNAL"
     entitlements:

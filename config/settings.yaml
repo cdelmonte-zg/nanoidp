@@ -35,8 +35,6 @@ oauth:
   issuer_from_request: false
   issuer_from_proxy_headers: false
   # logos_dir: ./static/logos  # optional override; defaults to src/nanoidp/static/logos
-  require_pkce: true
-  refresh_token_rotation: false
 saml:
   entity_id: http://localhost:${PORT:8000}/saml
   sso_url: http://localhost:${PORT:8000}/saml/sso
@@ -49,7 +47,6 @@ saml:
   export_groups: false
   roles_attr_name: roles
   groups_attr_name: groups
-  want_authn_requests_signed: false
 jwt:
   algorithm: RS256
   keys_dir: ./keys
@@ -64,8 +61,6 @@ allowed_identity_classes:
 session:
   secret_key: dev-secret-key-change-in-production
   permanent: true
-  require_ui_login: true
-  enforce_password_check: true
 logging:
   level: INFO
   format: '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
