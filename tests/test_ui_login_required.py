@@ -69,6 +69,37 @@ class TestRequireUiLoginOn:
         resp = test_client.get("/users")
         assert resp.status_code == 200
 
+    def test_on_persona_login_satisfies_gate(self, tmp_path):
+        """Enabled + login.mode persona: a passwordless identity selection
+        satisfies the gate (documented combination - the gate then confirms
+        a user was chosen, not that anyone was verified)."""
+        _write_settings(tmp_path, session_overrides={"require_ui_login": True})
+        data = yaml.safe_load((tmp_path / "settings.yaml").read_text())
+        data["login"] = {"mode": "persona"}
+        (tmp_path / "settings.yaml").write_text(yaml.safe_dump(data))
+        app = create_app(config_dir=str(tmp_path))
+        test_client = app.test_client()
+
+        resp = test_client.post(
+            "/login", data={"username": "admin"}, follow_redirects=False
+        )
+        assert resp.status_code == 302
+        assert "/login" not in resp.headers["Location"]
+
+        resp = test_client.get("/users")
+        assert resp.status_code == 200
+
+    def test_on_other_blueprints_stay_ungated(self, tmp_path):
+        """Enabled: the gate is ui_bp-only - the management API and the OAuth
+        discovery endpoint stay reachable without a session (regression pin
+        for the blueprint-separation property the design relies on)."""
+        _write_settings(tmp_path, session_overrides={"require_ui_login": True})
+        app = create_app(config_dir=str(tmp_path))
+        test_client = app.test_client()
+
+        assert test_client.get("/api/config").status_code == 200
+        assert test_client.get("/.well-known/openid-configuration").status_code == 200
+
     def test_on_real_login_grants_access(self, tmp_path):
         """Enabled: successful /login POST grants access to /users."""
         _write_settings(tmp_path, session_overrides={"require_ui_login": True})
