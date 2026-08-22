@@ -9,7 +9,7 @@
     <style>
         body {
             min-height: 100vh;
-            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+            background: {% if client and client.background_color %}{{ client.background_color }}{% else %}linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%){% endif %};
             display: flex;
             align-items: center;
             justify-content: center;
@@ -22,7 +22,7 @@
             box-shadow: 0 10px 40px rgba(0,0,0,0.3);
         }
         .authorize-header {
-            background: linear-gradient(135deg, #0d6efd 0%, #6610f2 100%);
+            background: {% if client and client.header_color %}{{ client.header_color }}{% else %}linear-gradient(135deg, #0d6efd 0%, #6610f2 100%){% endif %};
             color: #fff;
             padding: 2rem;
             border-radius: 1rem 1rem 0 0;
@@ -48,6 +48,12 @@
             font-size: 0.8rem;
             margin: 0.2rem;
         }
+        .authorize-footer {
+            background: {% if client and client.footer_color %}{{ client.footer_color }}{% else %}transparent{% endif %};
+            padding: 1rem;
+            border-radius: 0 0 1rem 1rem;
+            margin: 0 -2rem -2rem -2rem;
+        }
     </style>
 </head>
 <body>
@@ -67,9 +73,14 @@
 
             <div class="client-info">
                 <div class="d-flex align-items-center mb-2">
+                    {% if logo_url %}
+                    <img src="{{ logo_url }}" alt="" class="me-2" style="height:2rem;width:auto;">
+                    {% else %}
                     <i class="bi bi-app-indicator text-primary me-2 fs-4"></i>
+                    {% endif %}
                     <div>
-                        <strong>{{ client_id }}</strong>
+                        {% if not client or client.show_client_id %}<strong>{{ client_id }}</strong>{% endif %}
+                        {% if client and client.show_description and client.description %}<small class="text-muted d-block">{{ client.description }}</small>{% endif %}
                         <small class="text-muted d-block">wants to access your account</small>
                     </div>
                 </div>
@@ -112,7 +123,7 @@
                 </button>
             </form>
 
-            <div class="text-center mt-3">
+            <div class="authorize-footer text-center mt-3">
                 <small class="text-muted">
                     <i class="bi bi-info-circle me-1"></i>
                     Sign in to authorize this application

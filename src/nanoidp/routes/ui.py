@@ -11,6 +11,7 @@ from io import StringIO
 from flask import (
     Blueprint,
     Response,
+    current_app,
     flash,
     redirect,
     render_template,
@@ -20,6 +21,7 @@ from flask import (
 )
 from flask.typing import ResponseReturnValue
 
+from ..branding import effective_logos_dir
 from ..config import OAuthClient, User, get_config
 from ..services import get_audit_log, get_token_service, get_yaml_writer
 from ._audit import audit_event
@@ -327,10 +329,14 @@ def client_create() -> ResponseReturnValue:
     if request.method == "GET":
         # Generate a random client secret
         generated_secret = secrets.token_urlsafe(32)
+        logos_dir = effective_logos_dir(
+            get_config().settings.logos_dir, current_app.static_folder
+        )
         return render_template(
             "clients_form.html",
             client=None,
             generated_secret=generated_secret,
+            logos_dir=logos_dir,
             current_user=session.get("user"),
         )
 
@@ -350,6 +356,11 @@ def client_create() -> ResponseReturnValue:
             client_id=client_id,
             client_secret=client_secret,
             description=request.form.get("description", ""),
+            background_color=request.form.get("background_color") or None,
+            header_color=request.form.get("header_color") or None,
+            footer_color=request.form.get("footer_color") or None,
+            show_client_id=bool(request.form.get("show_client_id")),
+            show_description=bool(request.form.get("show_description")),
             additional_audiences=_parse_textarea_list(
                 request.form.get("additional_audiences", "")
             ),
@@ -388,10 +399,14 @@ def client_edit(client_id: str) -> ResponseReturnValue:
         return redirect(url_for("ui.clients"))
 
     if request.method == "GET":
+        logos_dir = effective_logos_dir(
+            config.settings.logos_dir, current_app.static_folder
+        )
         return render_template(
             "clients_form.html",
             client=client,
             generated_secret=None,
+            logos_dir=logos_dir,
             current_user=session.get("user"),
         )
 
@@ -406,6 +421,11 @@ def client_edit(client_id: str) -> ResponseReturnValue:
             client_id=client_id,
             client_secret=client_secret,
             description=request.form.get("description", ""),
+            background_color=request.form.get("background_color") or None,
+            header_color=request.form.get("header_color") or None,
+            footer_color=request.form.get("footer_color") or None,
+            show_client_id=bool(request.form.get("show_client_id")),
+            show_description=bool(request.form.get("show_description")),
             additional_audiences=_parse_textarea_list(
                 request.form.get("additional_audiences", "")
             ),
@@ -547,6 +567,7 @@ def settings() -> ResponseReturnValue:
             token_expiry_minutes=int(expiry_raw) if expiry_raw else None,
             require_pkce=_form_bool("require_pkce"),
             refresh_token_rotation=_form_bool("refresh_token_rotation"),
+            logos_dir=_form_text("logos_dir"),
         )
 
         # SAML settings

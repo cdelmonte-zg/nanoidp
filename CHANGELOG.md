@@ -15,6 +15,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the security caveats inline.
 
 ### Added
+- **Per-client login page branding**: optional per-client colors (background,
+  header, footer, all as validated hex values), show/hide client_id and
+  description on the `/authorize` login page, and per-client logo images
+  stored locally in `static/logos/` keyed by client ID (no YAML config needed
+  for logos; place the image file and it's served automatically; the
+  directory is overridable via `oauth.logos_dir`). Colours and toggles are
+  editable from the OAuth client form in the UI and from the MCP
+  `create_client`/`update_client`/`get_client` tools, descriptions are
+  already supported, and logos are deployed by the operator to the server
+  filesystem. Designed for demos and prototyping; colours are structured
+  (not free-form CSS) to prevent stored-XSS on the auth UI, and logos are
+  local files only (no remote URLs) to avoid beacons.
 - **First-class group support**: users gain a `groups` list alongside `roles`,
   modelled exactly the same way. It is loaded from and persisted to
   `users.yaml` (omitted when empty), emitted as a `groups` claim on the access

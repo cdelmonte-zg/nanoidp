@@ -103,6 +103,16 @@
                         </div>
                         <div class="form-text">Each refresh invalidates the used refresh token; reuse revokes its rotation family (forced on by oauth21).</div>
                     </div>
+
+                    <hr class="my-4">
+                    <h6 class="mb-3"><i class="bi bi-palette me-2"></i>Login Page Branding</h6>
+
+                    <div class="mb-3">
+                        <label for="logos_dir" class="form-label">Logos Directory</label>
+                        <input type="text" class="form-control" id="logos_dir" name="logos_dir"
+                               value="{{ settings.logos_dir or '' }}" placeholder="src/nanoidp/static/logos (default)">
+                        <div class="form-text">Directory where per-client logo files are looked up by filename (<code>&lt;client_id&gt;.svg/.png/.jpg/.webp</code>). Leave blank to use the default (the app's own <code>static/logos</code>).</div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -307,7 +317,8 @@ function updatePreview() {
             audience: document.getElementById('audience').value,
             token_expiry_minutes: parseInt(document.getElementById('token_expiry_minutes').value) || 60,
             require_pkce: document.getElementById('require_pkce').checked,
-            refresh_token_rotation: document.getElementById('refresh_token_rotation').checked
+            refresh_token_rotation: document.getElementById('refresh_token_rotation').checked,
+            logos_dir: document.getElementById('logos_dir').value.trim()
         },
         saml: {
             entity_id: document.getElementById('saml_entity_id').value,

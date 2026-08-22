@@ -96,6 +96,15 @@ oauth:
       description: "Client whose redirect_uri is pinned"
       redirect_uris:            # optional; when set, /authorize enforces
         - "http://localhost:3000/callback"  # exact string matching
+    - client_id: "branded-client"
+      client_secret: "secret"
+      description: "Demo client with custom login page branding"
+      background_color: "#2c3e50"  # optional; hex only, behind the login card
+      header_color: "#3498db"      # optional; hex only, the card's header band
+      footer_color: "#e8f4f8"      # optional; hex only, the card's footer band
+      show_client_id: true         # optional; default true
+      show_description: true       # optional; default false
+  # logos_dir: "./static/logos"    # optional; defaults to src/nanoidp/static/logos
 
 saml:
   entity_id: "http://localhost:8000/saml"
@@ -137,6 +146,29 @@ OAuth 2.1 §4.1.1): no prefix, host or path normalization, and a mismatch
 is answered with `400 invalid_request` directly, never by redirecting to
 the unvalidated URI (§3.1.2.4). Clients without the field keep accepting
 any syntactically valid URI, the permissive dev default.
+
+**Login page branding**: for demos and prototyping, a client can show its
+`client_id` and `description` on the `/authorize` login page and use custom
+colors, so testers can see which application they're signing in to. All
+fields are optional and safe by construction: colors must be a plain
+`#rrggbb` hex string (validated on save, rejected otherwise), never raw CSS
+or markup, and a logo is a local file, never a remote URL. To add a logo,
+drop an image at `<logos_dir>/<client_id>.{svg,png,jpg,jpeg,webp}` (default
+`logos_dir`: `src/nanoidp/static/logos`, overridable via `oauth.logos_dir`);
+it's picked up by filename, no config entry needed.
+
+To preview a client's branded login page, open `/authorize` with its
+`client_id` and a `redirect_uri` (any syntactically valid URL works unless
+the client has `redirect_uris` pinned - see above):
+
+```text
+http://localhost:8000/authorize?response_type=code&client_id=branded-client&redirect_uri=http://localhost:3000/callback
+```
+
+The page won't complete the flow (there's no app listening at
+`redirect_uri` to receive the code), but it renders the branding, which is
+all a visual check needs. This only affects `/authorize`; the dashboard's
+own `/login` and the SAML SSO login page are unbranded.
 
 The SAML options (`strict_binding`, `sign_responses`, `c14n_algorithm`)
 are covered in detail in [SAML options](saml.md). Security-related

@@ -166,6 +166,7 @@ class YamlWriter:
         token_expiry_minutes: Optional[int] = None,
         require_pkce: Optional[bool] = None,
         refresh_token_rotation: Optional[bool] = None,
+        logos_dir: Optional[str] = None,
     ) -> None:
         """Update OAuth settings.
 
@@ -216,6 +217,13 @@ class YamlWriter:
             oauth.get("refresh_token_rotation"), refresh_token_rotation
         ):
             oauth["refresh_token_rotation"] = refresh_token_rotation
+        if logos_dir is not None:
+            next_logos_dir = logos_dir or ""
+            if not is_unchanged(oauth.get("logos_dir"), next_logos_dir):
+                if logos_dir:
+                    oauth["logos_dir"] = logos_dir
+                else:
+                    oauth.pop("logos_dir", None)
 
         self._atomic_write(self.settings_file, data)
         get_config().reload()

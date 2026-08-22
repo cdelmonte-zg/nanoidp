@@ -24,8 +24,17 @@ oauth:
     description: 'Client with registered redirect URIs (exact matching, issue #67)'
     redirect_uris:
     - http://localhost:3000/callback
+  - client_id: branded-client
+    client_secret: branded-secret
+    description: Demo client with custom login page branding
+    background_color: '#2c3e50'
+    header_color: '#3498db'
+    footer_color: '#e8f4f8'
+    show_client_id: true
+    show_description: true
   issuer_from_request: false
   issuer_from_proxy_headers: false
+  # logos_dir: ./static/logos  # optional override; defaults to src/nanoidp/static/logos
 saml:
   entity_id: http://localhost:${PORT:8000}/saml
   sso_url: http://localhost:${PORT:8000}/saml/sso
