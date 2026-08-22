@@ -1,3 +1,4 @@
+{% import "_macros.html" as macros %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -95,6 +96,15 @@
 
                     <hr class="my-4">
 
+                    {% if persona_mode %}
+                    {{ macros.persona_picker(users, "Persona login - select a user to authorize this device.", js_submit=true) }}
+
+                    <div class="d-grid">
+                        <button type="submit" name="action" value="deny" class="btn btn-outline-danger py-2">
+                            <i class="bi bi-x-circle me-2"></i>Deny
+                        </button>
+                    </div>
+                    {% else %}
                     <div class="form-floating mb-3">
                         <input type="text" class="form-control" id="username" name="username" placeholder="Username" required>
                         <label for="username"><i class="bi bi-person me-2"></i>Username</label>
@@ -113,6 +123,7 @@
                             <i class="bi bi-x-circle me-2"></i>Deny
                         </button>
                     </div>
+                    {% endif %}
                 </form>
 
                 <div class="text-center mt-3">
@@ -131,6 +142,29 @@
         document.getElementById('user_code')?.addEventListener('input', function(e) {
             e.target.value = e.target.value.toUpperCase();
         });
+
+        {% if persona_mode %}
+        document.getElementById('user_code')?.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+            }
+        });
+
+        // Persona picker buttons are type=button, not submit: pressing Enter
+        // in the device code field can no longer implicitly "click" (and
+        // thus authorize as) whichever user happens to be listed first -
+        // only an explicit click/keyboard-activation on a picker button submits.
+        document.querySelectorAll('.persona-user-btn').forEach(function(btn) {
+            btn.addEventListener('click', function() {
+                var hidden = document.createElement('input');
+                hidden.type = 'hidden';
+                hidden.name = 'username';
+                hidden.value = btn.value;
+                btn.form.appendChild(hidden);
+                btn.form.submit();
+            });
+        });
+        {% endif %}
     </script>
 </body>
 </html>

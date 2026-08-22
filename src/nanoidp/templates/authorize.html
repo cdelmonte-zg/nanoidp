@@ -1,3 +1,4 @@
+{% import "_macros.html" as macros %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -107,6 +108,11 @@
                 </div>
             </div>
 
+            {% if persona_mode %}
+            <form method="POST">
+                {{ macros.persona_picker(users, "Persona login - select a user to authorize.") }}
+            </form>
+            {% else %}
             <form method="POST">
                 <div class="form-floating mb-3">
                     <input type="text" class="form-control" id="username" name="username" placeholder="Username" required autofocus>
@@ -122,6 +128,7 @@
                     <i class="bi bi-check-circle me-2"></i>Authorize
                 </button>
             </form>
+            {% endif %}
 
             <div class="authorize-footer text-center mt-3">
                 <small class="text-muted">

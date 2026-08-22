@@ -159,6 +159,9 @@ class DeviceCodeStore:
 
         The credential check runs inside the lock, as it always did, so two
         concurrent verifications cannot both claim the same pending code.
+        ``authenticate`` is the single choke point for both password and
+        persona login (see ``ConfigManager.interactive_authenticate``) - this
+        store no longer needs to know which mode is active.
         """
         with self._lock:
             device_code = self._by_user_code.get(user_code)
@@ -173,9 +176,11 @@ class DeviceCodeStore:
             if action == "deny":
                 grant.status = "denied"
                 return DeviceVerifyOutcome.DENIED, None
-            if not username or not password:
+
+            if not username:
                 return DeviceVerifyOutcome.MISSING_CREDENTIALS, None
             user = authenticate(username, password)
+
             if not user:
                 return DeviceVerifyOutcome.INVALID_CREDENTIALS, None
             grant.status = "authorized"

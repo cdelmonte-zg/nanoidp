@@ -46,6 +46,10 @@ against them without depending on accidental or invented semantics.
 - **Drive it from an agent.** An [MCP server](guides/MCP_WORKFLOW.md)
   exposes users, clients, tokens, keys, and settings to Claude Code and
   other MCP-compatible tools.
+- **See who you're testing as.** Persona login mode lists your configured
+  users right in the interactive login UI, so you sign in by picking one
+  instead of hunting down a password in `users.yaml` - opt-in, off by
+  default. See the [Security guide](guides/SECURITY.md#persona-login-mode).
 - **Configure it your way.** A full web UI, plain YAML files, a REST API.
   No database required.
 

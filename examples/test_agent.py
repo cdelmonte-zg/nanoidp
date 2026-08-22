@@ -76,6 +76,7 @@ class TestCategory(Enum):
     CORE = "Core"
     OAUTH = "OAuth2/OIDC"
     SAML = "SAML"
+    PERSONA = "Persona Login"
     KEYS = "Key Management"
     API = "REST API"
 
@@ -2616,6 +2617,190 @@ class NanoIDPTestAgent:
             return self._add_result("SAML Metadata Bindings", TestCategory.SAML, False, str(e))
 
     # =========================================================================
+    # PERSONA LOGIN MODE TESTS
+    # =========================================================================
+
+    def test_persona_login_mode(self) -> TestResult:
+        """Persona login mode (passwordless interactive login, a local
+        development/testing convenience, off by default).
+
+        Temporarily switches the running server into 'login_mode: persona'
+        via the dashboard settings form, creates a password-less test user
+        (only possible once persona mode is on), then exercises every
+        interactive surface by selecting that user instead of supplying a
+        password: the nanoidp dashboard's /login, OIDC /authorize, SAML
+        /saml/sso (checking AuthnContextClassRef is 'unspecified', not the
+        password-mode 'PasswordProtectedTransport'), and the device flow's
+        /device. Restores login_mode and removes the test user afterward,
+        regardless of how far the checks got.
+        """
+        import re
+
+        persona_user = "e2e-persona-user"
+        checks: Dict[str, bool] = {}
+
+        try:
+            # Step 1: enable persona mode. Every other settings field follows
+            # the "absent = unchanged" contract (#131), so only login_mode
+            # needs to be sent.
+            resp = self.session.post(
+                f"{self.base_url}/settings",
+                data={"login_mode": "persona"},
+                timeout=10
+            )
+            checks["enabled_persona_mode"] = resp.status_code == 200
+
+            # Step 2: create a password-less test user (only allowed now that
+            # persona mode is on - see routes/ui.py user_create()).
+            resp = self.session.post(
+                f"{self.base_url}/users/create",
+                data={"username": persona_user, "email": "e2e-persona@example.org"},
+                timeout=10
+            )
+            checks["created_passwordless_user"] = resp.status_code in (200, 302)
+
+            # Step 3: nanoidp dashboard /login - picker shown, selection logs in.
+            login_page = requests.get(f"{self.base_url}/login", timeout=5)
+            picker_shown = 'name="password"' not in login_page.text
+            login_resp = requests.post(
+                f"{self.base_url}/login",
+                data={"username": persona_user},
+                allow_redirects=False,
+                timeout=5
+            )
+            checks["login_ui_persona"] = picker_shown and login_resp.status_code == 302
+
+            # Step 4: OIDC /authorize - selection issues a code, exchangeable for a token.
+            state = secrets.token_urlsafe(16)
+            redirect_uri = "http://localhost:3000/callback"
+            auth_params = {
+                "response_type": "code",
+                "client_id": self.client_id,
+                "redirect_uri": redirect_uri,
+                "scope": "openid",
+                "state": state,
+            }
+            requests.get(
+                f"{self.base_url}/authorize",
+                params=auth_params,
+                allow_redirects=False,
+                timeout=5
+            )
+            authorize_resp = requests.post(
+                f"{self.base_url}/authorize",
+                data={**auth_params, "username": persona_user},
+                allow_redirects=False,
+                timeout=5
+            )
+            authorize_ok = False
+            if authorize_resp.status_code == 302:
+                params = parse_qs(urlparse(authorize_resp.headers.get("Location", "")).query)
+                if "code" in params:
+                    token_resp = self.session.post(
+                        f"{self.base_url}/token",
+                        data={
+                            "grant_type": "authorization_code",
+                            "code": params["code"][0],
+                            "redirect_uri": redirect_uri,
+                        },
+                        timeout=5
+                    )
+                    authorize_ok = (
+                        token_resp.status_code == 200
+                        and "access_token" in token_resp.json()
+                    )
+            checks["authorize_persona"] = authorize_ok
+
+            # Step 5: device flow - selection authorizes the device.
+            device_ok = False
+            device_auth_resp = self.session.post(
+                f"{self.base_url}/device_authorization",
+                data={"scope": "openid"},
+                timeout=5
+            )
+            if device_auth_resp.status_code == 200:
+                device_data = device_auth_resp.json()
+                device_code = device_data.get("device_code")
+                user_code = device_data.get("user_code")
+                requests.get(
+                    f"{self.base_url}/device",
+                    params={"user_code": user_code},
+                    timeout=5
+                )
+                requests.post(
+                    f"{self.base_url}/device",
+                    data={"user_code": user_code, "username": persona_user},
+                    timeout=5
+                )
+                time.sleep(1)
+                token_resp = self.session.post(
+                    f"{self.base_url}/token",
+                    data={
+                        "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+                        "device_code": device_code,
+                    },
+                    timeout=5
+                )
+                device_ok = (
+                    token_resp.status_code == 200
+                    and "access_token" in token_resp.json()
+                )
+            checks["device_persona"] = device_ok
+
+            # Step 6: SAML /saml/sso - selection must NOT claim
+            # PasswordProtectedTransport (#persona login design contract, point 6).
+            request_id = "_persona_e2e_test"
+            acs_url = "http://localhost:8080/acs"
+            saml_request_xml = f"""
+            <samlp:AuthnRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"
+                ID="{request_id}" Version="2.0" IssueInstant="2024-01-01T00:00:00Z"
+                AssertionConsumerServiceURL="{acs_url}">
+                <saml:Issuer xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion">test-sp</saml:Issuer>
+            </samlp:AuthnRequest>
+            """.strip()
+            encoded_request = base64.b64encode(saml_request_xml.encode()).decode()
+
+            saml_resp = requests.post(
+                f"{self.base_url}/saml/sso",
+                data={"SAMLRequest": encoded_request, "username": persona_user},
+                allow_redirects=False,
+                timeout=5
+            )
+            saml_ok = False
+            authn_context = None
+            if saml_resp.status_code == 200 and "SAMLResponse" in saml_resp.text:
+                match = re.search(r'name="SAMLResponse"\s+value="([^"]+)"', saml_resp.text)
+                if match:
+                    saml_response_xml = base64.b64decode(match.group(1)).decode("utf-8")
+                    ctx_match = re.search(
+                        r"<[^:>]*:?AuthnContextClassRef>([^<]+)<", saml_response_xml
+                    )
+                    authn_context = ctx_match.group(1) if ctx_match else None
+                    saml_ok = authn_context == (
+                        "urn:oasis:names:tc:SAML:2.0:ac:classes:unspecified"
+                    )
+            checks["saml_persona_unspecified_context"] = saml_ok
+        finally:
+            # Cleanup runs regardless of how far the checks above got, so a
+            # failed assertion never leaves the running server in persona
+            # mode or with a leftover test user.
+            requests.post(f"{self.base_url}/users/{persona_user}/delete", timeout=5)
+            self.session.post(
+                f"{self.base_url}/settings",
+                data={"login_mode": "password"},
+                timeout=10
+            )
+
+        all_ok = all(checks.values())
+        return self._add_result(
+            "Persona Login Mode",
+            TestCategory.PERSONA,
+            all_ok,
+            ", ".join(f"{k}={'OK' if v else 'FAIL'}" for k, v in checks.items()),
+            checks
+        )
+
+    # =========================================================================
     # KEY MANAGEMENT TESTS
     # =========================================================================
 
@@ -3349,6 +3534,9 @@ class NanoIDPTestAgent:
                 self.test_saml_signing_config,
                 self.test_saml_c14n_algorithm,
                 self.test_saml_exclusive_c14n,
+            ]),
+            (TestCategory.PERSONA, "Persona Login Mode", [
+                self.test_persona_login_mode,
             ]),
             (TestCategory.KEYS, "Key Management", [
                 self.test_key_info,

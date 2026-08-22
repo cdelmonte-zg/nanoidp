@@ -177,8 +177,17 @@ def _build_saml_response(
     attributes: dict,
     in_response_to: Optional[str] = None,
     sign: bool = True,
+    authn_context: str = "urn:oasis:names:tc:SAML:2.0:ac:classes:PasswordProtectedTransport",
 ) -> bytes:
-    """Build a SAML Response XML."""
+    """Build a SAML Response XML.
+
+    ``authn_context`` (AuthnContextClassRef) defaults to
+    PasswordProtectedTransport - accurate for every existing caller, which
+    all authenticate by password. A persona-mode login authenticates by
+    identity selection instead, so the caller passes 'unspecified' there;
+    claiming PasswordProtectedTransport for that login would be false (#persona
+    login design contract, point 6).
+    """
     config = get_config()
     crypto = get_crypto_service(config.settings.keys_dir)
 
@@ -264,7 +273,7 @@ def _build_saml_response(
     )
     ctx = etree.SubElement(authn, "{urn:oasis:names:tc:SAML:2.0:assertion}AuthnContext")
     ctxc = etree.SubElement(ctx, "{urn:oasis:names:tc:SAML:2.0:assertion}AuthnContextClassRef")
-    ctxc.text = "urn:oasis:names:tc:SAML:2.0:ac:classes:PasswordProtectedTransport"
+    ctxc.text = authn_context
 
     if attributes:
         attrs = etree.SubElement(assertion, "{urn:oasis:names:tc:SAML:2.0:assertion}AttributeStatement")
@@ -440,36 +449,46 @@ def sso() -> ResponseReturnValue:
 
     # Check if user is authenticated
     username = session.get("user")
+    persona_mode = config.settings.persona_mode_enabled
 
     # Handle inline login (no redirect to preserve binding)
     if not username:
         login_error = None
 
-        # Check if login form was submitted
+        # Check if login form was submitted. Persona mode authenticates by
+        # identity selection only; password mode is unchanged.
         form_username = request.form.get("username", "").strip()
         form_password = request.form.get("password", "")
 
-        if form_username and form_password:
-            user = config.authenticate(form_username, form_password)
-            if user:
-                session["user"] = form_username
-                session.permanent = True
-                username = form_username
-                audit_event(
-                    "login",
-                    "success",
-                    endpoint="/saml/sso",
-                    username=username,
-                )
-            else:
-                login_error = "Invalid credentials"
-                audit_event(
-                    "login",
-                    "failed",
-                    endpoint="/saml/sso",
-                    username=form_username,
-                    details={"reason": "Invalid credentials"},
-                )
+        user = config.interactive_authenticate(form_username, form_password)
+
+        if user:
+            session["user"] = form_username
+            # Recorded so the assertion's AuthnContextClassRef below reflects
+            # how this session actually authenticated (#persona login design
+            # contract, point 6) - persona logins must not claim
+            # PasswordProtectedTransport.
+            session["auth_method"] = "persona" if persona_mode else "password"
+            session.permanent = True
+            username = form_username
+            audit_event(
+                "login",
+                "success",
+                endpoint="/saml/sso",
+                username=username,
+            )
+        elif (persona_mode and form_username) or (
+            not persona_mode and form_username and form_password
+        ):
+            # A real (failed) selection/login attempt, not just missing input
+            login_error = "Invalid credentials"
+            audit_event(
+                "login",
+                "failed",
+                endpoint="/saml/sso",
+                username=form_username,
+                details={"reason": "Invalid credentials"},
+            )
 
         # Still not authenticated - show login form
         if not username:
@@ -482,6 +501,7 @@ def sso() -> ResponseReturnValue:
                 relay_state=relay_state,
                 original_verb=request.method,
                 users=list(config.users.keys()),
+                persona_mode=persona_mode,
             )
 
     user = config.get_user(username)
@@ -538,6 +558,18 @@ def sso() -> ResponseReturnValue:
 
     name_id = user.email or f"{username}@example.org"
 
+    # AuthnContextClassRef must reflect how THIS session actually
+    # authenticated, not the current server-wide setting - the session may
+    # have been authenticated earlier (e.g. via the nanoidp dashboard's own
+    # /login) and is only being reused here. Defaults to "password" when
+    # unset (sessions predating this feature, or seeded directly in tests),
+    # preserving the prior unconditional PasswordProtectedTransport behavior.
+    authn_context = (
+        "urn:oasis:names:tc:SAML:2.0:ac:classes:unspecified"
+        if session.get("auth_method", "password") == "persona"
+        else "urn:oasis:names:tc:SAML:2.0:ac:classes:PasswordProtectedTransport"
+    )
+
     # Generate SAML Response
     xml = _build_saml_response(
         acs_url=acs_url,
@@ -547,6 +579,7 @@ def sso() -> ResponseReturnValue:
         attributes={k: v for k, v in saml_attrs.items() if v is not None},
         in_response_to=in_response_to,
         sign=config.settings.saml_sign_responses,
+        authn_context=authn_context,
     )
     saml_b64 = b64encode(xml).decode("ascii")
 

@@ -95,6 +95,28 @@ class TestUserAuthentication:
         user = config.authenticate("", "")
         assert user is None
 
+    def test_authenticate_rejects_passwordless_user(self, app):
+        """A password-less (persona-mode-only) user never authenticates here,
+        regardless of the password supplied - a missing password is not an
+        empty credential (#persona login design contract, point 4)."""
+        with app.app_context():
+            config = get_config()
+            config.users["persona-user"] = User(username="persona-user")
+
+            assert config.authenticate("persona-user", "") is None
+            assert config.authenticate("persona-user", "anything") is None
+            assert config.authenticate("persona-user", "persona-user") is None
+
+    def test_authenticate_passwordless_user_safe_with_bcrypt_enabled(self, app):
+        """Must not crash (AttributeError on None.encode()) when
+        password_hashing is on and the user has no password."""
+        with app.app_context():
+            config = get_config()
+            config.users["persona-user"] = User(username="persona-user")
+            config.settings.password_hashing = True
+
+            assert config.authenticate("persona-user", "anything") is None
+
 
 class TestClientManagement:
     """Tests for OAuth client management."""
@@ -266,6 +288,18 @@ class TestUserDataclass:
         assert user.source_acl == []
         assert user.attributes == {}
 
+    def test_user_password_defaults_to_none(self):
+        """A user with no password field is persona-mode-only (password=None)."""
+        user = User(username="persona-user")
+
+        assert user.password is None
+
+    def test_user_password_none_is_valid(self):
+        """Explicitly passing password=None is accepted (not a validation error)."""
+        user = User(username="persona-user", password=None)
+
+        assert user.password is None
+
 
 class TestOAuthClientDataclass:
     """Tests for the OAuthClient dataclass."""
@@ -300,6 +334,93 @@ class TestOAuthClientDataclass:
         assert client.description == ""
 
 
+class TestLoginMode:
+    """Tests for the login_mode setting (persona login, local dev convenience)."""
+
+    def test_default_login_mode_is_password(self):
+        assert Settings().login_mode == "password"
+
+    def test_login_mode_persona_is_valid(self):
+        assert Settings(login_mode="persona").login_mode == "persona"
+
+    def test_login_mode_invalid_value_rejected(self):
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            Settings(login_mode="sso")
+
+    def test_persona_mode_enabled_reflects_login_mode(self):
+        assert Settings(login_mode="password").persona_mode_enabled is False
+        assert Settings(login_mode="persona").persona_mode_enabled is True
+
+    def test_login_mode_loaded_from_settings_yaml(self, tmp_path):
+        """login.mode: persona in settings.yaml is picked up by ConfigManager."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        (config_dir / "settings.yaml").write_text(
+            "login:\n  mode: persona\n"
+        )
+        (config_dir / "users.yaml").write_text(
+            'users:\n  admin:\n    password: "admin"\ndefault_user: admin\n'
+        )
+
+        manager = ConfigManager(str(config_dir))
+
+        assert manager.settings.login_mode == "persona"
+        assert manager.settings.persona_mode_enabled is True
+
+    def test_login_mode_defaults_when_section_absent(self, tmp_path):
+        """No 'login' section at all -> default 'password' mode (backward compatible)."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        (config_dir / "settings.yaml").write_text("oauth:\n  issuer: http://localhost:8000\n")
+        (config_dir / "users.yaml").write_text(
+            'users:\n  admin:\n    password: "admin"\ndefault_user: admin\n'
+        )
+
+        manager = ConfigManager(str(config_dir))
+
+        assert manager.settings.login_mode == "password"
+
+    def test_bare_login_section_does_not_crash(self, tmp_path):
+        """Regression: 'login:' with nothing under it parses to
+        {"login": None} (YAML null), not a missing key - must not crash
+        the loader (previously `data.get("login", {})` returned None)."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        (config_dir / "settings.yaml").write_text("login:\n")
+        (config_dir / "users.yaml").write_text(
+            'users:\n  admin:\n    password: "admin"\ndefault_user: admin\n'
+        )
+
+        manager = ConfigManager(str(config_dir))
+
+        assert manager.settings.login_mode == "password"
+
+
+class TestUsersYamlPasswordOptional:
+    """Tests for loading users without a password from users.yaml."""
+
+    def test_user_missing_password_key_loads_as_none(self, tmp_path):
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        (config_dir / "settings.yaml").write_text("oauth:\n  issuer: http://localhost:8000\n")
+        (config_dir / "users.yaml").write_text(
+            "users:\n"
+            "  admin:\n"
+            '    password: "admin"\n'
+            "  persona-user:\n"
+            '    email: "persona@example.org"\n'
+            "default_user: admin\n"
+        )
+
+        manager = ConfigManager(str(config_dir))
+        user = manager.get_user("persona-user")
+
+        assert user is not None
+        assert user.password is None
+
+
 class TestGlobalConfig:
     """Tests for the global configuration singleton."""
 
@@ -332,7 +453,11 @@ class TestUserPydanticValidation:
         assert "username" in str(exc_info.value)
 
     def test_user_empty_password_fails(self):
-        """Test that empty password raises ValidationError."""
+        """Test that empty password raises ValidationError.
+
+        None (omitted) is the correct way to express "no password" - an
+        empty string is a distinct, still-rejected footgun.
+        """
         from pydantic import ValidationError
 
         with pytest.raises(ValidationError) as exc_info:

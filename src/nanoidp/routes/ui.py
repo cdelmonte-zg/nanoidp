@@ -59,6 +59,7 @@ def login() -> ResponseReturnValue:
     This endpoint is for direct web UI access only.
     """
     config = get_config()
+    persona_mode = config.settings.persona_mode_enabled
 
     if request.method == "GET":
         error = request.args.get("error")
@@ -66,16 +67,20 @@ def login() -> ResponseReturnValue:
             "login.html",
             error=error,
             users=list(config.users.keys()),
+            persona_mode=persona_mode,
         )
 
-    # POST: validate credentials
+    # POST: persona mode selects a user by identity, no password prompt;
+    # password mode is unchanged.
     username = request.form.get("username", "").strip()
     password = request.form.get("password", "")
 
-    if not username or not password:
-        return redirect(url_for("ui.login", error="Username and password required"))
+    if (persona_mode and not username) or (not persona_mode and (not username or not password)):
+        error = "Select a user" if persona_mode else "Username and password required"
+        return redirect(url_for("ui.login", error=error))
 
-    user = config.authenticate(username, password)
+    user = config.interactive_authenticate(username, password)
+
     if not user:
         audit_event(
             "login",
@@ -88,6 +93,10 @@ def login() -> ResponseReturnValue:
 
     # Create session
     session["user"] = username
+    # Recorded so a session authenticated here and later reused by SAML SSO
+    # reports the correct AuthnContextClassRef (persona logins must not
+    # claim PasswordProtectedTransport).
+    session["auth_method"] = "persona" if persona_mode else "password"
     session.permanent = True
 
     audit_event(
@@ -140,6 +149,7 @@ def user_create() -> ResponseReturnValue:
             "users_form.html",
             user=None,
             allowed_identity_classes=config.settings.allowed_identity_classes,
+            persona_mode=config.settings.persona_mode_enabled,
             current_user=session.get("user"),
         )
 
@@ -150,8 +160,11 @@ def user_create() -> ResponseReturnValue:
             flash("Username is required", "error")
             return redirect(url_for("ui.user_create"))
 
-        password = request.form.get("password", "")
-        if not password:
+        # A password-less user only makes sense in persona mode; only the
+        # blank-check is stripped, the stored value is kept verbatim.
+        raw_password = request.form.get("password", "")
+        password = None if not raw_password.strip() else raw_password
+        if password is None and not config.settings.persona_mode_enabled:
             flash("Password is required for new users", "error")
             return redirect(url_for("ui.user_create"))
 
@@ -235,13 +248,16 @@ def user_edit(username: str) -> ResponseReturnValue:
             "users_form.html",
             user=user,
             allowed_identity_classes=config.settings.allowed_identity_classes,
+            persona_mode=config.settings.persona_mode_enabled,
             current_user=session.get("user"),
         )
 
     # POST: Update user
     try:
-        # Get password - keep existing if not provided
-        password = request.form.get("password", "")
+        # Get password - keep existing if not provided. user.password is
+        # Optional[str] (a persona-mode-only user has none), hence the
+        # annotation - without it mypy infers plain str from request.form.get().
+        password: str | None = request.form.get("password", "")
         if not password:
             password = user.password
 
@@ -590,6 +606,9 @@ def settings() -> ResponseReturnValue:
         identity_classes = [ic.strip() for ic in request.form.get("allowed_identity_classes", "").split("\n") if ic.strip()]
         if identity_classes:
             yaml_writer.update_allowed_identity_classes(identity_classes)
+
+        # Login mode (persona login, local dev convenience)
+        yaml_writer.update_login_settings(mode=_form_text("login_mode"))
 
         flash("Settings updated successfully", "success")
         return redirect(url_for("ui.settings"))

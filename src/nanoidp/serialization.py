@@ -99,6 +99,43 @@ def is_unchanged(current_raw: Any, new_value: Any) -> bool:
     return expanded == new_value
 
 
+def merge_optional_nested_field(
+    document: Dict[str, Any],
+    section_key: str,
+    field_key: str,
+    value: Any,
+    default: Any,
+) -> None:
+    """Write ``document[section_key][field_key] = value``, omitting the field
+    (and the whole section, once empty) when ``value`` equals ``default`` -
+    the "omit at default" convention shared by every optional settings
+    section (``security_profile``, ``login.mode``, ...). A bare
+    ``section_key:`` line in YAML parses to ``{section_key: None}``, not a
+    missing key, hence ``or {}`` rather than a ``.get(..., {})`` default.
+
+    Shared between ``apply_settings_document`` (below) and
+    ``YamlWriter.update_login_settings`` so the merge logic isn't duplicated
+    at each call site.
+    """
+    section = document.get(section_key) or {}
+    current = section.get(field_key, default)
+    if is_unchanged(current, value):
+        return
+    if value != default:
+        # Not `setdefault(section_key, {})`: a bare `section_key:` line
+        # already has the key present with a `None` value, and setdefault
+        # only fills in *missing* keys - it would hand back that `None`
+        # unchanged and the subscript assignment below would raise.
+        if document.get(section_key) is None:
+            document[section_key] = {}
+        document[section_key][field_key] = value
+    elif section_key in document:
+        document[section_key].pop(field_key, None)
+        if not document[section_key]:
+            document.pop(section_key, None)
+
+
+
 def _quoted(value: str) -> SingleQuotedScalarString:
     """Force single-quoted style so an embedded ``#`` is never mistaken for a
     comment and stray leading/trailing whitespace survives (#127).
@@ -248,12 +285,14 @@ def user_to_yaml(user: User) -> Dict[str, Any]:
     Canonical form is sparse: optional fields and model defaults
     (``tenant: default``, empty lists) are omitted and restored by the loader's
     defaults on the next read. Free-form text is quoted so it round-trips
-    safely even if it contains ``#`` (#127).
+    safely even if it contains ``#`` (#127). ``password`` is omitted entirely
+    when ``None`` - a persona-mode-only user, as opposed to an empty-string
+    password (which the model rejects outright).
     """
-    entry: Dict[str, Any] = {
-        "password": _quoted(user.password),
-        "email": user.email,
-    }
+    entry: Dict[str, Any] = {}
+    if user.password is not None:
+        entry["password"] = _quoted(user.password)
+    entry["email"] = user.email
     if user.identity_class:
         entry["identity_class"] = user.identity_class
     if user.entitlements:
@@ -395,6 +434,9 @@ def apply_settings_document(
             document["security_profile"] = settings.security_profile
         else:
             document.pop("security_profile", None)
+
+    login_mode_default = "password"
+    merge_optional_nested_field(document, "login", "mode", settings.login_mode, login_mode_default)
 
     return document
 

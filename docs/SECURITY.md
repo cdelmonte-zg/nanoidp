@@ -73,6 +73,44 @@ python -m nanoidp --profile oauth21
 
 ---
 
+## Persona Login Mode
+
+Interactive logins can optionally skip password prompts entirely and let you sign in by picking a configured user from a list - handy for local testing when you just want to switch between users quickly, without looking up passwords.
+
+Opt-in and off by default:
+
+```yaml
+login:
+  mode: persona   # default: password
+```
+
+| Mode | Behavior |
+|------|----------|
+| `password` (default) | Interactive logins require the configured password |
+| `persona` | Interactive logins list the configured users; sign in by selecting one, no password prompt |
+
+**Where it applies**: every interactive login surface - the nanoidp dashboard's `/login`, OIDC's `/authorize`, SAML's `/saml/sso`, and the device authorization flow's `/device` verification page.
+
+**Where it doesn't apply**: the OAuth2 `password` grant (`grant_type=password` at `/token`) is unaffected either way - it's a machine-to-machine credential exchange, not an interactive login. A user with no `password` configured (see below) simply can never authenticate through it, in either mode.
+
+**Password-less users**: `password` is optional on a user in `users.yaml`. A user without one can only sign in via persona mode - they're rejected by password-mode login and the OAuth password grant alike.
+
+```yaml
+users:
+  admin:
+    password: "admin"          # still works with either login mode
+  alice:
+    email: "alice@example.org" # no password: persona-mode only
+```
+
+**SAML detail**: a persona login can't claim `AuthnContextClassRef: PasswordProtectedTransport`, since no password was used - NanoIDP emits `urn:oasis:names:tc:SAML:2.0:ac:classes:unspecified` instead for sessions authenticated this way.
+
+**Orthogonal to security profiles**: `login.mode` and `security_profile` are independent settings. `security_profile` governs OAuth/SAML protocol strictness; `login.mode` only changes how the interactive login UI authenticates the resource owner. Persona mode works the same under any profile.
+
+Like the rest of NanoIDP, this is a local development/testing convenience - it is never intended as an authentication mode for a deployed environment.
+
+---
+
 ## Key Management
 
 NanoIDP uses RSA keys for JWT signing. Keys can be auto-generated, imported from external files, or rotated dynamically.
@@ -156,6 +194,7 @@ The following MCP tools modify configuration and require extra caution:
 | Tool | Description |
 |------|-------------|
 | `create_user` | Create a new user |
+| `create_persona_user` | Create a password-less user (persona login mode) |
 | `update_user` | Modify user attributes |
 | `delete_user` | Remove a user |
 | `create_client` | Create OAuth client |

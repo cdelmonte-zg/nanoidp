@@ -1,3 +1,4 @@
+{% import "_macros.html" as macros %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -64,6 +65,19 @@
             </div>
             {% endif %}
 
+            {% if persona_mode %}
+            <form method="POST">
+                {% if saml_request %}
+                <input type="hidden" name="SAMLRequest" value="{{ saml_request|e }}">
+                <input type="hidden" name="saml_original_verb" value="{{ original_verb|e }}">
+                {% endif %}
+                {% if relay_state %}
+                <input type="hidden" name="RelayState" value="{{ relay_state|e }}">
+                {% endif %}
+
+                {{ macros.persona_picker(users, "Persona login - select a user to sign in.") }}
+            </form>
+            {% else %}
             <form method="POST">
                 {% if saml_request %}
                 <input type="hidden" name="SAMLRequest" value="{{ saml_request|e }}">
@@ -100,6 +114,7 @@
                     {% endfor %}
                 </div>
             </div>
+            {% endif %}
             {% endif %}
         </div>
     </div>

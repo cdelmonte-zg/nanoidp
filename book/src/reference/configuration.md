@@ -42,6 +42,33 @@ default_user: "admin"
 How these attributes end up in tokens, including the `authority_prefixes`
 mapping below, is described in [Tokens and claims](tokens.md).
 
+## Login mode (persona login)
+
+`password` is optional on a user - a user without one can only sign in via
+[persona login mode](../guides/SECURITY.md#persona-login-mode), a local
+dev/testing convenience (off by default) that lets every interactive login
+surface (`/login`, `/authorize`, `/saml/sso`, `/device`) authenticate by
+selecting a configured user instead of typing a password:
+
+```yaml
+# settings.yaml
+login:
+  mode: persona   # default: password
+```
+
+```yaml
+# users.yaml
+users:
+  admin:
+    password: "admin"          # still works with either login mode
+  alice:
+    email: "alice@example.org" # no password: persona-mode only
+```
+
+See the [Security guide](../guides/SECURITY.md#persona-login-mode) for the
+full contract, including why the OAuth `password` grant is unaffected and
+the SAML `AuthnContextClassRef` detail.
+
 ## Settings (`config/settings.yaml`)
 
 ```yaml
@@ -121,6 +148,10 @@ saml:
 
 # Optional; also settable at startup with --profile (which wins over YAML)
 # security_profile: oauth21   # dev (default) | stricter-dev | oauth21
+
+# Optional; local dev/testing convenience, off by default - see "Login mode" above
+# login:
+#   mode: persona   # password (default) | persona
 
 authority_prefixes:
   roles: "ROLE_"

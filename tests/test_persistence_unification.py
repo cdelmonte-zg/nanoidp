@@ -116,6 +116,54 @@ class TestSaveIsNotLossy:
         assert "security_profile" not in doc
         assert "allowed_identity_classes" not in doc
 
+    def test_login_mode_persisted_when_non_default(self, tmp_path):
+        config_dir = _seed(tmp_path, BASE_SETTINGS)
+        manager = ConfigManager(str(config_dir))
+        manager.settings.login_mode = "persona"
+        manager.save()
+
+        doc = _read(config_dir / "settings.yaml")
+        assert doc["login"]["mode"] == "persona"
+
+    def test_login_mode_section_omitted_at_default(self, tmp_path):
+        """Default 'password' mode never materializes a 'login:' section."""
+        config_dir = _seed(tmp_path, BASE_SETTINGS)
+        manager = ConfigManager(str(config_dir))
+        manager.save()
+
+        doc = _read(config_dir / "settings.yaml")
+        assert "login" not in doc
+
+    def test_login_mode_cleared_back_to_default_removes_section(self, tmp_path):
+        config_dir = _seed(tmp_path, BASE_SETTINGS + "login:\n  mode: persona\n")
+        manager = ConfigManager(str(config_dir))
+        manager.settings.login_mode = "password"
+        manager.save()
+
+        doc = _read(config_dir / "settings.yaml")
+        assert "login" not in doc
+
+    def test_bare_login_section_survives_config_manager_save(self, tmp_path):
+        """Regression: a bare 'login:' line parses to {"login": None} (YAML
+        null), not a missing key - ConfigManager.save() must not crash on it."""
+        config_dir = _seed(tmp_path, BASE_SETTINGS + "login:\n")
+        manager = ConfigManager(str(config_dir))
+        manager.settings.login_mode = "persona"
+        manager.save()
+
+        doc = _read(config_dir / "settings.yaml")
+        assert doc["login"]["mode"] == "persona"
+
+    def test_bare_login_section_survives_yaml_writer_update(self, tmp_path):
+        """Same regression via the YamlWriter path (used by the Settings UI)."""
+        config_dir = _seed(tmp_path, BASE_SETTINGS + "login:\n")
+        ConfigManager(str(config_dir))
+        writer = YamlWriter(str(config_dir))
+        writer.update_login_settings(mode="persona")
+
+        doc = _read(config_dir / "settings.yaml")
+        assert doc["login"]["mode"] == "persona"
+
     def test_save_creates_backup(self, tmp_path):
         config_dir = _seed(tmp_path, BASE_SETTINGS)
         ConfigManager(str(config_dir)).save()
@@ -172,3 +220,38 @@ class TestSingleUserEntry:
         manager = ConfigManager(str(config_dir))
         manager.save()
         assert _read(users_file)["my_note"] == "keep me"
+
+
+class TestPasswordlessUserEntry:
+    """A user without a password (persona-mode-only) serializes without a
+    'password' key at all, and round-trips back to password=None."""
+
+    USER = User(username="persona-bob", email="bob@example.org", roles=["USER"])
+
+    def test_password_key_omitted(self):
+        entry = user_to_yaml(self.USER)
+        assert "password" not in entry
+
+    def test_both_paths_write_the_same_entry(self, tmp_path):
+        dir1 = _seed(tmp_path / "a", BASE_SETTINGS)
+        manager = ConfigManager(str(dir1))
+        manager.users["persona-bob"] = self.USER
+        manager.save()
+        entry1 = _read(dir1 / "users.yaml")["users"]["persona-bob"]
+
+        dir2 = _seed(tmp_path / "b", BASE_SETTINGS)
+        ConfigManager(str(dir2))
+        writer = YamlWriter(str(dir2))
+        writer.save_user(self.USER, is_new=True)
+        entry2 = _read(dir2 / "users.yaml")["users"]["persona-bob"]
+
+        assert entry1 == entry2 == user_to_yaml(self.USER)
+
+    def test_round_trips_to_password_none(self, tmp_path):
+        config_dir = _seed(tmp_path, BASE_SETTINGS)
+        manager = ConfigManager(str(config_dir))
+        manager.users["persona-bob"] = self.USER
+        manager.save()
+
+        reloaded = ConfigManager(str(config_dir)).users["persona-bob"]
+        assert reloaded.password is None

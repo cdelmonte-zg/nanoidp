@@ -229,6 +229,25 @@
             </div>
         </div>
 
+        <!-- Login Mode -->
+        <div class="col-12">
+            <div class="card">
+                <div class="card-header">
+                    <i class="bi bi-people me-2"></i>Login Mode
+                </div>
+                <div class="card-body">
+                    <div class="mb-3">
+                        <label for="login_mode" class="form-label">Interactive Login Mode</label>
+                        <select class="form-select" id="login_mode" name="login_mode">
+                            <option value="password" {% if settings.login_mode == 'password' %}selected{% endif %}>Password (default)</option>
+                            <option value="persona" {% if settings.login_mode == 'persona' %}selected{% endif %}>Persona (passwordless)</option>
+                        </select>
+                        <div class="form-text">"Password" requires the configured password on /login, /authorize, /saml/sso and the device flow. "Persona" lists the configured users and logs in by selecting one instead - a local development/testing convenience, off by default, not intended for deployed environments. Unrelated to the OAuth password grant, which always still requires a password.</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <!-- Identity Classes -->
         <div class="col-12">
             <div class="card">
@@ -338,7 +357,10 @@ function updatePreview() {
         allowed_identity_classes: document.getElementById('allowed_identity_classes').value
             .split('\n')
             .map(s => s.trim())
-            .filter(s => s)
+            .filter(s => s),
+        login: {
+            mode: document.getElementById('login_mode').value
+        }
     };
 
     document.getElementById('settingsPreview').textContent = JSON.stringify(preview, null, 2);

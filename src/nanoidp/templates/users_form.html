@@ -36,11 +36,13 @@
                     </div>
 
                     <div class="mb-3">
-                        <label for="password" class="form-label">Password {% if not user %}<span class="text-danger">*</span>{% endif %}</label>
+                        <label for="password" class="form-label">Password {% if not user and not persona_mode %}<span class="text-danger">*</span>{% endif %}</label>
                         <input type="password" class="form-control" id="password" name="password"
-                               {% if not user %}required{% endif %}>
+                               {% if not user and not persona_mode %}required{% endif %}>
                         {% if user %}
                         <div class="form-text">Leave empty to keep current password</div>
+                        {% elif persona_mode %}
+                        <div class="form-text">Leave empty for a persona-mode-only user (cannot log in with a password)</div>
                         {% endif %}
                     </div>
 

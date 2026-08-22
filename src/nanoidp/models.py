@@ -63,7 +63,14 @@ class User(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     username: str = Field(..., min_length=1, description="Unique username")
-    password: str = Field(..., min_length=1, description="User password")
+    password: Optional[str] = Field(
+        default=None,
+        min_length=1,
+        description="User password. Optional - omit for a user that only "
+        "authenticates via persona-mode interactive login (settings "
+        "'login.mode: persona'); such a user cannot authenticate via "
+        "password-mode login or the OAuth password grant.",
+    )
     email: str = Field(default="", description="User email address")
     identity_class: Optional[str] = Field(default=None, description="Identity classification")
     entitlements: List[str] = Field(default_factory=list, description="User entitlements")
@@ -271,6 +278,18 @@ class Settings(BaseModel):
     log_saml_requests: bool = Field(default=True, description="Log SAML requests")
     verbose_logging: bool = Field(default=True, description="Include usernames/client_ids in logs (dev convenience)")
 
+    # Login (persona mode, local dev convenience)
+    login_mode: str = Field(
+        default="password",
+        description="Interactive login mode: 'password' (default) requires "
+        "the configured password on /login, /authorize, /saml/sso and the "
+        "device flow; 'persona' lists the configured users and logs in by "
+        "selecting one, no password prompt. Opt-in, off by default - a local "
+        "development/testing convenience, not an authentication mode for "
+        "deployed environments. Orthogonal to 'security_profile' and to the "
+        "OAuth password grant, which is unaffected either way.",
+    )
+
     # Security (stricter-dev profile)
     security_profile: str = Field(
         default="dev", description="Security profile: dev, stricter-dev or oauth21"
@@ -305,6 +324,15 @@ class Settings(BaseModel):
             raise ValueError(f"Security profile must be one of: {valid_profiles}")
         return v
 
+    @field_validator("login_mode")
+    @classmethod
+    def validate_login_mode(cls, v: str) -> str:
+        """Validate login mode."""
+        valid_modes = {"password", "persona"}
+        if v not in valid_modes:
+            raise ValueError(f"Login mode must be one of: {valid_modes}")
+        return v
+
     # ------------------------------------------------------------------
     # Derived protocol behavior (#68). Routes and the shared discovery
     # builder consume these properties instead of raw fields, so a profile
@@ -333,6 +361,13 @@ class Settings(BaseModel):
     def password_grant_enabled(self) -> bool:
         """OAuth 2.1 removes the resource-owner password grant entirely."""
         return self.security_profile != "oauth21"
+
+    @property
+    def persona_mode_enabled(self) -> bool:
+        """Interactive logins select a configured user instead of a password
+        (local dev/testing convenience only; unrelated to 'security_profile'
+        and to the OAuth password grant - see 'login_mode' above)."""
+        return self.login_mode == "persona"
 
     @field_validator("issuer")
     @classmethod

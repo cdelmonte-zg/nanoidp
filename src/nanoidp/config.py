@@ -89,6 +89,9 @@ class ConfigManager:
         jwt_config = data.get("jwt", {})
         session = data.get("session", {})
         logging_config = data.get("logging", {})
+        # `or {}` (not the `, {}` default) because a bare `login:` line in
+        # YAML parses to `{"login": None}`, not a missing key.
+        login = data.get("login") or {}
 
         # Parse OAuth clients
         clients = []
@@ -161,6 +164,8 @@ class ConfigManager:
             # JWT
             jwt_algorithm=jwt_config.get("algorithm", "RS256"),
             keys_dir=jwt_config.get("keys_dir", "./keys"),
+            # Login mode (persona = passwordless interactive login, local dev convenience)
+            login_mode=login.get("mode", "password"),
             # Security profile (top-level; CLI --profile overrides it, #68)
             security_profile=data.get("security_profile", "dev"),
             # Authority prefixes
@@ -224,7 +229,10 @@ class ConfigManager:
 
             self.users[username] = User(
                 username=username,
-                password=user_data.get("password", ""),
+                # Missing key -> None (persona-mode-only user), not "" - a
+                # user without a password must never accidentally validate
+                # against an empty password.
+                password=user_data.get("password"),
                 email=user_data.get("email", f"{username}@example.org"),
                 identity_class=user_data.get("identity_class"),
                 entitlements=user_data.get("entitlements", []),
@@ -253,9 +261,12 @@ class ConfigManager:
         return self.users.get(username)
 
     def authenticate(self, username: str, password: str) -> Optional[User]:
-        """Authenticate a user. Supports bcrypt when password_hashing is enabled."""
+        """Authenticate a user. Supports bcrypt when password_hashing is enabled.
+
+        A password-less user (``password is None``) never authenticates here.
+        """
         user = self.get_user(username)
-        if not user:
+        if not user or user.password is None:
             return None
 
         if self.settings.password_hashing:
@@ -275,6 +286,20 @@ class ConfigManager:
                 return user
 
         return None
+
+    def interactive_authenticate(self, username: str, password: str) -> Optional[User]:
+        """Single choke point for the four interactive login surfaces (UI
+        ``/login``, OIDC ``/authorize``, SAML ``/saml/sso``, device
+        ``/device``): consults ``persona_mode_enabled`` so the persona/
+        password branch isn't hand-copied at each call site.
+
+        Persona mode: identity selection only, a non-empty ``username``
+        selects the user - no credential check. Password mode: unchanged,
+        delegates to ``authenticate()`` and requires both fields.
+        """
+        if self.settings.persona_mode_enabled:
+            return self.get_user(username) if username else None
+        return self.authenticate(username, password) if username and password else None
 
     def hash_password(self, password: str) -> str:
         """Hash a password using bcrypt."""

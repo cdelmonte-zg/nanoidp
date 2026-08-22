@@ -7,7 +7,7 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from ..config import OAuthClient, User, get_config
+from ..config import OAuthClient, Settings, User, get_config
 from ..serialization import (
     atomic_write_yaml,
     client_id_matches,
@@ -15,6 +15,7 @@ from ..serialization import (
     is_unchanged,
     load_yaml_document,
     merge_client_entry,
+    merge_optional_nested_field,
     user_to_yaml,
 )
 
@@ -316,6 +317,30 @@ class YamlWriter:
         data = self._load_settings_yaml()
         if not is_unchanged(data.get("allowed_identity_classes"), classes):
             data["allowed_identity_classes"] = classes
+
+        self._atomic_write(self.settings_file, data)
+        get_config().reload()
+
+    def update_login_settings(self, mode: Optional[str] = None) -> None:
+        """Update the 'login' section (persona login mode, local dev
+        convenience). 'password' is the default and is never persisted -
+        the 'login' section is omitted entirely at the default, same as
+        'security_profile' at 'dev' (#83/#87 read-modify-write conventions).
+
+        Unlike other text fields' "absent = unchanged, blank = clear"
+        convention (#131), there is no sensible "cleared" login mode, so a
+        blank value is treated the same as absent: left unchanged, not
+        written to disk. A present, non-blank value is validated against
+        the same `{"password", "persona"}` set as ``Settings.login_mode``
+        *before* anything is written, so an invalid value (e.g. a typo)
+        raises instead of persisting a mode the server can't start with.
+        """
+        data = self._load_settings_yaml()
+        login_mode_default = "password"
+
+        if mode:
+            Settings.validate_login_mode(mode)
+            merge_optional_nested_field(data, "login", "mode", mode, login_mode_default)
 
         self._atomic_write(self.settings_file, data)
         get_config().reload()

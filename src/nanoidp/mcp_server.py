@@ -81,6 +81,7 @@ _readonly_mode: bool = False
 # Tools that modify state and require admin secret when configured
 MUTATING_TOOLS = {
     "create_user",
+    "create_persona_user",
     "update_user",
     "delete_user",
     "create_client",
@@ -179,6 +180,29 @@ def _user_to_dict(user: User) -> dict[str, Any]:
     }
 
 
+def _build_user_from_arguments(
+    username: str, password: Optional[str], arguments: dict[str, Any]
+) -> User:
+    """Build a ``User`` from ``create_user``/``create_persona_user`` arguments.
+
+    Shared so the two tools can never drift on the non-password fields -
+    ``create_persona_user`` is the same shape with ``password`` fixed to
+    ``None`` instead of taken from the caller.
+    """
+    return User(
+        username=username,
+        password=password,
+        email=arguments.get("email", ""),
+        roles=arguments.get("roles", ["USER"]),
+        groups=arguments.get("groups", []),
+        tenant=arguments.get("tenant", "default"),
+        identity_class=arguments.get("identity_class"),
+        entitlements=arguments.get("entitlements", []),
+        source_acl=arguments.get("source_acl", []),
+        attributes=arguments.get("attributes", {}),
+    )
+
+
 def _client_to_dict(client: OAuthClient) -> dict[str, Any]:
     """Convert OAuthClient to dictionary (without secret)."""
     return {
@@ -211,6 +235,50 @@ def _normalize_str_list(value: Any, field: str) -> list[str]:
 def _normalize_audiences(value: Any) -> list[str]:
     """Coerce a raw audiences argument (see ``_normalize_str_list``)."""
     return _normalize_str_list(value, "additional_audiences")
+
+
+# Shared by create_user's and create_persona_user's input_schema (#10): every
+# field but username/password is identical between the two tools, and
+# _build_user_from_arguments() reads all of these from either one - a
+# property missing here would be silently ignored on that tool alone.
+_USER_COMMON_PROPERTIES: dict[str, Any] = {
+    "email": {
+        "type": "string",
+        "description": "Email address (optional)",
+    },
+    "roles": {
+        "type": "array",
+        "items": {"type": "string"},
+        "description": "List of roles (optional, default: ['USER'])",
+    },
+    "groups": {
+        "type": "array",
+        "items": {"type": "string"},
+        "description": "List of groups (optional)",
+    },
+    "tenant": {
+        "type": "string",
+        "description": "Tenant identifier (optional, default: 'default')",
+    },
+    "identity_class": {
+        "type": "string",
+        "description": "Identity class (e.g., INTERNAL, EXTERNAL)",
+    },
+    "entitlements": {
+        "type": "array",
+        "items": {"type": "string"},
+        "description": "List of entitlements",
+    },
+    "source_acl": {
+        "type": "array",
+        "items": {"type": "string"},
+        "description": "Source ACL entries for document-level security",
+    },
+    "attributes": {
+        "type": "object",
+        "description": "Custom key-value attributes (optional)",
+    },
+}
 
 
 _HEX_COLOR_RE = re.compile(HEX_COLOR_PATTERN)
@@ -274,40 +342,32 @@ _TOOLS: list[Tool] = [
                     "type": "string",
                     "description": "Password for the new user",
                 },
-                "email": {
-                    "type": "string",
-                    "description": "Email address (optional)",
-                },
-                "roles": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "List of roles (optional, default: ['USER'])",
-                },
-                "groups": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "List of groups (optional)",
-                },
-                "tenant": {
-                    "type": "string",
-                    "description": "Tenant identifier (optional, default: 'default')",
-                },
-                "identity_class": {
-                    "type": "string",
-                    "description": "Identity class (e.g., INTERNAL, EXTERNAL)",
-                },
-                "entitlements": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "List of entitlements",
-                },
-                "source_acl": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Source ACL entries for document-level security",
-                },
+                **_USER_COMMON_PROPERTIES,
             },
             "required": ["username", "password"],
+        },
+    ),
+    Tool(
+        name="create_persona_user",
+        description=(
+            "Create a password-less user for persona login mode (local "
+            "dev/testing convenience, 'login.mode: persona' in settings). "
+            "The user can only authenticate by identity selection in the "
+            "interactive login UI - never via password-mode login or the "
+            "OAuth password grant. To keep 'create_user' unambiguous "
+            "(always creates a normal, password-protected user), this is a "
+            "separate tool rather than an optional password on create_user."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "username": {
+                    "type": "string",
+                    "description": "Username for the new persona-mode-only user",
+                },
+                **_USER_COMMON_PROPERTIES,
+            },
+            "required": ["username"],
         },
     ),
     Tool(
@@ -726,6 +786,18 @@ _TOOLS: list[Tool] = [
                     "type": "boolean",
                     "description": "Reject /authorize requests without a PKCE code_challenge (#47)",
                 },
+                "login_mode": {
+                    "type": "string",
+                    "enum": ["password", "persona"],
+                    "description": "Interactive login mode: 'password' (default) "
+                    "requires the configured password on /login, /authorize, "
+                    "/saml/sso and the device flow; 'persona' lists the "
+                    "configured users and logs in by selecting one, no password "
+                    "prompt. Opt-in, off by default - a local development/testing "
+                    "convenience, not an authentication mode for deployed "
+                    "environments. Orthogonal to 'security_profile' and to the "
+                    "OAuth password grant, which is unaffected either way.",
+                },
             },
             "required": [],
         },
@@ -962,18 +1034,16 @@ async def _execute_tool(name: str, arguments: dict[str, Any], config: ConfigMana
         if username in config.users:
             return {"success": False, "error": f"User '{username}' already exists"}
 
-        user = User(
-            username=username,
-            password=arguments["password"],
-            email=arguments.get("email", ""),
-            roles=arguments.get("roles", ["USER"]),
-            groups=arguments.get("groups", []),
-            tenant=arguments.get("tenant", "default"),
-            identity_class=arguments.get("identity_class"),
-            entitlements=arguments.get("entitlements", []),
-            source_acl=arguments.get("source_acl", []),
-            attributes=arguments.get("attributes", {}),
-        )
+        user = _build_user_from_arguments(username, arguments["password"], arguments)
+        config.users[username] = user
+        return {"success": True, "user": _user_to_dict(user)}
+
+    elif name == "create_persona_user":
+        username = arguments["username"]
+        if username in config.users:
+            return {"success": False, "error": f"User '{username}' already exists"}
+
+        user = _build_user_from_arguments(username, None, arguments)
         config.users[username] = user
         return {"success": True, "user": _user_to_dict(user)}
 
@@ -1179,6 +1249,7 @@ async def _execute_tool(name: str, arguments: dict[str, Any], config: ConfigMana
             "audience": settings.audience,
             "token_expiry_minutes": settings.token_expiry_minutes,
             "security_profile": settings.security_profile,
+            "login_mode": settings.login_mode,
             "refresh_token_rotation": settings.refresh_token_rotation,
             "require_pkce": settings.require_pkce,
             "jwt_algorithm": settings.jwt_algorithm,
@@ -1210,6 +1281,11 @@ async def _execute_tool(name: str, arguments: dict[str, Any], config: ConfigMana
 
     elif name == "update_settings":
         settings = config.settings
+
+        # Settings (unlike OAuthClient) has no validate_assignment, but the
+        # tool's input_schema declares "enum": ["password", "persona"] for
+        # login_mode, so call_tool()'s jsonschema pass already rejects an
+        # invalid value before this handler ever runs.
         updated = []
         if "issuer" in arguments:
             settings.issuer = arguments["issuer"]
@@ -1280,6 +1356,9 @@ async def _execute_tool(name: str, arguments: dict[str, Any], config: ConfigMana
         if "require_pkce" in arguments:
             settings.require_pkce = arguments["require_pkce"]
             updated.append("require_pkce")
+        if "login_mode" in arguments:
+            settings.login_mode = arguments["login_mode"]
+            updated.append("login_mode")
 
         return {
             "success": True,
@@ -1294,6 +1373,7 @@ async def _execute_tool(name: str, arguments: dict[str, Any], config: ConfigMana
                 "token_expiry_minutes": settings.token_expiry_minutes,
                 "refresh_token_rotation": settings.refresh_token_rotation,
                 "require_pkce": settings.require_pkce,
+                "login_mode": settings.login_mode,
                 "saml_sign_responses": settings.saml_sign_responses,
                 "saml_c14n_algorithm": settings.saml_c14n_algorithm,
                 "strict_saml_binding": settings.strict_saml_binding,
