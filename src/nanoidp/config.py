@@ -101,6 +101,11 @@ class ConfigManager:
                 client_id=client_id,
                 client_secret=client_data.get("client_secret", ""),
                 description=client_data.get("description", ""),
+                background_color=client_data.get("background_color"),
+                header_color=client_data.get("header_color"),
+                footer_color=client_data.get("footer_color"),
+                show_client_id=client_data.get("show_client_id", True),
+                show_description=client_data.get("show_description", False),
                 additional_audiences=_coerce_additional_audiences(
                     client_data.get("additional_audiences", []), client_id
                 ),
@@ -140,6 +145,7 @@ class ConfigManager:
             refresh_token_rotation=oauth.get("refresh_token_rotation", False),
             require_pkce=oauth.get("require_pkce", False),
             clients=clients,
+            logos_dir=oauth.get("logos_dir"),
             # SAML
             saml_entity_id=saml.get("entity_id", "http://localhost:8000/saml"),
             saml_sso_url=saml.get("sso_url", "http://localhost:8000/saml/sso"),

@@ -78,6 +78,78 @@
                             (RFC 6749 §3.1.2.3, OAuth 2.1 §4.1.1). Leave empty to accept any syntactically valid URI (dev default).
                         </div>
                     </div>
+
+                    <hr class="my-4">
+                    <h6 class="mb-3">
+                        <i class="bi bi-palette me-2"></i>Login Page Branding (Optional)
+                        {% if client %}
+                        <a href="{{ url_for('oauth.authorize', response_type='code', client_id=client.client_id, redirect_uri=client.redirect_uris[0] if client.redirect_uris else 'http://localhost:3000/callback') }}"
+                           target="_blank" rel="noopener" class="ms-2" title="Preview login page in a new tab">
+                            <i class="bi bi-box-arrow-up-right"></i>
+                        </a>
+                        {% endif %}
+                    </h6>
+
+                    <div class="mb-3">
+                        <div class="form-check mb-1">
+                            <input type="checkbox" class="form-check-input color-enable-toggle" id="enable_background_color"
+                                   data-target="background_color"
+                                   {% if client and client.background_color %}checked{% endif %}>
+                            <label class="form-check-label" for="enable_background_color">Custom background color</label>
+                        </div>
+                        <input type="color" class="form-control form-control-color" id="background_color" name="background_color"
+                               value="{{ client.background_color if client and client.background_color else '#1a1a2e' }}"
+                               title="Color behind the login card"
+                               {% if not (client and client.background_color) %}disabled{% endif %}>
+                        <div class="form-text">Color behind the login dialog</div>
+                    </div>
+
+                    <div class="mb-3">
+                        <div class="form-check mb-1">
+                            <input type="checkbox" class="form-check-input color-enable-toggle" id="enable_header_color"
+                                   data-target="header_color"
+                                   {% if client and client.header_color %}checked{% endif %}>
+                            <label class="form-check-label" for="enable_header_color">Custom header color</label>
+                        </div>
+                        <input type="color" class="form-control form-control-color" id="header_color" name="header_color"
+                               value="{{ client.header_color if client and client.header_color else '#0d6efd' }}"
+                               title="Color for the header band"
+                               {% if not (client and client.header_color) %}disabled{% endif %}>
+                        <div class="form-text">Color for the card header band</div>
+                    </div>
+
+                    <div class="mb-3">
+                        <div class="form-check mb-1">
+                            <input type="checkbox" class="form-check-input color-enable-toggle" id="enable_footer_color"
+                                   data-target="footer_color"
+                                   {% if client and client.footer_color %}checked{% endif %}>
+                            <label class="form-check-label" for="enable_footer_color">Custom footer color</label>
+                        </div>
+                        <input type="color" class="form-control form-control-color" id="footer_color" name="footer_color"
+                               value="{{ client.footer_color if client and client.footer_color else '#ffffff' }}"
+                               title="Color for the footer band"
+                               {% if not (client and client.footer_color) %}disabled{% endif %}>
+                        <div class="form-text">Color for the card footer band</div>
+                    </div>
+
+                    <div class="mb-3 form-check">
+                        <input type="checkbox" class="form-check-input" id="show_client_id" name="show_client_id"
+                               {% if not client or client.show_client_id %}checked{% endif %}>
+                        <label class="form-check-label" for="show_client_id">Show Client ID on login page</label>
+                    </div>
+
+                    <div class="mb-3 form-check">
+                        <input type="checkbox" class="form-check-input" id="show_description" name="show_description"
+                               {% if client and client.show_description %}checked{% endif %}>
+                        <label class="form-check-label" for="show_description">Show description on login page</label>
+                    </div>
+
+                    <div class="alert alert-info" role="alert">
+                        <i class="bi bi-info-circle me-2"></i>
+                        <strong>Logo:</strong> To add a client logo to the login page, place an image file at
+                        <code>{{ logos_dir }}/<em>{{ 'client-id' if not client else client.client_id }}</em>.{svg,png,jpg,webp}</code>
+                        on the server - no configuration needed.
+                    </div>
                 </div>
             </div>
 
@@ -119,6 +191,15 @@ function generateSecret() {
         .replace(/=/g, '');
     document.getElementById('client_secret').value = secret;
 }
+
+// Color pickers always submit a value, so a disabled input (unchecked toggle)
+// is the only way to keep an untouched color field unset (#150).
+document.querySelectorAll('.color-enable-toggle').forEach(function(toggle) {
+    var target = document.getElementById(toggle.dataset.target);
+    toggle.addEventListener('change', function() {
+        target.disabled = !toggle.checked;
+    });
+});
 
 // Form validation
 (function() {

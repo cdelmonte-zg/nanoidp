@@ -103,6 +103,11 @@ class User(BaseModel):
         }
 
 
+# Shared with mcp_server's pre-mutation check, so the MCP tool and this model
+# can never diverge on what a valid color is (#150 review).
+HEX_COLOR_PATTERN = r"^#[0-9a-fA-F]{6}$"
+
+
 class OAuthClient(BaseModel):
     """Represents an OAuth client."""
     # Validate on direct attribute assignment too (e.g. MCP update_client), so the
@@ -112,6 +117,20 @@ class OAuthClient(BaseModel):
     client_id: str = Field(..., min_length=1, description="OAuth client ID")
     client_secret: str = Field(..., min_length=1, description="OAuth client secret")
     description: str = Field(default="", description="Client description")
+    background_color: Optional[str] = Field(
+        default=None, pattern=HEX_COLOR_PATTERN,
+        description="Optional hex background color for the /authorize page (behind the login card)",
+    )
+    header_color: Optional[str] = Field(
+        default=None, pattern=HEX_COLOR_PATTERN,
+        description="Optional hex color for the /authorize login card header band",
+    )
+    footer_color: Optional[str] = Field(
+        default=None, pattern=HEX_COLOR_PATTERN,
+        description="Optional hex color for the /authorize login card footer band",
+    )
+    show_client_id: bool = Field(default=True, description="Show client_id on the /authorize login page")
+    show_description: bool = Field(default=False, description="Show description on the /authorize login page")
     additional_audiences: List[str] = Field(
         default_factory=list,
         description="Extra audiences added to the ID Token 'aud' alongside the client_id",
@@ -192,6 +211,13 @@ class Settings(BaseModel):
         "refresh token, so its reuse fails (lets clients test rotation handling, #46)",
     )
     clients: List[OAuthClient] = Field(default_factory=list, description="OAuth clients")
+    logos_dir: Optional[str] = Field(
+        default=None,
+        description="Directory path where per-client logo files are stored for the "
+        "/authorize login page (relative to the process cwd, or absolute). "
+        "When unset (default), resolves to the Flask app's 'static/logos' "
+        "subdirectory (src/nanoidp/static/logos).",
+    )
 
     # SAML
     saml_entity_id: str = Field(default="http://localhost:8000/saml", description="SAML entity ID")

@@ -814,6 +814,74 @@ class NanoIDPTestAgent:
                 "Redirect URI Exact Match", TestCategory.OAUTH, False, f"Error: {e}"
             )
 
+    def test_client_branding(self) -> TestResult:
+        """Per-client login page branding is created and rendered end-to-end (#150).
+
+        Creates a client with colors and the id/description toggles via the
+        clients UI form, then checks that /authorize's login page reflects
+        every one of them, and cleans the client up afterwards.
+        """
+        test_client_id = f"branding-test-{secrets.token_hex(4)}"
+        test_description = "Branding e2e test client"
+        try:
+            create = requests.post(
+                f"{self.base_url}/clients/create",
+                data={
+                    "client_id": test_client_id,
+                    "client_secret": "branding-test-secret",
+                    "description": test_description,
+                    "background_color": "#123456",
+                    "header_color": "#abcdef",
+                    "footer_color": "#654321",
+                    "show_client_id": "on",
+                    "show_description": "on",
+                },
+                allow_redirects=False,
+                timeout=5,
+            )
+            created = (
+                create.status_code in (302, 303)
+                and create.headers.get("Location", "").rstrip("/").endswith("/clients")
+            )
+            if not created:
+                return self._add_result(
+                    "Client Branding", TestCategory.OAUTH, False,
+                    f"Client creation failed: status={create.status_code}, "
+                    f"location={create.headers.get('Location')}",
+                )
+
+            authorize = requests.get(
+                f"{self.base_url}/authorize",
+                params={
+                    "response_type": "code",
+                    "client_id": test_client_id,
+                    "redirect_uri": "http://localhost:3000/callback",
+                },
+                timeout=5,
+            )
+            html = authorize.text
+            checks = {
+                "background_color": "#123456" in html,
+                "header_color": "#abcdef" in html,
+                "footer_color": "#654321" in html,
+                "client_id_shown": test_client_id in html,
+                "description_shown": test_description in html,
+            }
+            success = authorize.status_code == 200 and all(checks.values())
+            return self._add_result(
+                "Client Branding", TestCategory.OAUTH, success,
+                f"authorize_status={authorize.status_code}, checks={checks}",
+                checks,
+            )
+        except Exception as e:
+            return self._add_result(
+                "Client Branding", TestCategory.OAUTH, False, f"Error: {e}"
+            )
+        finally:
+            requests.post(
+                f"{self.base_url}/clients/{test_client_id}/delete", timeout=5
+            )
+
     def test_id_token_audience(self) -> TestResult:
         """ID Token `aud` is the client_id; access token `aud` is the resource (issue #32)."""
         try:
@@ -3436,6 +3504,7 @@ class NanoIDPTestAgent:
                 self.test_issuer_from_proxy_headers,
                 self.test_authorization_code_pkce,
                 self.test_redirect_uri_exact_matching,
+                self.test_client_branding,
                 self.test_id_token_audience,
                 self.test_id_token_time_claims,
                 self.test_id_token_audience_array,
