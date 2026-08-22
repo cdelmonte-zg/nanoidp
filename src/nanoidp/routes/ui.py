@@ -25,10 +25,12 @@ from ..branding import effective_logos_dir
 from ..config import OAuthClient, User, get_config
 from ..services import get_audit_log, get_token_service, get_yaml_writer
 from ._audit import audit_event
+from ._auth import ui_login_required
 
 logger = logging.getLogger(__name__)
 
 ui_bp = Blueprint("ui", __name__)
+ui_bp.before_request(ui_login_required)
 
 
 # ==================== Dashboard ====================

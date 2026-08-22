@@ -204,7 +204,11 @@ own `/login` and the SAML SSO login page are unbranded.
 The SAML options (`strict_binding`, `sign_responses`, `c14n_algorithm`)
 are covered in detail in [SAML options](saml.md). Security-related
 settings are covered in the [Security guide](../guides/SECURITY.md):
-profiles, `require_pkce`, key management, and `jwt.external_keys`.
+profiles, `require_pkce`, key management, `jwt.external_keys`, and the
+config UI's opt-in [login gate](../guides/SECURITY.md#config-ui-login-gate)
+(`session.require_ui_login`), and the invalid-bcrypt-hash
+[fallback removal](../guides/SECURITY.md#invalid-bcrypt-hash-fallback)
+(`session.enforce_password_check`).
 
 ## Logging
 

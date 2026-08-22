@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Security
+- **Opt-in login gate for the config web UI**: new `session.require_ui_login`
+  setting (off by default) makes `/login` actually enforce a logged-in
+  session on the dashboard, users, clients, settings, keys, claims, audit log
+  and token tester pages - previously `/login`/`/logout` existed but nothing
+  gated on them, so the login page implied protection it didn't provide.
+  Does not affect the separate `/api/*` management API, which remains
+  unauthenticated by design regardless. YAML-only for now, following the
+  `secret_key`/`security_profile` precedent. Related to the network-binding
+  hardening in GHSA-2473-px8h-rvg6.
+- **Opt-in removal of the invalid-bcrypt-hash plaintext fallback**: new
+  `session.enforce_password_check` setting (off by default). When
+  `password_hashing` is on, a `users.yaml` password that isn't a valid
+  bcrypt hash previously fell back to plaintext comparison with only a
+  warning logged - this setting removes that fallback, rejecting the login
+  outright instead. Default behavior (the fallback) is unchanged; opt-in
+  only. YAML-only, same treatment as `require_ui_login`.
+
 ## [2.6.0] - 2026-08-21
 
 ### Documentation
