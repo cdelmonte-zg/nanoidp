@@ -18,10 +18,13 @@ import pytest
 
 from nanoidp.config import ConfigManager, OAuthClient, get_config
 from nanoidp.services.redirect_uri import (
+    PRIVATE_SCHEME_REASON,
+    has_acceptable_scheme,
     is_absolute_redirect_uri,
     is_loopback_redirect_uri,
     redirect_uri_is_registered,
     redirect_uri_matches,
+    redirect_uri_rejection_reason,
 )
 
 CUSTOM_SCHEME = "com.example.app:/oauth2redirect"
@@ -31,12 +34,57 @@ LOCALHOST = "http://localhost:3000/callback"
 WEB = "https://app.example.com/cb"
 
 
+class TestPrivateUseSchemeRule:
+    """RFC 8252 §7.1 minimum rule: a private-use scheme must contain a period."""
+
+    @pytest.mark.parametrize(
+        "uri",
+        [
+            CUSTOM_SCHEME,
+            "com.example.app://callback",  # authority form is fine too
+            "a.b:/x",
+            LOOPBACK_V4,
+            LOCALHOST,
+            WEB,
+        ],
+    )
+    def test_acceptable_schemes(self, uri):
+        assert has_acceptable_scheme(uri)
+        assert redirect_uri_rejection_reason(uri) is None
+
+    @pytest.mark.parametrize("uri", ["myapp://callback", "myapp:/x", "app:/cb"])
+    def test_private_scheme_without_period_rejected(self, uri):
+        assert not has_acceptable_scheme(uri)
+        assert redirect_uri_rejection_reason(uri) == PRIVATE_SCHEME_REASON
+
+    def test_non_absolute_gets_generic_reason(self):
+        assert redirect_uri_rejection_reason("/relative") == "Invalid redirect_uri"
+        assert redirect_uri_rejection_reason("https://a.example/cb#f") == "Invalid redirect_uri"
+
+    def test_authorize_rejects_myapp_scheme_with_rfc_reason(self, client):
+        """demo-client has no redirect_uris, so only the syntactic gate applies."""
+        response = client.get(
+            "/authorize",
+            query_string={
+                "response_type": "code",
+                "client_id": "demo-client",
+                "redirect_uri": "myapp://callback",
+                "scope": "openid",
+            },
+        )
+        assert response.status_code == 400
+        assert "Location" not in response.headers
+        body = response.get_json()
+        assert body["error"] == "invalid_request"
+        assert "RFC 8252 section 7.1" in body["error_description"]
+
+
 class TestIsAbsoluteRedirectUri:
     @pytest.mark.parametrize(
         "uri",
         [
             CUSTOM_SCHEME,
-            "myapp://callback",
+            "myapp://callback",  # absolute; the scheme rule is a separate gate
             LOOPBACK_V4,
             LOOPBACK_V6,
             "http://127.0.0.1/callback",

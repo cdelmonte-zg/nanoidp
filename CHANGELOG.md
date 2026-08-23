@@ -33,7 +33,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   changes (with a loader migration), never on optional additions.
 - **Native-app redirect URIs** (#81, RFC 8252): `/authorize` accepts
   private-use scheme redirect URIs such as `com.example.app:/oauth2redirect`
-  (§7.1: a scheme and a path, no authority) as absolute URIs, and a
+  (§7.1: a scheme and a path, no authority) as absolute URIs and applies
+  §7.1's minimum rule to them (a non-`http(s)` scheme without a period,
+  such as `myapp://`, is rejected with a message naming the rule; domain
+  ownership is not verified), and a
   registered loopback URI (`http://127.0.0.1:{port}/...`,
   `http://[::1]:{port}/...`) matches any port (§7.3), since native apps
   bind an ephemeral port. Everything else keeps exact string matching (RFC

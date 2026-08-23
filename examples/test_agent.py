@@ -877,6 +877,9 @@ class NanoIDPTestAgent:
             localhost_other_port = authorize("http://localhost:3001/callback")
             web_other_port = authorize("https://app.example.com:444/cb")
             loopback_other_path = authorize("http://127.0.0.1:51234/other")
+            # RFC 8252 section 7.1 minimum rule: a private-use scheme without
+            # a period is rejected at the syntactic gate, registered or not.
+            private_scheme_no_period = authorize("myapp://callback")
 
             checks = {
                 "custom_scheme_accepted": custom.status_code == 200,
@@ -885,6 +888,8 @@ class NanoIDPTestAgent:
                 "localhost_other_port_rejected": rejected(localhost_other_port),
                 "web_other_port_rejected": rejected(web_other_port),
                 "loopback_other_path_rejected": rejected(loopback_other_path),
+                "private_scheme_without_period_rejected": rejected(private_scheme_no_period)
+                and "RFC 8252" in private_scheme_no_period.json().get("error_description", ""),
             }
 
             # Complete the loopback flow: the code must land on the port the
@@ -914,8 +919,8 @@ class NanoIDPTestAgent:
                 "Native App Redirect URIs",
                 TestCategory.OAUTH,
                 success,
-                "RFC 8252: custom scheme + loopback port variability accepted, "
-                "localhost/non-loopback ports and other paths rejected",
+                "RFC 8252: reverse-domain scheme + loopback port variability accepted, "
+                "localhost/non-loopback ports, other paths and myapp:// rejected",
                 {**checks, "statuses": {
                     "custom": custom.status_code,
                     "loopback_other_port": loopback_other_port.status_code,

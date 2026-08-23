@@ -215,7 +215,12 @@ any absolute URI, the permissive dev default.
 **Native apps (RFC 8252)**: two things a native client needs are built
 in. A private-use scheme URI such as `com.example.app:/oauth2redirect`
 (§7.1: a scheme and a path, no host) is a valid `redirect_uri` and can be
-registered like any other. A registered loopback URI,
+registered like any other. §7.1 requires such schemes to be a domain the
+app controls, in reverse order; NanoIDP applies the minimum rule the RFC
+asks of an authorization server, rejecting any non-`http(s)` scheme that
+contains no period (`myapp://callback` is answered with `400
+invalid_request` naming the rule), and does not verify domain ownership.
+A registered loopback URI,
 `http://127.0.0.1:{port}/callback` or `http://[::1]:{port}/callback`,
 matches any port (§7.3), because the app binds an ephemeral port at
 runtime; register it with any placeholder port (`:0` reads well). Only

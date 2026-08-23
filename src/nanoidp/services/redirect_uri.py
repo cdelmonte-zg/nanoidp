@@ -58,6 +58,49 @@ def is_absolute_redirect_uri(uri: str) -> bool:
     return True
 
 
+_WEB_SCHEMES = frozenset({"http", "https"})
+
+PRIVATE_SCHEME_REASON = (
+    "Invalid redirect_uri: private-use scheme must be reverse-domain based, "
+    "e.g. com.example.app:/callback (RFC 8252 section 7.1)"
+)
+
+
+def has_acceptable_scheme(uri: str) -> bool:
+    """True when the scheme is ``http``/``https`` or a reverse-domain private-use
+    scheme (RFC 8252 §7.1).
+
+    §7.1 requires private-use schemes to be based on a domain name under the
+    app's control, in reverse order (``com.example.app``), names ``myapp`` as
+    an example that does NOT qualify, and says the authorization server
+    SHOULD enforce it and at a minimum SHOULD reject schemes without a
+    period. This applies exactly that minimum rule: nanoidp cannot know which
+    domains an app controls, so full reverse-domain ownership is not
+    verified, only the presence of a period in the scheme.
+    """
+    try:
+        scheme = urlparse(uri).scheme
+    except ValueError:
+        return False
+    return scheme in _WEB_SCHEMES or "." in scheme
+
+
+def redirect_uri_rejection_reason(uri: str) -> str | None:
+    """The single syntactic gate /authorize applies to a ``redirect_uri``.
+
+    Returns ``None`` when the URI is acceptable, otherwise the
+    ``error_description`` to answer with: the generic "Invalid redirect_uri"
+    for non-absolute URIs and fragments (RFC 6749 §3.1.2), or a message that
+    names the RFC 8252 §7.1 rule for a private-use scheme without a period,
+    so a client developer learns why ``myapp://`` is not enough.
+    """
+    if not is_absolute_redirect_uri(uri):
+        return "Invalid redirect_uri"
+    if not has_acceptable_scheme(uri):
+        return PRIVATE_SCHEME_REASON
+    return None
+
+
 def is_loopback_redirect_uri(uri: str) -> bool:
     """True for ``http://127.0.0.1[:port]/...`` and ``http://[::1][:port]/...``.
 

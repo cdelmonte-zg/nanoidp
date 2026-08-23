@@ -37,7 +37,7 @@ from ..services import (
     get_token_service,
 )
 from ..services.device_code import DEVICE_CODE_EXPIRES_IN, DEVICE_POLL_INTERVAL
-from ..services.redirect_uri import is_absolute_redirect_uri, redirect_uri_is_registered
+from ..services.redirect_uri import redirect_uri_is_registered, redirect_uri_rejection_reason
 from ..services.token import resolve_user_claim, sanitize_claim_names
 from ._audit import audit_event
 from ._issuer import effective_issuer
@@ -192,11 +192,13 @@ def authorize() -> ResponseReturnValue:
     # Syntactic validation (RFC 6749 §3.1.2): an absolute URI with no
     # fragment. A scheme is required; an authority is not, so native-app
     # private-use scheme URIs like com.example.app:/oauth2redirect (RFC 8252
-    # §7.1) pass (#81). See services/redirect_uri.py.
-    if not is_absolute_redirect_uri(redirect_uri):
+    # §7.1) pass (#81), while a private-use scheme without a period (myapp://)
+    # is rejected per §7.1's minimum rule. See services/redirect_uri.py.
+    rejection = redirect_uri_rejection_reason(redirect_uri)
+    if rejection is not None:
         return jsonify({
             "error": "invalid_request",
-            "error_description": "Invalid redirect_uri"
+            "error_description": rejection
         }), 400
 
     # Matching against registered redirect URIs (issue #67). RFC 6749
