@@ -225,8 +225,9 @@ class ConfigManager:
             clients=clients,
             logos_dir=oauth.get("logos_dir"),
             # SAML
-            saml_entity_id=saml.get("entity_id", "http://localhost:8000/saml"),
-            saml_sso_url=saml.get("sso_url", "http://localhost:8000/saml/sso"),
+            # Absent or blank = derived from the effective issuer (#181).
+            saml_entity_id=saml.get("entity_id") or None,
+            saml_sso_url=saml.get("sso_url") or None,
             default_acs_url=saml.get("default_acs_url", "http://localhost:8080/login/saml2/sso/samlIdp"),
             saml_sign_responses=saml.get("sign_responses", True),
             saml_export_roles=saml.get("export_roles", False),

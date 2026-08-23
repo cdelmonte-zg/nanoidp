@@ -430,10 +430,14 @@ def apply_settings_document(
             oauth.pop("clients", None)
 
     saml = document.setdefault("saml", {})
-    if not is_unchanged(saml.get("entity_id"), settings.saml_entity_id):
-        saml["entity_id"] = settings.saml_entity_id
-    if not is_unchanged(saml.get("sso_url"), settings.saml_sso_url):
-        saml["sso_url"] = settings.saml_sso_url
+    # entity_id / sso_url: None means "derived from the effective issuer"
+    # (#181) and is represented by the key being absent - a derived value is
+    # never materialized into the file, so it keeps following the issuer.
+    for key, value in (("entity_id", settings.saml_entity_id), ("sso_url", settings.saml_sso_url)):
+        if value is None:
+            saml.pop(key, None)
+        elif not is_unchanged(saml.get(key), value):
+            saml[key] = value
     if not is_unchanged(saml.get("default_acs_url"), settings.default_acs_url):
         saml["default_acs_url"] = settings.default_acs_url
     if not is_unchanged(saml.get("sign_responses"), settings.saml_sign_responses):

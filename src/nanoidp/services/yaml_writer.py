@@ -248,10 +248,15 @@ class YamlWriter:
         data = self._load_settings_yaml()
         saml = data.setdefault("saml", {})
 
-        if entity_id is not None and not is_unchanged(saml.get("entity_id"), entity_id):
-            saml["entity_id"] = entity_id
-        if sso_url is not None and not is_unchanged(saml.get("sso_url"), sso_url):
-            saml["sso_url"] = sso_url
+        # Blank clears the key: absent = derived from the effective issuer
+        # (#181), the same "present-but-blank = clear" contract as #131.
+        for key, value in (("entity_id", entity_id), ("sso_url", sso_url)):
+            if value is None:
+                continue
+            if not value:
+                saml.pop(key, None)
+            elif not is_unchanged(saml.get(key), value):
+                saml[key] = value
         if default_acs_url is not None and not is_unchanged(
             saml.get("default_acs_url"), default_acs_url
         ):

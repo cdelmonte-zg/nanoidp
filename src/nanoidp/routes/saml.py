@@ -23,6 +23,7 @@ from ..services.saml_verification import (
     verify_redirect_signature,
 )
 from ._audit import audit_event
+from ._issuer import effective_saml_entity_id, effective_saml_sso_url
 
 # Create secure XML parser (XXE protection without deprecated defusedxml.lxml)
 _secure_parser = etree.XMLParser(
@@ -329,7 +330,7 @@ def metadata() -> ResponseReturnValue:
 
     ent = etree.Element(
         "{urn:oasis:names:tc:SAML:2.0:metadata}EntityDescriptor",
-        entityID=settings.saml_entity_id,
+        entityID=effective_saml_entity_id(settings),
         nsmap=NS,
     )
     idpsso = etree.SubElement(
@@ -354,13 +355,13 @@ def metadata() -> ResponseReturnValue:
         idpsso,
         "{urn:oasis:names:tc:SAML:2.0:metadata}SingleSignOnService",
         Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST",
-        Location=settings.saml_sso_url,
+        Location=effective_saml_sso_url(settings),
     )
     etree.SubElement(
         idpsso,
         "{urn:oasis:names:tc:SAML:2.0:metadata}SingleSignOnService",
         Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect",
-        Location=settings.saml_sso_url,
+        Location=effective_saml_sso_url(settings),
     )
 
     xml = etree.tostring(ent, xml_declaration=True, encoding="UTF-8", pretty_print=True)
@@ -573,7 +574,7 @@ def sso() -> ResponseReturnValue:
     # Generate SAML Response
     xml = _build_saml_response(
         acs_url=acs_url,
-        issuer=config.settings.saml_entity_id,
+        issuer=effective_saml_entity_id(config.settings),
         audience=config.settings.audience,
         name_id=name_id,
         attributes={k: v for k, v in saml_attrs.items() if v is not None},
@@ -833,7 +834,7 @@ def attribute_query() -> ResponseReturnValue:
             }
 
         # Build SAML Response
-        issuer_url = f"{config.settings.saml_entity_id}"
+        issuer_url = effective_saml_entity_id(config.settings)
         response_xml = _build_attribute_query_response(
             user_id=user_id,
             attributes=attributes,

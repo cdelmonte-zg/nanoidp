@@ -127,15 +127,19 @@
                     <div class="mb-3">
                         <label for="saml_entity_id" class="form-label">Entity ID</label>
                         <input type="text" class="form-control" id="saml_entity_id" name="saml_entity_id"
-                               value="{{ settings.saml_entity_id }}">
-                        <div class="form-text">SAML IdP Entity ID</div>
+                               value="{{ settings.saml_entity_id or '' }}"
+                               placeholder="{{ effective_saml_entity_id }}">
+                        <div class="form-text">SAML IdP Entity ID. Leave blank to derive it from the issuer
+                            (currently <code>{{ effective_saml_entity_id }}</code>).</div>
                     </div>
 
                     <div class="mb-3">
                         <label for="saml_sso_url" class="form-label">SSO URL</label>
                         <input type="url" class="form-control" id="saml_sso_url" name="saml_sso_url"
-                               value="{{ settings.saml_sso_url }}">
-                        <div class="form-text">SAML Single Sign-On endpoint</div>
+                               value="{{ settings.saml_sso_url or '' }}"
+                               placeholder="{{ effective_saml_sso_url }}">
+                        <div class="form-text">SAML Single Sign-On endpoint. Leave blank to derive it from the
+                            issuer (currently <code>{{ effective_saml_sso_url }}</code>).</div>
                     </div>
 
                     <div class="mb-3">

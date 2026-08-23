@@ -9,7 +9,7 @@ from flask.typing import ResponseReturnValue
 
 from ..config import get_config
 from ..services import get_audit_log, get_token_service
-from ._issuer import effective_issuer
+from ._issuer import effective_issuer, effective_saml_entity_id, effective_saml_sso_url
 
 logger = logging.getLogger(__name__)
 
@@ -148,8 +148,15 @@ def get_configuration() -> ResponseReturnValue:
             "clients_count": len(settings.clients),
         },
         "saml": {
-            "entity_id": settings.saml_entity_id,
-            "sso_url": settings.saml_sso_url,
+            # Effective values for THIS request (#181): explicit YAML value,
+            # or derived from the effective issuer. The *_derived flags let a
+            # client (the e2e agent rebuilding the settings form, an MCP
+            # agent) tell the two apart, so it never posts a derived value
+            # back as an explicit one and freezes it.
+            "entity_id": effective_saml_entity_id(settings),
+            "entity_id_derived": settings.saml_entity_id is None,
+            "sso_url": effective_saml_sso_url(settings),
+            "sso_url_derived": settings.saml_sso_url is None,
             # The e2e agent rebuilds the /settings form from this document, so
             # every form-editable SAML field must appear here - omitting one
             # makes the round-trip post it blank and the "blank = clear"

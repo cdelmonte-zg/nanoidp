@@ -166,8 +166,12 @@ oauth:
   # logos_dir: "./static/logos"    # optional; defaults to src/nanoidp/static/logos
 
 saml:
-  entity_id: "http://localhost:8000/saml"
-  sso_url: "http://localhost:8000/saml/sso"
+  # Both optional: when absent they are derived from the effective issuer as
+  # <issuer>/saml and <issuer>/saml/sso, so they follow issuer_from_request and
+  # the reverse-proxy settings exactly like OIDC discovery does (#181). Set
+  # them only when the SP needs a different, fixed value.
+  # entity_id: "http://localhost:8000/saml"
+  # sso_url: "http://localhost:8000/saml/sso"
   default_acs_url: "http://localhost:8080/login/saml2/sso/nanoidp"
   sign_responses: true  # Set to false for testing unsigned SAML flows
   want_authn_requests_signed: false  # verify AuthnRequest signatures (see SAML options)

@@ -35,3 +35,20 @@ def effective_issuer(settings: Settings) -> str:
     if settings.issuer_allowlist and candidate not in settings.issuer_allowlist:
         return settings.issuer
     return candidate
+
+
+def effective_saml_entity_id(settings: Settings) -> str:
+    """SAML entityID for the current request (#181).
+
+    Explicit ``saml.entity_id`` wins; otherwise ``<effective issuer>/saml``,
+    so the metadata a SAML SP fetches through a proxy or a second hostname
+    names the same origin OIDC discovery does. SAML 2.0 Metadata 2.3.2:
+    ``entityID`` is the unique identifier the entity uses as ``<Issuer>``
+    (Core 2.2.5), which is why responses and assertions call this too.
+    """
+    return settings.resolve_saml_entity_id(effective_issuer(settings))
+
+
+def effective_saml_sso_url(settings: Settings) -> str:
+    """SAML SingleSignOnService location for the current request (#181)."""
+    return settings.resolve_saml_sso_url(effective_issuer(settings))

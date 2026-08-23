@@ -99,6 +99,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   file" use case only worked for settings. A UI/MCP save of one user still
   rewrites only that user's entry; the MCP `save_config` tool rewrites the
   whole map and materializes expanded placeholders, as documented.
+- **SAML `entity_id`/`sso_url` follow the effective issuer** (#181). With
+  `oauth.issuer_from_request` on (or behind a proxy), OIDC discovery reflected
+  the request host while `/saml/metadata`, the `<Issuer>` in responses and
+  assertions and the SSO location kept the fixed `http://localhost:8000/...`
+  strings. Both settings are now optional: absent (or blank in the UI/MCP)
+  means derived as `<effective issuer>/saml` and `<effective issuer>/saml/sso`
+  through one helper shared by every SAML surface, an explicit value still
+  wins, and a derived value is never written back to `settings.yaml`. SAML 2.0
+  Metadata 2.3.2 requires `entityID` to be the value used as `<Issuer>` (Core
+  2.2.5). `/api/config` and the MCP `get_settings` tool report the effective
+  values plus `entity_id_derived`/`sso_url_derived`; `update_settings` gains
+  `saml_entity_id`/`saml_sso_url` (empty string clears); the e2e agent checks
+  metadata against discovery and no longer posts derived values back as
+  explicit ones.
 - **Example presets now bind to `127.0.0.1`** (#164). All four pre-2.6.0
   presets (`cli-device-flow`, `microservices-client-credentials`,
   `react-spa-pkce`, `spring-boot-saml`) still shipped an explicit
