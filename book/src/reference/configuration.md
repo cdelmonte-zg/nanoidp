@@ -14,6 +14,30 @@ Everything below can also be managed from the web UI at
 - **Audit Log**: view and export authentication events
 - **Token Tester**: generate and inspect tokens
 
+## Config schema version
+
+Both files may declare, at the top level, the schema version they follow:
+
+```yaml
+config_version: 1
+```
+
+The contract is a single integer, not semver:
+
+- **Absent means 1.** Existing files need no change; `nanoidp init` and the
+  wizard write the key into the files they create, and saves from the web UI
+  or the MCP server preserve it if present and never add it.
+- **Optional additions never bump it.** New optional keys with defaults keep
+  the version; only renames, removals or semantic changes of existing keys
+  do, and such a bump ships with a migration step in the loader.
+- **A newer version than the running release understands is refused at
+  startup** with a message naming the file, the value found and the
+  supported version, as is any value that is not a positive integer.
+
+`GET /api/config` and the MCP `get_settings` tool report the effective
+`config_version`, so external tools and agents know which contract to target.
+The CHANGELOG carries a "Config schema" section whenever it changes.
+
 ## Users (`config/users.yaml`)
 
 ```yaml

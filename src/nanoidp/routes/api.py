@@ -128,6 +128,8 @@ def get_configuration() -> ResponseReturnValue:
     settings = config.settings
 
     return jsonify({
+        # Config schema version the loaded files follow (#175); absent = 1.
+        "config_version": config.config_version,
         "server": {
             "host": settings.host,
             "port": settings.port,

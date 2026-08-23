@@ -23,9 +23,11 @@ from .models import (  # noqa: F401
     _coerce_client_str_list,
 )
 from .serialization import (
+    CONFIG_VERSION,
     apply_settings_document,
     apply_users_document,
     atomic_write_yaml,
+    check_config_version,
     load_yaml_document,
 )
 from .serialization import expand_env_vars as _expand_env_vars
@@ -53,6 +55,9 @@ class ConfigManager:
         self.settings: Settings = Settings()
         self.users: Dict[str, User] = {}
         self.default_user: str = "admin"
+        # Effective config schema version of the loaded files (#175): the
+        # declared value, or 1 when a file carries no config_version key.
+        self.config_version: int = CONFIG_VERSION
         self._load_config()
 
     def _find_config_dir(self) -> str:
@@ -151,6 +156,9 @@ class ConfigManager:
         with open(settings_file, "r") as f:
             data = yaml.safe_load(f) or {}
 
+        # Refuse files written for a newer contract before reading any key
+        # (#175): a silently half-understood file is worse than a clear stop.
+        self.config_version = check_config_version(data, settings_file)
         data = _expand_env_vars(data)
 
         server = data.get("server", {})
@@ -282,6 +290,7 @@ class ConfigManager:
         with open(users_file, "r") as f:
             data = yaml.safe_load(f) or {}
 
+        check_config_version(data, users_file)
         self.default_user = data.get("default_user", "admin")
 
         for username, user_data in data.get("users", {}).items():

@@ -23,6 +23,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DEFAULT_USERS_YAML = """# NanoIDP Users Configuration
 # Documentation: https://github.com/cdelmonte-zg/nanoidp
 
+# Config schema version this file follows (absent = 1)
+config_version: 1
+
 users:
   admin:
     password: "admin"
@@ -53,6 +56,9 @@ default_user: "admin"
 
 DEFAULT_SETTINGS_YAML = """# NanoIDP Settings Configuration
 # Documentation: https://github.com/cdelmonte-zg/nanoidp
+
+# Config schema version this file follows (absent = 1)
+config_version: 1
 
 server:
   host: "127.0.0.1"

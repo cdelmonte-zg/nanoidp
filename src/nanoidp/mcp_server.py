@@ -1241,6 +1241,8 @@ async def _execute_tool(name: str, arguments: dict[str, Any], config: ConfigMana
     elif name == "get_settings":
         settings = config.settings
         return {
+            # Same key as GET /api/config (#175): the contract an agent targets.
+            "config_version": config.config_version,
             "issuer": settings.issuer,
             "issuer_from_request": settings.issuer_from_request,
             "issuer_allowlist": settings.issuer_allowlist,

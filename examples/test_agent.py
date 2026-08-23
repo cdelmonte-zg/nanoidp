@@ -3117,6 +3117,25 @@ class NanoIDPTestAgent:
         except Exception as e:
             return self._add_result("Verbose Logging Setting", TestCategory.API, False, str(e))
 
+    def test_api_config_version(self) -> TestResult:
+        """REST API - /api/config declares the config schema version (#175).
+
+        Absent from the files means 1, so a stock server always reports 1;
+        the key is the contract external tools and MCP agents target.
+        """
+        try:
+            doc = self.session.get(f"{self.base_url}/api/config", timeout=5).json()
+            version = doc.get("config_version")
+            return self._add_result(
+                "API Config Version",
+                TestCategory.API,
+                version == 1,
+                f"config_version={version!r} (expected 1)",
+                {"config_version": version},
+            )
+        except Exception as e:
+            return self._add_result("API Config Version", TestCategory.API, False, str(e))
+
     def test_api_config_reload(self) -> TestResult:
         """REST API - Reload configuration."""
         try:
@@ -3591,6 +3610,7 @@ class NanoIDPTestAgent:
                 self.test_api_direct_token,
                 self.test_api_config,
                 self.test_api_verbose_logging_setting,
+                self.test_api_config_version,
                 self.test_api_config_reload,
                 self.test_api_config_profile_survives_reload,
                 self.test_api_audit_log,
