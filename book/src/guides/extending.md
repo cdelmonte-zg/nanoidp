@@ -120,9 +120,20 @@ A plugin that cannot be loaded (its package is not installed, it declares
 another `hook_api_version`, its `configure()` raises) follows the same
 policy as `on_before_load`: logged at ERROR, listed under `plugins_failed`
 by `nanoidp plugins`, `GET /api/config` and the MCP `get_settings` tool,
-and skipped; under `strict` the load fails. A failed `on_before_load` under
-`strict` is reported by `POST /api/config/reload` as a JSON `503` and by the
-MCP `reload_config` tool as an error result, never as an HTML error page.
+and skipped; under `strict` the load fails. The public `reason` is one of
+nanoidp's own diagnoses (`not installed`, `incompatible hook_api_version=N
+(expected 1)`, `already loaded`, `initialization failed`); the exception
+text itself, which may embed the plugin's settings, goes to the local log
+only. A plugin that failed in non-strict mode is retried only when the
+`hooks:`/`plugins:` declaration changes or the process restarts: a reload
+with an unchanged declaration does not re-apply it.
+
+A failed `on_before_load` or plugin load under `strict` is reported by
+`POST /api/config/reload` as a JSON `503` (`kind` names the phase:
+`on_before_load` or `plugin_load`) and by the MCP `reload_config` tool as an
+error result, never as an HTML error page. Such a reload fails without
+commit: the running settings, the profile hardening and the registered
+plugins stay exactly as they were until a later reload succeeds.
 
 ## Worked example: version every change in git
 
