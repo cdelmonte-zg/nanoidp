@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "nanoidp"
-version = "2.7.0rc3"
+version = "2.7.0rc4"
 description = "A lightweight, configurable Identity Provider for development and testing"
 readme = "README.md"
 license = "MIT"
