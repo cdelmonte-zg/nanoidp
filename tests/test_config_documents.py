@@ -124,14 +124,10 @@ class TestShippedFilesLoadWithoutWarnings:
         with caplog.at_level(logging.WARNING, logger="nanoidp.config_documents"):
             document = load_settings_document(data, path)
         assert not [r for r in caplog.records if "unknown key" in r.getMessage()], caplog.text
-        if path.parent.name == "react-spa-pkce":
-            # Pre-existing, independent of this refactor: the preset ships a
-            # public client with client_secret "" which OAuthClient refuses
-            # (min_length=1). Tracked under #188 (public clients).
-            with pytest.raises(ValueError, match="client_secret"):
-                document.to_settings()
-        else:
-            document.to_settings()
+        # Every shipped preset must actually load (#198): react-spa-pkce used
+        # to ship client_secret "" which OAuthClient refuses; it now carries a
+        # placeholder until #188 introduces real public clients.
+        document.to_settings()
 
     @pytest.mark.parametrize("path", SHIPPED_USERS, ids=lambda p: str(p.relative_to(REPO)))
     def test_users(self, path, caplog):
