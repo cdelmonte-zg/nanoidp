@@ -589,7 +589,7 @@ _TOOLS: list[Tool] = [
                 "redirect_uris": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Registered redirect URIs; when non-empty, /authorize enforces exact matching (optional)",
+                    "description": "Registered redirect URIs; when non-empty, /authorize enforces exact matching, except a registered loopback URI (http://127.0.0.1:{port}/..., http://[::1]:{port}/...) matches any port per RFC 8252 section 7.3; private-use schemes like com.example.app:/cb are accepted (optional)",
                 },
             },
             "required": ["client_id", "client_secret"],
@@ -641,7 +641,7 @@ _TOOLS: list[Tool] = [
                 "redirect_uris": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Replace the client's registered redirect URIs; empty list removes the restriction (optional)",
+                    "description": "Replace the client's registered redirect URIs (loopback URIs match any port per RFC 8252 section 7.3, private-use schemes accepted); empty list removes the restriction (optional)",
                 },
             },
             "required": ["client_id"],

@@ -814,6 +814,125 @@ class NanoIDPTestAgent:
                 "Redirect URI Exact Match", TestCategory.OAUTH, False, f"Error: {e}"
             )
 
+    def test_native_app_redirect_uris(self) -> TestResult:
+        """Native-app redirect URIs per RFC 8252 (issue #81).
+
+        Registers a client (clients UI form, so the form path is exercised
+        too) with a private-use scheme URI (section 7.1) and a loopback URI
+        with a placeholder port (section 7.3), then runs the accept/reject
+        matrix on /authorize: custom scheme accepted, loopback on another
+        port accepted, localhost on another port rejected, non-loopback host
+        on another port rejected. Rejections must be 400 without a redirect
+        (RFC 6749 section 3.1.2.4).
+        """
+        test_client_id = f"native-test-{secrets.token_hex(4)}"
+        custom_scheme = "com.example.app:/oauth2redirect"
+        try:
+            create = requests.post(
+                f"{self.base_url}/clients/create",
+                data={
+                    "client_id": test_client_id,
+                    "client_secret": "native-test-secret",
+                    "description": "Native-app e2e test client",
+                    "redirect_uris": "\n".join([
+                        custom_scheme,
+                        "http://127.0.0.1:0/callback",
+                        "http://localhost:3000/callback",
+                        "https://app.example.com/cb",
+                    ]),
+                },
+                allow_redirects=False,
+                timeout=5,
+            )
+            if create.status_code not in (302, 303):
+                return self._add_result(
+                    "Native App Redirect URIs", TestCategory.OAUTH, False,
+                    f"Client creation failed: status={create.status_code}",
+                )
+
+            def authorize(redirect_uri: str) -> requests.Response:
+                return requests.get(
+                    f"{self.base_url}/authorize",
+                    params={
+                        "response_type": "code",
+                        "client_id": test_client_id,
+                        "redirect_uri": redirect_uri,
+                        "scope": "openid",
+                    },
+                    allow_redirects=False,
+                    timeout=5,
+                )
+
+            def rejected(resp: requests.Response) -> bool:
+                if resp.status_code != 400 or "Location" in resp.headers:
+                    return False
+                try:
+                    return resp.json().get("error") == "invalid_request"
+                except ValueError:
+                    return False
+
+            custom = authorize(custom_scheme)
+            loopback_other_port = authorize("http://127.0.0.1:51234/callback")
+            loopback_no_port = authorize("http://127.0.0.1/callback")
+            localhost_other_port = authorize("http://localhost:3001/callback")
+            web_other_port = authorize("https://app.example.com:444/cb")
+            loopback_other_path = authorize("http://127.0.0.1:51234/other")
+
+            checks = {
+                "custom_scheme_accepted": custom.status_code == 200,
+                "loopback_other_port_accepted": loopback_other_port.status_code == 200,
+                "loopback_no_port_accepted": loopback_no_port.status_code == 200,
+                "localhost_other_port_rejected": rejected(localhost_other_port),
+                "web_other_port_rejected": rejected(web_other_port),
+                "loopback_other_path_rejected": rejected(loopback_other_path),
+            }
+
+            # Complete the loopback flow: the code must land on the port the
+            # app asked for, not on the registered placeholder.
+            login = requests.post(
+                f"{self.base_url}/authorize",
+                data={
+                    "response_type": "code",
+                    "client_id": test_client_id,
+                    "redirect_uri": "http://127.0.0.1:51234/callback",
+                    "scope": "openid",
+                    "username": self.username,
+                    "password": self.password,
+                },
+                allow_redirects=False,
+                timeout=5,
+            )
+            location = login.headers.get("Location", "")
+            checks["loopback_flow_redirects_to_requested_port"] = (
+                login.status_code == 302
+                and location.startswith("http://127.0.0.1:51234/callback?")
+                and "code=" in location
+            )
+
+            success = all(checks.values())
+            return self._add_result(
+                "Native App Redirect URIs",
+                TestCategory.OAUTH,
+                success,
+                "RFC 8252: custom scheme + loopback port variability accepted, "
+                "localhost/non-loopback ports and other paths rejected",
+                {**checks, "statuses": {
+                    "custom": custom.status_code,
+                    "loopback_other_port": loopback_other_port.status_code,
+                    "localhost_other_port": localhost_other_port.status_code,
+                    "web_other_port": web_other_port.status_code,
+                    "login": login.status_code,
+                }},
+            )
+        except Exception as e:
+            return self._add_result(
+                "Native App Redirect URIs", TestCategory.OAUTH, False, f"Error: {e}"
+            )
+        finally:
+            requests.post(
+                f"{self.base_url}/clients/{test_client_id}/delete", timeout=5
+            )
+
     def test_client_branding(self) -> TestResult:
         """Per-client login page branding is created and rendered end-to-end (#150).
 
@@ -3565,6 +3684,7 @@ class NanoIDPTestAgent:
                 self.test_issuer_from_proxy_headers,
                 self.test_authorization_code_pkce,
                 self.test_redirect_uri_exact_matching,
+                self.test_native_app_redirect_uris,
                 self.test_client_branding,
                 self.test_id_token_audience,
                 self.test_id_token_time_claims,

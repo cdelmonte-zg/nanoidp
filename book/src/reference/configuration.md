@@ -210,7 +210,27 @@ list gets exact-string matching on `/authorize` (RFC 6749 §3.1.2.3,
 OAuth 2.1 §4.1.1): no prefix, host or path normalization, and a mismatch
 is answered with `400 invalid_request` directly, never by redirecting to
 the unvalidated URI (§3.1.2.4). Clients without the field keep accepting
-any syntactically valid URI, the permissive dev default.
+any absolute URI, the permissive dev default.
+
+**Native apps (RFC 8252)**: two things a native client needs are built
+in. A private-use scheme URI such as `com.example.app:/oauth2redirect`
+(§7.1: a scheme and a path, no host) is a valid `redirect_uri` and can be
+registered like any other. A registered loopback URI,
+`http://127.0.0.1:{port}/callback` or `http://[::1]:{port}/callback`,
+matches any port (§7.3), because the app binds an ephemeral port at
+runtime; register it with any placeholder port (`:0` reads well). Only
+the port is variable: scheme, host, path and query stay exact, and
+`localhost` gets no port flexibility (§7.3 and §8.3 recommend the IP
+literals precisely because `localhost` can be remapped). The `oauth21`
+profile keeps the loopback exception, as the OAuth 2.1 draft does.
+
+```yaml
+    - client_id: "native-client"
+      client_secret: "secret"
+      redirect_uris:
+        - "com.example.app:/oauth2redirect"   # private-use scheme, exact
+        - "http://127.0.0.1:0/callback"       # loopback: any port matches
+```
 
 **Login page branding**: for demos and prototyping, a client can show its
 `client_id` and `description` on the `/authorize` login page and use custom
