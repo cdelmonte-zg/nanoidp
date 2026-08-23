@@ -280,6 +280,22 @@ class TestEdgeConventionsPreserved:
         })
         settings = ConfigManager(cfg).settings
         assert settings.cors_allowed_origins == ["*"]
+        # the container shape was never read either: a scalar or a bare line loads
+        for value in ("whatever", None, 3):
+            ConfigManager(_write(tmp_path, {"device_flow": value}))
+
+    def test_blank_saml_attr_names_fall_back_to_defaults(self, tmp_path):
+        """A bare `roles_attr_name:` reached Settings as None and the domain
+        before-validator turned it into the default; the document model must
+        let None through instead of rejecting it (#197 review)."""
+        cfg = _write(tmp_path, {"saml": {"roles_attr_name": None, "groups_attr_name": None}})
+        settings = ConfigManager(cfg).settings
+        assert settings.saml_roles_attr_name == "roles"
+        assert settings.saml_groups_attr_name == "groups"
+        cfg = _write(tmp_path, {"saml": {"roles_attr_name": "  ", "groups_attr_name": ""}})
+        settings = ConfigManager(cfg).settings
+        assert settings.saml_roles_attr_name == "roles"
+        assert settings.saml_groups_attr_name == "groups"
 
     def test_scalar_redirect_uri_is_coerced_and_bad_shape_is_client_scoped(self, tmp_path):
         cfg = _write(tmp_path, {"oauth": {"clients": [{"client_id": "c", "client_secret": "s", "redirect_uris": "http://x/cb"}]}})

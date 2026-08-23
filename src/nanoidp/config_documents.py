@@ -132,8 +132,11 @@ class SamlSection(BaseModel):
     sign_responses: bool = True
     export_roles: bool = False
     export_groups: bool = False
-    roles_attr_name: str = "roles"
-    groups_attr_name: str = "groups"
+    # Optional on purpose: the domain model's before-validator
+    # (normalize_saml_attr_name) turns None/blank into the default, and a
+    # bare `roles_attr_name:` line must keep reaching it (#197 review).
+    roles_attr_name: Optional[str] = "roles"
+    groups_attr_name: Optional[str] = "groups"
     c14n_algorithm: str = "exc_c14n"
     want_authn_requests_signed: bool = False
     sp_certificates: Optional[List[str]] = None
@@ -174,16 +177,8 @@ class LoginSection(BaseModel):
     mode: str = "password"
 
 
-class DeviceFlowSection(BaseModel):
-    """Present in shipped presets, never consumed by the loader."""
 
-    model_config = _FORBID
-
-    code_expiry_seconds: Any = None  # accepted for compatibility, never consumed
-    polling_interval: Any = None  # accepted for compatibility, never consumed
-
-
-_SECTIONS = ("server", "oauth", "saml", "jwt", "session", "logging", "login", "device_flow")
+_SECTIONS = ("server", "oauth", "saml", "jwt", "session", "logging", "login")
 
 
 class SettingsDocument(BaseModel):
@@ -208,7 +203,10 @@ class SettingsDocument(BaseModel):
     # Accepted for compatibility, never consumed (the old loader never read it;
     # CORS stays ["*"]), hence Any: no new validation on an ignored key.
     cors_allowed_origins: Any = None
-    device_flow: DeviceFlowSection = Field(default_factory=DeviceFlowSection)
+    # Never read by the old loader, so neither the container shape nor its
+    # keys are validated: `device_flow: whatever` and a bare `device_flow:`
+    # loaded before and still do (#197 review).
+    device_flow: Any = None
 
     @model_validator(mode="before")
     @classmethod
@@ -262,8 +260,10 @@ class SettingsDocument(BaseModel):
             saml_sign_responses=self.saml.sign_responses,
             saml_export_roles=self.saml.export_roles,
             saml_export_groups=self.saml.export_groups,
-            saml_roles_attr_name=self.saml.roles_attr_name,
-            saml_groups_attr_name=self.saml.groups_attr_name,
+            # None passes through on purpose: Settings' before-validator
+            # normalizes it to the default, exactly as the old loader let it.
+            saml_roles_attr_name=self.saml.roles_attr_name,  # type: ignore[arg-type]
+            saml_groups_attr_name=self.saml.groups_attr_name,  # type: ignore[arg-type]
             saml_c14n_algorithm=self.saml.c14n_algorithm,
             saml_want_authn_requests_signed=self.saml.want_authn_requests_signed,
             saml_sp_certificates=self.saml.sp_certificates or [],
