@@ -24,7 +24,7 @@ from mcp.client.stdio import stdio_client
 
 # Deliberately a hard number: the docs advertise the tool count, so growing or
 # shrinking the MCP surface must consciously update both (metadata never lies).
-EXPECTED_TOOLS = 25
+EXPECTED_TOOLS = 26
 
 
 async def run(config_dir: str) -> int:
@@ -63,6 +63,18 @@ async def run(config_dir: str) -> int:
                 print(f"[FAIL] discovery document incomplete: {discovery!r}")
                 return 1
             print(f"[OK] get_oidc_discovery: issuer={discovery['issuer']}")
+
+            # validate_config (#175 piece 4): the config the server is running
+            # on must lint clean through the same loaders, and the call must
+            # be inert (no hook, no plugin, no reload).
+            result = await session.call_tool("validate_config", {})
+            validation = json.loads(result.content[0].text)
+            if not validation.get("valid"):
+                print(f"[FAIL] validate_config reported the config invalid: {validation!r}")
+                return 1
+            print(
+                f"[OK] validate_config: valid, {len(validation.get('findings', []))} finding(s)"
+            )
 
             result = await session.call_tool("get_keys_info", {})
             keys_info = json.loads(result.content[0].text)

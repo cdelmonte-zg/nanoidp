@@ -37,8 +37,10 @@ The contract is a single integer, not semver:
   or the MCP server preserve it if present and never add it.
 - **Unknown keys are reported.** A key nanoidp does not know (a typo such
   as `oauth.isuer`) is logged as a warning with its path and ignored; the
-  file still loads. Inside a user entry, unknown keys become that user's
-  `attributes`, as they always have.
+  file still loads, unless the directory is validated strictly (see
+  [Validating your configuration](#validating-your-configuration)). Inside a
+  user entry, unknown keys become that user's `attributes`, as they always
+  have.
 - **Optional additions never bump it.** New optional keys with defaults keep
   the version; only renames, removals or semantic changes of existing keys
   do, and such a bump ships with a migration step in the loader.
@@ -49,6 +51,101 @@ The contract is a single integer, not semver:
 `GET /api/config` and the MCP `get_settings` tool report the effective
 `config_version`, so external tools and agents know which contract to target.
 The CHANGELOG carries a "Config schema" section whenever it changes.
+
+### The generated schema artifact
+
+The machine-readable form of the contract lives in the repository at
+[`docs/schema/config.v1.json`](https://github.com/cdelmonte-zg/nanoidp/blob/main/docs/schema/config.v1.json):
+one standalone JSON Schema per file, under the keys `settings`, `users` and
+`bootstrap`, next to the `config_version` they describe. Point an editor's
+YAML-schema support at the entry matching the file to get completion and
+typo detection while writing it.
+
+It is generated, never hand-written - that is the whole point, since a
+hand-written schema would be one more place the contract could disagree
+with itself:
+
+```bash
+nanoidp config-schema                 # the full document, on stdout
+nanoidp config-schema --file users    # one file's schema
+nanoidp config-schema --write         # regenerate docs/schema/config.v1.json
+```
+
+`--write` targets a path inside the repository and therefore works from a
+source checkout only; from an installed package, redirect stdout instead. A
+test fails when the committed file no longer matches the models, with the
+command to run.
+
+One thing the schema cannot express: a `${VAR}` placeholder is a string
+until it is expanded, and its expansion is a string too, which nanoidp then
+coerces to the field's type. A plain JSON Schema check therefore flags
+`port: ${PORT:8000}` against `"type": "integer"`. Use `nanoidp
+validate-config` for that check - it runs the real loader.
+
+## Validating your configuration
+
+Unknown keys are reported, not ignored. What "reported" means is a choice:
+
+```yaml
+# settings.yaml
+config_validation: warn     # default: log the key and its path, keep loading
+# config_validation: strict # refuse to start
+```
+
+The value belongs to the configuration directory as a whole: `users.yaml`
+and `bootstrap.yaml` follow what `settings.yaml` declares. Wrong types and
+refused values are errors in both modes and always have been; `strict` is
+only about the unknown key. The server flag `--strict-config` turns strict
+on for one run, wins over the file, and is never written back:
+
+```bash
+nanoidp --strict-config          # unknown key -> refuse to start
+```
+
+To check a directory without starting anything:
+
+```bash
+$ nanoidp validate-config --config ./config
+validate-config: ./config
+warning: config/settings.yaml: unknown key oauth.isuer
+0 error(s), 1 warning(s)
+$ echo $?
+0
+$ nanoidp validate-config --config ./config --strict
+validate-config: ./config (strict)
+warning: config/settings.yaml: unknown key oauth.isuer
+0 error(s), 1 warning(s) (strict: warnings fail)
+$ echo $?
+1
+```
+
+One line per finding; exit 0 when clean, or with warnings only and no
+`--strict`; exit 1 on any error, and on any warning under `--strict` (a
+directory that declares `config_validation: strict` is strict either way,
+since that is a directory the server would refuse to start on).
+
+The command reads the three files through the same loaders the server uses,
+and does nothing else: no server, no `ConfigManager`, no hook dispatched, no
+plugin imported. `bootstrap.yaml` is checked for its shape only, because a
+lint step that ran the commands a directory declares would be a remote
+execution primitive triggered by looking at it. That is what makes it safe
+as a pre-commit or CI step:
+
+```yaml
+# .pre-commit-config.yaml
+repos:
+  - repo: local
+    hooks:
+      - id: nanoidp-validate-config
+        name: nanoidp validate-config
+        entry: nanoidp validate-config --config ./config --strict
+        language: system
+        files: ^config/.*\.yaml$
+        pass_filenames: false
+```
+
+MCP agents have the same check as the read-only `validate_config` tool,
+which returns `{valid, findings}` for the running config directory.
 
 ## Users (`config/users.yaml`)
 
@@ -194,6 +291,11 @@ saml:
 # Optional; local dev/testing convenience, off by default - see "Login mode" above
 # login:
 #   mode: persona   # password (default) | persona
+
+# Optional; how an unknown key is reported - see "Validating your configuration"
+# below. Also settable at startup with --strict-config, which wins over this
+# value for that run only and is never written back
+# config_validation: strict   # warn (default) | strict
 
 authority_prefixes:
   roles: "ROLE_"

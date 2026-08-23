@@ -21,7 +21,11 @@ from .services import init_crypto_service
 limiter: Optional[Limiter] = None
 
 
-def create_app(config_dir: Optional[str] = None, profile: Optional[str] = None) -> Flask:
+def create_app(
+    config_dir: Optional[str] = None,
+    profile: Optional[str] = None,
+    strict_config: Optional[bool] = None,
+) -> Flask:
     """Create and configure the Flask application."""
     global limiter
 
@@ -31,7 +35,10 @@ def create_app(config_dir: Optional[str] = None, profile: Optional[str] = None) 
     # reload(); the stricter-dev runtime hardening is derived from the
     # EFFECTIVE profile inside ConfigManager, so YAML and CLI mean the same
     # thing and neither is lost on the first UI/MCP save (#68 review, #172).
-    config = init_config(config_dir, profile_override=profile)
+    # --strict-config follows the same contract (#175 piece 4): given, it
+    # wins over settings.yaml's config_validation for this run only; omitted
+    # (None), the file decides.
+    config = init_config(config_dir, profile_override=profile, strict_config=strict_config)
     settings = config.settings
 
     # Configure logging
@@ -116,6 +123,9 @@ def create_app(config_dir: Optional[str] = None, profile: Optional[str] = None) 
 
     logger.info("NanoIDP initialized")
     logger.info(f"  - Security profile: {settings.security_profile}")
+    logger.info(
+        f"  - Config validation: {'strict' if config.strict_config else 'warn'}"
+    )
     logger.info(f"  - Password hashing: {'bcrypt' if settings.password_hashing else 'plaintext'}")
     logger.info(f"  - Issuer: {settings.issuer}")
     logger.info(f"  - Users: {len(config.users)}")
@@ -135,9 +145,10 @@ def run_app(
     debug: Optional[bool] = None,
     config_dir: Optional[str] = None,
     profile: Optional[str] = None,
+    strict_config: Optional[bool] = None,
 ) -> None:
     """Run the Flask application."""
-    app = create_app(config_dir, profile=profile)
+    app = create_app(config_dir, profile=profile, strict_config=strict_config)
     config = get_config()
     settings = config.settings
 

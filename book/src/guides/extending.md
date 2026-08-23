@@ -227,6 +227,12 @@ with nanoidp's environment: the file is operator-owned by definition, the
 same trust boundary as `secret_key` or `management_secret`. Neither surface
 is reachable from the web UI or MCP.
 
+Checking a configuration directory is not the same as loading one:
+`nanoidp validate-config` and the MCP `validate_config` tool validate the
+shape of `hooks:` and `plugins:` without dispatching a hook or importing a
+plugin, so linting a directory someone else wrote executes nothing
+([Configuration](../reference/configuration.md#validating-your-configuration)).
+
 ## What hooks are not
 
 There are no hooks on the protocol path (`on_token_issued`, `on_login` and

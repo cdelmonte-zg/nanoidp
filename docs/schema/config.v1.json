@@ -1,0 +1,726 @@
+{
+  "bootstrap": {
+    "$defs": {
+      "HooksSection": {
+        "additionalProperties": false,
+        "description": "``hooks:`` (#185): shell commands run at the three extension points.\n\nAbsent = no hooks. ``strict`` applies to plugins too; ``timeout_seconds``\nis for shell hooks only (a plugin manages its own timeouts). Policy\nvalues declared here override ``bootstrap.yaml``'s; undeclared ones do\nnot (``model_fields_set`` decides). YAML-only (and ``bootstrap.yaml``/env): never settable from the UI\nor MCP, since a command editable through the surface it observes would\nbe a remote-execution primitive.",
+        "properties": {
+          "on_audit_event": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "On Audit Event"
+          },
+          "on_before_load": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "On Before Load"
+          },
+          "on_config_saved": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "On Config Saved"
+          },
+          "strict": {
+            "default": false,
+            "title": "Strict",
+            "type": "boolean"
+          },
+          "timeout_seconds": {
+            "default": 10.0,
+            "exclusiveMinimum": 0,
+            "title": "Timeout Seconds",
+            "type": "number"
+          }
+        },
+        "title": "HooksSection",
+        "type": "object"
+      }
+    },
+    "$id": "https://cdelmonte-zg.github.io/nanoidp/schema/config.v1-bootstrap.json",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "``bootstrap.yaml`` (#185): the hook surface that exists before\n``settings.yaml`` can be read. Only ``hooks:`` and ``plugins:`` are\nallowed, validated by the same section models; anything else is refused\nso the file cannot quietly grow into a second settings file.",
+    "properties": {
+      "hooks": {
+        "$ref": "#/$defs/HooksSection"
+      },
+      "plugins": {
+        "additionalProperties": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "title": "Plugins",
+        "type": "object"
+      }
+    },
+    "title": "BootstrapDocument",
+    "type": "object"
+  },
+  "config_version": 1,
+  "description": "One JSON Schema per configuration file, generated from the document models in nanoidp.config_documents by `nanoidp config-schema --write`. Do not edit by hand. Each of settings, users and bootstrap is a standalone schema; validate a file against the entry of the same name.",
+  "settings": {
+    "$defs": {
+      "ClientEntry": {
+        "additionalProperties": false,
+        "description": "One ``oauth.clients[]`` entry. ``additional_audiences`` and\n``redirect_uris`` stay ``Any`` here because the loader accepts a scalar\nstring as a one-element list and reports unsupported shapes with a\nclient-scoped message (#35); that coercion runs in ``to_client()``.",
+        "properties": {
+          "additional_audiences": {
+            "default": null,
+            "title": "Additional Audiences"
+          },
+          "background_color": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Background Color"
+          },
+          "client_id": {
+            "default": "",
+            "title": "Client Id",
+            "type": "string"
+          },
+          "client_secret": {
+            "default": "",
+            "title": "Client Secret",
+            "type": "string"
+          },
+          "description": {
+            "default": "",
+            "title": "Description",
+            "type": "string"
+          },
+          "footer_color": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Footer Color"
+          },
+          "header_color": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Header Color"
+          },
+          "redirect_uris": {
+            "default": null,
+            "title": "Redirect Uris"
+          },
+          "show_client_id": {
+            "default": true,
+            "title": "Show Client Id",
+            "type": "boolean"
+          },
+          "show_description": {
+            "default": false,
+            "title": "Show Description",
+            "type": "boolean"
+          }
+        },
+        "title": "ClientEntry",
+        "type": "object"
+      },
+      "HooksSection": {
+        "additionalProperties": false,
+        "description": "``hooks:`` (#185): shell commands run at the three extension points.\n\nAbsent = no hooks. ``strict`` applies to plugins too; ``timeout_seconds``\nis for shell hooks only (a plugin manages its own timeouts). Policy\nvalues declared here override ``bootstrap.yaml``'s; undeclared ones do\nnot (``model_fields_set`` decides). YAML-only (and ``bootstrap.yaml``/env): never settable from the UI\nor MCP, since a command editable through the surface it observes would\nbe a remote-execution primitive.",
+        "properties": {
+          "on_audit_event": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "On Audit Event"
+          },
+          "on_before_load": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "On Before Load"
+          },
+          "on_config_saved": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "On Config Saved"
+          },
+          "strict": {
+            "default": false,
+            "title": "Strict",
+            "type": "boolean"
+          },
+          "timeout_seconds": {
+            "default": 10.0,
+            "exclusiveMinimum": 0,
+            "title": "Timeout Seconds",
+            "type": "number"
+          }
+        },
+        "title": "HooksSection",
+        "type": "object"
+      },
+      "JwtSection": {
+        "additionalProperties": false,
+        "properties": {
+          "algorithm": {
+            "default": "RS256",
+            "title": "Algorithm",
+            "type": "string"
+          },
+          "keys_dir": {
+            "default": "./keys",
+            "title": "Keys Dir",
+            "type": "string"
+          }
+        },
+        "title": "JwtSection",
+        "type": "object"
+      },
+      "LoggingSection": {
+        "additionalProperties": false,
+        "properties": {
+          "format": {
+            "default": null,
+            "title": "Format"
+          },
+          "level": {
+            "default": "INFO",
+            "title": "Level",
+            "type": "string"
+          },
+          "log_saml_requests": {
+            "default": true,
+            "title": "Log Saml Requests",
+            "type": "boolean"
+          },
+          "log_token_requests": {
+            "default": true,
+            "title": "Log Token Requests",
+            "type": "boolean"
+          },
+          "verbose_logging": {
+            "default": true,
+            "title": "Verbose Logging",
+            "type": "boolean"
+          }
+        },
+        "title": "LoggingSection",
+        "type": "object"
+      },
+      "LoginSection": {
+        "additionalProperties": false,
+        "properties": {
+          "mode": {
+            "default": "password",
+            "title": "Mode",
+            "type": "string"
+          }
+        },
+        "title": "LoginSection",
+        "type": "object"
+      },
+      "OAuthSection": {
+        "additionalProperties": false,
+        "properties": {
+          "audience": {
+            "default": "default",
+            "title": "Audience",
+            "type": "string"
+          },
+          "clients": {
+            "items": {
+              "$ref": "#/$defs/ClientEntry"
+            },
+            "title": "Clients",
+            "type": "array"
+          },
+          "device_verification_base_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Device Verification Base Url"
+          },
+          "issuer": {
+            "default": "http://localhost:8000",
+            "title": "Issuer",
+            "type": "string"
+          },
+          "issuer_allowlist": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Issuer Allowlist"
+          },
+          "issuer_from_proxy_headers": {
+            "default": false,
+            "title": "Issuer From Proxy Headers",
+            "type": "boolean"
+          },
+          "issuer_from_request": {
+            "default": false,
+            "title": "Issuer From Request",
+            "type": "boolean"
+          },
+          "logos_dir": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Logos Dir"
+          },
+          "refresh_token_expiry_minutes": {
+            "default": null,
+            "title": "Refresh Token Expiry Minutes"
+          },
+          "refresh_token_rotation": {
+            "default": false,
+            "title": "Refresh Token Rotation",
+            "type": "boolean"
+          },
+          "require_pkce": {
+            "default": false,
+            "title": "Require Pkce",
+            "type": "boolean"
+          },
+          "token_expiry_minutes": {
+            "default": 60,
+            "title": "Token Expiry Minutes",
+            "type": "integer"
+          }
+        },
+        "title": "OAuthSection",
+        "type": "object"
+      },
+      "SamlSection": {
+        "additionalProperties": false,
+        "properties": {
+          "c14n_algorithm": {
+            "default": "exc_c14n",
+            "title": "C14N Algorithm",
+            "type": "string"
+          },
+          "default_acs_url": {
+            "default": "http://localhost:8080/login/saml2/sso/samlIdp",
+            "title": "Default Acs Url",
+            "type": "string"
+          },
+          "entity_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Entity Id"
+          },
+          "export_groups": {
+            "default": false,
+            "title": "Export Groups",
+            "type": "boolean"
+          },
+          "export_roles": {
+            "default": false,
+            "title": "Export Roles",
+            "type": "boolean"
+          },
+          "groups_attr_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": "groups",
+            "title": "Groups Attr Name"
+          },
+          "roles_attr_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": "roles",
+            "title": "Roles Attr Name"
+          },
+          "sign_responses": {
+            "default": true,
+            "title": "Sign Responses",
+            "type": "boolean"
+          },
+          "sp_certificates": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Sp Certificates"
+          },
+          "sso_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Sso Url"
+          },
+          "strict_binding": {
+            "default": false,
+            "title": "Strict Binding",
+            "type": "boolean"
+          },
+          "want_authn_requests_signed": {
+            "default": false,
+            "title": "Want Authn Requests Signed",
+            "type": "boolean"
+          }
+        },
+        "title": "SamlSection",
+        "type": "object"
+      },
+      "ServerSection": {
+        "additionalProperties": false,
+        "properties": {
+          "debug": {
+            "default": false,
+            "title": "Debug",
+            "type": "boolean"
+          },
+          "host": {
+            "default": "127.0.0.1",
+            "title": "Host",
+            "type": "string"
+          },
+          "port": {
+            "default": 8000,
+            "title": "Port",
+            "type": "integer"
+          }
+        },
+        "title": "ServerSection",
+        "type": "object"
+      },
+      "SessionSection": {
+        "additionalProperties": false,
+        "properties": {
+          "enforce_password_check": {
+            "default": false,
+            "title": "Enforce Password Check",
+            "type": "boolean"
+          },
+          "permanent": {
+            "default": null,
+            "title": "Permanent"
+          },
+          "require_ui_login": {
+            "default": false,
+            "title": "Require Ui Login",
+            "type": "boolean"
+          },
+          "secret_key": {
+            "default": "dev-secret-key-change-in-production",
+            "title": "Secret Key",
+            "type": "string"
+          }
+        },
+        "title": "SessionSection",
+        "type": "object"
+      }
+    },
+    "$id": "https://cdelmonte-zg.github.io/nanoidp/schema/config.v1-settings.json",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "Top-level shape of ``settings.yaml``.",
+    "properties": {
+      "allowed_identity_classes": {
+        "items": {
+          "type": "string"
+        },
+        "title": "Allowed Identity Classes",
+        "type": "array"
+      },
+      "authority_prefixes": {
+        "additionalProperties": {
+          "type": "string"
+        },
+        "title": "Authority Prefixes",
+        "type": "object"
+      },
+      "config_validation": {
+        "default": "warn",
+        "title": "Config Validation",
+        "type": "string"
+      },
+      "config_version": {
+        "anyOf": [
+          {
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Config Version"
+      },
+      "cors_allowed_origins": {
+        "default": null,
+        "title": "Cors Allowed Origins"
+      },
+      "device_flow": {
+        "default": null,
+        "title": "Device Flow"
+      },
+      "hooks": {
+        "$ref": "#/$defs/HooksSection"
+      },
+      "jwt": {
+        "$ref": "#/$defs/JwtSection"
+      },
+      "logging": {
+        "$ref": "#/$defs/LoggingSection"
+      },
+      "login": {
+        "$ref": "#/$defs/LoginSection"
+      },
+      "oauth": {
+        "$ref": "#/$defs/OAuthSection"
+      },
+      "plugins": {
+        "additionalProperties": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "title": "Plugins",
+        "type": "object"
+      },
+      "saml": {
+        "$ref": "#/$defs/SamlSection"
+      },
+      "security_profile": {
+        "default": "dev",
+        "title": "Security Profile",
+        "type": "string"
+      },
+      "server": {
+        "$ref": "#/$defs/ServerSection"
+      },
+      "session": {
+        "$ref": "#/$defs/SessionSection"
+      }
+    },
+    "title": "SettingsDocument",
+    "type": "object"
+  },
+  "title": "NanoIDP configuration directory",
+  "users": {
+    "$defs": {
+      "UserEntry": {
+        "additionalProperties": true,
+        "description": "One ``users.<name>`` mapping. Defaults mirror the old loader: a\nmissing ``password`` is ``None`` (persona-only user), ``roles`` default\nto ``[\"USER\"]``, ``email`` to ``<username>@example.org`` (filled in by\n``to_user`` because it needs the key).",
+        "properties": {
+          "attributes": {
+            "additionalProperties": true,
+            "title": "Attributes",
+            "type": "object"
+          },
+          "email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Email"
+          },
+          "entitlements": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Entitlements",
+            "type": "array"
+          },
+          "groups": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Groups",
+            "type": "array"
+          },
+          "identity_class": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Identity Class"
+          },
+          "password": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Password"
+          },
+          "roles": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Roles",
+            "type": "array"
+          },
+          "source_acl": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Source Acl",
+            "type": "array"
+          },
+          "tenant": {
+            "default": "default",
+            "title": "Tenant",
+            "type": "string"
+          }
+        },
+        "title": "UserEntry",
+        "type": "object"
+      }
+    },
+    "$id": "https://cdelmonte-zg.github.io/nanoidp/schema/config.v1-users.json",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "Top-level shape of ``users.yaml``.",
+    "properties": {
+      "config_version": {
+        "anyOf": [
+          {
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Config Version"
+      },
+      "default_user": {
+        "default": "admin",
+        "title": "Default User",
+        "type": "string"
+      },
+      "users": {
+        "additionalProperties": {
+          "$ref": "#/$defs/UserEntry"
+        },
+        "title": "Users",
+        "type": "object"
+      }
+    },
+    "title": "UsersDocument",
+    "type": "object"
+  }
+}

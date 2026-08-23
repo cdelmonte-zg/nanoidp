@@ -17,6 +17,7 @@ import yaml
 from .config_documents import (
     HooksSection,
     SettingsDocument,
+    declared_validation_mode,
     document_defaults,
     load_settings_document,
     load_users_document,
@@ -47,7 +48,10 @@ class ConfigManager:
     """Manages configuration loading and access."""
 
     def __init__(
-        self, config_dir: Optional[str] = None, profile_override: Optional[str] = None
+        self,
+        config_dir: Optional[str] = None,
+        profile_override: Optional[str] = None,
+        strict_config: Optional[bool] = None,
     ) -> None:
         self.config_dir = Path(config_dir or self._find_config_dir())
         # A transient CLI/programmatic `--profile` (#172). Kept here, not on
@@ -59,6 +63,13 @@ class ConfigManager:
                 f"expected one of {', '.join(SECURITY_PROFILES)}"
             )
         self.profile_override: Optional[str] = profile_override
+        # The transient CLI --strict-config (#175 piece 4), same contract as
+        # profile_override: True wins over settings.yaml's config_validation
+        # for the life of the process and is never written back. None means
+        # "whatever the file declares".
+        self.strict_config_override: Optional[bool] = strict_config
+        # Effective strictness, re-derived from the file on every load.
+        self.strict_config: bool = self._effective_strict(self._peek_validation_mode())
         self._declared: Dict[str, Any] = {}
         self.settings: Settings = Settings()
         self.users: Dict[str, User] = {}
@@ -70,7 +81,12 @@ class ConfigManager:
         # the config dir, NANOIDP_BOOTSTRAP_HOOK / _PLUGIN) is read before
         # the first load because settings.yaml may be what a hook renders;
         # settings.yaml's own hooks: / plugins: are merged in after each load.
-        self.hooks: HookRegistry = bootstrap_registry(self.config_dir)
+        # bootstrap.yaml is read before settings.yaml (it may be what renders
+        # it), so the strictness it follows comes from a raw peek at
+        # settings.yaml's config_validation above: one contract per directory.
+        self.hooks: HookRegistry = bootstrap_registry(
+            self.config_dir, strict_config=self.strict_config
+        )
         # Last settings.yaml hooks:/plugins: declaration applied to the
         # registry; an unchanged declaration is not re-applied on the next
         # load, so a post-write refresh does not drop and re-instantiate
@@ -97,6 +113,30 @@ class ConfigManager:
 
         # Default to ./config
         return "./config"
+
+    def _effective_strict(self, declared_mode: str) -> bool:
+        """--strict-config wins over the file, as --profile does (#172)."""
+        if self.strict_config_override is not None:
+            return self.strict_config_override
+        return declared_mode == "strict"
+
+    def _peek_validation_mode(self) -> str:
+        """``config_validation`` as declared by settings.yaml, read raw.
+
+        Needed before the document loader runs (it decides how that loader
+        reports) and before bootstrap.yaml is read. A file that cannot be
+        parsed at all returns the default here and fails with its real error
+        a moment later, in _read_settings, where the message belongs.
+        """
+        settings_file = self.config_dir / "settings.yaml"
+        if not settings_file.exists():
+            return "warn"
+        try:
+            with open(settings_file, "r") as f:
+                data = yaml.safe_load(f) or {}
+        except Exception:  # noqa: BLE001 - reported by _read_settings
+            return "warn"
+        return declared_validation_mode(data) if isinstance(data, dict) else "warn"
 
     def _load_config(self) -> None:
         """Load all configuration files."""
@@ -183,6 +223,10 @@ class ConfigManager:
         with open(settings_file, "r") as f:
             data = yaml.safe_load(f) or {}
 
+        # Re-derived on every load: an edited config_validation takes effect
+        # on the next reload, an explicit --strict-config keeps winning.
+        self.strict_config = self._effective_strict(declared_validation_mode(data))
+
         # Refuse files written for a newer contract before reading any key
         # (#175): a silently half-understood file is worse than a clear stop.
         self.config_version = check_config_version(data, settings_file)
@@ -193,7 +237,7 @@ class ConfigManager:
         # reported with their path, defaults live on the model, and the
         # domain Settings is built from it with every validator it already
         # had. ${VAR} expansion and config_version stay at the edge, above.
-        document = load_settings_document(data, settings_file)
+        document = load_settings_document(data, settings_file, strict=self.strict_config)
         # Fail without commit (#200 review): build the candidate, apply the
         # file's hooks/plugins (which may raise under strict and then rolls
         # the registry back), and only then promote the candidate. A reload
@@ -283,7 +327,9 @@ class ConfigManager:
         data = _expand_env_vars(data)
         # Same document-model path as settings (#175 piece 2); unknown keys
         # inside a user entry keep folding into its attributes, as always.
-        self.users, self.default_user = load_users_document(data, users_file).to_users()
+        self.users, self.default_user = load_users_document(
+            data, users_file, strict=self.strict_config
+        ).to_users()
 
     def _set_default_users(self) -> None:
         """Set default users."""
@@ -455,14 +501,19 @@ def get_config() -> ConfigManager:
 
 
 def init_config(
-    config_dir: Optional[str] = None, profile_override: Optional[str] = None
+    config_dir: Optional[str] = None,
+    profile_override: Optional[str] = None,
+    strict_config: Optional[bool] = None,
 ) -> ConfigManager:
     """Initialize the global config instance.
 
     profile_override is the CLI --profile: it wins over settings.yaml's
     security_profile for the life of the process and is re-applied on every
-    reload() without ever being persisted (#172).
+    reload() without ever being persisted (#172). strict_config is the CLI
+    --strict-config, with the same contract over config_validation (#175).
     """
     global _config
-    _config = ConfigManager(config_dir, profile_override=profile_override)
+    _config = ConfigManager(
+        config_dir, profile_override=profile_override, strict_config=strict_config
+    )
     return _config

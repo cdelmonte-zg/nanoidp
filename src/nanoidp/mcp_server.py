@@ -58,6 +58,7 @@ from mcp.types import (
 
 from . import __version__
 from .config import ConfigManager, OAuthClient, User, init_config
+from .config_validation import validate_config_result
 from .hooks import HookError
 from .models import HEX_COLOR_PATTERN, normalize_saml_attr_name
 from .services import (
@@ -679,6 +680,28 @@ _TOOLS: list[Tool] = [
         input_schema={
             "type": "object",
             "properties": {},
+            "required": [],
+        },
+    ),
+    Tool(
+        name="validate_config",
+        description="Validate the running configuration directory (settings.yaml, "
+        "users.yaml, bootstrap.yaml) and report what a start or reload would "
+        "complain about: unknown keys as warnings, wrong types and refused values "
+        "as errors. Read-only and inert: it re-reads the files through the same "
+        "loaders, runs no hook and loads no plugin. 'valid' is false on any error, "
+        "and on a warning too when the directory declares config_validation: strict "
+        "(or 'strict' is passed), which is when a start would refuse.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "strict": {
+                    "type": "boolean",
+                    "description": "Treat warnings as failures, like the server's "
+                    "--strict-config. A directory declaring config_validation: "
+                    "strict is strict regardless.",
+                },
+            },
             "required": [],
         },
     ),
@@ -1314,6 +1337,12 @@ async def _execute_tool(name: str, arguments: dict[str, Any], config: ConfigMana
         except HookError as exc:
             return {"success": False, "error": f"Reload failed: {exc.message}", "kind": exc.kind}
         return {"success": True, "message": "Configuration reloaded"}
+
+    elif name == "validate_config":
+        # The CLI's code path exactly (nanoidp.config_validation): no
+        # ConfigManager is built, no hook runs, no plugin is imported, and
+        # the running configuration is not touched or reloaded.
+        return validate_config_result(config.config_dir, bool(arguments.get("strict", False)))
 
     elif name == "update_settings":
         settings = config.settings
