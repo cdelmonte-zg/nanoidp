@@ -126,7 +126,7 @@ class ConfigManager:
         Needed before the document loader runs (it decides how that loader
         reports) and before bootstrap.yaml is read. A file that cannot be
         parsed at all returns the default here and fails with its real error
-        a moment later, in _read_settings, where the message belongs.
+        a moment later, in _stage_directory, where the message belongs.
         """
         settings_file = self.config_dir / "settings.yaml"
         if not settings_file.exists():
@@ -134,26 +134,31 @@ class ConfigManager:
         try:
             with open(settings_file, "r") as f:
                 data = yaml.safe_load(f) or {}
-        except Exception:  # noqa: BLE001 - reported by _read_settings
+        except Exception:  # noqa: BLE001 - reported by _stage_directory
             return "warn"
         return declared_validation_mode(data) if isinstance(data, dict) else "warn"
 
-    def _load_config(self) -> None:
-        """Load all configuration files."""
+    def _load_config(self, run_before_load: bool = True) -> None:
+        """Load all configuration files as ONE directory transaction.
+
+        The transactional boundary is the whole configuration directory
+        (#204 review): settings.yaml AND users.yaml are parsed and validated
+        into candidates first, and only when both are valid does anything
+        touch the runtime. A failed load (strict unknown key in either file,
+        wrong types, version mismatch, strict plugin failure) leaves
+        settings, users, default_user, strict_config, config_version, the
+        profile hardening and the hook registry exactly as they were.
+        """
         # on_before_load: bootstrap hooks run once (first load only), the
         # settings.yaml-declared ones on every load. The registry enforces
         # the once-only rule; under hooks.strict a failure raises HookError
         # here, before anything is read.
-        self.hooks.run_before_load(self.config_dir)
-        self._load_settings()
-        self._load_users()
+        if run_before_load:
+            self.hooks.run_before_load(self.config_dir)
+        staged = self._stage_directory()
+        self._commit_directory(staged)
         logger.info(f"Loaded configuration from {self.config_dir}")
         logger.info(f"Loaded {len(self.users)} users")
-
-    def _load_settings(self) -> None:
-        """Load settings from settings.yaml, then apply the effective profile."""
-        self._read_settings()
-        self._apply_profile()
 
     # Settings fields the stricter-dev profile forces at runtime (#47, #68).
     # Listed once so _apply_profile() and persistable_settings() cannot drift:
@@ -168,31 +173,22 @@ class ConfigManager:
         "debug": False,
     }
 
-    def _apply_profile(self) -> None:
-        """Make the effective security profile real on the freshly built Settings.
+    def _apply_profile(self, settings: Settings) -> Dict[str, Any]:
+        """Make the effective security profile real on a candidate Settings.
 
-        Two things used to happen once in create_app() and were lost on the
-        first reload() - i.e. on the first UI/MCP save (#172): the CLI
-        --profile override, and the stricter-dev runtime hardening. Both
-        belong here, next to the only place Settings is rebuilt, so every
-        reload re-derives them.
-
-        self.settings is the EFFECTIVE state. Every value this method forces
-        is recorded in self._declared with the value the file declared (or
-        the model default), so persistable_settings() can hand the writer
-        the declared state and neither the override nor its derived effects
-        ever reach settings.yaml (#172 review). oauth21 needs no mutation;
-        its protocol strictness derives from security_profile via Settings
-        properties (#68).
+        Pure with respect to the manager: mutates only the candidate and
+        RETURNS the declared-value snapshot; the caller commits both. See
+        _STRICTER_DEV_HARDENING and persistable_settings().
         """
-        self._declared = {}
+        declared: Dict[str, Any] = {}
         if self.profile_override is not None:
-            self._declared["security_profile"] = self.settings.security_profile
-            self.settings.security_profile = self.profile_override
-        if self.settings.security_profile == "stricter-dev":
+            declared["security_profile"] = settings.security_profile
+            settings.security_profile = self.profile_override
+        if settings.security_profile == "stricter-dev":
             for field, forced in self._STRICTER_DEV_HARDENING.items():
-                self._declared[field] = getattr(self.settings, field)
-                setattr(self.settings, field, forced)
+                declared[field] = getattr(settings, field)
+                setattr(settings, field, forced)
+        return declared
 
     def persistable_settings(self) -> Settings:
         """The declared configuration state, as opposed to the effective one.
@@ -207,45 +203,84 @@ class ConfigManager:
             return self.settings
         return self.settings.model_copy(update=self._declared)
 
-    def _read_settings(self) -> None:
-        """Build Settings from settings.yaml (defaults when the file is absent)."""
+    def _stage_directory(self) -> Dict[str, Any]:
+        """Parse and validate the whole directory into candidates, committing
+        nothing. Any exception here leaves the manager untouched."""
+        staged: Dict[str, Any] = {}
         settings_file = self.config_dir / "settings.yaml"
-
         if not settings_file.exists():
             logger.warning(f"Settings file not found: {settings_file}, using defaults")
+            staged["settings_missing"] = True
+            staged["strict"] = self._effective_strict("warn")
+            staged["version"] = IMPLICIT_CONFIG_VERSION
+            staged["settings"] = self._default_settings()
+            staged["hooks_section"] = None
+            staged["plugins"] = {}
+        else:
+            with open(settings_file, "r") as f:
+                data = yaml.safe_load(f) or {}
+            # Candidate strictness: an edited config_validation takes effect
+            # on the load that reads it, an explicit --strict-config keeps
+            # winning, and a load that FAILS never changes the running mode
+            # (#204 review).
+            staged["settings_missing"] = False
+            staged["strict"] = self._effective_strict(declared_validation_mode(data))
+            # Refuse files written for a newer contract before reading any
+            # key (#175): a silently half-understood file is worse than a
+            # clear stop.
+            staged["version"] = check_config_version(data, settings_file)
+            data = _expand_env_vars(data)
+            # YAML -> document model -> domain model (#175 piece 2).
+            document = load_settings_document(data, settings_file, strict=staged["strict"])
+            staged["settings"] = document.to_settings()
+            staged["hooks_section"] = document.hooks
+            staged["plugins"] = document.plugins
+        # The profile hardening is part of the candidate, not a later step.
+        staged["declared"] = self._apply_profile(staged["settings"])
+
+        users_file = self.config_dir / "users.yaml"
+        if not users_file.exists():
+            logger.warning(f"Users file not found: {users_file}, using defaults")
+            staged["users"], staged["default_user"] = self._default_users(), "admin"
+        else:
+            with open(users_file, "r") as f:
+                udata = yaml.safe_load(f) or {}
+            # config_version is checked BEFORE placeholder expansion: it must
+            # be a literal integer, never ${VAR} (#175 review).
+            users_version = check_config_version(udata, users_file)
+            # One contract for the whole directory (#175 review).
+            if users_version != staged["version"]:
+                raise ValueError(
+                    f"{users_file}: config_version {users_version} does not match "
+                    f"settings.yaml's config_version {staged['version']}; the "
+                    f"configuration directory follows one contract version"
+                )
+            udata = _expand_env_vars(udata)
+            staged["users"], staged["default_user"] = load_users_document(
+                udata, users_file, strict=staged["strict"]
+            ).to_users()
+        return staged
+
+    def _commit_directory(self, staged: Dict[str, Any]) -> None:
+        """Promote a fully validated staging to the runtime.
+
+        The hook registry goes first because it is the only step that can
+        still fail (strict plugin load), and replace_source() rolls itself
+        back on failure (#200 review); everything after is plain assignment.
+        """
+        if staged["settings_missing"]:
             # A vanished settings.yaml takes its hooks, plugins and policy
             # with it (#185 review); bootstrap entries stay.
             self.hooks.drop_source(SOURCE_SETTINGS)
             self._hooks_snapshot = None
-            self._set_default_settings()
-            return
-
-        with open(settings_file, "r") as f:
-            data = yaml.safe_load(f) or {}
-
-        # Re-derived on every load: an edited config_validation takes effect
-        # on the next reload, an explicit --strict-config keeps winning.
-        self.strict_config = self._effective_strict(declared_validation_mode(data))
-
-        # Refuse files written for a newer contract before reading any key
-        # (#175): a silently half-understood file is worse than a clear stop.
-        self.config_version = check_config_version(data, settings_file)
-        data = _expand_env_vars(data)
-
-        # YAML -> document model -> domain model (#175 piece 2). The document
-        # model is the single statement of the file format: unknown keys are
-        # reported with their path, defaults live on the model, and the
-        # domain Settings is built from it with every validator it already
-        # had. ${VAR} expansion and config_version stay at the edge, above.
-        document = load_settings_document(data, settings_file, strict=self.strict_config)
-        # Fail without commit (#200 review): build the candidate, apply the
-        # file's hooks/plugins (which may raise under strict and then rolls
-        # the registry back), and only then promote the candidate. A reload
-        # that answers 503 leaves settings, profile hardening and registry
-        # exactly as they were.
-        candidate = document.to_settings()
-        self._configure_hooks_from(document.hooks, document.plugins)
-        self.settings = candidate
+        else:
+            self._configure_hooks_from(staged["hooks_section"], staged["plugins"])
+        self.settings = staged["settings"]
+        self._declared = staged["declared"]
+        self.strict_config = staged["strict"]
+        self.config_version = staged["version"]
+        self.users = staged["users"]
+        self.default_user = staged["default_user"]
 
     def _configure_hooks_from(self, hooks: HooksSection, plugins: Dict[str, Dict[str, Any]]) -> None:
         """Replace the settings.yaml-sourced hooks/plugins with the file's
@@ -277,11 +312,9 @@ class ConfigManager:
         when the error propagates; YamlWriter reloads before re-raising."""
         self.hooks.run_config_saved(path, kind)
 
-    def _set_default_settings(self) -> None:
-        """Set default settings with demo client."""
-        # Model defaults (the same the loader applies to a sparse file) plus
-        # the demo client and prefixes a fresh install gets.
-        self.settings = SettingsDocument(
+    def _default_settings(self) -> Settings:
+        """The Settings a directory without settings.yaml gets."""
+        return SettingsDocument(
             authority_prefixes={
                 "roles": "ROLE_",
                 "groups": "GROUP_",
@@ -290,50 +323,10 @@ class ConfigManager:
             },
             allowed_identity_classes=["INTERNAL", "EXTERNAL", "PARTNER", "SERVICE"],
         ).to_settings()
-        self.settings.clients = [OAuthClient(
-            client_id="demo-client",
-            client_secret="demo-secret",
-            description="Default demo client",
-        )]
 
-    def _load_users(self) -> None:
-        """Load users from users.yaml."""
-        users_file = self.config_dir / "users.yaml"
-
-        if not users_file.exists():
-            logger.warning(f"Users file not found: {users_file}, using defaults")
-            self._set_default_users()
-            return
-
-        with open(users_file, "r") as f:
-            data = yaml.safe_load(f) or {}
-
-        # config_version is checked BEFORE placeholder expansion on purpose:
-        # it must be a literal integer, never ${VAR} (#175 review).
-        users_version = check_config_version(data, users_file)
-        # One contract for the whole directory (#175 review): both files must
-        # declare the same version. Impossible to violate while only v1 exists
-        # (the check above already refused anything else), enforced now so
-        # the rule is real before the first bump makes it matter.
-        if users_version != self.config_version:
-            raise ValueError(
-                f"{users_file}: config_version {users_version} does not match "
-                f"settings.yaml's config_version {self.config_version}; the "
-                f"configuration directory follows one contract version"
-            )
-        # users.yaml takes the same ${VAR} / ${VAR:default} placeholders as
-        # settings.yaml (passwords, emails, attributes); until #175 only the
-        # settings loader expanded them.
-        data = _expand_env_vars(data)
-        # Same document-model path as settings (#175 piece 2); unknown keys
-        # inside a user entry keep folding into its attributes, as always.
-        self.users, self.default_user = load_users_document(
-            data, users_file, strict=self.strict_config
-        ).to_users()
-
-    def _set_default_users(self) -> None:
-        """Set default users."""
-        self.users = {
+    def _default_users(self) -> Dict[str, User]:
+        """The users a directory without users.yaml gets."""
+        return {
             "admin": User(
                 username="admin",
                 password="admin",
@@ -443,8 +436,7 @@ class ConfigManager:
         (or whose push just failed) would silently roll the write back
         (#185 review). Only an explicit reload() consults the mirror.
         """
-        self._load_settings()
-        self._load_users()
+        self._load_config(run_before_load=False)
         logger.info("Configuration refreshed from local files")
 
     def save(self) -> None:

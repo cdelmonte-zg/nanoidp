@@ -686,9 +686,10 @@ _TOOLS: list[Tool] = [
     Tool(
         name="validate_config",
         description="Validate the running configuration directory (settings.yaml, "
-        "users.yaml, bootstrap.yaml) and report what a start or reload would "
-        "complain about: unknown keys as warnings, wrong types and refused values "
-        "as errors. Read-only and inert: it re-reads the files through the same "
+        "users.yaml, bootstrap.yaml): unknown keys as warnings, wrong types and "
+        "refused values as errors. settings.yaml and users.yaml findings are what "
+        "a startup or the next reload would hit; bootstrap.yaml findings are what "
+        "would stop the NEXT startup (the bootstrap surface loads at startup only). Read-only and inert: it re-reads the files through the same "
         "loaders, runs no hook and loads no plugin. 'valid' is false on any error, "
         "and on a warning too when the directory declares config_validation: strict "
         "(or 'strict' is passed), which is when a start would refuse.",

@@ -249,3 +249,125 @@ class TestConfigValidationIsObservable:
         app.config["TESTING"] = True
         with app.test_client() as client:
             assert client.get("/api/config").get_json()["config_validation"] == "strict"
+
+
+class TestDirectoryLoadIsTransactional:
+    """#204 review: the transactional boundary is the whole configuration
+    directory. A reload that fails while validating users.yaml (or anywhere)
+    must not have committed the new settings, strictness or hooks."""
+
+    def _write(self, tmp_path, settings, users):
+        import yaml as _yaml
+
+        (tmp_path / "settings.yaml").write_text(_yaml.safe_dump(settings))
+        (tmp_path / "users.yaml").write_text(_yaml.safe_dump(users))
+
+    def test_invalid_users_under_strict_commits_nothing(self, tmp_path):
+        from nanoidp.config import ConfigManager
+
+        log = tmp_path / "hooks.log"
+        self._write(
+            tmp_path,
+            {
+                "server": {"host": "127.0.0.1", "port": 8000},
+                "oauth": {"audience": "old"},
+                "hooks": {"on_config_saved": f"echo saved >> {log}"},
+            },
+            {"users": {"alice": {"password": "x"}}},
+        )
+        manager = ConfigManager(str(tmp_path))
+        old_settings = manager.settings
+        old_users = manager.users
+        old_default = manager.default_user
+        old_strict = manager.strict_config
+        old_registry = manager.hooks.snapshot()
+        old_marker = manager._hooks_snapshot
+        # disk: changed settings + hooks, strict on, users.yaml typo
+        self._write(
+            tmp_path,
+            {
+                "server": {"host": "127.0.0.1", "port": 8000},
+                "oauth": {"audience": "new"},
+                "config_validation": "strict",
+                "hooks": {"on_config_saved": f"echo saved2 >> {log}"},
+            },
+            {"users": {"alice": {"password": "x"}}, "defualt_user": "alice"},
+        )
+        import pytest as _pytest
+
+        with _pytest.raises(ValueError, match="unknown key defualt_user"):
+            manager.reload()
+        assert manager.settings is old_settings
+        assert manager.settings.audience == "old"
+        assert manager.users is old_users
+        assert manager.default_user == old_default
+        assert manager.strict_config is old_strict
+        assert manager.hooks.snapshot() == old_registry
+        assert manager._hooks_snapshot is old_marker
+        # fixing users commits everything at once
+        self._write(
+            tmp_path,
+            {
+                "server": {"host": "127.0.0.1", "port": 8000},
+                "oauth": {"audience": "new"},
+                "config_validation": "strict",
+                "hooks": {"on_config_saved": f"echo saved2 >> {log}"},
+            },
+            {"users": {"alice": {"password": "x"}}},
+        )
+        manager.reload()
+        assert manager.settings.audience == "new"
+        assert manager.strict_config is True
+
+    def test_failed_strict_flip_does_not_change_the_running_mode(self, tmp_path):
+        """config_validation: strict plus a typo in the same file: the load
+        fails AND the running mode stays warn (#204 review: the mode used to
+        flip before validation ran)."""
+        from nanoidp.app import create_app
+        from nanoidp.config import get_config
+
+        self._write(
+            tmp_path,
+            {"server": {"host": "127.0.0.1", "port": 8000}},
+            {"users": {"alice": {"password": "x"}}},
+        )
+        app = create_app(config_dir=str(tmp_path))
+        app.config["TESTING"] = True
+        self._write(
+            tmp_path,
+            {
+                "server": {"host": "127.0.0.1", "port": 8000},
+                "config_validation": "strict",
+                "oauth": {"isuer": "x"},
+            },
+            {"users": {"alice": {"password": "x"}}},
+        )
+        import pytest as _pytest
+
+        with _pytest.raises(ValueError, match="unknown key oauth.isuer"):
+            get_config().reload()
+        assert get_config().strict_config is False
+        with app.test_client() as client:
+            assert client.get("/api/config").get_json()["config_validation"] == "warn"
+
+    def test_profile_hardening_survives_a_failed_users_load(self, tmp_path):
+        from nanoidp.config import get_config, init_config
+
+        self._write(
+            tmp_path,
+            {"server": {"host": "127.0.0.1", "port": 8000}, "config_validation": "strict"},
+            {"users": {"alice": {"password": "x"}}},
+        )
+        init_config(str(tmp_path), profile_override="stricter-dev")
+        assert get_config().settings.require_pkce is True
+        self._write(
+            tmp_path,
+            {"server": {"host": "127.0.0.1", "port": 8000}, "config_validation": "strict"},
+            {"users": {"alice": {"password": "x"}}, "defualt_user": "alice"},
+        )
+        import pytest as _pytest
+
+        with _pytest.raises(ValueError):
+            get_config().reload()
+        assert get_config().settings.security_profile == "stricter-dev"
+        assert get_config().settings.require_pkce is True

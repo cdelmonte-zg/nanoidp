@@ -95,7 +95,14 @@ config_validation: warn     # default: log the key and its path, keep loading
 The value belongs to the configuration directory as a whole: `users.yaml`
 and `bootstrap.yaml` follow what `settings.yaml` declares. Wrong types and
 refused values are errors in both modes and always have been; `strict` is
-only about the unknown key. The server flag `--strict-config` turns strict
+only about the unknown key. `settings.yaml` and `users.yaml` are validated
+on startup and on every reload; `bootstrap.yaml` is validated when the
+bootstrap surface is loaded, at startup (`validate-config` checks all
+three, so for `bootstrap.yaml` it reports what would stop the NEXT
+startup, not the next reload). A load that fails validates and commits
+nothing: the running settings, users, validation mode and hooks stay
+exactly as they were, in the same fail-without-commit contract as the
+hook registry. The server flag `--strict-config` turns strict
 on for one run, wins over the file, and is never written back:
 
 ```bash
