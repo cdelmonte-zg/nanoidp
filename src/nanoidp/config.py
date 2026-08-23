@@ -290,7 +290,13 @@ class ConfigManager:
         with open(users_file, "r") as f:
             data = yaml.safe_load(f) or {}
 
+        # config_version is checked BEFORE placeholder expansion on purpose:
+        # it must be a literal integer, never ${VAR} (#175 review).
         check_config_version(data, users_file)
+        # users.yaml takes the same ${VAR} / ${VAR:default} placeholders as
+        # settings.yaml (passwords, emails, attributes); until #175 only the
+        # settings loader expanded them.
+        data = _expand_env_vars(data)
         self.default_user = data.get("default_user", "admin")
 
         for username, user_data in data.get("users", {}).items():

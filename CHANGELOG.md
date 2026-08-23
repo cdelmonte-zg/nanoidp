@@ -9,7 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Config schema
 - `config_version` 1 introduced (#175, piece 1). No changes required to
-  existing files: a file without the key is version 1.
+  existing files: a file without the key is version 1. The version is the
+  contract of the config directory as a whole: both files declare the same
+  number, each is checked independently, and it must be a literal integer
+  (checked before `${VAR}` expansion).
 
 ### Added
 - **Import contracts enforced in CI** (#149): `import-linter` now pins the
@@ -69,6 +72,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the hardening it implies is ever written into the operator's file. `GET /api/config` exposes `security_profile`,
   `profile_override` and the derived `effective` values; the e2e agent checks
   they are stable across a reload.
+- **`users.yaml` now expands `${VAR}` / `${VAR:default}` placeholders** like
+  `settings.yaml` always did (#175 review). A `password: ${ALICE_PASSWORD}`
+  used to be taken literally, so the documented "secrets kept out of the
+  file" use case only worked for settings. A UI/MCP save of one user still
+  rewrites only that user's entry; the MCP `save_config` tool rewrites the
+  whole map and materializes expanded placeholders, as documented.
 - **Example presets now bind to `127.0.0.1`** (#164). All four pre-2.6.0
   presets (`cli-device-flow`, `microservices-client-credentials`,
   `react-spa-pkce`, `spring-boot-saml`) still shipped an explicit

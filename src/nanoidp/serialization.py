@@ -170,6 +170,14 @@ def check_config_version(data: Dict[str, Any], file_path: Path) -> int:
     """Validate a document's top-level ``config_version`` and return the
     effective value (``CONFIG_VERSION`` when the key is absent).
 
+    ``config_version`` is the version of the configuration directory's
+    contract as a whole, not of one file: ``settings.yaml`` and
+    ``users.yaml`` declare the same number, each file is validated
+    independently against ``CONFIG_VERSION`` with this function, and a
+    future bump applies to both files together with one loader migration.
+    The value must be a literal integer: the check runs before ``${VAR}``
+    expansion by design, so a placeholder here is rejected.
+
     Raises ``ValueError`` naming the file, the value found and the supported
     version when the value is not a positive integer or is newer than this
     release understands. Lower or equal versions load normally.

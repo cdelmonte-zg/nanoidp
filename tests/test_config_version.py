@@ -58,6 +58,24 @@ class TestLoader:
         with pytest.raises(ValueError, match=r"users\.yaml: config_version must be a positive integer"):
             ConfigManager(_write(tmp_path, None, {"config_version": "1"}))
 
+    @pytest.mark.parametrize("file", ["settings.yaml", "users.yaml"])
+    def test_placeholder_is_not_a_valid_version(self, tmp_path, monkeypatch, file):
+        """config_version is checked before ${VAR} expansion: literal only."""
+        monkeypatch.setenv("CONFIG_VERSION", "1")
+        _write(tmp_path)
+        path = tmp_path / file
+        path.write_text("config_version: ${CONFIG_VERSION:1}\n" + path.read_text())
+        with pytest.raises(ValueError, match=r"must be a positive integer, found '\$\{CONFIG_VERSION:1\}'"):
+            ConfigManager(str(tmp_path))
+
+    def test_both_files_validated_against_one_contract(self, tmp_path):
+        """v1: each file checked independently against CONFIG_VERSION; the
+        manager reports the single contract version."""
+        config = ConfigManager(_write(tmp_path, {"config_version": 1}, None))
+        assert config.config_version == 1
+        config = ConfigManager(_write(tmp_path, None, {"config_version": 1}))
+        assert config.config_version == 1
+
     def test_check_helper_returns_effective_value(self, tmp_path):
         path = tmp_path / "settings.yaml"
         assert check_config_version({}, path) == CONFIG_VERSION
@@ -125,3 +143,89 @@ class TestExposure:
         config = ConfigManager(_write(tmp_path, {"config_version": 1}))
         result = await _execute_tool("get_settings", {}, config)
         assert result["config_version"] == 1
+
+
+class TestUsersPlaceholders:
+    """users.yaml expands ${VAR} like settings.yaml (#175 review)."""
+
+    USERS = {
+        "users": {
+            "alice": {
+                "password": "${ALICE_PASSWORD}",
+                "email": "${ALICE_EMAIL:alice@example.org}",
+                "roles": ["${ALICE_ROLE:reader}"],
+                "attributes": {"dept": "${ALICE_DEPT:eng}"},
+            },
+            "bob": {"password": "bob-pw"},
+        }
+    }
+
+    def _write_users(self, tmp_path):
+        settings = {
+            "server": {"port": 8000},
+            "oauth": {"clients": [{"client_id": "demo-client", "client_secret": "demo-secret"}]},
+        }
+        (tmp_path / "settings.yaml").write_text(yaml.safe_dump(settings))
+        (tmp_path / "users.yaml").write_text(yaml.safe_dump(self.USERS))
+        return str(tmp_path)
+
+    def test_placeholders_expand_on_load(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("ALICE_PASSWORD", "s3cret")
+        monkeypatch.delenv("ALICE_EMAIL", raising=False)
+        config = ConfigManager(self._write_users(tmp_path))
+        alice = config.users["alice"]
+        assert alice.password == "s3cret"
+        assert alice.email == "alice@example.org"
+        assert alice.roles == ["reader"]
+        assert alice.attributes["dept"] == "eng"
+
+    def test_unset_placeholder_without_default_fails_validation(self, tmp_path, monkeypatch):
+        """${ALICE_PASSWORD} with the variable unset expands to "", which the
+        User model refuses: a missing secret is a loud load failure, not a
+        user with an empty password."""
+        monkeypatch.delenv("ALICE_PASSWORD", raising=False)
+        with pytest.raises(ValueError, match="password"):
+            ConfigManager(self._write_users(tmp_path))
+
+    def test_login_with_expanded_password(self, tmp_path, monkeypatch):
+        from nanoidp.app import create_app
+
+        monkeypatch.setenv("ALICE_PASSWORD", "s3cret")
+        app = create_app(config_dir=self._write_users(tmp_path))
+        app.config["TESTING"] = True
+        import base64
+
+        auth = {"Authorization": "Basic " + base64.b64encode(b"demo-client:demo-secret").decode()}
+        with app.test_client() as client:
+            ok = client.post("/token", data={
+                "grant_type": "password", "username": "alice", "password": "s3cret",
+            }, headers=auth)
+            bad = client.post("/token", data={
+                "grant_type": "password", "username": "alice", "password": "${ALICE_PASSWORD}",
+            }, headers=auth)
+        assert ok.status_code == 200, ok.get_json()
+        assert bad.status_code in (400, 401)
+
+    def test_saving_another_user_keeps_placeholder_text(self, tmp_path, monkeypatch):
+        from nanoidp.config import init_config
+        from nanoidp.models import User
+        from nanoidp.services.yaml_writer import YamlWriter
+
+        monkeypatch.setenv("ALICE_PASSWORD", "s3cret")
+        init_config(self._write_users(tmp_path))
+        YamlWriter(str(tmp_path)).save_user(User(username="carol", password="c"), is_new=True)
+        raw = (tmp_path / "users.yaml").read_text()
+        assert "${ALICE_PASSWORD}" in raw
+        assert "${ALICE_EMAIL:alice@example.org}" in raw
+        assert "s3cret" not in raw
+
+    def test_full_save_materializes_placeholders_documented_behaviour(self, tmp_path, monkeypatch):
+        """ConfigManager.save() (MCP save_config) rewrites the whole user map
+        from the loaded values; documented in configuration.md, not changed
+        here (the users writer has no per-field is_unchanged merge)."""
+        monkeypatch.setenv("ALICE_PASSWORD", "s3cret")
+        config = ConfigManager(self._write_users(tmp_path))
+        config.save()
+        raw = (tmp_path / "users.yaml").read_text()
+        assert "${ALICE_PASSWORD}" not in raw
+        assert "s3cret" in raw

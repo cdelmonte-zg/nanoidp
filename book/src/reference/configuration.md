@@ -22,6 +22,14 @@ Both files may declare, at the top level, the schema version they follow:
 config_version: 1
 ```
 
+The version belongs to the configuration directory's contract as a whole,
+not to one file: `settings.yaml` and `users.yaml` declare the same number,
+each file is checked independently against the version the running release
+supports, and a future bump applies to both files together with one loader
+migration. The value must be a literal integer; it is checked before
+`${VAR}` placeholders are expanded, so `config_version: ${CONFIG_VERSION:1}`
+is rejected like any non-integer.
+
 The contract is a single integer, not semver:
 
 - **Absent means 1.** Existing files need no change; `nanoidp init` and the
@@ -265,17 +273,32 @@ though for a dev tool this is typically not an issue.
 ## Placeholders and the config directory as the interface
 
 Both files accept `${VAR}` and `${VAR:default}` placeholders in any scalar
-value, expanded from the environment when the file is loaded and left intact
-when the file is saved (a UI or MCP save never materializes an expanded
-placeholder, only the fields it changed):
+value except `config_version` (a literal integer, see above), expanded from
+the environment when the file is loaded:
 
 ```yaml
+# settings.yaml
 oauth:
   issuer: ${OAUTH_ISSUER:http://localhost:8000}
   clients:
     - client_id: my-app
       client_secret: ${MY_APP_SECRET}      # no default: empty when unset
+
+# users.yaml
+users:
+  alice:
+    password: ${ALICE_PASSWORD}              # unset: load fails, a password cannot be empty
+    email: ${ALICE_EMAIL:alice@example.org}
 ```
+
+What a save does to placeholders differs between the two files. In
+`settings.yaml` a web UI or MCP save rewrites only the fields it changed, so
+untouched placeholders survive. In `users.yaml` a save of one user rewrites
+that user's entry from its loaded (expanded) values and leaves every other
+user's text intact; the MCP `save_config` tool rewrites the whole user map
+and therefore materializes every expanded placeholder in it. Keep
+placeholder-backed users out of the UI/MCP edit path, or regenerate the
+file from its source after editing.
 
 This makes the config directory the whole interface between NanoIDP and
 whatever produces its configuration. Three use cases that need nothing
