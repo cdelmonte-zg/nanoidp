@@ -3,6 +3,8 @@ Pytest configuration and shared fixtures for NanoIDP tests.
 """
 
 import base64
+import shutil
+from pathlib import Path
 from typing import Optional
 
 import pytest
@@ -11,6 +13,9 @@ import nanoidp.config as config_module
 import nanoidp.mcp_server as mcp_server_module
 import nanoidp.services.crypto as crypto_module
 import nanoidp.services.token as token_module
+import nanoidp.services.yaml_writer as yaml_writer_module
+
+_REPO_CONFIG_DIR = Path(__file__).resolve().parent.parent / "config"
 from nanoidp.app import create_app
 from nanoidp.config import OAuthClient, User
 
@@ -56,6 +61,27 @@ def mcp_list_tools():
 
 
 @pytest.fixture(autouse=True)
+def isolated_repo_config(tmp_path_factory, monkeypatch):
+    """Every test that does not pass an explicit config_dir works on a
+    throwaway copy of the repo's config/ directory, never on the real one.
+
+    ConfigManager's discovery falls back to ./config, so a bare
+    create_app() in a test loads the committed preset; any UI/MCP save that
+    follows then rewrites config/settings.yaml or users.yaml in the
+    checkout. That rewrite has twice ended up committed by accident (#183
+    review) and makes the suite order-dependent. NANOIDP_CONFIG_DIR is the
+    first thing discovery honours, so pointing it at a fresh copy per test
+    closes the hole without touching the tests themselves. Tests that set
+    the variable or pass config_dir explicitly are unaffected.
+    """
+    config_dir = tmp_path_factory.mktemp("repo-config")
+    for name in ("settings.yaml", "users.yaml"):
+        shutil.copy(_REPO_CONFIG_DIR / name, config_dir / name)
+    monkeypatch.setenv("NANOIDP_CONFIG_DIR", str(config_dir))
+    yield config_dir
+
+
+@pytest.fixture(autouse=True)
 def reset_singletons():
     """Reset service singletons before and after each test.
 
@@ -66,17 +92,22 @@ def reset_singletons():
     _ensure_config()), which must be reset the same way or a test that drives
     it caches a ConfigManager into that global for the rest of the session.
     """
+    # get_yaml_writer()'s singleton captures config_dir from whichever
+    # ConfigManager is active when first built and keeps writing there; left
+    # unreset, a later test's saves land in an earlier test's directory.
     # Reset before test
     crypto_module._crypto_service = None
     config_module._config = None
     token_module._token_service = None
     mcp_server_module._config = None
+    yaml_writer_module._yaml_writer = None
     yield
     # Reset after test
     crypto_module._crypto_service = None
     config_module._config = None
     token_module._token_service = None
     mcp_server_module._config = None
+    yaml_writer_module._yaml_writer = None
 
 
 @pytest.fixture
