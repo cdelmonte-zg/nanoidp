@@ -70,6 +70,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   local files only (no remote URLs) to avoid beacons.
 
 ### Fixed
+- **The unit suite no longer rewrites the repo's `config/` files.** Tests
+  that build an app without an explicit config directory used to load the
+  committed preset through ConfigManager's `./config` fallback, and any save
+  that followed rewrote `config/settings.yaml` or `users.yaml` in the
+  checkout - twice committed by accident during review. `tests/conftest.py`
+  now points `NANOIDP_CONFIG_DIR` at a fresh copy of `config/` for every
+  test and resets the `yaml_writer` singleton alongside the others.
 - **`--profile` overrides settings.yaml for every value and survives reloads**
   (#172). An explicit `--profile dev` could not bring a file configured with
   `oauth21`/`stricter-dev` back to `dev` (the flag defaulted to `dev`, so the
