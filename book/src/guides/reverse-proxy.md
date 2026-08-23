@@ -214,3 +214,17 @@ environment:
   the trust model behind `issuer_from_request`
 - [Endpoints reference](../reference/endpoints.md) - `GET /api/config`,
   `POST /api/config/reload`
+
+## SAML metadata follows the issuer
+
+`saml.entity_id` and `saml.sso_url` are optional. When they are absent from
+`settings.yaml`, nanoidp derives them from the effective issuer as
+`<issuer>/saml` and `<issuer>/saml/sso`, so `/saml/metadata`, the `<Issuer>`
+in responses and assertions, and OIDC discovery all name the same origin under
+every option above (fixed issuer, request-derived issuer, proxy headers,
+allowlist). Nothing SAML-specific needs to be configured for a proxy.
+
+Set them explicitly only when the SP expects a fixed, different value; an
+explicit value always wins and does not follow the request. `GET /api/config`
+reports the effective values together with `entity_id_derived` /
+`sso_url_derived` so you can tell which case applies.

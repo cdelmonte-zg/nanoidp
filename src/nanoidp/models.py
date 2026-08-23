@@ -231,8 +231,21 @@ class Settings(BaseModel):
     )
 
     # SAML
-    saml_entity_id: str = Field(default="http://localhost:8000/saml", description="SAML entity ID")
-    saml_sso_url: str = Field(default="http://localhost:8000/saml/sso", description="SAML SSO URL")
+    # None means "derived from the effective issuer" (#181): <issuer>/saml and
+    # <issuer>/saml/sso, where the issuer follows issuer_from_request, the
+    # proxy headers and the allowlist exactly as OIDC discovery does. An
+    # explicit value wins. SAML 2.0 Metadata 2.3.2 requires entityID to be the
+    # value the IdP uses as <Issuer> (Core 2.2.5), so every SAML surface reads
+    # these through resolve_saml_entity_id()/resolve_saml_sso_url(), never the
+    # raw fields.
+    saml_entity_id: Optional[str] = Field(
+        default=None,
+        description="SAML entity ID; unset = derived from the effective issuer as <issuer>/saml",
+    )
+    saml_sso_url: Optional[str] = Field(
+        default=None,
+        description="SAML SSO URL; unset = derived from the effective issuer as <issuer>/saml/sso",
+    )
     default_acs_url: str = Field(default="http://localhost:8080/login/saml2/sso/samlIdp", description="Default ACS URL")
     saml_sign_responses: bool = Field(default=True, description="Sign SAML responses (set to false for testing unsigned flows)")
     saml_export_roles: bool = Field(
@@ -354,6 +367,14 @@ class Settings(BaseModel):
     @classmethod
     def _validate_saml_attr_name(cls, v: Any, info: ValidationInfo) -> str:
         return normalize_saml_attr_name(str(info.field_name), v)
+
+    def resolve_saml_entity_id(self, issuer: str) -> str:
+        """The entityID to advertise for ``issuer``: explicit value, else derived (#181)."""
+        return self.saml_entity_id or f"{issuer.rstrip('/')}/saml"
+
+    def resolve_saml_sso_url(self, issuer: str) -> str:
+        """The SSO location to advertise for ``issuer``: explicit value, else derived (#181)."""
+        return self.saml_sso_url or f"{issuer.rstrip('/')}/saml/sso"
 
     @field_validator("security_profile")
     @classmethod

@@ -26,6 +26,7 @@ from ..config import OAuthClient, User, get_config
 from ..services import get_audit_log, get_token_service, get_yaml_writer
 from ._audit import audit_event
 from ._auth import ui_login_required
+from ._issuer import effective_saml_entity_id, effective_saml_sso_url
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +45,7 @@ def index() -> ResponseReturnValue:
     return render_template(
         "index.html",
         users_count=len(config.users),
+        saml_entity_id=effective_saml_entity_id(config.settings),
         stats=audit.get_stats(),
         settings=config.settings,
         current_user=session.get("user"),
@@ -560,6 +562,9 @@ def settings() -> ResponseReturnValue:
         return render_template(
             "settings.html",
             settings=config.settings,
+            # Shown as placeholders when the fields are derived (#181)
+            effective_saml_entity_id=effective_saml_entity_id(config.settings),
+            effective_saml_sso_url=effective_saml_sso_url(config.settings),
             current_user=session.get("user"),
         )
 

@@ -1758,6 +1758,54 @@ class NanoIDPTestAgent:
         except Exception as e:
             return self._add_result("SAML Metadata", TestCategory.SAML, False, str(e))
 
+    def test_saml_metadata_follows_issuer(self) -> TestResult:
+        """SAML metadata entityID / SSO location follow the effective issuer (#181).
+
+        Reads /api/config: when entity_id / sso_url are derived, metadata must
+        advertise <discovery issuer>/saml and <discovery issuer>/saml/sso for
+        the same Host the agent uses (so it tracks issuer_from_request like
+        OIDC does); when explicit, metadata must carry the explicit values
+        verbatim. Either way metadata, /api/config and discovery agree.
+        """
+        try:
+            cfg = self.session.get(f"{self.base_url}/api/config", timeout=5).json()
+            saml_cfg = cfg.get("saml", {})
+            for key in ("entity_id", "entity_id_derived", "sso_url", "sso_url_derived"):
+                if key not in saml_cfg:
+                    return self._add_result(
+                        "SAML Metadata Follows Issuer", TestCategory.SAML, False,
+                        f"/api/config saml lacks {key}", saml_cfg,
+                    )
+            discovery = self.session.get(
+                f"{self.base_url}/.well-known/openid-configuration", timeout=5
+            ).json()
+            issuer = discovery.get("issuer", "").rstrip("/")
+            metadata = self.session.get(f"{self.base_url}/saml/metadata", timeout=5)
+            root = ET.fromstring(metadata.text)
+            entity_id = root.get("entityID")
+            locations = {
+                el.get("Location")
+                for el in root.iter("{urn:oasis:names:tc:SAML:2.0:metadata}SingleSignOnService")
+            }
+            expected_entity = f"{issuer}/saml" if saml_cfg["entity_id_derived"] else saml_cfg["entity_id"]
+            expected_sso = f"{issuer}/saml/sso" if saml_cfg["sso_url_derived"] else saml_cfg["sso_url"]
+            ok = (
+                entity_id == expected_entity
+                and locations == {expected_sso}
+                and saml_cfg["entity_id"] == expected_entity
+                and saml_cfg["sso_url"] == expected_sso
+            )
+            return self._add_result(
+                "SAML Metadata Follows Issuer",
+                TestCategory.SAML,
+                ok,
+                f"entityID={entity_id} (derived={saml_cfg['entity_id_derived']}), "
+                f"sso={sorted(locations)}, issuer={issuer}",
+                {"entity_id": entity_id, "locations": sorted(locations), "expected": [expected_entity, expected_sso]},
+            )
+        except Exception as e:
+            return self._add_result("SAML Metadata Follows Issuer", TestCategory.SAML, False, str(e))
+
     def test_saml_sso_post_binding(self) -> TestResult:
         """SAML SSO endpoint with HTTP-POST binding (uncompressed request).
 
@@ -2208,8 +2256,10 @@ class NanoIDPTestAgent:
                     "issuer": config.get("oauth", {}).get("issuer", "http://localhost:8000"),
                     "audience": config.get("oauth", {}).get("audience", "default"),
                     "token_expiry_minutes": config.get("oauth", {}).get("token_expiry_minutes", 60),
-                    "saml_entity_id": saml_config.get("entity_id", "http://localhost:8000/saml"),
-                    "saml_sso_url": saml_config.get("sso_url", "http://localhost:8000/saml/sso"),
+                    # Derived values (#181) go back as blank, or the round-trip
+                    # would freeze them into explicit settings.
+                    "saml_entity_id": "" if saml_config.get("entity_id_derived") else saml_config.get("entity_id", ""),
+                    "saml_sso_url": "" if saml_config.get("sso_url_derived") else saml_config.get("sso_url", ""),
                     "default_acs_url": saml_config.get("default_acs_url", ""),
                     "saml_sign_responses": "true" if sign_responses else "",
                     "strict_saml_binding": "true" if saml_config.get("strict_binding", False) else "",
@@ -2261,8 +2311,10 @@ class NanoIDPTestAgent:
                     "issuer": config.get("oauth", {}).get("issuer", "http://localhost:8000"),
                     "audience": config.get("oauth", {}).get("audience", "default"),
                     "token_expiry_minutes": config.get("oauth", {}).get("token_expiry_minutes", 60),
-                    "saml_entity_id": saml_config.get("entity_id", "http://localhost:8000/saml"),
-                    "saml_sso_url": saml_config.get("sso_url", "http://localhost:8000/saml/sso"),
+                    # Derived values (#181) go back as blank, or the round-trip
+                    # would freeze them into explicit settings.
+                    "saml_entity_id": "" if saml_config.get("entity_id_derived") else saml_config.get("entity_id", ""),
+                    "saml_sso_url": "" if saml_config.get("sso_url_derived") else saml_config.get("sso_url", ""),
                     "default_acs_url": saml_config.get("default_acs_url", ""),
                     "saml_sign_responses": "true" if sign_responses else "",
                     "strict_saml_binding": "true" if saml_config.get("strict_binding", False) else "",
@@ -3708,6 +3760,7 @@ class NanoIDPTestAgent:
             ]),
             (TestCategory.SAML, "SAML 2.0", [
                 self.test_saml_metadata,
+                self.test_saml_metadata_follows_issuer,
                 self.test_saml_metadata_bindings,
                 self.test_saml_sso_post_binding,
                 self.test_saml_sso_redirect_binding,

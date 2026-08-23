@@ -736,6 +736,17 @@ _TOOLS: list[Tool] = [
                     "type": "integer",
                     "description": "Token expiration in minutes",
                 },
+                "saml_entity_id": {
+                    "type": "string",
+                    "description": "SAML IdP entityID. Empty string clears it so "
+                    "it is derived again from the effective issuer as "
+                    "<issuer>/saml (#181)",
+                },
+                "saml_sso_url": {
+                    "type": "string",
+                    "description": "SAML SingleSignOnService location. Empty string "
+                    "clears it so it is derived again as <issuer>/saml/sso (#181)",
+                },
                 "saml_sign_responses": {
                     "type": "boolean",
                     "description": "Enable/disable SAML response signing",
@@ -1256,8 +1267,13 @@ async def _execute_tool(name: str, arguments: dict[str, Any], config: ConfigMana
             "require_pkce": settings.require_pkce,
             "jwt_algorithm": settings.jwt_algorithm,
             "saml": {
-                "entity_id": settings.saml_entity_id,
-                "sso_url": settings.saml_sso_url,
+                # MCP has no HTTP request, so derived values (#181) resolve
+                # against the fixed settings.issuer, the same exception the
+                # MCP discovery tools already make for issuer_from_request.
+                "entity_id": settings.resolve_saml_entity_id(settings.issuer),
+                "entity_id_derived": settings.saml_entity_id is None,
+                "sso_url": settings.resolve_saml_sso_url(settings.issuer),
+                "sso_url_derived": settings.saml_sso_url is None,
                 "sign_responses": settings.saml_sign_responses,
                 "c14n_algorithm": settings.saml_c14n_algorithm,
                 "strict_binding": settings.strict_saml_binding,
@@ -1314,6 +1330,13 @@ async def _execute_tool(name: str, arguments: dict[str, Any], config: ConfigMana
         if "token_expiry_minutes" in arguments:
             settings.token_expiry_minutes = arguments["token_expiry_minutes"]
             updated.append("token_expiry_minutes")
+        if "saml_entity_id" in arguments:
+            # "" = back to derived (#181), mirroring the UI form's blank field
+            settings.saml_entity_id = arguments["saml_entity_id"] or None
+            updated.append("saml_entity_id")
+        if "saml_sso_url" in arguments:
+            settings.saml_sso_url = arguments["saml_sso_url"] or None
+            updated.append("saml_sso_url")
         if "saml_sign_responses" in arguments:
             settings.saml_sign_responses = arguments["saml_sign_responses"]
             updated.append("saml_sign_responses")
