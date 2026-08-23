@@ -10,8 +10,9 @@ import re
 import pytest
 import yaml
 
+from nanoidp import serialization
 from nanoidp.config import ConfigManager
-from nanoidp.serialization import CONFIG_VERSION, check_config_version
+from nanoidp.serialization import CONFIG_VERSION, IMPLICIT_CONFIG_VERSION, check_config_version
 
 
 def _write(tmp_path, settings_extra=None, users_extra=None):
@@ -78,8 +79,33 @@ class TestLoader:
 
     def test_check_helper_returns_effective_value(self, tmp_path):
         path = tmp_path / "settings.yaml"
-        assert check_config_version({}, path) == CONFIG_VERSION
+        assert IMPLICIT_CONFIG_VERSION == 1
+        assert check_config_version({}, path) == 1
         assert check_config_version({"config_version": 1}, path) == 1
+
+    def test_absent_stays_v1_after_a_future_bump(self, tmp_path, monkeypatch):
+        """#175 review: "absent = 1" must not silently become "absent = newest"
+        when CONFIG_VERSION moves. Simulate the first bump."""
+        monkeypatch.setattr(serialization, "CONFIG_VERSION", 2)
+        path = tmp_path / "settings.yaml"
+        assert check_config_version({}, path) == 1
+        assert check_config_version({"config_version": 1}, path) == 1
+        assert check_config_version({"config_version": 2}, path) == 2
+        with pytest.raises(ValueError, match="newer than this release"):
+            check_config_version({"config_version": 3}, path)
+
+    def test_files_must_agree_on_the_contract_version(self, tmp_path, monkeypatch):
+        """One version for the whole directory: a mismatch between
+        settings.yaml and users.yaml is refused. Needs a simulated v2, since
+        with only v1 both supported values are necessarily equal."""
+        monkeypatch.setattr(serialization, "CONFIG_VERSION", 2)
+        with pytest.raises(ValueError, match="does not match settings.yaml's config_version 2"):
+            ConfigManager(_write(tmp_path, {"config_version": 2}, None))
+        with pytest.raises(ValueError, match="config_version 2 does not match settings.yaml's config_version 1"):
+            ConfigManager(_write(tmp_path, None, {"config_version": 2}))
+        # both explicit and equal, or both absent, load fine
+        assert ConfigManager(_write(tmp_path, {"config_version": 2}, {"config_version": 2})).config_version == 2
+        assert ConfigManager(_write(tmp_path, None, None)).config_version == 1
 
 
 class TestWriterPreservesKey:

@@ -23,7 +23,7 @@ from .models import (  # noqa: F401
     _coerce_client_str_list,
 )
 from .serialization import (
-    CONFIG_VERSION,
+    IMPLICIT_CONFIG_VERSION,
     apply_settings_document,
     apply_users_document,
     atomic_write_yaml,
@@ -57,7 +57,7 @@ class ConfigManager:
         self.default_user: str = "admin"
         # Effective config schema version of the loaded files (#175): the
         # declared value, or 1 when a file carries no config_version key.
-        self.config_version: int = CONFIG_VERSION
+        self.config_version: int = IMPLICIT_CONFIG_VERSION
         self._load_config()
 
     def _find_config_dir(self) -> str:
@@ -292,7 +292,17 @@ class ConfigManager:
 
         # config_version is checked BEFORE placeholder expansion on purpose:
         # it must be a literal integer, never ${VAR} (#175 review).
-        check_config_version(data, users_file)
+        users_version = check_config_version(data, users_file)
+        # One contract for the whole directory (#175 review): both files must
+        # declare the same version. Impossible to violate while only v1 exists
+        # (the check above already refused anything else), enforced now so
+        # the rule is real before the first bump makes it matter.
+        if users_version != self.config_version:
+            raise ValueError(
+                f"{users_file}: config_version {users_version} does not match "
+                f"settings.yaml's config_version {self.config_version}; the "
+                f"configuration directory follows one contract version"
+            )
         # users.yaml takes the same ${VAR} / ${VAR:default} placeholders as
         # settings.yaml (passwords, emails, attributes); until #175 only the
         # settings loader expanded them.

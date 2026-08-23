@@ -23,9 +23,9 @@ config_version: 1
 ```
 
 The version belongs to the configuration directory's contract as a whole,
-not to one file: `settings.yaml` and `users.yaml` declare the same number,
-each file is checked independently against the version the running release
-supports, and a future bump applies to both files together with one loader
+not to one file: `settings.yaml` and `users.yaml` declare the same number
+(a mismatch refuses to start), each file is checked independently against
+the version the running release supports, and a future bump applies to both files together with one loader
 migration. The value must be a literal integer; it is checked before
 `${VAR}` placeholders are expanded, so `config_version: ${CONFIG_VERSION:1}`
 is rejected like any non-integer.

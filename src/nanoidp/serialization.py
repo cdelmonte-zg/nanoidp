@@ -162,13 +162,22 @@ def client_id_matches(raw_entry: Any, client_id: str) -> bool:
 
 # Config schema version (#175, piece 1). One integer, not semver: optional
 # additions never bump it; renames, removals or semantic changes do, together
-# with a migration step in the loader. Absent from a file means 1.
+# with a migration step in the loader.
+#
+# Two constants on purpose (#175 review): CONFIG_VERSION is the newest
+# contract this release understands and moves with each bump;
+# IMPLICIT_CONFIG_VERSION is what a file WITHOUT the key declares and is
+# frozen at 1 forever, because files written before the key existed must
+# keep loading as v1 (and migrating from there) no matter how far
+# CONFIG_VERSION advances.
 CONFIG_VERSION = 1
+IMPLICIT_CONFIG_VERSION = 1
 
 
 def check_config_version(data: Dict[str, Any], file_path: Path) -> int:
     """Validate a document's top-level ``config_version`` and return the
-    effective value (``CONFIG_VERSION`` when the key is absent).
+    effective value (``IMPLICIT_CONFIG_VERSION``, i.e. 1, when the key is
+    absent - never the current ``CONFIG_VERSION``).
 
     ``config_version`` is the version of the configuration directory's
     contract as a whole, not of one file: ``settings.yaml`` and
@@ -183,7 +192,7 @@ def check_config_version(data: Dict[str, Any], file_path: Path) -> int:
     release understands. Lower or equal versions load normally.
     """
     if "config_version" not in data:
-        return CONFIG_VERSION
+        return IMPLICIT_CONFIG_VERSION
     value = data["config_version"]
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         raise ValueError(
