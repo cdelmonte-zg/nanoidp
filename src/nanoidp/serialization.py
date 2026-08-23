@@ -160,6 +160,54 @@ def client_id_matches(raw_entry: Any, client_id: str) -> bool:
     return is_unchanged(raw_entry.get("client_id"), client_id)
 
 
+# Config schema version (#175, piece 1). One integer, not semver: optional
+# additions never bump it; renames, removals or semantic changes do, together
+# with a migration step in the loader.
+#
+# Two constants on purpose (#175 review): CONFIG_VERSION is the newest
+# contract this release understands and moves with each bump;
+# IMPLICIT_CONFIG_VERSION is what a file WITHOUT the key declares and is
+# frozen at 1 forever, because files written before the key existed must
+# keep loading as v1 (and migrating from there) no matter how far
+# CONFIG_VERSION advances.
+CONFIG_VERSION = 1
+IMPLICIT_CONFIG_VERSION = 1
+
+
+def check_config_version(data: Dict[str, Any], file_path: Path) -> int:
+    """Validate a document's top-level ``config_version`` and return the
+    effective value (``IMPLICIT_CONFIG_VERSION``, i.e. 1, when the key is
+    absent - never the current ``CONFIG_VERSION``).
+
+    ``config_version`` is the version of the configuration directory's
+    contract as a whole, not of one file: ``settings.yaml`` and
+    ``users.yaml`` declare the same number, each file is validated
+    independently against ``CONFIG_VERSION`` with this function, and a
+    future bump applies to both files together with one loader migration.
+    The value must be a literal integer: the check runs before ``${VAR}``
+    expansion by design, so a placeholder here is rejected.
+
+    Raises ``ValueError`` naming the file, the value found and the supported
+    version when the value is not a positive integer or is newer than this
+    release understands. Lower or equal versions load normally.
+    """
+    if "config_version" not in data:
+        return IMPLICIT_CONFIG_VERSION
+    value = data["config_version"]
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError(
+            f"{file_path}: config_version must be a positive integer, "
+            f"found {value!r} (this release supports config_version {CONFIG_VERSION})"
+        )
+    if value > CONFIG_VERSION:
+        raise ValueError(
+            f"{file_path}: config_version {value} is newer than this release "
+            f"supports (config_version {CONFIG_VERSION}); upgrade nanoidp or "
+            f"downgrade the file"
+        )
+    return value
+
+
 def load_yaml_document(file_path: Path) -> Dict[str, Any]:
     """Load a YAML document preserving comments/quote style for a later
     round-trip write. Returns an empty ``CommentedMap`` if the file is

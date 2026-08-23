@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Config schema
+- `config_version` 1 introduced (#175, piece 1). No changes required to
+  existing files: a file without the key is version 1. The version is the
+  contract of the config directory as a whole: both files declare the same
+  number, each is checked independently, and it must be a literal integer
+  (checked before `${VAR}` expansion).
+
 ### Added
 - **Import contracts enforced in CI** (#149): `import-linter` now pins the
   package layering (`routes -> services -> config`) and the invariant that
@@ -14,6 +21,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lets `config.py` import it without a cycle). Both used to live only in
   comments; `lint-imports` runs next to ruff and mypy in the Tests workflow
   and fails when a change adds a forbidden import.
+- **`config_version` field** (#175, piece 1): `settings.yaml` and
+  `users.yaml` accept a top-level integer `config_version: 1`. Absent means
+  1, so existing files load unchanged; a value that is not a positive
+  integer, or newer than the running release supports, is refused at
+  startup with a message naming the file, the value and the supported
+  version. `nanoidp init` and the wizard write it into the files they
+  create; UI/MCP saves preserve an existing key and never add one. `GET
+  /api/config` and the MCP `get_settings` tool expose the effective value;
+  the e2e agent asserts it. Bumps only on renames, removals or semantic
+  changes (with a loader migration), never on optional additions.
 - **Persona login mode** (#156): opt-in `login.mode: persona` lists the
   configured users on every interactive login surface (`/login`,
   `/authorize`, `/saml/sso` and the device flow's verification page) and
@@ -55,6 +72,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the hardening it implies is ever written into the operator's file. `GET /api/config` exposes `security_profile`,
   `profile_override` and the derived `effective` values; the e2e agent checks
   they are stable across a reload.
+- **`users.yaml` now expands `${VAR}` / `${VAR:default}` placeholders** like
+  `settings.yaml` always did (#175 review). A `password: ${ALICE_PASSWORD}`
+  used to be taken literally, so the documented "secrets kept out of the
+  file" use case only worked for settings. A UI/MCP save of one user still
+  rewrites only that user's entry; the MCP `save_config` tool rewrites the
+  whole map and materializes expanded placeholders, as documented.
 - **Example presets now bind to `127.0.0.1`** (#164). All four pre-2.6.0
   presets (`cli-device-flow`, `microservices-client-credentials`,
   `react-spa-pkce`, `spring-boot-saml`) still shipped an explicit

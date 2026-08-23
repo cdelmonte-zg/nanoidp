@@ -23,9 +23,11 @@ from .models import (  # noqa: F401
     _coerce_client_str_list,
 )
 from .serialization import (
+    IMPLICIT_CONFIG_VERSION,
     apply_settings_document,
     apply_users_document,
     atomic_write_yaml,
+    check_config_version,
     load_yaml_document,
 )
 from .serialization import expand_env_vars as _expand_env_vars
@@ -53,6 +55,9 @@ class ConfigManager:
         self.settings: Settings = Settings()
         self.users: Dict[str, User] = {}
         self.default_user: str = "admin"
+        # Effective config schema version of the loaded files (#175): the
+        # declared value, or 1 when a file carries no config_version key.
+        self.config_version: int = IMPLICIT_CONFIG_VERSION
         self._load_config()
 
     def _find_config_dir(self) -> str:
@@ -151,6 +156,9 @@ class ConfigManager:
         with open(settings_file, "r") as f:
             data = yaml.safe_load(f) or {}
 
+        # Refuse files written for a newer contract before reading any key
+        # (#175): a silently half-understood file is worse than a clear stop.
+        self.config_version = check_config_version(data, settings_file)
         data = _expand_env_vars(data)
 
         server = data.get("server", {})
@@ -282,6 +290,23 @@ class ConfigManager:
         with open(users_file, "r") as f:
             data = yaml.safe_load(f) or {}
 
+        # config_version is checked BEFORE placeholder expansion on purpose:
+        # it must be a literal integer, never ${VAR} (#175 review).
+        users_version = check_config_version(data, users_file)
+        # One contract for the whole directory (#175 review): both files must
+        # declare the same version. Impossible to violate while only v1 exists
+        # (the check above already refused anything else), enforced now so
+        # the rule is real before the first bump makes it matter.
+        if users_version != self.config_version:
+            raise ValueError(
+                f"{users_file}: config_version {users_version} does not match "
+                f"settings.yaml's config_version {self.config_version}; the "
+                f"configuration directory follows one contract version"
+            )
+        # users.yaml takes the same ${VAR} / ${VAR:default} placeholders as
+        # settings.yaml (passwords, emails, attributes); until #175 only the
+        # settings loader expanded them.
+        data = _expand_env_vars(data)
         self.default_user = data.get("default_user", "admin")
 
         for username, user_data in data.get("users", {}).items():
