@@ -15,6 +15,7 @@ import yaml
 # Re-exported for compatibility: the models were defined here until #86, and
 # every consumer (routes, services, MCP, tests) imports them from this module.
 from .models import (  # noqa: F401
+    SECURITY_PROFILES,
     OAuthClient,
     Settings,
     User,
@@ -35,8 +36,19 @@ logger = logging.getLogger(__name__)
 class ConfigManager:
     """Manages configuration loading and access."""
 
-    def __init__(self, config_dir: Optional[str] = None) -> None:
+    def __init__(
+        self, config_dir: Optional[str] = None, profile_override: Optional[str] = None
+    ) -> None:
         self.config_dir = Path(config_dir or self._find_config_dir())
+        # A transient CLI/programmatic `--profile` (#172). Kept here, not on
+        # Settings, because it must survive every reload() - which rebuilds
+        # Settings from YAML - and must never be written back to the file.
+        if profile_override is not None and profile_override not in SECURITY_PROFILES:
+            raise ValueError(
+                f"Invalid profile override {profile_override!r}; "
+                f"expected one of {', '.join(SECURITY_PROFILES)}"
+            )
+        self.profile_override: Optional[str] = profile_override
         self.settings: Settings = Settings()
         self.users: Dict[str, User] = {}
         self.default_user: str = "admin"
@@ -70,7 +82,35 @@ class ConfigManager:
         logger.info(f"Loaded {len(self.users)} users")
 
     def _load_settings(self) -> None:
-        """Load settings from settings.yaml."""
+        """Load settings from settings.yaml, then apply the effective profile."""
+        self._read_settings()
+        self._apply_profile()
+
+    def _apply_profile(self) -> None:
+        """Make the effective security profile real on the freshly built Settings.
+
+        Two things used to happen once in create_app() and were lost on the
+        first reload() - i.e. on the first UI/MCP save (#172): the CLI
+        --profile override, and the stricter-dev runtime hardening
+        (require_pkce, password_hashing, rate_limit_enabled, debug off). Both
+        belong here, next to the only place Settings is rebuilt, so every
+        reload re-derives them. The YAML value is never touched: the override
+        lives in memory and _save_settings() preserves the on-disk profile.
+        oauth21 needs no mutation; its protocol strictness derives from
+        security_profile via Settings properties (#68).
+        """
+        if self.profile_override is not None:
+            self.settings.security_profile = self.profile_override
+        if self.settings.security_profile == "stricter-dev":
+            self.settings.rate_limit_enabled = True
+            self.settings.password_hashing = True
+            # PKCE required and 'plain' rejected in stricter-dev (#47)
+            self.settings.require_pkce = True
+            # Block debug mode in stricter-dev
+            self.settings.debug = False
+
+    def _read_settings(self) -> None:
+        """Build Settings from settings.yaml (defaults when the file is absent)."""
         settings_file = self.config_dir / "settings.yaml"
 
         if not settings_file.exists():
@@ -364,7 +404,15 @@ class ConfigManager:
         """
         settings_file = self.config_dir / "settings.yaml"
         document = load_yaml_document(settings_file)
+        on_disk_profile = document.get("security_profile")
         apply_settings_document(document, self.settings)
+        if self.profile_override is not None:
+            # A transient --profile must not rewrite the operator's file (#172):
+            # keep whatever security_profile the YAML declared (or didn't).
+            if on_disk_profile is None:
+                document.pop("security_profile", None)
+            else:
+                document["security_profile"] = on_disk_profile
         atomic_write_yaml(settings_file, document)
 
 
@@ -383,8 +431,15 @@ def get_config() -> ConfigManager:
     return _config
 
 
-def init_config(config_dir: Optional[str] = None) -> ConfigManager:
-    """Initialize the global config instance."""
+def init_config(
+    config_dir: Optional[str] = None, profile_override: Optional[str] = None
+) -> ConfigManager:
+    """Initialize the global config instance.
+
+    profile_override is the CLI --profile: it wins over settings.yaml's
+    security_profile for the life of the process and is re-applied on every
+    reload() without ever being persisted (#172).
+    """
     global _config
-    _config = ConfigManager(config_dir)
+    _config = ConfigManager(config_dir, profile_override=profile_override)
     return _config

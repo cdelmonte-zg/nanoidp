@@ -166,6 +166,17 @@ def get_configuration() -> ResponseReturnValue:
         },
         "authority_prefixes": settings.authority_prefixes,
         "allowed_identity_classes": settings.allowed_identity_classes,
+        # Effective profile, i.e. after the CLI --profile override and the
+        # stricter-dev hardening are applied (#172). profile_override tells
+        # a client whether the value comes from the process, not the YAML.
+        "security_profile": settings.security_profile,
+        "profile_override": config.profile_override,
+        "effective": {
+            "require_pkce": settings.require_pkce,
+            "password_hashing": settings.password_hashing,
+            "rate_limit_enabled": settings.rate_limit_enabled,
+            "debug": settings.debug,
+        },
         "users_count": len(config.users),
     })
 
