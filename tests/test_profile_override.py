@@ -88,6 +88,72 @@ class TestOverrideSurvivesReload:
         assert on_disk["security_profile"] == "oauth21"
 
 
+class TestDerivedHardeningIsNeverPersisted:
+    """#172 review: the override's EFFECTS must stay out of the file too.
+
+    Before the fix, --profile stricter-dev never wrote "stricter-dev" but
+    save() wrote `oauth.require_pkce: true` (and the other forced fields),
+    so the next start without the flag kept PKCE enforced.
+    """
+
+    FORCED = ("require_pkce", "password_hashing", "rate_limit_enabled")
+
+    def _on_disk(self, tmp_path):
+        return yaml.safe_load((tmp_path / "settings.yaml").read_text())
+
+    def test_cli_stricter_dev_save_writes_neither_profile_nor_effects(self, tmp_path):
+        config = init_config(_write_config(tmp_path), profile_override="stricter-dev")
+        config.save()
+        on_disk = self._on_disk(tmp_path)
+        assert "security_profile" not in on_disk
+        # The writer materializes managed keys at their DECLARED value (false,
+        # the model default here); what must never appear is the forced true.
+        flat = yaml.safe_dump(on_disk)
+        for field in self.FORCED:
+            assert f"{field}: true" not in flat, flat
+        assert (on_disk.get("oauth") or {}).get("require_pkce") is not True
+        # the effective state is untouched by the save
+        assert config.settings.require_pkce is True
+        assert config.settings.security_profile == "stricter-dev"
+
+    def test_cli_stricter_dev_save_keeps_explicit_declared_values(self, tmp_path):
+        """File says require_pkce: false explicitly; the flag forces True at
+        runtime; the save must keep the declared false."""
+        settings = {
+            "server": {"host": "127.0.0.1", "port": 8000},
+            "oauth": {"require_pkce": False},
+        }
+        (tmp_path / "settings.yaml").write_text(yaml.safe_dump(settings))
+        (tmp_path / "users.yaml").write_text(yaml.safe_dump({"users": {}}))
+        config = init_config(str(tmp_path), profile_override="stricter-dev")
+        assert config.settings.require_pkce is True
+        config.save()
+        assert self._on_disk(tmp_path)["oauth"]["require_pkce"] is False
+
+    def test_yaml_stricter_dev_save_does_not_materialize_effects(self, tmp_path):
+        """Profile declared in YAML: the hardening is implied by the profile
+        line and must not be spelled out by a save either."""
+        config = init_config(_write_config(tmp_path, "stricter-dev"))
+        config.save()
+        on_disk = self._on_disk(tmp_path)
+        assert on_disk["security_profile"] == "stricter-dev"
+        assert "require_pkce: true" not in yaml.safe_dump(on_disk)
+        assert (on_disk.get("oauth") or {}).get("require_pkce") is not True
+
+    def test_persistable_settings_is_effective_settings_without_profile(self, tmp_path):
+        config = ConfigManager(_write_config(tmp_path))
+        assert config.persistable_settings() is config.settings
+
+    def test_next_start_without_flag_is_not_hardened(self, tmp_path):
+        """End to end: run with the flag, save, restart without it."""
+        init_config(_write_config(tmp_path), profile_override="stricter-dev").save()
+        fresh = ConfigManager(str(tmp_path))
+        assert fresh.settings.security_profile == "dev"
+        assert fresh.settings.require_pkce is False
+        assert fresh.settings.password_hashing is False
+        assert fresh.settings.rate_limit_enabled is False
+
+
 class TestStricterDevHardeningSurvivesReload:
     EXPECTED = {"require_pkce": True, "password_hashing": True, "rate_limit_enabled": True, "debug": False}
 

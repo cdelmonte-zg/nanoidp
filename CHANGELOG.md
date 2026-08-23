@@ -44,8 +44,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   profile came from `settings.yaml` itself. The override now lives on
   `ConfigManager` (`--profile` defaults to none, `init_config(...,
   profile_override=)`), the effective profile and its hardening are re-derived
-  after every settings load, and a save never writes the override into the
-  operator's file. `GET /api/config` exposes `security_profile`,
+  after every settings load, and a save serializes the DECLARED state
+  (`ConfigManager.persistable_settings()`), so neither the override nor
+  the hardening it implies is ever written into the operator's file. `GET /api/config` exposes `security_profile`,
   `profile_override` and the derived `effective` values; the e2e agent checks
   they are stable across a reload.
 - **Example presets now bind to `127.0.0.1`** (#164). All four pre-2.6.0

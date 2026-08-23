@@ -8,7 +8,7 @@ import logging
 import os
 import threading
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 import yaml
 
@@ -49,6 +49,7 @@ class ConfigManager:
                 f"expected one of {', '.join(SECURITY_PROFILES)}"
             )
         self.profile_override: Optional[str] = profile_override
+        self._declared: Dict[str, Any] = {}
         self.settings: Settings = Settings()
         self.users: Dict[str, User] = {}
         self.default_user: str = "admin"
@@ -86,28 +87,57 @@ class ConfigManager:
         self._read_settings()
         self._apply_profile()
 
+    # Settings fields the stricter-dev profile forces at runtime (#47, #68).
+    # Listed once so _apply_profile() and persistable_settings() cannot drift:
+    # adding a derived field here is all it takes for it to be both applied
+    # on every reload and kept out of the operator's file.
+    _STRICTER_DEV_HARDENING: Dict[str, Any] = {
+        "rate_limit_enabled": True,
+        "password_hashing": True,
+        # PKCE required and 'plain' rejected in stricter-dev (#47)
+        "require_pkce": True,
+        # Block debug mode in stricter-dev
+        "debug": False,
+    }
+
     def _apply_profile(self) -> None:
         """Make the effective security profile real on the freshly built Settings.
 
         Two things used to happen once in create_app() and were lost on the
         first reload() - i.e. on the first UI/MCP save (#172): the CLI
-        --profile override, and the stricter-dev runtime hardening
-        (require_pkce, password_hashing, rate_limit_enabled, debug off). Both
+        --profile override, and the stricter-dev runtime hardening. Both
         belong here, next to the only place Settings is rebuilt, so every
-        reload re-derives them. The YAML value is never touched: the override
-        lives in memory and _save_settings() preserves the on-disk profile.
-        oauth21 needs no mutation; its protocol strictness derives from
-        security_profile via Settings properties (#68).
+        reload re-derives them.
+
+        self.settings is the EFFECTIVE state. Every value this method forces
+        is recorded in self._declared with the value the file declared (or
+        the model default), so persistable_settings() can hand the writer
+        the declared state and neither the override nor its derived effects
+        ever reach settings.yaml (#172 review). oauth21 needs no mutation;
+        its protocol strictness derives from security_profile via Settings
+        properties (#68).
         """
+        self._declared = {}
         if self.profile_override is not None:
+            self._declared["security_profile"] = self.settings.security_profile
             self.settings.security_profile = self.profile_override
         if self.settings.security_profile == "stricter-dev":
-            self.settings.rate_limit_enabled = True
-            self.settings.password_hashing = True
-            # PKCE required and 'plain' rejected in stricter-dev (#47)
-            self.settings.require_pkce = True
-            # Block debug mode in stricter-dev
-            self.settings.debug = False
+            for field, forced in self._STRICTER_DEV_HARDENING.items():
+                self._declared[field] = getattr(self.settings, field)
+                setattr(self.settings, field, forced)
+
+    def persistable_settings(self) -> Settings:
+        """The declared configuration state, as opposed to the effective one.
+
+        Identical to self.settings except for the fields _apply_profile()
+        forced, which carry the value the file declared. This is what the
+        writer serializes: a transient --profile, or the hardening a profile
+        implies, must never be written into the operator's file, where it
+        would survive the next start without the flag.
+        """
+        if not self._declared:
+            return self.settings
+        return self.settings.model_copy(update=self._declared)
 
     def _read_settings(self) -> None:
         """Build Settings from settings.yaml (defaults when the file is absent)."""
@@ -404,15 +434,8 @@ class ConfigManager:
         """
         settings_file = self.config_dir / "settings.yaml"
         document = load_yaml_document(settings_file)
-        on_disk_profile = document.get("security_profile")
-        apply_settings_document(document, self.settings)
-        if self.profile_override is not None:
-            # A transient --profile must not rewrite the operator's file (#172):
-            # keep whatever security_profile the YAML declared (or didn't).
-            if on_disk_profile is None:
-                document.pop("security_profile", None)
-            else:
-                document["security_profile"] = on_disk_profile
+        # Declared state, not effective state (#172): see persistable_settings().
+        apply_settings_document(document, self.persistable_settings())
         atomic_write_yaml(settings_file, document)
 
 
