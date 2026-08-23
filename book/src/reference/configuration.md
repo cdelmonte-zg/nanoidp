@@ -35,6 +35,10 @@ The contract is a single integer, not semver:
 - **Absent means 1.** Existing files need no change; `nanoidp init` and the
   wizard write the key into the files they create, and saves from the web UI
   or the MCP server preserve it if present and never add it.
+- **Unknown keys are reported.** A key nanoidp does not know (a typo such
+  as `oauth.isuer`) is logged as a warning with its path and ignored; the
+  file still loads. Inside a user entry, unknown keys become that user's
+  `attributes`, as they always have.
 - **Optional additions never bump it.** New optional keys with defaults keep
   the version; only renames, removals or semantic changes of existing keys
   do, and such a bump ships with a migration step in the loader.
