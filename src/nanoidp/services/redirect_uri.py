@@ -115,19 +115,41 @@ def is_loopback_redirect_uri(uri: str) -> bool:
     return parsed.scheme == "http" and hostname in _LOOPBACK_HOSTS
 
 
-def _without_port(uri: str) -> str:
-    """The URI with its port component removed, for loopback comparison."""
-    parsed = urlparse(uri)
-    hostname = parsed.hostname or ""
-    if ":" in hostname:  # IPv6 literal: restore the brackets
-        hostname = f"[{hostname}]"
-    netloc = hostname
-    if parsed.username is not None:
-        userinfo = parsed.username
-        if parsed.password is not None:
-            userinfo = f"{userinfo}:{parsed.password}"
-        netloc = f"{userinfo}@{netloc}"
-    return parsed._replace(netloc=netloc).geturl()
+def _strip_loopback_port(uri: str) -> str | None:
+    """``uri`` with only its port substring removed, or None if unusable.
+
+    The port exception (RFC 8252 §7.3) must not relax anything but the
+    port, so this never re-serializes the URI: ``urlparse`` is used only to
+    locate the authority and to validate the port (``.port`` raises on a
+    non-numeric or out-of-range value such as ``:evil``), and the original
+    string is then sliced so that scheme case, an empty query, trailing
+    characters and everything else stay byte-identical for the comparison
+    (#81 review). Returns None when the authority cannot be located or the
+    port is invalid, which callers treat as "no match".
+    """
+    try:
+        parsed = urlparse(uri)
+        port = parsed.port  # ValueError on ":evil", ":99999", ...
+    except ValueError:
+        return None
+    if not parsed.netloc:
+        return None
+    authority_start = uri.find("//")
+    if authority_start == -1:
+        return None
+    authority_start += 2
+    authority_end = authority_start + len(parsed.netloc)
+    if uri[authority_start:authority_end] != parsed.netloc:
+        return None
+    if port is None:
+        return uri
+    suffix = f":{port}"
+    netloc = parsed.netloc
+    if not netloc.endswith(suffix):
+        # e.g. ":0080" would parse as 80 but is not the literal suffix;
+        # refuse rather than guess.
+        return None
+    return uri[:authority_end - len(suffix)] + uri[authority_end:]
 
 
 def redirect_uri_matches(requested: str, registered: str) -> bool:
@@ -146,7 +168,11 @@ def redirect_uri_matches(requested: str, registered: str) -> bool:
         return False
     if not is_loopback_redirect_uri(requested):
         return False
-    return _without_port(requested) == _without_port(registered)
+    requested_stripped = _strip_loopback_port(requested)
+    registered_stripped = _strip_loopback_port(registered)
+    if requested_stripped is None or registered_stripped is None:
+        return False
+    return requested_stripped == registered_stripped
 
 
 def redirect_uri_is_registered(requested: str, registered_uris: Iterable[str]) -> bool:

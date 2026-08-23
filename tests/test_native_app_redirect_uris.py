@@ -390,3 +390,46 @@ class TestRegistrationSurfacesAcceptNativeUris:
         # and the registration is honoured end-to-end
         assert _authorize(client, "ui-native", "http://127.0.0.1:7/callback").status_code == 200
         assert _authorize(client, "ui-native", LOCALHOST).status_code == 400
+
+
+class TestLoopbackPortExceptionTouchesOnlyThePort:
+    """#81 review: the port exception must relax the port and nothing else.
+
+    The previous implementation re-serialized the parsed URI, which
+    normalized scheme case, dropped an empty query and never validated the
+    port, so ``:evil`` was silently stripped. The comparison now slices only
+    the port substring out of the ORIGINAL string.
+    """
+
+    REGISTERED = "http://127.0.0.1:0/cb"
+
+    @pytest.mark.parametrize(
+        "requested",
+        [
+            "http://127.0.0.1:evil/cb",     # non-numeric port
+            "http://127.0.0.1:99999/cb",    # out-of-range port
+            "http://127.0.0.1:123/cb?",     # empty query is not "no query"
+            "HTTP://127.0.0.1:123/cb",      # scheme case preserved
+            "http://127.0.0.1:123/cb/",     # trailing slash
+            "http://127.0.0.1:123/CB",      # path case
+            "http://127.0.0.1:0080/cb",     # zero-padded port is not a port literal
+            "http://user@127.0.0.1:123/cb", # userinfo differs
+        ],
+    )
+    def test_rejected(self, requested):
+        assert not redirect_uri_matches(requested, self.REGISTERED)
+
+    @pytest.mark.parametrize(
+        "requested",
+        ["http://127.0.0.1:123/cb", "http://127.0.0.1:65535/cb", "http://127.0.0.1/cb"],
+    )
+    def test_accepted(self, requested):
+        assert redirect_uri_matches(requested, self.REGISTERED)
+
+    def test_ipv6_only_port_varies(self):
+        assert redirect_uri_matches("http://[::1]:4242/cb", "http://[::1]:0/cb")
+        assert not redirect_uri_matches("http://[::1]:4242/cb?", "http://[::1]:0/cb")
+        assert not redirect_uri_matches("http://[::1]:evil/cb", "http://[::1]:0/cb")
+
+    def test_registered_with_invalid_port_never_matches(self):
+        assert not redirect_uri_matches("http://127.0.0.1:123/cb", "http://127.0.0.1:evil/cb")
