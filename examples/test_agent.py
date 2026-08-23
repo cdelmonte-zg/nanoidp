@@ -3413,7 +3413,12 @@ class NanoIDPTestAgent:
                 loaded = {p.get("name"): p for p in block.get("plugins", [])}
                 plugin = loaded.get(expected_plugin)
                 failed = [f.get("name") for f in block.get("plugins_failed", [])]
-                if plugin is None or plugin.get("hook_api_version") != 1 or not {
+                # The plugin must come from NANOIDP_BOOTSTRAP_PLUGIN (source
+                # bootstrap-env), not from a settings.yaml declaration: the
+                # bootstrap surface is what this check exists to prove.
+                if plugin is None or plugin.get("hook_api_version") != 1 or plugin.get(
+                    "source"
+                ) != "bootstrap-env" or not {
                     "on_before_load", "on_config_saved", "on_audit_event"
                 } <= set(plugin.get("hooks", [])):
                     return self._add_result(
@@ -3424,6 +3429,23 @@ class NanoIDPTestAgent:
                         block,
                     )
             saved_hooks = [h for h in block.get("shell_hooks", []) if h.get("hook") == "on_config_saved"]
+            log_path = os.environ.get("NANOIDP_E2E_HOOK_LOG")
+            if log_path:
+                # The e2e workflow declares the hook in config/bootstrap.yaml:
+                # with the log path set, the hook is mandatory and must carry
+                # that source, so a bootstrap.yaml that silently stopped
+                # loading cannot pass as "nothing configured".
+                bootstrap_hooks = [h for h in saved_hooks if h.get("source") == "bootstrap.yaml"]
+                if not bootstrap_hooks:
+                    return self._add_result(
+                        "API Hooks Block",
+                        TestCategory.API,
+                        False,
+                        "NANOIDP_E2E_HOOK_LOG is set but no on_config_saved hook from "
+                        f"bootstrap.yaml is registered: {saved_hooks!r}",
+                        block,
+                    )
+                saved_hooks = bootstrap_hooks
             if not saved_hooks:
                 return self._add_result(
                     "API Hooks Block",
@@ -3433,7 +3455,6 @@ class NanoIDPTestAgent:
                     f"(block present, {len(block.get('plugins', []))} plugins)",
                     {"skipped": True, "hooks": block},
                 )
-            log_path = os.environ.get("NANOIDP_E2E_HOOK_LOG")
             lines_before = self._count_lines(log_path)
             saml_config = before.get("saml", {})
             # A no-op settings round-trip: same values posted back, derived
