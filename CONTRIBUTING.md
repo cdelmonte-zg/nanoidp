@@ -99,7 +99,17 @@ ruff check src tests
 
 # Fix linting issues automatically
 ruff check --fix src tests
+
+# Check architectural import contracts (#149)
+lint-imports
 ```
+
+`lint-imports` enforces the package layering `routes -> services -> config`
+and keeps `serialization.py` free of runtime imports from the package (that is
+what lets `config.py` import it without a cycle). The contracts live in
+`[tool.importlinter]` in `pyproject.toml`; a type-checking-only import does not
+count. If a change needs a new edge between layers, adjust the contract in the
+same PR and say why.
 
 ## Code Style
 
