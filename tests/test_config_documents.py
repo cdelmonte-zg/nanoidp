@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from pydantic import ValidationError
 
 from nanoidp.config import ConfigManager
 from nanoidp.config_documents import (
@@ -62,7 +63,7 @@ class TestDefaultsMatchTheOldLoaderLiterals:
         assert d.oauth.token_expiry_minutes == 60
         assert d.oauth.refresh_token_rotation is False
         assert d.oauth.require_pkce is False
-        assert d.oauth.clients is None
+        assert d.oauth.clients == []
         assert d.oauth.logos_dir is None
         assert d.saml.entity_id is None and d.saml.sso_url is None
         assert d.saml.default_acs_url == "http://localhost:8080/login/saml2/sso/samlIdp"
@@ -84,7 +85,7 @@ class TestDefaultsMatchTheOldLoaderLiterals:
         assert d.login.mode == "password"
         assert d.security_profile == "dev"
         assert d.authority_prefixes == {}
-        assert d.allowed_identity_classes is None
+        assert d.allowed_identity_classes == []
 
     def test_empty_document_builds_the_same_settings_as_an_empty_file(self, tmp_path):
         (tmp_path / "settings.yaml").write_text("")
@@ -222,24 +223,63 @@ class TestEdgeConventionsPreserved:
         assert config.settings.audience == "aud"
         assert config.users["alice"].password == "s3cret"
 
-    def test_bare_sections_parse_as_empty(self, tmp_path):
-        (tmp_path / "settings.yaml").write_text("login:\nsaml:\noauth:\nserver:\n")
-        (tmp_path / "users.yaml").write_text("users:\n")
-        config = ConfigManager(str(tmp_path))
-        assert config.settings.login_mode == "password"
-        assert config.settings.saml_entity_id is None
-        assert config.users == {}
+    def test_bare_login_is_empty_but_other_bare_sections_are_errors(self, tmp_path):
+        """Only `login:` was special-cased by the old loader (`or {}`); a bare
+        `oauth:` / `saml:` / `server:` was a type error and stays one (#197
+        review: null and missing differ)."""
+        (tmp_path / "settings.yaml").write_text("login:\n")
+        (tmp_path / "users.yaml").write_text("users: {}\n")
+        assert ConfigManager(str(tmp_path)).settings.login_mode == "password"
+        for section in ("oauth", "saml", "server", "session", "jwt", "logging"):
+            (tmp_path / "settings.yaml").write_text(f"{section}:\n")
+            with pytest.raises(ValueError, match=f"invalid value at {section}"):
+                ConfigManager(str(tmp_path))
 
     def test_blank_saml_urls_mean_derived(self, tmp_path):
         cfg = _write(tmp_path, {"saml": {"entity_id": "", "sso_url": ""}})
         settings = ConfigManager(cfg).settings
         assert settings.saml_entity_id is None and settings.saml_sso_url is None
 
-    def test_null_lists_are_empty(self, tmp_path):
-        cfg = _write(tmp_path, {"oauth": {"issuer_allowlist": None, "clients": None}, "saml": {"sp_certificates": None}, "allowed_identity_classes": None})
+    def test_null_collections_are_errors_except_where_the_old_loader_said_or(self, tmp_path):
+        """`issuer_allowlist` and `sp_certificates` used `... or []` and keep
+        accepting null; `clients`, `allowed_identity_classes` did not and a
+        null there is a type error with its path, as before."""
+        cfg = _write(tmp_path, {"oauth": {"issuer_allowlist": None}, "saml": {"sp_certificates": None}})
         settings = ConfigManager(cfg).settings
-        assert settings.issuer_allowlist == [] and settings.clients == []
-        assert settings.saml_sp_certificates == [] and settings.allowed_identity_classes == []
+        assert settings.issuer_allowlist == [] and settings.saml_sp_certificates == []
+        with pytest.raises(ValueError, match="invalid value at oauth.clients"):
+            ConfigManager(_write(tmp_path, {"oauth": {"clients": None}}))
+        with pytest.raises(ValueError, match="invalid value at allowed_identity_classes"):
+            ConfigManager(_write(tmp_path, {"allowed_identity_classes": None}))
+
+    def test_user_null_fields_are_errors_but_missing_fields_default(self, tmp_path):
+        _write(tmp_path)
+        (tmp_path / "users.yaml").write_text(yaml.safe_dump({"users": {"a": {"password": "x"}}}))
+        user = ConfigManager(str(tmp_path)).users["a"]
+        assert user.roles == ["USER"] and user.groups == [] and user.email == "a@example.org"
+        for field in ("roles", "groups", "entitlements", "source_acl", "attributes", "email"):
+            (tmp_path / "users.yaml").write_text(yaml.safe_dump({"users": {"a": {"password": "x", field: None}}}))
+            with pytest.raises((ValueError, ValidationError)):
+                ConfigManager(str(tmp_path))
+        # null password and identity_class are valid (Optional in the domain model)
+        (tmp_path / "users.yaml").write_text(yaml.safe_dump({"users": {"a": {"password": None, "identity_class": None}}}))
+        assert ConfigManager(str(tmp_path)).users["a"].password is None
+        # bare `users:` was a type error and stays one
+        (tmp_path / "users.yaml").write_text("users:\n")
+        with pytest.raises(ValueError, match="invalid value at users"):
+            ConfigManager(str(tmp_path))
+
+    def test_compatibility_keys_are_not_validated(self, tmp_path):
+        """Keys the old loader never read must keep loading with any value."""
+        cfg = _write(tmp_path, {
+            "cors_allowed_origins": "*",
+            "session": {"permanent": "whatever"},
+            "logging": {"format": 42},
+            "oauth": {"refresh_token_expiry_minutes": "soon"},
+            "device_flow": {"polling_interval": "x", "code_expiry_seconds": None},
+        })
+        settings = ConfigManager(cfg).settings
+        assert settings.cors_allowed_origins == ["*"]
 
     def test_scalar_redirect_uri_is_coerced_and_bad_shape_is_client_scoped(self, tmp_path):
         cfg = _write(tmp_path, {"oauth": {"clients": [{"client_id": "c", "client_secret": "s", "redirect_uris": "http://x/cb"}]}})

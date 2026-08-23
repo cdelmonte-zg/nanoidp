@@ -110,11 +110,16 @@ class OAuthSection(BaseModel):
     token_expiry_minutes: int = 60
     refresh_token_rotation: bool = False
     require_pkce: bool = False
-    clients: Optional[List[ClientEntry]] = None
+    # Absent = no clients; an explicit `clients:` (null) is a type error, as
+    # it was for the old loader (#197 review: null and missing differ).
+    clients: List[ClientEntry] = Field(default_factory=list)
     logos_dir: Optional[str] = None
     # Present in shipped presets, never consumed by the loader (accepted for
     # compatibility; see the module docstring).
-    refresh_token_expiry_minutes: Optional[int] = None
+    # Accepted for compatibility (shipped presets carry it), never consumed and
+    # therefore never validated: the old loader did not read it at all, so any
+    # value must keep loading (#197 review).
+    refresh_token_expiry_minutes: Any = None
 
 
 class SamlSection(BaseModel):
@@ -149,7 +154,7 @@ class SessionSection(BaseModel):
     require_ui_login: bool = False
     enforce_password_check: bool = False
     # Shipped presets carry it; the app sets session.permanent itself.
-    permanent: Optional[bool] = None
+    permanent: Any = None  # accepted for compatibility, never consumed
 
 
 class LoggingSection(BaseModel):
@@ -160,7 +165,7 @@ class LoggingSection(BaseModel):
     log_saml_requests: bool = True
     verbose_logging: bool = True
     # Shipped presets carry it; logging.basicConfig uses a fixed format.
-    format: Optional[str] = None
+    format: Any = None  # accepted for compatibility, never consumed
 
 
 class LoginSection(BaseModel):
@@ -174,8 +179,8 @@ class DeviceFlowSection(BaseModel):
 
     model_config = _FORBID
 
-    code_expiry_seconds: Optional[int] = None
-    polling_interval: Optional[int] = None
+    code_expiry_seconds: Any = None  # accepted for compatibility, never consumed
+    polling_interval: Any = None  # accepted for compatibility, never consumed
 
 
 _SECTIONS = ("server", "oauth", "saml", "jwt", "session", "logging", "login", "device_flow")
@@ -198,25 +203,28 @@ class SettingsDocument(BaseModel):
     login: LoginSection = Field(default_factory=LoginSection)
     security_profile: str = "dev"
     authority_prefixes: Dict[str, str] = Field(default_factory=dict)
-    allowed_identity_classes: Optional[List[str]] = None
+    allowed_identity_classes: List[str] = Field(default_factory=list)
     # Accepted for compatibility, not consumed (module docstring).
-    cors_allowed_origins: Optional[List[str]] = None
+    # Accepted for compatibility, never consumed (the old loader never read it;
+    # CORS stays ["*"]), hence Any: no new validation on an ignored key.
+    cors_allowed_origins: Any = None
     device_flow: DeviceFlowSection = Field(default_factory=DeviceFlowSection)
 
     @model_validator(mode="before")
     @classmethod
-    def _bare_sections_are_empty(cls, data: Any) -> Any:
+    def _bare_login_is_empty(cls, data: Any) -> Any:
         """A bare ``login:`` line parses to ``{"login": None}``, not a missing
-        key; treat every ``None`` section as an empty one."""
-        if isinstance(data, dict):
-            for key in _SECTIONS:
-                if key in data and data[key] is None:
-                    data = {**data, key: {}}
+        key. The old loader special-cased exactly this one section
+        (``data.get("login") or {}``); every other bare section was, and
+        stays, a type error: null and missing are different things (#197
+        review)."""
+        if isinstance(data, dict) and "login" in data and data["login"] is None:
+            data = {**data, "login": {}}
         return data
 
     def to_settings(self) -> Settings:
         """Build the domain ``Settings`` exactly as the old loader did."""
-        clients = [entry.to_client() for entry in (self.oauth.clients or [])]
+        clients = [entry.to_client() for entry in self.oauth.clients]
 
         # A client_id must be unique. Duplicates - including two ${VAR}
         # placeholders that expand to the same value - make client lookup
@@ -265,7 +273,7 @@ class SettingsDocument(BaseModel):
             login_mode=self.login.mode,
             security_profile=self.security_profile,
             authority_prefixes=self.authority_prefixes,
-            allowed_identity_classes=self.allowed_identity_classes or [],
+            allowed_identity_classes=self.allowed_identity_classes,
             secret_key=self.session.secret_key,
             require_ui_login=self.session.require_ui_login,
             enforce_password_check=self.session.enforce_password_check,
@@ -294,18 +302,22 @@ class UserEntry(BaseModel):
 
     model_config = ConfigDict(extra="allow")
 
+    # Missing -> default, explicit null -> validation error, exactly like the
+    # old ``user_data.get(key, default)`` followed by the domain model's
+    # validators (#197 review). ``password`` and ``identity_class`` are the
+    # two fields whose domain type is Optional, so null is valid there.
     password: Optional[str] = None
     email: Optional[str] = None
     identity_class: Optional[str] = None
-    entitlements: Optional[List[str]] = None
-    roles: Optional[List[str]] = None
-    groups: Optional[List[str]] = None
+    entitlements: List[str] = Field(default_factory=list)
+    roles: List[str] = Field(default_factory=lambda: ["USER"])
+    groups: List[str] = Field(default_factory=list)
     tenant: str = "default"
-    source_acl: Optional[List[str]] = None
-    attributes: Optional[Dict[str, Any]] = None
+    source_acl: List[str] = Field(default_factory=list)
+    attributes: Dict[str, Any] = Field(default_factory=dict)
 
     def to_user(self, username: str) -> User:
-        attributes: Dict[str, Any] = dict(self.attributes or {})
+        attributes: Dict[str, Any] = dict(self.attributes)
         # Any field not in the known set becomes an attribute (legacy files).
         for key, value in (self.model_extra or {}).items():
             if key not in _USER_KNOWN_FIELDS and key not in attributes:
@@ -313,13 +325,22 @@ class UserEntry(BaseModel):
         return User(
             username=username,
             password=self.password,
-            email=self.email if self.email is not None else f"{username}@example.org",
+            # Default depends on the key, so "absent" is detected through
+            # model_fields_set; an explicit `email: null` reaches User.email
+            # (a str) and fails there, as it did before.
+            email=(
+                # An explicit null is passed through on purpose so that
+                # User.email (a str) rejects it at runtime, as before.
+                self.email  # type: ignore[arg-type]
+                if "email" in self.model_fields_set
+                else f"{username}@example.org"
+            ),
             identity_class=self.identity_class,
-            entitlements=self.entitlements if self.entitlements is not None else [],
-            roles=self.roles if self.roles is not None else ["USER"],
-            groups=self.groups if self.groups is not None else [],
+            entitlements=self.entitlements,
+            roles=self.roles,
+            groups=self.groups,
             tenant=self.tenant,
-            source_acl=self.source_acl if self.source_acl is not None else [],
+            source_acl=self.source_acl,
             attributes=attributes,
         )
 
@@ -331,12 +352,13 @@ class UsersDocument(BaseModel):
 
     config_version: Optional[int] = None
     default_user: str = "admin"
-    users: Optional[Dict[str, UserEntry]] = None
+    # Absent = no users; a bare `users:` (null) is a type error, as before.
+    users: Dict[str, UserEntry] = Field(default_factory=dict)
 
     def to_users(self) -> Tuple[Dict[str, User], str]:
         users = {
             username: entry.to_user(username)
-            for username, entry in (self.users or {}).items()
+            for username, entry in self.users.items()
         }
         return users, self.default_user
 
