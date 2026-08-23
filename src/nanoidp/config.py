@@ -354,9 +354,27 @@ class ConfigManager:
         return None
 
     def reload(self) -> None:
-        """Reload configuration from files."""
+        """Reload configuration from files: the EXTERNAL reload.
+
+        Runs on_before_load first (render from a store, ...), then reads the
+        files. This is what startup, POST /api/config/reload and the MCP
+        reload_config tool do.
+        """
         self._load_config()
         logger.info("Configuration reloaded")
+
+    def reload_local(self) -> None:
+        """Refresh the in-memory configuration from the LOCAL files only.
+
+        No on_before_load: this is the post-write refresh. After a local
+        write the files on disk are the newest state by definition, and
+        letting on_before_load pull from a mirror that has not caught up yet
+        (or whose push just failed) would silently roll the write back
+        (#185 review). Only an explicit reload() consults the mirror.
+        """
+        self._load_settings()
+        self._load_users()
+        logger.info("Configuration refreshed from local files")
 
     def save(self) -> None:
         """Save current configuration to YAML files."""

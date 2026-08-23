@@ -608,3 +608,69 @@ class TestStrictSaveKeepsDiskAndRuntimeAligned:
         assert "Settings saved locally; mirror hook failed" in page
         assert get_config().settings.audience == "aligned"
         assert yaml.safe_load((tmp_path / "settings.yaml").read_text())["oauth"]["audience"] == "aligned"
+
+
+class TestPostWriteRefreshNeverConsultsTheMirror:
+    """#185 review: the refresh after a local write must read the LOCAL files
+    only. If it ran on_before_load, a mirror that has not caught up (or whose
+    push just failed) would be copied back over the file just written: a
+    silent rollback, with the UI still reporting success."""
+
+    def _mirror_setup(self, tmp_path, strict):
+        remote = tmp_path / "remote"
+        remote.mkdir()
+        cfg = _write(tmp_path)
+        # the mirror holds the OLD configuration
+        (remote / "settings.yaml").write_text((tmp_path / "settings.yaml").read_text())
+        (tmp_path / "settings.yaml").write_text(
+            (tmp_path / "settings.yaml").read_text()
+            + yaml.safe_dump({"hooks": {
+                "on_before_load": f"cp {remote}/settings.yaml {{config_dir}}/settings.yaml",
+                "on_config_saved": "false",
+                "strict": strict,
+            }})
+        )
+        (remote / "settings.yaml").write_text((tmp_path / "settings.yaml").read_text())
+        return cfg, remote
+
+    @pytest.mark.parametrize("strict", [True, False])
+    def test_failed_push_does_not_roll_the_write_back(self, tmp_path, strict):
+        from nanoidp.config import get_config
+        from nanoidp.services.yaml_writer import YamlWriter
+
+        cfg, remote = self._mirror_setup(tmp_path, strict)
+        init_config(cfg)
+        assert get_config().settings.login_mode == "password"
+        writer = YamlWriter(cfg)
+        if strict:
+            with pytest.raises(HookError):
+                writer.update_login_settings(mode="persona")
+        else:
+            writer.update_login_settings(mode="persona")
+        local = yaml.safe_load((tmp_path / "settings.yaml").read_text())
+        assert local["login"]["mode"] == "persona", "local write must survive"
+        assert get_config().settings.login_mode == "persona", "runtime must follow the local disk"
+        assert "login" not in yaml.safe_load((remote / "settings.yaml").read_text()), "mirror untouched (push failed)"
+
+    def test_explicit_reload_still_pulls_from_the_mirror(self, tmp_path):
+        """The mirror is consulted by the EXTERNAL reload only."""
+        from nanoidp.config import get_config
+        from nanoidp.services.yaml_writer import YamlWriter
+
+        cfg, remote = self._mirror_setup(tmp_path, strict=False)
+        init_config(cfg)
+        YamlWriter(cfg).update_login_settings(mode="persona")
+        assert get_config().settings.login_mode == "persona"
+        get_config().reload()  # on_before_load copies the old mirror back
+        assert get_config().settings.login_mode == "password"
+
+    def test_reload_local_does_not_run_before_load(self, tmp_path):
+        from nanoidp.config import get_config
+
+        log = tmp_path / "hooks.log"
+        init_config(_write(tmp_path, {"hooks": {"on_before_load": _record_cmd(log, "before")}}))
+        n = len(_lines(log))
+        get_config().reload_local()
+        assert len(_lines(log)) == n
+        get_config().reload()
+        assert len(_lines(log)) == n + 1

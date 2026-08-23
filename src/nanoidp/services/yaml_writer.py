@@ -35,18 +35,29 @@ class YamlWriter:
 
     def _atomic_write(self, file_path: Path, data: Dict[str, Any]) -> None:
         """Atomically write a YAML document (shared implementation, #83), then
-        notify the on_config_saved hooks through ConfigManager (#185)."""
+        run the single post-write contract (#185):
+
+            write local -> notify the mirror (on_config_saved) -> refresh the
+            runtime FROM LOCAL DISK -> propagate a mirror failure if strict.
+
+        The refresh is ConfigManager.reload_local(), never reload(): a
+        reload() would run on_before_load and could pull a stale or
+        failed-to-update mirror back over the file just written, turning a
+        mirror hiccup into a silent rollback (#185 review). The disk is the
+        newest state after our own write; only an explicit reload consults
+        the mirror.
+        """
         atomic_write_yaml(file_path, data)
         kind = "users" if file_path.name == "users.yaml" else "settings"
+        config = get_config()
+        hook_error: Optional[HookError] = None
         try:
-            get_config().notify_saved(file_path, kind)
-        except HookError:
-            # Under hooks.strict the mirror failed AFTER the local write. The
-            # caller's own reload() will not run once we raise, so reload
-            # here first: disk and runtime must carry the same (new) value,
-            # only the mirror is behind (#185 review).
-            get_config().reload()
-            raise
+            config.notify_saved(file_path, kind)
+        except HookError as exc:
+            hook_error = exc
+        config.reload_local()
+        if hook_error is not None:
+            raise hook_error
 
     def _load_users_yaml(self) -> Dict[str, Any]:
         """Load the current users.yaml content."""
@@ -77,7 +88,7 @@ class YamlWriter:
 
         self._atomic_write(self.users_file, data)
 
-        get_config().reload()
+        # Reload config to pick up changes
 
     def delete_user(self, username: str) -> None:
         """
@@ -100,7 +111,7 @@ class YamlWriter:
 
         self._atomic_write(self.users_file, data)
 
-        get_config().reload()
+        # Reload config to pick up changes
 
     def set_default_user(self, username: str) -> None:
         """Set the default user for client_credentials grant."""
@@ -112,7 +123,6 @@ class YamlWriter:
         data["default_user"] = username
 
         self._atomic_write(self.users_file, data)
-        get_config().reload()
 
     # ==================== OAuth Client Operations ====================
 
@@ -146,7 +156,6 @@ class YamlWriter:
             clients.append(client_to_yaml(client))
 
         self._atomic_write(self.settings_file, data)
-        get_config().reload()
 
     def delete_client(self, client_id: str) -> None:
         """Delete an OAuth client from settings.yaml."""
@@ -163,7 +172,6 @@ class YamlWriter:
         data["oauth"]["clients"] = new_clients
 
         self._atomic_write(self.settings_file, data)
-        get_config().reload()
 
     # ==================== Settings Operations ====================
 
@@ -238,7 +246,6 @@ class YamlWriter:
                     oauth.pop("logos_dir", None)
 
         self._atomic_write(self.settings_file, data)
-        get_config().reload()
 
     def update_saml_settings(
         self,
@@ -317,7 +324,6 @@ class YamlWriter:
                 saml.pop("groups_attr_name", None)
 
         self._atomic_write(self.settings_file, data)
-        get_config().reload()
 
     def update_authority_prefixes(self, prefixes: Dict[str, str]) -> None:
         """Update authority prefix mappings."""
@@ -326,7 +332,6 @@ class YamlWriter:
             data["authority_prefixes"] = prefixes
 
         self._atomic_write(self.settings_file, data)
-        get_config().reload()
 
     def update_allowed_identity_classes(self, classes: List[str]) -> None:
         """Update allowed identity classes."""
@@ -335,7 +340,6 @@ class YamlWriter:
             data["allowed_identity_classes"] = classes
 
         self._atomic_write(self.settings_file, data)
-        get_config().reload()
 
     def update_login_settings(self, mode: Optional[str] = None) -> None:
         """Update the 'login' section (persona login mode, local dev
@@ -359,7 +363,6 @@ class YamlWriter:
             merge_optional_nested_field(data, "login", "mode", mode, login_mode_default)
 
         self._atomic_write(self.settings_file, data)
-        get_config().reload()
 
 
 # Global instance

@@ -15,7 +15,7 @@ Three hooks, called synchronously:
 
 | Hook | When | Arguments | Typical use |
 |---|---|---|---|
-| `on_before_load` | before `settings.yaml` and `users.yaml` are read: startup and every reload | plugin: `config_dir`; shell: `{config_dir}` | render the files from a store into the directory |
+| `on_before_load` | before `settings.yaml` and `users.yaml` are read: startup and every explicit reload (`POST /api/config/reload`, MCP `reload_config`), never the refresh that follows a local write | plugin: `config_dir`; shell: `{config_dir}` | render the files from a store into the directory |
 | `on_config_saved` | after an atomic write of either file (web UI, MCP, `save`) | plugin: `path`, `kind` (`settings` or `users`); shell: `{config_dir}`, `{path}`, `{kind}` | push to a store, `git commit`, notify |
 | `on_audit_event` | after an audit entry is recorded | plugin: the event as a mapping; shell: `{config_dir}`, `{event_type}` plus the event as JSON on stdin | ship audit elsewhere |
 
@@ -70,7 +70,7 @@ interrupt it.
 | Hook | default | `hooks.strict: true` |
 |---|---|---|
 | `on_before_load` | log, continue with whatever is in the directory | the load (startup or reload) fails with the hook's error |
-| `on_config_saved` | log | the error is propagated to the caller **after** the write. Disk and runtime stay aligned: the file on disk is what was written and the running configuration is reloaded from it before the error is raised, so only the mirror is behind. The web UI says "Settings saved locally; mirror hook failed" |
+| `on_config_saved` | log | the error is propagated to the caller **after** the write. Disk and runtime stay aligned: the file on disk is what was written and the running configuration is reloaded from it before the error is raised, so only the mirror is behind. The web UI says "Settings saved locally; mirror hook failed". That refresh reads the local files only and does not run `on_before_load`: the disk is the newest state right after a write, and pulling a mirror that has not caught up yet would silently roll the write back |
 | `on_audit_event` | log | log; never propagates |
 
 `on_before_load` is the only hook that can block an operation, because it
