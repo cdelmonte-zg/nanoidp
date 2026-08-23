@@ -15,11 +15,13 @@ import yaml
 # Re-exported for compatibility: the models were defined here until #86, and
 # every consumer (routes, services, MCP, tests) imports them from this module.
 from .config_documents import (
+    HooksSection,
     SettingsDocument,
     document_defaults,
     load_settings_document,
     load_users_document,
 )
+from .hooks import SOURCE_SETTINGS, HookRegistry, bootstrap_registry
 from .models import (  # noqa: F401
     SECURITY_PROFILES,
     OAuthClient,
@@ -64,6 +66,11 @@ class ConfigManager:
         # Effective config schema version of the loaded files (#175): the
         # declared value, or 1 when a file carries no config_version key.
         self.config_version: int = IMPLICIT_CONFIG_VERSION
+        # Hooks and plugins (#185): the bootstrap surface (bootstrap.yaml in
+        # the config dir, NANOIDP_BOOTSTRAP_HOOK / _PLUGIN) is read before
+        # the first load because settings.yaml may be what a hook renders;
+        # settings.yaml's own hooks: / plugins: are merged in after each load.
+        self.hooks: HookRegistry = bootstrap_registry(self.config_dir)
         self._load_config()
 
     def _find_config_dir(self) -> str:
@@ -88,6 +95,11 @@ class ConfigManager:
 
     def _load_config(self) -> None:
         """Load all configuration files."""
+        # on_before_load: bootstrap hooks run once (first load only), the
+        # settings.yaml-declared ones on every load. The registry enforces
+        # the once-only rule; under hooks.strict a failure raises HookError
+        # here, before anything is read.
+        self.hooks.run_before_load(self.config_dir)
         self._load_settings()
         self._load_users()
         logger.info(f"Loaded configuration from {self.config_dir}")
@@ -172,7 +184,22 @@ class ConfigManager:
         # reported with their path, defaults live on the model, and the
         # domain Settings is built from it with every validator it already
         # had. ${VAR} expansion and config_version stay at the edge, above.
-        self.settings = load_settings_document(data, settings_file).to_settings()
+        document = load_settings_document(data, settings_file)
+        self.settings = document.to_settings()
+        self._configure_hooks_from(document.hooks, document.plugins)
+
+    def _configure_hooks_from(self, hooks: HooksSection, plugins: Dict[str, Dict[str, Any]]) -> None:
+        """Replace the settings.yaml-sourced hooks/plugins with the file's
+        current declaration (#185); bootstrap entries are untouched."""
+        self.hooks.drop_source(SOURCE_SETTINGS)
+        self.hooks.configure_from_sections(hooks.model_dump(), plugins, SOURCE_SETTINGS)
+
+    def notify_saved(self, path: Path, kind: str) -> None:
+        """The single on_config_saved call site for every write path (#185):
+        ConfigManager's own saves and YamlWriter's. Called AFTER the atomic
+        write; under hooks.strict the hook's failure is raised to the caller
+        while the file on disk stays what was written."""
+        self.hooks.run_config_saved(path, kind)
 
     def _set_default_settings(self) -> None:
         """Set default settings with demo client."""
@@ -336,6 +363,7 @@ class ConfigManager:
         document = load_yaml_document(users_file)
         apply_users_document(document, self.users, self.default_user)
         atomic_write_yaml(users_file, document)
+        self.notify_saved(users_file, "users")
 
     def _save_settings(self) -> None:
         """Save settings to settings.yaml (shared builder, #83).
@@ -348,6 +376,7 @@ class ConfigManager:
         # Declared state, not effective state (#172): see persistable_settings().
         apply_settings_document(document, self.persistable_settings(), defaults=document_defaults())
         atomic_write_yaml(settings_file, document)
+        self.notify_saved(settings_file, "settings")
 
 
 # Global config instance

@@ -303,6 +303,28 @@ logging:
 Set `verbose_logging: false` if you're concerned about PII in log files,
 though for a dev tool this is typically not an issue.
 
+## Hooks and plugins (`hooks:`, `plugins:`)
+
+Two optional top-level sections, absent by default, declare the extension
+points described in [Extending nanoidp: hooks and plugins](../guides/extending.md):
+`hooks:` holds shell commands for `on_before_load`, `on_config_saved` and
+`on_audit_event` plus `strict` and `timeout_seconds`; `plugins:` maps a
+plugin name to its own settings (the only section whose inner keys nanoidp
+does not validate). Both are YAML-only: reported by `GET /api/config` and
+the MCP `get_settings` tool, never changed through the web UI or MCP. Hooks
+that must run before `settings.yaml` exists go in `bootstrap.yaml` (same two
+keys) or in `NANOIDP_BOOTSTRAP_HOOK` / `NANOIDP_BOOTSTRAP_PLUGIN`.
+
+```yaml
+hooks:
+  on_config_saved: "git -C {config_dir} add {path} && git -C {config_dir} commit -q -m 'nanoidp: {kind}' || true"
+  strict: false
+  timeout_seconds: 10
+plugins:
+  echo:
+    record: /tmp/nanoidp-hooks.jsonl
+```
+
 ## Placeholders and the config directory as the interface
 
 Both files accept `${VAR}` and `${VAR:default}` placeholders in any scalar

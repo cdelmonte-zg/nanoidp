@@ -11,6 +11,7 @@
 
 - [Requesting tokens](guides/token-requests.md)
 - [Running behind a reverse proxy](guides/reverse-proxy.md)
+- [Extending nanoidp: hooks and plugins](guides/extending.md)
 - [MCP with Claude Code](guides/MCP_WORKFLOW.md)
 - [Security guide](guides/SECURITY.md)
 

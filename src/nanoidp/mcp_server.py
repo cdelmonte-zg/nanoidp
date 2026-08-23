@@ -683,7 +683,10 @@ _TOOLS: list[Tool] = [
     ),
     Tool(
         name="update_settings",
-        description="Update NanoIDP settings (issuer, audience, token expiry, SAML options, etc.)",
+        description="Update NanoIDP settings (issuer, audience, token expiry, SAML options, etc.). "
+        "hooks: and plugins: (#185) are YAML-only, like secret_key and require_ui_login: "
+        "they are reported by get_settings but cannot be changed here, since a command "
+        "editable through the surface it observes would be a remote-execution primitive.",
         input_schema={
             "type": "object",
             "properties": {
@@ -1291,6 +1294,8 @@ async def _execute_tool(name: str, arguments: dict[str, Any], config: ConfigMana
             },
             "authority_prefixes": settings.authority_prefixes,
             "allowed_identity_classes": settings.allowed_identity_classes,
+            # Hooks and plugins (#185): same block as GET /api/config.
+            "hooks": config.hooks.describe(),
         }
 
     elif name == "reload_config":

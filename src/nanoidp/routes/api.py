@@ -186,6 +186,9 @@ def get_configuration() -> ResponseReturnValue:
             "rate_limit_enabled": settings.rate_limit_enabled,
             "debug": settings.debug,
         },
+        # Hooks and plugins (#185): what is loaded, from which surface, and
+        # the failure counters. YAML-only; reported, never settable here.
+        "hooks": config.hooks.describe(),
         "users_count": len(config.users),
     })
 

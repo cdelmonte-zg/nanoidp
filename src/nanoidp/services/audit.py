@@ -109,6 +109,15 @@ class AuditLog:
         else:
             logger.warning(log_msg)
 
+        # on_audit_event (#185): after the entry is recorded. The registry
+        # never lets a hook failure out of run_audit_event; the guard here
+        # covers the config singleton itself being unavailable.
+        try:
+            from ..config import get_config
+            get_config().hooks.run_audit_event(entry.to_dict())
+        except Exception:
+            logger.debug("audit hooks unavailable", exc_info=True)
+
     def _update_stats(self, event_type: str, status: str) -> None:
         """Update statistics counters."""
         self._stats["total_requests"] += 1

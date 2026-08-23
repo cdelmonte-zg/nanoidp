@@ -33,8 +33,11 @@ class YamlWriter:
         self.settings_file = self.config_dir / "settings.yaml"
 
     def _atomic_write(self, file_path: Path, data: Dict[str, Any]) -> None:
-        """Atomically write a YAML document (shared implementation, #83)."""
+        """Atomically write a YAML document (shared implementation, #83), then
+        notify the on_config_saved hooks through ConfigManager (#185)."""
         atomic_write_yaml(file_path, data)
+        kind = "users" if file_path.name == "users.yaml" else "settings"
+        get_config().notify_saved(file_path, kind)
 
     def _load_users_yaml(self) -> Dict[str, Any]:
         """Load the current users.yaml content."""
