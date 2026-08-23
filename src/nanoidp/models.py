@@ -58,6 +58,12 @@ def _coerce_additional_audiences(raw: Any, client_id: str) -> List[str]:
     return _coerce_client_str_list(raw, client_id, "additional_audiences")
 
 
+# The three security profiles, in one place: Settings.security_profile's
+# validator, the CLI --profile choices and ConfigManager's override check all
+# read this tuple (#172).
+SECURITY_PROFILES: tuple[str, ...] = ("dev", "stricter-dev", "oauth21")
+
+
 class User(BaseModel):
     """Represents a user in the system."""
     model_config = ConfigDict(extra="allow")
@@ -348,9 +354,8 @@ class Settings(BaseModel):
     @classmethod
     def validate_security_profile(cls, v: str) -> str:
         """Validate security profile."""
-        valid_profiles = {"dev", "stricter-dev", "oauth21"}
-        if v not in valid_profiles:
-            raise ValueError(f"Security profile must be one of: {valid_profiles}")
+        if v not in SECURITY_PROFILES:
+            raise ValueError(f"Security profile must be one of: {set(SECURITY_PROFILES)}")
         return v
 
     @field_validator("login_mode")

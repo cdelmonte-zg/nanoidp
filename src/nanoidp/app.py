@@ -26,23 +26,13 @@ def create_app(config_dir: Optional[str] = None, profile: Optional[str] = None) 
     global limiter
 
     # Initialize configuration
-    config = init_config(config_dir)
+    # The CLI --profile (any of the three values, including an explicit
+    # "dev") wins over settings.yaml's security_profile and survives every
+    # reload(); the stricter-dev runtime hardening is derived from the
+    # EFFECTIVE profile inside ConfigManager, so YAML and CLI mean the same
+    # thing and neither is lost on the first UI/MCP save (#68 review, #172).
+    config = init_config(config_dir, profile_override=profile)
     settings = config.settings
-
-    # Apply profile overrides. The CLI --profile wins over settings.yaml's
-    # security_profile; the runtime mutations key off the EFFECTIVE profile,
-    # so YAML and CLI mean the same thing (#68 review). oauth21 needs no
-    # mutations here: its protocol behavior is derived from security_profile
-    # via Settings properties (#68).
-    if profile in ("stricter-dev", "oauth21"):
-        settings.security_profile = profile
-    if settings.security_profile == "stricter-dev":
-        settings.rate_limit_enabled = True
-        settings.password_hashing = True
-        # PKCE required and 'plain' rejected in stricter-dev (#47)
-        settings.require_pkce = True
-        # Block debug mode in stricter-dev
-        settings.debug = False
 
     # Configure logging
     logging.basicConfig(

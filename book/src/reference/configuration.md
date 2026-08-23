@@ -146,7 +146,9 @@ saml:
   roles_attr_name: "roles"   # attribute name used when export_roles is on
   groups_attr_name: "groups" # attribute name used when export_groups is on
 
-# Optional; also settable at startup with --profile (which wins over YAML)
+# Optional; also settable at startup with --profile, which wins over this value
+# for that run only (any of the three, including an explicit dev), is never
+# written back here and survives every reload (#172)
 # security_profile: oauth21   # dev (default) | stricter-dev | oauth21
 
 # Optional; local dev/testing convenience, off by default - see "Login mode" above

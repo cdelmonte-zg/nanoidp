@@ -39,6 +39,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   local files only (no remote URLs) to avoid beacons.
 
 ### Fixed
+- **`--profile` overrides settings.yaml for every value and survives reloads**
+  (#172). An explicit `--profile dev` could not bring a file configured with
+  `oauth21`/`stricter-dev` back to `dev` (the flag defaulted to `dev`, so the
+  code could not tell "asked for dev" from "omitted"), and any CLI profile was
+  dropped by the first configuration reload, i.e. by the first web UI or MCP
+  save. Worse, the `stricter-dev` runtime hardening (`require_pkce`,
+  `password_hashing`, `rate_limit_enabled`, debug off) was applied once in
+  `create_app()` and silently lost on that same first reload, even when the
+  profile came from `settings.yaml` itself. The override now lives on
+  `ConfigManager` (`--profile` defaults to none, `init_config(...,
+  profile_override=)`), the effective profile and its hardening are re-derived
+  after every settings load, and a save serializes the DECLARED state
+  (`ConfigManager.persistable_settings()`), so neither the override nor
+  the hardening it implies is ever written into the operator's file. `GET /api/config` exposes `security_profile`,
+  `profile_override` and the derived `effective` values; the e2e agent checks
+  they are stable across a reload.
 - **Example presets now bind to `127.0.0.1`** (#164). All four pre-2.6.0
   presets (`cli-device-flow`, `microservices-client-credentials`,
   `react-spa-pkce`, `spring-boot-saml`) still shipped an explicit

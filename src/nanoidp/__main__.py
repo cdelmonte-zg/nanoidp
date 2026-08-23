@@ -13,6 +13,7 @@ import os
 import sys
 
 from nanoidp import __version__
+from nanoidp.models import SECURITY_PROFILES
 
 # Add src to path for development
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -185,10 +186,12 @@ def main() -> None:
     )
     parser.add_argument(
         "--profile",
-        choices=["dev", "stricter-dev", "oauth21"],
-        default="dev",
-        help="Security profile: dev (default), stricter-dev (runtime hardening) "
-        "or oauth21 (draft OAuth 2.1 protocol strictness)",
+        choices=list(SECURITY_PROFILES),
+        default=None,
+        help="Security profile: dev, stricter-dev (runtime hardening) or oauth21 "
+        "(draft OAuth 2.1 protocol strictness). When given it overrides "
+        "settings.yaml's security_profile for this run only; when omitted the "
+        "YAML value applies (default: dev)",
     )
 
     args = parser.parse_args()

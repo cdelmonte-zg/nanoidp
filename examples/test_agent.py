@@ -3143,6 +3143,48 @@ class NanoIDPTestAgent:
         except Exception as e:
             return self._add_result("API Config Reload", TestCategory.API, False, str(e))
 
+    def test_api_config_profile_survives_reload(self) -> TestResult:
+        """REST API - The effective security profile is stable across reloads (#172).
+
+        /api/config reports the EFFECTIVE profile (CLI --profile override
+        applied, stricter-dev hardening derived). Before #172 a reload - which
+        every UI/MCP save triggers - rebuilt Settings from YAML and silently
+        dropped both the CLI override and the stricter-dev hardening, so the
+        same document read before and after a reload must be identical.
+        """
+        try:
+            keys = ("security_profile", "profile_override", "effective")
+            before = self.session.get(f"{self.base_url}/api/config", timeout=5).json()
+            missing = [k for k in keys if k not in before]
+            if missing:
+                return self._add_result(
+                    "API Profile Survives Reload",
+                    TestCategory.API,
+                    False,
+                    f"/api/config lacks {missing}",
+                    before,
+                )
+            self.session.post(f"{self.base_url}/api/config/reload", timeout=5)
+            after = self.session.get(f"{self.base_url}/api/config", timeout=5).json()
+            snapshot_before = {k: before[k] for k in keys}
+            snapshot_after = {k: after.get(k) for k in keys}
+            same = snapshot_before == snapshot_after
+            hardened = (
+                before["security_profile"] != "stricter-dev"
+                or before["effective"].get("require_pkce") is True
+            )
+            return self._add_result(
+                "API Profile Survives Reload",
+                TestCategory.API,
+                same and hardened,
+                f"profile={before['security_profile']} override={before['profile_override']} "
+                f"{'unchanged' if same else 'CHANGED'} after reload"
+                + ("" if hardened else "; stricter-dev without require_pkce"),
+                {"before": snapshot_before, "after": snapshot_after},
+            )
+        except Exception as e:
+            return self._add_result("API Profile Survives Reload", TestCategory.API, False, str(e))
+
     def test_api_audit_log(self) -> TestResult:
         """REST API - Audit log."""
         try:
@@ -3550,6 +3592,7 @@ class NanoIDPTestAgent:
                 self.test_api_config,
                 self.test_api_verbose_logging_setting,
                 self.test_api_config_reload,
+                self.test_api_config_profile_survives_reload,
                 self.test_api_audit_log,
                 self.test_api_audit_stats,
             ]),

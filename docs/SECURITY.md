@@ -99,6 +99,16 @@ python -m nanoidp --profile stricter-dev
 python -m nanoidp --profile oauth21
 ```
 
+`--profile` is a per-run override: when given (any of the three values,
+including an explicit `dev`) it wins over `security_profile` in
+`settings.yaml`, is never written back to the file, and is re-applied after
+every configuration reload, including the reload that follows each web UI or
+MCP save. The `stricter-dev` runtime hardening (`require_pkce`,
+`password_hashing`, `rate_limit_enabled`, debug off) is derived from the
+effective profile on every reload the same way, whether the profile came from
+the flag or from YAML. `GET /api/config` reports the effective profile,
+whether it came from an override, and the derived values (#172).
+
 ### Feature Comparison
 
 | Feature | `dev` | `stricter-dev` | `oauth21` |
