@@ -35,6 +35,10 @@ jobs:
         run: |
           mypy src
 
+      - name: Check import contracts
+        run: |
+          lint-imports
+
       - name: Run tests
         run: |
           pytest tests/ -v --tb=short

@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Import contracts enforced in CI** (#149): `import-linter` now pins the
+  package layering (`routes -> services -> config`) and the invariant that
+  `serialization.py` has no runtime imports from the package (it is what
+  lets `config.py` import it without a cycle). Both used to live only in
+  comments; `lint-imports` runs next to ruff and mypy in the Tests workflow
+  and fails when a change adds a forbidden import.
 - **Persona login mode** (#156): opt-in `login.mode: persona` lists the
   configured users on every interactive login surface (`/login`,
   `/authorize`, `/saml/sso` and the device flow's verification page) and

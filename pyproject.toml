@@ -75,6 +75,7 @@ dev = [
     "types-PyYAML",
     "types-jsonschema",
     "requests>=2.31.0",  # examples/test_agent.py (e2e)
+    "import-linter>=2.0",  # architectural import contracts (#149), see [tool.importlinter]
 ]
 
 [project.scripts]
@@ -96,6 +97,36 @@ include = [
     "/config",
     "/README.md",
     "/LICENSE",
+]
+
+# Architectural import contracts (#149), enforced by `lint-imports` in CI.
+# The package layering is routes -> services -> config -> serialization/models;
+# higher layers may import lower ones, never the reverse. The only declared
+# back-edge is serialization -> config, which exists purely under
+# TYPE_CHECKING so config.py can import serialization at runtime without a
+# cycle; exclude_type_checking_imports keeps those annotations-only edges out
+# of the graph so the contracts describe runtime dependencies.
+[tool.importlinter]
+root_package = "nanoidp"
+exclude_type_checking_imports = true
+
+[[tool.importlinter.contracts]]
+name = "serialization has no runtime package imports"
+type = "forbidden"
+source_modules = ["nanoidp.serialization"]
+forbidden_modules = [
+    "nanoidp.services",
+    "nanoidp.routes",
+    "nanoidp.config",
+]
+
+[[tool.importlinter.contracts]]
+name = "layers: routes -> services -> config"
+type = "layers"
+layers = [
+    "nanoidp.routes",
+    "nanoidp.services",
+    "nanoidp.config",
 ]
 
 [tool.black]
