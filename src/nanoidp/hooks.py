@@ -74,6 +74,7 @@ import json
 import logging
 import os
 import subprocess
+import threading
 from dataclasses import dataclass, field
 from importlib import metadata
 from pathlib import Path
@@ -81,7 +82,8 @@ from typing import Any, Dict, List, Mapping, Optional
 
 import yaml
 
-from .config_documents import BootstrapDocument
+from .config_documents import load_bootstrap_document
+from .serialization import expand_env_vars
 
 logger = logging.getLogger(__name__)
 
@@ -103,7 +105,30 @@ SOURCE_SETTINGS = "settings.yaml"
 
 
 class HookError(RuntimeError):
-    """A hook failed and the policy for that hook says the caller must know."""
+    """A hook failed and the policy for that hook says the caller must know.
+
+    ``message`` is always a synthetic string built by the registry (hook
+    name, source, exit code); it never embeds a command, stderr or a
+    plugin's exception text, so callers may put it in an HTTP/MCP
+    response. ``kind`` says which phase failed: the hook name
+    (``on_before_load``, ``on_config_saved``) or ``plugin_load`` for a
+    plugin that could not be registered during a load.
+    """
+
+    def __init__(self, message: str, kind: str = "hook") -> None:
+        super().__init__(message)
+        self.message = message
+        self.kind = kind
+
+
+class PluginLoadError(ValueError):
+    """A plugin could not be registered, for a reason nanoidp itself
+    diagnosed. ``public_reason`` is safe to expose (it is built from names
+    and versions, never from plugin-provided text)."""
+
+    def __init__(self, message: str, public_reason: str) -> None:
+        super().__init__(message)
+        self.public_reason = public_reason
 
 
 @dataclass
@@ -176,6 +201,14 @@ class HookRegistry:
         # history instead of reporting a fresh zero.
         self._retired_shell: Dict[tuple, int] = {}
         self._retired_plugins: Dict[tuple, Dict[str, int]] = {}
+        # Plugins a source declared but that could not be loaded (missing
+        # entry point, wrong hook_api_version, configure() raised): reported,
+        # never fatal unless strict (review before 2.7.0rc4).
+        self._failed_plugins: Dict[str, List[Dict[str, str]]] = {}
+        # Set while on_before_load runs on this thread: an audit event logged
+        # from inside a load must not re-enter the registry (or the config
+        # singleton, whose construction may hold a non-reentrant lock).
+        self._loading = threading.local()
 
     # ----------------------------------------------------------------- policy
 
@@ -212,12 +245,13 @@ class HookRegistry:
     def add_plugin(self, name: str, source: str, config: Optional[Mapping[str, Any]] = None) -> LoadedPlugin:
         """Load ``name`` from the ``nanoidp.plugins`` entry-point group."""
         if any(p.name == name for p in self.plugins):
-            raise ValueError(f"Plugin {name!r} is already loaded")
+            raise PluginLoadError(f"Plugin {name!r} is already loaded", "already loaded")
         candidates = [ep for ep in metadata.entry_points(group=ENTRY_POINT_GROUP) if ep.name == name]
         if not candidates:
-            raise ValueError(
+            raise PluginLoadError(
                 f"Plugin {name!r} not found: no '{ENTRY_POINT_GROUP}' entry point with that "
-                f"name is installed (pip install the package that provides it)"
+                f"name is installed (pip install the package that provides it)",
+                "not installed",
             )
         factory = candidates[0].load()
         # An entry point may point at a class (instantiate it) or at a
@@ -231,9 +265,10 @@ class HookRegistry:
         """Register an already-constructed plugin (tests, in-process use)."""
         api_version = getattr(obj, "hook_api_version", None)
         if api_version != HOOK_API_VERSION:
-            raise ValueError(
+            raise PluginLoadError(
                 f"Plugin {name!r} declares hook_api_version={api_version!r}; this nanoidp "
-                f"implements hook API version {HOOK_API_VERSION}. Upgrade the plugin or nanoidp."
+                f"implements hook API version {HOOK_API_VERSION}. Upgrade the plugin or nanoidp.",
+                f"incompatible hook_api_version={api_version!r} (expected {HOOK_API_VERSION})",
             )
         plugin = LoadedPlugin(name=name, obj=obj, api_version=api_version, source=source, config=dict(config or {}))
         plugin.failures.update(self._retired_plugins.pop((name, source), {}))
@@ -253,9 +288,51 @@ class HookRegistry:
                 self._retired_plugins[(p.name, p.source)] = dict(p.failures)
         self.shell_hooks = [h for h in self.shell_hooks if h.source != source]
         self.plugins = [p for p in self.plugins if p.source != source]
+        self._failed_plugins.pop(source, None)
         # A source that is gone no longer has a say in strict/timeout: the
         # bootstrap baseline (or the default) applies again.
         self._policy.pop(source, None)
+
+    # ----------------------------------------------------------- transactions
+
+    def snapshot(self) -> Dict[str, Any]:
+        """Copy of every piece of registry state, for rollback (#200 review).
+
+        Plugin objects are shared, not copied: a rolled-back reload keeps the
+        instances that were serving before, which is the point."""
+        return {
+            "shell_hooks": list(self.shell_hooks),
+            "plugins": list(self.plugins),
+            "policy": {k: dict(v) for k, v in self._policy.items()},
+            "retired_shell": dict(self._retired_shell),
+            "retired_plugins": {k: dict(v) for k, v in self._retired_plugins.items()},
+            "failed_plugins": {k: [dict(f) for f in v] for k, v in self._failed_plugins.items()},
+        }
+
+    def restore(self, snap: Dict[str, Any]) -> None:
+        """Put the registry back to a snapshot() state."""
+        self.shell_hooks = list(snap["shell_hooks"])
+        self.plugins = list(snap["plugins"])
+        self._policy = {k: dict(v) for k, v in snap["policy"].items()}
+        self._retired_shell = dict(snap["retired_shell"])
+        self._retired_plugins = {k: dict(v) for k, v in snap["retired_plugins"].items()}
+        self._failed_plugins = {k: [dict(f) for f in v] for k, v in snap["failed_plugins"].items()}
+
+    def replace_source(self, hooks: Any, plugins: Mapping[str, Any], source: str) -> None:
+        """Atomically replace everything ``source`` declares.
+
+        drop_source + configure_from_sections, but if registration raises
+        (strict plugin failure) the registry is restored to exactly what it
+        was, so a failed reload never leaves old plugins dropped and new ones
+        half loaded (#200 review: a failed reload must not commit).
+        """
+        snap = self.snapshot()
+        try:
+            self.drop_source(source)
+            self.configure_from_sections(hooks, plugins, source)
+        except HookError:
+            self.restore(snap)
+            raise
 
     def configure_from_sections(
         self,
@@ -284,18 +361,61 @@ class HookRegistry:
             strict=values.get("strict") if "strict" in declared else None,
             timeout_seconds=values.get("timeout_seconds") if "timeout_seconds" in declared else None,
         )
+        self.load_plugins(plugins, source)
+
+    def load_plugins(self, plugins: Mapping[str, Any], source: str) -> None:
+        """Load every plugin ``source`` declares, following the error policy.
+
+        A plugin that cannot be loaded (no entry point installed, wrong
+        ``hook_api_version``, ``configure()`` raising) is logged at ERROR,
+        recorded in ``describe()["plugins_failed"]`` and skipped; under
+        ``strict`` the load fails with a ``HookError`` naming the plugins,
+        after every plugin was attempted. Registration is part of the load,
+        so it follows on_before_load's policy, not an unconditional abort.
+        """
+        failed: List[str] = []
         for name, config in plugins.items():
-            self.add_plugin(name, source, config or {})
+            try:
+                self.add_plugin(name, source, config or {})
+            except Exception as exc:
+                # The public reason is one of nanoidp's own short diagnoses;
+                # the exception text (import error, constructor, configure(),
+                # which may embed the plugin's settings and therefore secrets)
+                # goes to the local log only (#200 review).
+                if isinstance(exc, PluginLoadError):
+                    reason = exc.public_reason
+                else:
+                    reason = "initialization failed"
+                logger.error(
+                    "plugin %r (%s) could not be loaded: %s", name, source, str(exc) or exc.__class__.__name__
+                )
+                self._failed_plugins.setdefault(source, []).append({"name": name, "reason": reason})
+                failed.append(name)
+        if failed and self.strict:
+            raise HookError(
+                f"plugin(s) {', '.join(repr(n) for n in failed)} from {source} could not be loaded",
+                kind="plugin_load",
+            )
 
     # --------------------------------------------------------------- dispatch
 
     def run_before_load(self, config_dir: Path) -> None:
         """May raise ``HookError`` under ``strict``; otherwise logs and returns."""
-        self._dispatch(
-            "on_before_load",
-            shell_placeholders={"config_dir": str(config_dir)},
-            plugin_args=(config_dir,),
-            propagate=self.strict,
+        self._loading.active = True
+        try:
+            self._dispatch(
+                "on_before_load",
+                shell_placeholders={"config_dir": str(config_dir)},
+                plugin_args=(config_dir,),
+                propagate=self.strict,
+            )
+        finally:
+            self._loading.active = False
+
+    def has_hook(self, hook: str) -> bool:
+        """True when at least one shell hook or plugin implements ``hook``."""
+        return any(h.hook == hook for h in self.shell_hooks) or any(
+            callable(getattr(p.obj, hook, None)) for p in self.plugins
         )
 
     def _config_dir_placeholder(self, fallback: Optional[Path] = None) -> str:
@@ -319,6 +439,14 @@ class HookRegistry:
 
     def run_audit_event(self, event: Mapping[str, Any]) -> None:
         """Never raises, strict or not: hooks must not alter protocol behaviour."""
+        # Nothing registered: no dict copies, no iteration (the default case).
+        if not self.has_hook("on_audit_event"):
+            return
+        # An audit event produced while on_before_load is running on this
+        # thread (a plugin logging from its load hook) stays in the audit log
+        # but is not dispatched: no recursion into a half-built registry.
+        if getattr(self._loading, "active", False):
+            return
         try:
             self._dispatch(
                 "on_audit_event",
@@ -341,6 +469,8 @@ class HookRegistry:
         propagate: bool,
         stdin_json: Optional[Mapping[str, Any]] = None,
     ) -> None:
+        if not self.has_hook(hook):
+            return
         errors: List[str] = []
         for shell_hook in [h for h in self.shell_hooks if h.hook == hook]:
             if shell_hook.once and shell_hook.ran:
@@ -364,7 +494,7 @@ class HookRegistry:
                 logger.warning(message, exc_info=True)
                 errors.append(message)
         if errors and propagate:
-            raise HookError("; ".join(errors))
+            raise HookError("; ".join(errors), kind=hook)
 
     def _run_shell(
         self,
@@ -424,6 +554,11 @@ class HookRegistry:
             "timeout_seconds": self.timeout_seconds,
             "shell_hooks": [h.describe() for h in self.shell_hooks],
             "plugins": [p.describe() for p in self.plugins],
+            "plugins_failed": [
+                {"name": f["name"], "source": source, "reason": f["reason"]}
+                for source, entries in self._failed_plugins.items()
+                for f in entries
+            ],
         }
 
     def format_report(self) -> str:
@@ -455,6 +590,8 @@ class HookRegistry:
                 f"  {p['name']:<16} api={p['hook_api_version']} {p['source']:<14} "
                 f"hooks={','.join(p['hooks']) or '-'} failures={p['failures']}"
             )
+        for f in info["plugins_failed"]:
+            lines.append(f"  {f['name']:<16} NOT LOADED ({f['source']}): {f['reason']}")
         return "\n".join(lines)
 
 
@@ -479,9 +616,13 @@ def bootstrap_registry(config_dir: Path, environ: Optional[Mapping[str, str]] = 
 
     bootstrap_file = config_dir / BOOTSTRAP_FILE
     if bootstrap_file.exists():
+        # Same path as settings.yaml: ${VAR} expansion first, then the
+        # document loader (unknown keys warned with their path, wrong types
+        # reported as "<file>: invalid value at <path>").
         with open(bootstrap_file, "r") as f:
             raw = yaml.safe_load(f) or {}
-        document = BootstrapDocument.model_validate(raw)
+        raw = expand_env_vars(raw)
+        document = load_bootstrap_document(raw, bootstrap_file)
         registry.configure_from_sections(document.hooks, document.plugins, SOURCE_BOOTSTRAP_FILE)
         # bootstrap.yaml's on_before_load runs before the first load only,
         # like the env hook: settings.yaml owns reloads.
@@ -495,7 +636,9 @@ def bootstrap_registry(config_dir: Path, environ: Optional[Mapping[str, str]] = 
 
     plugin_name = env.get(BOOTSTRAP_PLUGIN_ENV)
     if plugin_name:
-        registry.add_plugin(plugin_name, SOURCE_BOOTSTRAP_ENV, plugin_settings_from_env(plugin_name, env))
+        registry.load_plugins(
+            {plugin_name: plugin_settings_from_env(plugin_name, env)}, SOURCE_BOOTSTRAP_ENV
+        )
 
     return registry
 

@@ -333,12 +333,6 @@ class SettingsDocument(BaseModel):
             log_token_requests=self.logging.log_token_requests,
             log_saml_requests=self.logging.log_saml_requests,
             verbose_logging=self.logging.verbose_logging,
-            hooks_on_before_load=self.hooks.on_before_load,
-            hooks_on_config_saved=self.hooks.on_config_saved,
-            hooks_on_audit_event=self.hooks.on_audit_event,
-            hooks_strict=self.hooks.strict,
-            hooks_timeout_seconds=self.hooks.timeout_seconds,
-            plugins=self.plugins,
         )
 
 
@@ -502,6 +496,12 @@ def load_settings_document(data: Dict[str, Any], file_path: Path) -> SettingsDoc
 
 def load_users_document(data: Dict[str, Any], file_path: Path) -> UsersDocument:
     return _load_document(UsersDocument, data, file_path)
+
+
+def load_bootstrap_document(data: Dict[str, Any], file_path: Path) -> BootstrapDocument:
+    """``bootstrap.yaml`` goes through the same unknown-key / wrong-type
+    reporting as ``settings.yaml`` (review before 2.7.0rc4)."""
+    return _load_document(BootstrapDocument, data, file_path)
 
 
 def document_defaults() -> Dict[str, Any]:

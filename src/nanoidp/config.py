@@ -71,6 +71,11 @@ class ConfigManager:
         # the first load because settings.yaml may be what a hook renders;
         # settings.yaml's own hooks: / plugins: are merged in after each load.
         self.hooks: HookRegistry = bootstrap_registry(self.config_dir)
+        # Last settings.yaml hooks:/plugins: declaration applied to the
+        # registry; an unchanged declaration is not re-applied on the next
+        # load, so a post-write refresh does not drop and re-instantiate
+        # plugins (review before 2.7.0rc4).
+        self._hooks_snapshot: Optional[tuple] = None
         self._load_config()
 
     def _find_config_dir(self) -> str:
@@ -171,6 +176,7 @@ class ConfigManager:
             # A vanished settings.yaml takes its hooks, plugins and policy
             # with it (#185 review); bootstrap entries stay.
             self.hooks.drop_source(SOURCE_SETTINGS)
+            self._hooks_snapshot = None
             self._set_default_settings()
             return
 
@@ -188,16 +194,35 @@ class ConfigManager:
         # domain Settings is built from it with every validator it already
         # had. ${VAR} expansion and config_version stay at the edge, above.
         document = load_settings_document(data, settings_file)
-        self.settings = document.to_settings()
+        # Fail without commit (#200 review): build the candidate, apply the
+        # file's hooks/plugins (which may raise under strict and then rolls
+        # the registry back), and only then promote the candidate. A reload
+        # that answers 503 leaves settings, profile hardening and registry
+        # exactly as they were.
+        candidate = document.to_settings()
         self._configure_hooks_from(document.hooks, document.plugins)
+        self.settings = candidate
 
     def _configure_hooks_from(self, hooks: HooksSection, plugins: Dict[str, Dict[str, Any]]) -> None:
         """Replace the settings.yaml-sourced hooks/plugins with the file's
-        current declaration (#185); bootstrap entries are untouched."""
-        self.hooks.drop_source(SOURCE_SETTINGS)
+        current declaration (#185); bootstrap entries are untouched. Skipped
+        when the declaration is identical to the one already applied."""
+        # Plugins as an ORDERED tuple, not a dict: dict equality ignores
+        # order, and the v1 contract runs plugins in declaration order, so a
+        # file that only reorders them must be re-applied (#200 review).
+        snapshot = (
+            hooks.model_dump(),
+            frozenset(hooks.model_fields_set),
+            tuple((name, dict(cfg)) for name, cfg in plugins.items()),
+        )
+        if snapshot == self._hooks_snapshot:
+            return
         # The HooksSection itself, not model_dump(): only the policy values
         # the file declares explicitly override the bootstrap baseline.
-        self.hooks.configure_from_sections(hooks, plugins, SOURCE_SETTINGS)
+        # replace_source rolls the registry back if registration raises, and
+        # the snapshot is recorded only on success so a retry re-applies.
+        self.hooks.replace_source(hooks, plugins, SOURCE_SETTINGS)
+        self._hooks_snapshot = snapshot
 
     def notify_saved(self, path: Path, kind: str) -> None:
         """The single on_config_saved call site for every write path (#185):
@@ -407,6 +432,16 @@ class ConfigManager:
 # Global config instance
 _config: Optional[ConfigManager] = None
 _config_lock = threading.Lock()
+
+
+def get_config_if_loaded() -> Optional[ConfigManager]:
+    """The global config instance if one exists, without constructing it.
+
+    For callers that must never trigger a load (the audit log, which may be
+    written from inside a hook while the singleton is being built under
+    _config_lock): None means "no configuration yet", not an error.
+    """
+    return _config
 
 
 def get_config() -> ConfigManager:

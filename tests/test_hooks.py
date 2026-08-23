@@ -4,6 +4,8 @@ surface, the per-hook error policy, plugin loading and introspection.
 """
 
 import importlib.util
+import logging
+import pathlib
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -136,7 +138,7 @@ class TestBootstrapSurface:
         config = ConfigManager(str(tmp_path))
         assert config.settings.issuer == "http://rendered:1"
 
-    def test_bootstrap_yaml_hooks_and_unknown_key_refused(self, tmp_path):
+    def test_bootstrap_yaml_hooks_and_unknown_key_warned(self, tmp_path, caplog):
         log = tmp_path / "hooks.log"
         cfg = _write(tmp_path)
         (tmp_path / "bootstrap.yaml").write_text(yaml.safe_dump({"hooks": {
@@ -151,9 +153,12 @@ class TestBootstrapSurface:
         assert _lines(log).count("file-saved") == 2  # users + settings, every save
         assert {h["source"] for h in config.hooks.describe()["shell_hooks"]} == {SOURCE_BOOTSTRAP_FILE}
 
+        # Same reporting as settings.yaml: an unknown key is warned with its
+        # path and ignored, not a raw pydantic error (review before 2.7.0rc4).
         (tmp_path / "bootstrap.yaml").write_text(yaml.safe_dump({"hooks": {}, "oauth": {"issuer": "x"}}))
-        with pytest.raises(Exception, match="oauth"):
+        with caplog.at_level(logging.WARNING):
             ConfigManager(cfg)
+        assert any("bootstrap.yaml: unknown key oauth (ignored)" in r.getMessage() for r in caplog.records)
 
     def test_bootstrap_yaml_only_hooks_and_plugins(self):
         doc = BootstrapDocument.model_validate({"hooks": None, "plugins": None})
@@ -294,20 +299,31 @@ class TestPlugins:
         fake_entry_points["echo"] = _echo_plugin_class()
         config = ConfigManager(_write(tmp_path, {"plugins": {"echo": None}}))
         assert config.hooks.plugins[0].config == {}
-        assert config.settings.plugins == {"echo": {}}
 
-    def test_unknown_plugin_is_a_clear_error(self, tmp_path, fake_entry_points):
-        with pytest.raises(ValueError, match="Plugin 'nope' not found: no 'nanoidp.plugins' entry point"):
-            ConfigManager(_write(tmp_path, {"plugins": {"nope": {}}}))
+    def test_unknown_plugin_is_reported_not_fatal(self, tmp_path, fake_entry_points, caplog):
+        """Registration follows the error policy (review before 2.7.0rc4): a
+        missing package must not abort the load or a post-write refresh."""
+        with caplog.at_level(logging.ERROR):
+            config = ConfigManager(_write(tmp_path, {"plugins": {"nope": {}}}))
+        failed = config.hooks.describe()["plugins_failed"]
+        assert failed == [{"name": "nope", "source": SOURCE_SETTINGS, "reason": failed[0]["reason"]}]
+        assert failed[0]["reason"] == "not installed"
+        assert any("plugin 'nope'" in r.getMessage() for r in caplog.records)
+        assert "NOT LOADED" in config.hooks.format_report()
 
-    def test_api_version_mismatch_refused(self, tmp_path, fake_entry_points):
+    def test_unknown_plugin_blocks_the_load_under_strict(self, tmp_path, fake_entry_points):
+        with pytest.raises(HookError, match="plugin\\(s\\) 'nope' from settings.yaml could not be loaded"):
+            ConfigManager(_write(tmp_path, {"plugins": {"nope": {}}, "hooks": {"strict": True}}))
+
+    def test_api_version_mismatch_reported(self, tmp_path, fake_entry_points):
         class Old:
-            name = "old"
             hook_api_version = 0
 
         fake_entry_points["old"] = Old
-        with pytest.raises(ValueError, match="declares hook_api_version=0; this nanoidp implements hook API version 1"):
-            ConfigManager(_write(tmp_path, {"plugins": {"old": {}}}))
+        config = ConfigManager(_write(tmp_path, {"plugins": {"old": {}}}))
+        assert config.hooks.plugins == []
+        reason = config.hooks.describe()["plugins_failed"][0]["reason"]
+        assert reason == "incompatible hook_api_version=0 (expected 1)"
 
     def test_shell_hook_runs_before_plugins(self, tmp_path):
         order = []
@@ -394,8 +410,7 @@ class TestIntrospection:
     def test_shipped_config_declares_no_hooks(self):
         config = ConfigManager(str(REPO / "config"))
         info = config.hooks.describe()
-        assert info["shell_hooks"] == [] and info["plugins"] == []
-        assert config.settings.hooks_on_before_load is None and config.settings.plugins == {}
+        assert info["shell_hooks"] == [] and info["plugins"] == [] and info["plugins_failed"] == []
 
     def test_hooks_survive_a_settings_save_untouched(self, tmp_path):
         """The writer manages its own keys only; hooks:/plugins: are preserved
@@ -548,7 +563,7 @@ class TestSourcePrecedenceAndLifecycle:
     def test_bootstrap_yaml_rejects_non_positive_timeout(self, tmp_path):
         for value in (0, -1):
             self._bootstrap(tmp_path, timeout_seconds=value)
-            with pytest.raises(ValidationError):
+            with pytest.raises(ValueError, match="bootstrap.yaml: invalid value at hooks.timeout_seconds"):
                 ConfigManager(_write(tmp_path))
 
 
@@ -674,3 +689,325 @@ class TestPostWriteRefreshNeverConsultsTheMirror:
         assert len(_lines(log)) == n
         get_config().reload()
         assert len(_lines(log)) == n + 1
+
+
+class TestReviewBeforeRc4:
+    """Findings of the code review on v2.7.0-rc3..main, each pinned."""
+
+    def test_failed_plugin_does_not_break_saves_and_is_reported_by_the_api(self, tmp_path, fake_entry_points):
+        from nanoidp.app import create_app
+        from nanoidp.config import get_config
+        from nanoidp.services.yaml_writer import YamlWriter
+
+        app = create_app(config_dir=_write(tmp_path, {"plugins": {"store": {}}}))
+        app.config["TESTING"] = True
+        YamlWriter(str(tmp_path)).update_login_settings(mode="persona")  # post-write refresh must not raise
+        assert get_config().settings.login_mode == "persona"
+        with app.test_client() as client:
+            block = client.get("/api/config").get_json()["hooks"]
+        assert block["plugins_failed"][0]["name"] == "store"
+
+    def test_reload_endpoint_returns_json_on_hook_error(self, tmp_path):
+        from nanoidp.app import create_app
+
+        cfg = _write(tmp_path)
+        app = create_app(config_dir=cfg)
+        app.config["TESTING"] = True
+        # declare the failing strict hook AFTER the first load so startup passes
+        doc = yaml.safe_load((tmp_path / "settings.yaml").read_text())
+        doc["hooks"] = {"on_before_load": "false", "strict": True}
+        (tmp_path / "settings.yaml").write_text(yaml.safe_dump(doc))
+        with app.test_client() as client:
+            client.post("/api/config/reload")  # picks the declaration up (hook not yet registered)
+            resp = client.post("/api/config/reload")
+        assert resp.status_code == 503
+        assert resp.is_json
+        assert resp.get_json()["status"] == "error"
+        assert "on_before_load shell hook (settings.yaml) failed (exit 1)" in resp.get_json()["error"]
+
+    def test_mcp_reload_returns_error_result_on_hook_error(self, tmp_path, mcp_call_tool):
+        import asyncio
+
+        import nanoidp.mcp_server as mcp
+
+        cfg = _write(tmp_path)
+        mcp._config = ConfigManager(cfg)
+        doc = yaml.safe_load((tmp_path / "settings.yaml").read_text())
+        doc["hooks"] = {"on_before_load": "false", "strict": True}
+        (tmp_path / "settings.yaml").write_text(yaml.safe_dump(doc))
+        mcp._config.reload()
+        result = asyncio.run(mcp_call_tool("reload_config", {}))
+        payload = yaml.safe_load(result.content[0].text)
+        assert payload["success"] is False
+        assert "Reload failed: on_before_load shell hook (settings.yaml) failed (exit 1)" in payload["error"]
+
+    def test_audit_from_a_plugin_before_load_completes_and_is_not_dispatched(self, tmp_path, fake_entry_points):
+        from nanoidp.config import init_config
+        from nanoidp.services.audit import get_audit_log
+
+        seen = []
+
+        class Chatty:
+            hook_api_version = 1
+
+            def on_before_load(self, config_dir):
+                get_audit_log().log(event_type="plugin_boot", endpoint="/plugin", method="HOOK", status="success")
+
+            def on_audit_event(self, event):
+                seen.append(event["event_type"])
+
+        fake_entry_points["chatty"] = Chatty
+        cfg = _write(tmp_path, {"plugins": {"chatty": {}}})
+        config = init_config(cfg)
+        config.reload()  # plugin registered now: its on_before_load logs an audit event
+        assert "plugin_boot" not in seen  # not dispatched while loading: no recursion
+        get_audit_log().log(event_type="after", endpoint="/x", method="GET", status="success")
+        assert "after" in seen
+
+    def test_audit_logging_never_constructs_the_config(self, monkeypatch):
+        import nanoidp.config as config_module
+        from nanoidp.services.audit import get_audit_log
+
+        assert config_module._config is None
+
+        def boom(*a, **k):
+            raise AssertionError("ConfigManager constructed from an audit log call")
+
+        monkeypatch.setattr(config_module, "ConfigManager", boom)
+        get_audit_log().log(event_type="x", endpoint="/x", method="GET", status="success")
+        assert config_module._config is None
+
+    def test_bootstrap_yaml_expands_placeholders_and_reports_errors_like_settings(self, tmp_path, monkeypatch, caplog, fake_entry_points):
+        monkeypatch.setenv("STORE_URL", "s3://bucket")
+        fake_entry_points["echo"] = _echo_plugin_class()
+        cfg = _write(tmp_path)
+        (tmp_path / "bootstrap.yaml").write_text(yaml.safe_dump({"plugins": {"echo": {"url": "${STORE_URL}"}}}))
+        config = ConfigManager(cfg)
+        assert config.hooks.plugins[0].config == {"url": "s3://bucket"}
+
+        (tmp_path / "bootstrap.yaml").write_text(yaml.safe_dump({"hooks": {"timeout_seconds": "x"}}))
+        with pytest.raises(ValueError, match="bootstrap.yaml: invalid value at hooks.timeout_seconds"):
+            ConfigManager(cfg)
+
+        (tmp_path / "bootstrap.yaml").write_text(yaml.safe_dump({"hooks": {"on_before_laod": "true"}}))
+        with caplog.at_level(logging.WARNING):
+            ConfigManager(cfg)
+        assert any("bootstrap.yaml: unknown key hooks.on_before_laod (ignored)" in r.getMessage() for r in caplog.records)
+
+    def test_mcp_get_settings_carries_the_profile_keys_of_api_config(self, tmp_path, mcp_call_tool):
+        import asyncio
+
+        import nanoidp.mcp_server as mcp
+        from nanoidp.app import create_app
+
+        app = create_app(config_dir=_write(tmp_path), profile="stricter-dev")
+        app.config["TESTING"] = True
+        with app.test_client() as client:
+            api = client.get("/api/config").get_json()
+        mcp._config = ConfigManager(str(tmp_path), profile_override="stricter-dev")
+        result = asyncio.run(mcp_call_tool("get_settings", {}))
+        payload = yaml.safe_load(result.content[0].text)
+        for key in ("security_profile", "profile_override", "effective", "config_version", "hooks"):
+            assert payload[key] == api[key], key
+        assert payload["effective"]["require_pkce"] is True
+
+    def test_plugins_are_not_reinstantiated_on_a_post_write_refresh(self, tmp_path, fake_entry_points):
+        from nanoidp.config import init_config
+        from nanoidp.services.yaml_writer import YamlWriter
+
+        instances = []
+
+        class Counting:
+            hook_api_version = 1
+
+            def __init__(self):
+                instances.append(self)
+
+            def configure(self, settings):
+                self.settings = settings
+
+        fake_entry_points["counting"] = Counting
+        cfg = _write(tmp_path, {"plugins": {"counting": {"v": 1}}})
+        init_config(cfg)
+        writer = YamlWriter(cfg)
+        for mode in ("persona", "password", "persona"):
+            writer.update_login_settings(mode=mode)
+        assert len(instances) == 1
+        doc = yaml.safe_load((tmp_path / "settings.yaml").read_text())
+        doc["plugins"] = {"counting": {"v": 2}}
+        (tmp_path / "settings.yaml").write_text(yaml.safe_dump(doc))
+        writer.update_login_settings(mode="password")
+        assert len(instances) == 2 and instances[-1].settings == {"v": 2}
+
+    def test_settings_model_has_no_hook_fields(self):
+        from nanoidp.models import Settings
+
+        s = Settings()
+        for name in ("hooks_on_before_load", "hooks_on_config_saved", "hooks_on_audit_event",
+                     "hooks_strict", "hooks_timeout_seconds", "plugins"):
+            assert not hasattr(s, name), name
+
+    def test_dispatch_is_skipped_when_nothing_is_registered(self, monkeypatch):
+        registry = HookRegistry()
+
+        def boom(*a, **k):
+            raise AssertionError("_dispatch called with nothing registered")
+
+        monkeypatch.setattr(registry, "_dispatch", boom)
+        registry.run_audit_event({"event_type": "x"})  # the hot path: no copies, no dispatch
+        # the other hooks reach _dispatch, which returns before iterating
+        monkeypatch.undo()
+        monkeypatch.setattr(registry, "_run_shell", boom)
+        registry.run_config_saved(pathlib.Path("/tmp/x.yaml"), "settings")
+        registry.run_before_load(pathlib.Path("/tmp"))
+
+
+
+class TestPluginFailureReasonsNeverExposeExceptionText:
+    """#200 review: plugins_failed.reason must be one of nanoidp's own short
+    diagnoses; a configure() exception that embeds plugin settings (tokens)
+    stays in the local log."""
+
+    def test_configure_exception_is_redacted_everywhere(self, tmp_path, monkeypatch, caplog, fake_entry_points):
+        monkeypatch.setenv("PLUGIN_TOKEN", "s3cr3t-plugin-token")
+
+        class Leaky:
+            hook_api_version = 1
+
+            def configure(self, settings):
+                raise RuntimeError(f"cannot connect to {settings['url']} with token {settings['token']}")
+
+        fake_entry_points["leaky"] = Leaky
+        from nanoidp.app import create_app
+        from nanoidp.config import get_config
+
+        with caplog.at_level(logging.ERROR):
+            app = create_app(config_dir=_write(tmp_path, {"plugins": {"leaky": {"url": "https://store", "token": "${PLUGIN_TOKEN}"}}}))
+        app.config["TESTING"] = True
+        failed = get_config().hooks.describe()["plugins_failed"]
+        assert failed == [{"name": "leaky", "source": SOURCE_SETTINGS, "reason": "initialization failed"}]
+        with app.test_client() as client:
+            body = client.get("/api/config").get_data(as_text=True)
+        assert "s3cr3t-plugin-token" not in body and "cannot connect" not in body
+        # the detail is in the local log
+        assert any("s3cr3t-plugin-token" in r.getMessage() for r in caplog.records)
+        # strict: the propagated message names the plugin only
+        get_config().hooks.drop_source(SOURCE_SETTINGS)
+        cfg = _write(tmp_path, {"hooks": {"strict": True}, "plugins": {"leaky": {"url": "u", "token": "${PLUGIN_TOKEN}"}}})
+        with pytest.raises(HookError) as info:
+            ConfigManager(cfg)
+        assert info.value.kind == "plugin_load"
+        assert "s3cr3t-plugin-token" not in str(info.value) and "leaky" in str(info.value)
+
+
+class TestPluginDeclarationOrderIsHonouredOnReload:
+    def test_reordering_plugins_reapplies_them(self, tmp_path, fake_entry_points):
+        from nanoidp.config import get_config
+        from nanoidp.services.yaml_writer import YamlWriter
+
+        calls = []
+
+        def make(tag):
+            class P:
+                hook_api_version = 1
+
+                def on_config_saved(self, path, kind):
+                    calls.append(tag)
+            return P
+
+        fake_entry_points["pa"] = make("a")
+        fake_entry_points["pb"] = make("b")
+        cfg = _write(tmp_path, {"plugins": {"pa": {}, "pb": {}}})
+        init_config(cfg)
+        assert [p.name for p in get_config().hooks.plugins] == ["pa", "pb"]
+        YamlWriter(cfg).update_login_settings(mode="persona")
+        assert calls == ["a", "b"]
+        # rewrite the file with the plugins reordered, same configs
+        doc = yaml.safe_load((tmp_path / "settings.yaml").read_text())
+        doc["plugins"] = {"pb": {}, "pa": {}}
+        (tmp_path / "settings.yaml").write_text(yaml.safe_dump(doc, sort_keys=False))
+        get_config().reload_local()
+        assert [p.name for p in get_config().hooks.plugins] == ["pb", "pa"]
+        calls.clear()
+        YamlWriter(cfg).update_login_settings(mode="password")
+        assert calls[:2] == ["b", "a"]
+
+
+class TestReloadErrorNamesThePhase:
+    def test_plugin_load_failure_is_reported_as_plugin_load(self, tmp_path):
+        from nanoidp.app import create_app
+
+        app = create_app(config_dir=_write(tmp_path))
+        app.config["TESTING"] = True
+        doc = yaml.safe_load((tmp_path / "settings.yaml").read_text())
+        doc["hooks"] = {"strict": True}
+        doc["plugins"] = {"missing": {}}
+        (tmp_path / "settings.yaml").write_text(yaml.safe_dump(doc))
+        with app.test_client() as client:
+            resp = client.post("/api/config/reload")
+        assert resp.status_code == 503
+        body = resp.get_json()
+        assert body["kind"] == "plugin_load" and "missing" in body["error"]
+
+    def test_before_load_failure_is_reported_as_on_before_load(self, tmp_path):
+        from nanoidp.app import create_app
+
+        app = create_app(config_dir=_write(tmp_path))
+        app.config["TESTING"] = True
+        doc = yaml.safe_load((tmp_path / "settings.yaml").read_text())
+        doc["hooks"] = {"on_before_load": "false", "strict": True}
+        (tmp_path / "settings.yaml").write_text(yaml.safe_dump(doc))
+        with app.test_client() as client:
+            client.post("/api/config/reload")  # registers the hook (first reload reads the file)
+            resp = client.post("/api/config/reload")
+        assert resp.status_code == 503 and resp.get_json()["kind"] == "on_before_load"
+
+
+
+class TestStrictReloadFailsWithoutCommit:
+    """#200 review: a live process whose reload fails under strict must keep
+    its previous settings, profile hardening and registry untouched."""
+
+    def test_plugin_load_failure_leaves_runtime_and_registry_intact(self, tmp_path, fake_entry_points):
+        from nanoidp.app import create_app
+        from nanoidp.config import get_config
+
+        class Keep:
+            hook_api_version = 1
+
+        fake_entry_points["keep"] = Keep
+        app = create_app(config_dir=_write(tmp_path, {"plugins": {"keep": {}}}), profile="stricter-dev")
+        app.config["TESTING"] = True
+        config = get_config()
+        assert config.settings.security_profile == "stricter-dev" and config.settings.require_pkce is True
+        old_settings = config.settings
+        old_plugins = list(config.hooks.plugins)
+        old_snapshot = config.hooks.snapshot()
+        doc = yaml.safe_load((tmp_path / "settings.yaml").read_text())
+        doc["hooks"] = {"strict": True}
+        doc["plugins"] = {"keep": {}, "missing": {}}
+        doc.setdefault("oauth", {})["audience"] = "changed-on-disk"
+        (tmp_path / "settings.yaml").write_text(yaml.safe_dump(doc))
+        with app.test_client() as client:
+            resp = client.post("/api/config/reload")
+        assert resp.status_code == 503 and resp.get_json()["kind"] == "plugin_load"
+        # runtime: the previous Settings object, still hardened, audience unchanged
+        assert config.settings is old_settings
+        assert config.settings.security_profile == "stricter-dev"
+        assert config.settings.require_pkce is True
+        assert config.settings.password_hashing is True
+        assert config.settings.rate_limit_enabled is True
+        assert config.settings.debug is False
+        assert config.settings.audience != "changed-on-disk"
+        # registry: same plugin instances, same policy, nothing half-applied
+        assert config.hooks.plugins == old_plugins
+        assert config.hooks.snapshot() == old_snapshot
+        assert config.hooks.strict is False
+        # fixing the file makes the next reload succeed and commit
+        doc["plugins"] = {"keep": {}}
+        (tmp_path / "settings.yaml").write_text(yaml.safe_dump(doc))
+        with app.test_client() as client:
+            assert client.post("/api/config/reload").status_code == 200
+        assert config.settings.audience == "changed-on-disk"
+        assert config.settings.security_profile == "stricter-dev" and config.settings.require_pkce is True
+        assert config.hooks.strict is True

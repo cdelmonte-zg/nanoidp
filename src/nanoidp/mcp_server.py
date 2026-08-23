@@ -58,6 +58,7 @@ from mcp.types import (
 
 from . import __version__
 from .config import ConfigManager, OAuthClient, User, init_config
+from .hooks import HookError
 from .models import HEX_COLOR_PATTERN, normalize_saml_attr_name
 from .services import (
     build_discovery_document,
@@ -1265,6 +1266,15 @@ async def _execute_tool(name: str, arguments: dict[str, Any], config: ConfigMana
             "audience": settings.audience,
             "token_expiry_minutes": settings.token_expiry_minutes,
             "security_profile": settings.security_profile,
+            # Same as GET /api/config (#172): whether the profile comes from
+            # the CLI, and the values the effective profile forces.
+            "profile_override": config.profile_override,
+            "effective": {
+                "require_pkce": settings.require_pkce,
+                "password_hashing": settings.password_hashing,
+                "rate_limit_enabled": settings.rate_limit_enabled,
+                "debug": settings.debug,
+            },
             "login_mode": settings.login_mode,
             "refresh_token_rotation": settings.refresh_token_rotation,
             "require_pkce": settings.require_pkce,
@@ -1299,7 +1309,10 @@ async def _execute_tool(name: str, arguments: dict[str, Any], config: ConfigMana
         }
 
     elif name == "reload_config":
-        config.reload()
+        try:
+            config.reload()
+        except HookError as exc:
+            return {"success": False, "error": f"Reload failed: {exc.message}", "kind": exc.kind}
         return {"success": True, "message": "Configuration reloaded"}
 
     elif name == "update_settings":

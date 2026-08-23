@@ -90,11 +90,12 @@ class AuditLog:
             self._update_stats(event_type, status)
 
         # Verbose logging controlled by settings (late import to avoid circular dependency)
-        try:
-            from ..config import get_config
-            verbose = get_config().settings.verbose_logging
-        except Exception:
-            verbose = True  # Default to verbose if config not available
+        # Never construct the configuration from a log call: an audit event
+        # logged while the singleton is being built (a plugin's on_before_load)
+        # would block on the non-reentrant init lock (review before 2.7.0rc4).
+        from ..config import get_config_if_loaded
+        loaded = get_config_if_loaded()
+        verbose = loaded.settings.verbose_logging if loaded is not None else True
 
         # Build log message - include identifiers only if verbose logging is enabled
         log_msg = f"[{event_type}] {method} {endpoint} - {status}"
@@ -112,11 +113,11 @@ class AuditLog:
         # on_audit_event (#185): after the entry is recorded. The registry
         # never lets a hook failure out of run_audit_event; the guard here
         # covers the config singleton itself being unavailable.
-        try:
-            from ..config import get_config
-            get_config().hooks.run_audit_event(entry.to_dict())
-        except Exception:
-            logger.debug("audit hooks unavailable", exc_info=True)
+        if loaded is not None:
+            try:
+                loaded.hooks.run_audit_event(entry.to_dict())
+            except Exception:
+                logger.debug("audit hooks unavailable", exc_info=True)
 
     def _update_stats(self, event_type: str, status: str) -> None:
         """Update statistics counters."""

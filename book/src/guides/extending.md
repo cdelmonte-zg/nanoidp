@@ -98,7 +98,7 @@ outside the normal config covers it:
 |---|---|---|
 | `NANOIDP_BOOTSTRAP_HOOK="<command>"` or `nanoidp --bootstrap-hook "<command>"` | an `on_before_load` shell command | once, before the first load |
 | `NANOIDP_BOOTSTRAP_PLUGIN=<name>` with `NANOIDP_PLUGIN_<NAME>_<KEY>=<value>` | a plugin and its settings (name upper-cased, `-` as `_`) | loaded once, then takes part in every hook |
-| `bootstrap.yaml` in the configuration directory | `hooks:` and `plugins:` only, same schema as `settings.yaml`; any other key is refused | its `on_before_load` once, its other hooks and plugins always |
+| `bootstrap.yaml` in the configuration directory | `hooks:` and `plugins:` only, same schema and same loader as `settings.yaml`: `${VAR}` placeholders expand, an unknown key is warned with its path and ignored, a wrong type stops startup | its `on_before_load` once, its other hooks and plugins always |
 
 Precedence of the policy values (`strict`, `timeout_seconds`): the
 bootstrap surface is the baseline; `settings.yaml` overrides a value only
@@ -115,6 +115,25 @@ and saves. `nanoidp plugins` shows which surface each entry came from
 from `settings.yaml` cannot apply to the very first load (the file is not
 known yet): to make a failed bootstrap render fatal, set `strict: true` in
 `bootstrap.yaml`.
+
+A plugin that cannot be loaded (its package is not installed, it declares
+another `hook_api_version`, its `configure()` raises) follows the same
+policy as `on_before_load`: logged at ERROR, listed under `plugins_failed`
+by `nanoidp plugins`, `GET /api/config` and the MCP `get_settings` tool,
+and skipped; under `strict` the load fails. The public `reason` is one of
+nanoidp's own diagnoses (`not installed`, `incompatible hook_api_version=N
+(expected 1)`, `already loaded`, `initialization failed`); the exception
+text itself, which may embed the plugin's settings, goes to the local log
+only. A plugin that failed in non-strict mode is retried only when the
+`hooks:`/`plugins:` declaration changes or the process restarts: a reload
+with an unchanged declaration does not re-apply it.
+
+A failed `on_before_load` or plugin load under `strict` is reported by
+`POST /api/config/reload` as a JSON `503` (`kind` names the phase:
+`on_before_load` or `plugin_load`) and by the MCP `reload_config` tool as an
+error result, never as an HTML error page. Such a reload fails without
+commit: the running settings, the profile hardening and the registered
+plugins stay exactly as they were until a later reload succeeds.
 
 ## Worked example: version every change in git
 
