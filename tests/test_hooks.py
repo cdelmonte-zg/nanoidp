@@ -961,3 +961,53 @@ class TestReloadErrorNamesThePhase:
             client.post("/api/config/reload")  # registers the hook (first reload reads the file)
             resp = client.post("/api/config/reload")
         assert resp.status_code == 503 and resp.get_json()["kind"] == "on_before_load"
+
+
+
+class TestStrictReloadFailsWithoutCommit:
+    """#200 review: a live process whose reload fails under strict must keep
+    its previous settings, profile hardening and registry untouched."""
+
+    def test_plugin_load_failure_leaves_runtime_and_registry_intact(self, tmp_path, fake_entry_points):
+        from nanoidp.app import create_app
+        from nanoidp.config import get_config
+
+        class Keep:
+            hook_api_version = 1
+
+        fake_entry_points["keep"] = Keep
+        app = create_app(config_dir=_write(tmp_path, {"plugins": {"keep": {}}}), profile="stricter-dev")
+        app.config["TESTING"] = True
+        config = get_config()
+        assert config.settings.security_profile == "stricter-dev" and config.settings.require_pkce is True
+        old_settings = config.settings
+        old_plugins = list(config.hooks.plugins)
+        old_snapshot = config.hooks.snapshot()
+        doc = yaml.safe_load((tmp_path / "settings.yaml").read_text())
+        doc["hooks"] = {"strict": True}
+        doc["plugins"] = {"keep": {}, "missing": {}}
+        doc.setdefault("oauth", {})["audience"] = "changed-on-disk"
+        (tmp_path / "settings.yaml").write_text(yaml.safe_dump(doc))
+        with app.test_client() as client:
+            resp = client.post("/api/config/reload")
+        assert resp.status_code == 503 and resp.get_json()["kind"] == "plugin_load"
+        # runtime: the previous Settings object, still hardened, audience unchanged
+        assert config.settings is old_settings
+        assert config.settings.security_profile == "stricter-dev"
+        assert config.settings.require_pkce is True
+        assert config.settings.password_hashing is True
+        assert config.settings.rate_limit_enabled is True
+        assert config.settings.debug is False
+        assert config.settings.audience != "changed-on-disk"
+        # registry: same plugin instances, same policy, nothing half-applied
+        assert config.hooks.plugins == old_plugins
+        assert config.hooks.snapshot() == old_snapshot
+        assert config.hooks.strict is False
+        # fixing the file makes the next reload succeed and commit
+        doc["plugins"] = {"keep": {}}
+        (tmp_path / "settings.yaml").write_text(yaml.safe_dump(doc))
+        with app.test_client() as client:
+            assert client.post("/api/config/reload").status_code == 200
+        assert config.settings.audience == "changed-on-disk"
+        assert config.settings.security_profile == "stricter-dev" and config.settings.require_pkce is True
+        assert config.hooks.strict is True

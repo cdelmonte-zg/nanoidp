@@ -194,8 +194,14 @@ class ConfigManager:
         # domain Settings is built from it with every validator it already
         # had. ${VAR} expansion and config_version stay at the edge, above.
         document = load_settings_document(data, settings_file)
-        self.settings = document.to_settings()
+        # Fail without commit (#200 review): build the candidate, apply the
+        # file's hooks/plugins (which may raise under strict and then rolls
+        # the registry back), and only then promote the candidate. A reload
+        # that answers 503 leaves settings, profile hardening and registry
+        # exactly as they were.
+        candidate = document.to_settings()
         self._configure_hooks_from(document.hooks, document.plugins)
+        self.settings = candidate
 
     def _configure_hooks_from(self, hooks: HooksSection, plugins: Dict[str, Dict[str, Any]]) -> None:
         """Replace the settings.yaml-sourced hooks/plugins with the file's
@@ -211,10 +217,11 @@ class ConfigManager:
         )
         if snapshot == self._hooks_snapshot:
             return
-        self.hooks.drop_source(SOURCE_SETTINGS)
         # The HooksSection itself, not model_dump(): only the policy values
         # the file declares explicitly override the bootstrap baseline.
-        self.hooks.configure_from_sections(hooks, plugins, SOURCE_SETTINGS)
+        # replace_source rolls the registry back if registration raises, and
+        # the snapshot is recorded only on success so a retry re-applies.
+        self.hooks.replace_source(hooks, plugins, SOURCE_SETTINGS)
         self._hooks_snapshot = snapshot
 
     def notify_saved(self, path: Path, kind: str) -> None:

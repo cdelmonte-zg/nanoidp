@@ -293,6 +293,47 @@ class HookRegistry:
         # bootstrap baseline (or the default) applies again.
         self._policy.pop(source, None)
 
+    # ----------------------------------------------------------- transactions
+
+    def snapshot(self) -> Dict[str, Any]:
+        """Copy of every piece of registry state, for rollback (#200 review).
+
+        Plugin objects are shared, not copied: a rolled-back reload keeps the
+        instances that were serving before, which is the point."""
+        return {
+            "shell_hooks": list(self.shell_hooks),
+            "plugins": list(self.plugins),
+            "policy": {k: dict(v) for k, v in self._policy.items()},
+            "retired_shell": dict(self._retired_shell),
+            "retired_plugins": {k: dict(v) for k, v in self._retired_plugins.items()},
+            "failed_plugins": {k: [dict(f) for f in v] for k, v in self._failed_plugins.items()},
+        }
+
+    def restore(self, snap: Dict[str, Any]) -> None:
+        """Put the registry back to a snapshot() state."""
+        self.shell_hooks = list(snap["shell_hooks"])
+        self.plugins = list(snap["plugins"])
+        self._policy = {k: dict(v) for k, v in snap["policy"].items()}
+        self._retired_shell = dict(snap["retired_shell"])
+        self._retired_plugins = {k: dict(v) for k, v in snap["retired_plugins"].items()}
+        self._failed_plugins = {k: [dict(f) for f in v] for k, v in snap["failed_plugins"].items()}
+
+    def replace_source(self, hooks: Any, plugins: Mapping[str, Any], source: str) -> None:
+        """Atomically replace everything ``source`` declares.
+
+        drop_source + configure_from_sections, but if registration raises
+        (strict plugin failure) the registry is restored to exactly what it
+        was, so a failed reload never leaves old plugins dropped and new ones
+        half loaded (#200 review: a failed reload must not commit).
+        """
+        snap = self.snapshot()
+        try:
+            self.drop_source(source)
+            self.configure_from_sections(hooks, plugins, source)
+        except HookError:
+            self.restore(snap)
+            raise
+
     def configure_from_sections(
         self,
         hooks: Any,
