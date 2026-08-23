@@ -32,6 +32,13 @@ oauth:
     footer_color: '#e8f4f8'
     show_client_id: true
     show_description: true
+  - client_id: ui-native
+    client_secret: 's'
+    description: ''
+    show_client_id: false
+    redirect_uris:
+    - com.example.app:/oauth2redirect
+    - http://127.0.0.1:0/callback
   issuer_from_request: false
   issuer_from_proxy_headers: false
   # logos_dir: ./static/logos  # optional override; defaults to src/nanoidp/static/logos

@@ -31,6 +31,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   /api/config` and the MCP `get_settings` tool expose the effective value;
   the e2e agent asserts it. Bumps only on renames, removals or semantic
   changes (with a loader migration), never on optional additions.
+- **Native-app redirect URIs** (#81, RFC 8252): `/authorize` accepts
+  private-use scheme redirect URIs such as `com.example.app:/oauth2redirect`
+  (§7.1: a scheme and a path, no authority) as absolute URIs and applies
+  §7.1's minimum rule to them (a non-`http(s)` scheme without a period,
+  such as `myapp://`, is rejected with a message naming the rule; domain
+  ownership is not verified), and a
+  registered loopback URI (`http://127.0.0.1:{port}/...`,
+  `http://[::1]:{port}/...`) matches any port (§7.3), since native apps
+  bind an ephemeral port. Everything else keeps exact string matching (RFC
+  6749 §3.1.2.3): scheme, host, path and query of a loopback URI, every
+  port of a non-loopback or `localhost` registration. Fragments are now
+  rejected explicitly (§3.1.2). One shared matcher,
+  `services/redirect_uri.py`, serves both legs of `/authorize`; MCP tool
+  descriptions and `examples/test_agent.py` updated.
 - **Persona login mode** (#156): opt-in `login.mode: persona` lists the
   configured users on every interactive login surface (`/login`,
   `/authorize`, `/saml/sso` and the device flow's verification page) and

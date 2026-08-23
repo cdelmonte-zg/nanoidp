@@ -145,8 +145,13 @@ class OAuthClient(BaseModel):
         default_factory=list,
         description=(
             "Registered redirect URIs; when non-empty, /authorize enforces exact "
-            "string matching (RFC 6749 §3.1.2.3, OAuth 2.1 §4.1.1). Empty = any "
-            "syntactically valid URI is accepted (dev default)."
+            "string matching (RFC 6749 §3.1.2.3, OAuth 2.1 §4.1.1), except that a "
+            "registered loopback URI (http://127.0.0.1:{port}/..., "
+            "http://[::1]:{port}/...) matches any port (RFC 8252 §7.3, native "
+            "apps). Private-use scheme URIs (com.example.app:/cb, RFC 8252 §7.1) "
+            "are accepted when the scheme is reverse-domain based (contains a "
+            "period); myapp://cb is rejected. Empty = any absolute URI with an "
+            "acceptable scheme is accepted (dev default)."
         ),
     )
 
