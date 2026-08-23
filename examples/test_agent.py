@@ -49,6 +49,7 @@ Uso:
 import base64
 import hashlib
 import json
+import os
 import secrets
 import sys
 import time
@@ -3380,6 +3381,87 @@ class NanoIDPTestAgent:
         except Exception as e:
             return self._add_result("API Profile Survives Reload", TestCategory.API, False, str(e))
 
+    def test_api_hooks_block(self) -> TestResult:
+        """REST API - /api/config reports hooks and plugins (#185).
+
+        The block is always present (hook API version, strict, timeout,
+        loaded shell hooks and plugins with their source and failure
+        counters). When the server was started with an on_config_saved hook
+        (the e2e workflow passes one through settings.yaml or
+        NANOIDP_BOOTSTRAP_HOOK), a settings round-trip must run it without a
+        failure; with NANOIDP_E2E_HOOK_LOG set to the file that hook appends
+        to, the line count must grow too. Skips the hook part cleanly when no
+        hook is configured, like the persona/management checks.
+        """
+        try:
+            before = self.session.get(f"{self.base_url}/api/config", timeout=5).json()
+            block = before.get("hooks")
+            if not isinstance(block, dict) or block.get("hook_api_version") != 1:
+                return self._add_result(
+                    "API Hooks Block",
+                    TestCategory.API,
+                    False,
+                    f"/api/config lacks a hooks block with hook_api_version 1: {block!r}",
+                    before,
+                )
+            saved_hooks = [h for h in block.get("shell_hooks", []) if h.get("hook") == "on_config_saved"]
+            if not saved_hooks:
+                return self._add_result(
+                    "API Hooks Block",
+                    TestCategory.API,
+                    True,
+                    "Skipped hook round-trip: no on_config_saved hook configured "
+                    f"(block present, {len(block.get('plugins', []))} plugins)",
+                    {"skipped": True, "hooks": block},
+                )
+            log_path = os.environ.get("NANOIDP_E2E_HOOK_LOG")
+            lines_before = self._count_lines(log_path)
+            saml_config = before.get("saml", {})
+            # A no-op settings round-trip: same values posted back, derived
+            # SAML values as blank (#181), which is still an atomic write.
+            self.session.post(
+                f"{self.base_url}/settings",
+                data={
+                    "issuer": before.get("oauth", {}).get("issuer", "http://localhost:8000"),
+                    "audience": before.get("oauth", {}).get("audience", "default"),
+                    "token_expiry_minutes": before.get("oauth", {}).get("token_expiry_minutes", 60),
+                    "saml_entity_id": "" if saml_config.get("entity_id_derived") else saml_config.get("entity_id", ""),
+                    "saml_sso_url": "" if saml_config.get("sso_url_derived") else saml_config.get("sso_url", ""),
+                    "default_acs_url": saml_config.get("default_acs_url", ""),
+                    "saml_sign_responses": "true" if saml_config.get("sign_responses", True) else "",
+                    "strict_saml_binding": "true" if saml_config.get("strict_binding", False) else "",
+                    "saml_c14n_algorithm": saml_config.get("c14n_algorithm", "exc_c14n"),
+                    "allowed_identity_classes": "\n".join(before.get("allowed_identity_classes", [])),
+                },
+                allow_redirects=True,
+                timeout=10,
+            )
+            after = self.session.get(f"{self.base_url}/api/config", timeout=5).json().get("hooks", {})
+            failures_before = sum(h.get("failures", 0) for h in saved_hooks)
+            failures_after = sum(
+                h.get("failures", 0) for h in after.get("shell_hooks", []) if h.get("hook") == "on_config_saved"
+            )
+            lines_after = self._count_lines(log_path)
+            ran_clean = failures_after == failures_before
+            logged = lines_after > lines_before if log_path else True
+            return self._add_result(
+                "API Hooks Block",
+                TestCategory.API,
+                ran_clean and logged,
+                f"on_config_saved ran on a settings save: failures {failures_before}->{failures_after}"
+                + (f", log lines {lines_before}->{lines_after}" if log_path else ""),
+                {"before": block, "after": after},
+            )
+        except Exception as e:
+            return self._add_result("API Hooks Block", TestCategory.API, False, str(e))
+
+    @staticmethod
+    def _count_lines(path: Optional[str]) -> int:
+        if not path or not os.path.exists(path):
+            return 0
+        with open(path) as f:
+            return sum(1 for _ in f)
+
     def test_api_audit_log(self) -> TestResult:
         """REST API - Audit log."""
         try:
@@ -3791,6 +3873,7 @@ class NanoIDPTestAgent:
                 self.test_api_config_version,
                 self.test_api_config_reload,
                 self.test_api_config_profile_survives_reload,
+                self.test_api_hooks_block,
                 self.test_api_audit_log,
                 self.test_api_audit_stats,
             ]),

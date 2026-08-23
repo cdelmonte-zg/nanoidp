@@ -35,7 +35,7 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Type, TypeVar
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from .models import (
     OAuthClient,
@@ -177,6 +177,50 @@ class LoginSection(BaseModel):
     mode: str = "password"
 
 
+class HooksSection(BaseModel):
+    """``hooks:`` (#185): shell commands run at the three extension points.
+
+    Absent = no hooks. ``strict`` applies to plugins too; ``timeout_seconds``
+    is for shell hooks only (a plugin manages its own timeouts). Policy
+    values declared here override ``bootstrap.yaml``'s; undeclared ones do
+    not (``model_fields_set`` decides). YAML-only (and ``bootstrap.yaml``/env): never settable from the UI
+    or MCP, since a command editable through the surface it observes would
+    be a remote-execution primitive.
+    """
+
+    model_config = _FORBID
+
+    on_before_load: Optional[str] = None
+    on_config_saved: Optional[str] = None
+    on_audit_event: Optional[str] = None
+    strict: bool = False
+    timeout_seconds: float = Field(default=10.0, gt=0)
+
+
+def _validate_plugins_mapping(value: Any) -> Dict[str, Dict[str, Any]]:
+    """``plugins:`` is a mapping of plugin name -> its own settings mapping.
+
+    The only section with plugin-owned keys: the core validates the shape
+    (name -> mapping, a bare ``name:`` meaning no settings) and nothing
+    inside, because the keys belong to the plugin (#185).
+    """
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError("plugins must be a mapping of plugin name -> settings mapping")
+    result: Dict[str, Dict[str, Any]] = {}
+    for name, settings in value.items():
+        if not isinstance(name, str) or not name:
+            raise ValueError("plugin names must be non-empty strings")
+        if settings is None:
+            result[name] = {}
+        elif isinstance(settings, dict):
+            result[name] = dict(settings)
+        else:
+            raise ValueError(f"plugins.{name} must be a mapping (or empty)")
+    return result
+
+
 
 _SECTIONS = ("server", "oauth", "saml", "jwt", "session", "logging", "login")
 
@@ -207,6 +251,14 @@ class SettingsDocument(BaseModel):
     # keys are validated: `device_flow: whatever` and a bare `device_flow:`
     # loaded before and still do (#197 review).
     device_flow: Any = None
+    # Extension points (#185). Absent = off.
+    hooks: HooksSection = Field(default_factory=HooksSection)
+    plugins: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
+
+    @field_validator("plugins", mode="before")
+    @classmethod
+    def _plugins_shape(cls, value: Any) -> Dict[str, Dict[str, Any]]:
+        return _validate_plugins_mapping(value)
 
     @model_validator(mode="before")
     @classmethod
@@ -281,7 +333,39 @@ class SettingsDocument(BaseModel):
             log_token_requests=self.logging.log_token_requests,
             log_saml_requests=self.logging.log_saml_requests,
             verbose_logging=self.logging.verbose_logging,
+            hooks_on_before_load=self.hooks.on_before_load,
+            hooks_on_config_saved=self.hooks.on_config_saved,
+            hooks_on_audit_event=self.hooks.on_audit_event,
+            hooks_strict=self.hooks.strict,
+            hooks_timeout_seconds=self.hooks.timeout_seconds,
+            plugins=self.plugins,
         )
+
+
+class BootstrapDocument(BaseModel):
+    """``bootstrap.yaml`` (#185): the hook surface that exists before
+    ``settings.yaml`` can be read. Only ``hooks:`` and ``plugins:`` are
+    allowed, validated by the same section models; anything else is refused
+    so the file cannot quietly grow into a second settings file."""
+
+    model_config = _FORBID
+
+    hooks: HooksSection = Field(default_factory=HooksSection)
+    plugins: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
+
+    @field_validator("plugins", mode="before")
+    @classmethod
+    def _plugins_shape(cls, value: Any) -> Dict[str, Dict[str, Any]]:
+        return _validate_plugins_mapping(value)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _bare_sections_are_empty(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            for key in ("hooks", "plugins"):
+                if key in data and data[key] is None:
+                    data = {**data, key: {}}
+        return data
 
 
 # Keys of a user entry the domain model knows. Anything else in a user's

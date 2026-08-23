@@ -325,6 +325,40 @@ class Settings(BaseModel):
         "mode). YAML-only, like require_ui_login and secret_key.",
     )
 
+    # Hooks and plugins (#185): extension points, not backends. Effective
+    # values as loaded from settings.yaml; reported by /api/config and MCP,
+    # never settable through them (YAML-only, like secret_key).
+    hooks_on_before_load: Optional[str] = Field(
+        default=None,
+        description="Shell command run before settings/users are read (startup and every reload); "
+        "placeholder {config_dir}. Use: render the files from an external store.",
+    )
+    hooks_on_config_saved: Optional[str] = Field(
+        default=None,
+        description="Shell command run after an atomic write of settings.yaml or users.yaml; "
+        "placeholders {path}, {kind}. The local save is already committed when it runs.",
+    )
+    hooks_on_audit_event: Optional[str] = Field(
+        default=None,
+        description="Shell command run after an audit entry is recorded; placeholder {event_type}, "
+        "event JSON on stdin. Never fails the request that produced the event.",
+    )
+    hooks_strict: bool = Field(
+        default=False,
+        description="When on, an on_before_load failure fails the load and an on_config_saved "
+        "failure is propagated to the caller after the write. on_audit_event never propagates.",
+    )
+    hooks_timeout_seconds: float = Field(
+        default=10.0,
+        gt=0,
+        description="Timeout for shell hooks only; a Python plugin manages its own timeouts",
+    )
+    plugins: Dict[str, Dict[str, Any]] = Field(
+        default_factory=dict,
+        description="Python plugins to load from the 'nanoidp.plugins' entry-point group, "
+        "keyed by name, each with its own settings mapping (plugin-owned keys).",
+    )
+
     # Logging
     log_level: str = Field(default="INFO", description="Logging level")
     log_token_requests: bool = Field(default=True, description="Log token requests")

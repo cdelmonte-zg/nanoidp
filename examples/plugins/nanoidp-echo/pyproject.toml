@@ -1,0 +1,19 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "nanoidp-echo"
+version = "0.1.0"
+description = "Reference nanoidp plugin: logs every hook call and records it to a file"
+requires-python = ">=3.10"
+dependencies = []
+
+# The whole plugin contract is this one line: nanoidp loads the object named
+# here when settings.yaml (or bootstrap.yaml / NANOIDP_BOOTSTRAP_PLUGIN) lists
+# a plugin called "echo".
+[project.entry-points."nanoidp.plugins"]
+echo = "nanoidp_echo:EchoPlugin"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/nanoidp_echo"]

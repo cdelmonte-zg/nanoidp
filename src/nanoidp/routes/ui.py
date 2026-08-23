@@ -23,6 +23,7 @@ from flask.typing import ResponseReturnValue
 
 from ..branding import effective_logos_dir
 from ..config import OAuthClient, User, get_config
+from ..hooks import HookError
 from ..services import get_audit_log, get_token_service, get_yaml_writer
 from ._audit import audit_event
 from ._auth import ui_login_required
@@ -620,6 +621,13 @@ def settings() -> ResponseReturnValue:
         flash("Settings updated successfully", "success")
         return redirect(url_for("ui.settings"))
 
+    except HookError as e:
+        # The local write and the reload already happened (#185): the form's
+        # values are in effect, only the mirror hook failed. The message
+        # names the hook and its source, never the command.
+        logger.warning("Settings saved locally; mirror hook failed: %s", e)
+        flash(f"Settings saved locally; mirror hook failed: {e}", "error")
+        return redirect(url_for("ui.settings"))
     except Exception as e:
         logger.exception("Failed to update settings")
         flash(f"Failed to update settings: {e}", "error")

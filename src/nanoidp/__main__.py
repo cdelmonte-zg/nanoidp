@@ -171,7 +171,25 @@ def main() -> None:
         help="Path to create configuration directory (default: ./config)",
     )
 
+    # plugins subcommand (#185)
+    plugins_parser = subparsers.add_parser(
+        "plugins",
+        help="List loaded hooks and plugins (hook API version, implemented hooks, failures, source)",
+    )
+    plugins_parser.add_argument(
+        "--config",
+        default=None,
+        help="Path to configuration directory",
+    )
+
     # Main server arguments (when no subcommand)
+    parser.add_argument(
+        "--bootstrap-hook",
+        default=None,
+        help="Shell command run once before the first configuration load, e.g. to "
+        "render settings.yaml/users.yaml from an external store into the config "
+        "directory (placeholder {config_dir}). Same as NANOIDP_BOOTSTRAP_HOOK.",
+    )
     parser.add_argument(
         "--host",
         default=None,
@@ -214,6 +232,15 @@ def main() -> None:
         """)
         init_config(args.config_dir)
         return
+
+    # Handle plugins command
+    if args.command == "plugins":
+        from nanoidp.config import ConfigManager
+        print(ConfigManager(args.config).hooks.format_report())
+        return
+
+    if args.bootstrap_hook:
+        os.environ["NANOIDP_BOOTSTRAP_HOOK"] = args.bootstrap_hook
 
     # Handle wizard command
     if args.command == "wizard":

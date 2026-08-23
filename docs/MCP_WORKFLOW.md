@@ -88,6 +88,11 @@ Copy and paste these prompts directly into Claude Code.
 
 ### Configuration
 
+`get_settings` also reports the `hooks` block (loaded shell hooks and
+plugins, #185). `hooks:` and `plugins:` are YAML-only: an agent can read
+them, not change them, like `secret_key` and `require_ui_login`.
+
+
 **Check current settings:**
 > "Show me the current nanoidp settings including issuer and token expiry"
 

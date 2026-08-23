@@ -32,6 +32,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (checked before `${VAR}` expansion).
 
 ### Added
+- **Hooks and plugins v1** (#185): extension points for external
+  configuration stores, not backends. Three synchronous hooks with
+  `HOOK_API_VERSION = 1`: `on_before_load(config_dir)` before the files are
+  read (startup and every reload), `on_config_saved(path, kind)` after an
+  atomic write of `settings.yaml` or `users.yaml`, `on_audit_event(event)`
+  after an audit entry. Implement them as shell commands under `hooks:` in
+  `settings.yaml` (placeholders `{config_dir}`, `{path}`, `{kind}`,
+  `{event_type}`, audit event JSON on stdin) or as Python plugins packaged
+  separately and discovered through the `nanoidp.plugins` entry-point group,
+  configured under `plugins.<name>:`. Per-hook error policy: `on_before_load`
+  may block under `hooks.strict`, `on_config_saved` is propagated to the
+  caller under `strict` after the write (the local save is always
+  committed and the running configuration reloaded from it, so only the
+  mirror is behind), `on_audit_event` never propagates. Commands are never
+  reported by `/api/config` or MCP (they may embed expanded secrets) and a
+  propagated error names the hook and its source only; the bootstrap
+  surface is the baseline for `strict`/`timeout_seconds`, `settings.yaml`
+  overrides only what it declares. Bootstrap surface for hooks
+  that must run before `settings.yaml` exists: `NANOIDP_BOOTSTRAP_HOOK` /
+  `--bootstrap-hook`, `NANOIDP_BOOTSTRAP_PLUGIN` with
+  `NANOIDP_PLUGIN_<NAME>_<KEY>` settings, and `bootstrap.yaml` in the config
+  directory (`hooks:` and `plugins:` only). `nanoidp plugins`, `GET
+  /api/config` and the MCP `get_settings` tool report what is loaded, from
+  which surface, with failure counters; `hooks:`/`plugins:` are YAML-only.
+  Reference plugin `examples/plugins/nanoidp-echo`; guide "Extending nanoidp:
+  hooks and plugins".
 - **Import contracts enforced in CI** (#149): `import-linter` now pins the
   package layering (`routes -> services -> config`) and the invariant that
   `serialization.py` has no runtime imports from the package (it is what

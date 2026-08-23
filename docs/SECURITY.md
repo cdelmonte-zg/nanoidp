@@ -248,6 +248,28 @@ jwt:
 
 ---
 
+## Hooks and Plugins
+
+`hooks:` (shell commands run before a configuration load, after a
+configuration save and after an audit event) and `plugins:` (Python
+packages loaded from the `nanoidp.plugins` entry-point group) extend
+nanoidp from outside the core; see the
+[Extending nanoidp](https://cdelmonte-zg.github.io/nanoidp/guides/extending.html)
+guide. Two facts matter here:
+
+- A Python plugin runs with the process's privileges. Installing one is a
+  trust decision like any other dependency.
+- A shell hook runs whatever the YAML says, through the shell, with
+  nanoidp's environment. `settings.yaml` and `bootstrap.yaml` are
+  operator-owned by definition, the same trust boundary as `secret_key`
+  and `management_secret`, which is why hooks and plugins are YAML-only:
+  the web UI and the MCP `update_settings` tool report them and cannot
+  change them. A configuration surface that could set a command would be a
+  remote-execution primitive.
+
+Hooks never run on the protocol path and cannot fail a request: an
+`on_audit_event` failure is counted and logged, never propagated.
+
 ## MCP Server Security
 
 The MCP (Model Context Protocol) server provides integration with Claude Code and other MCP-compatible tools.
