@@ -262,6 +262,41 @@ logging:
 Set `verbose_logging: false` if you're concerned about PII in log files,
 though for a dev tool this is typically not an issue.
 
+## Placeholders and the config directory as the interface
+
+Both files accept `${VAR}` and `${VAR:default}` placeholders in any scalar
+value, expanded from the environment when the file is loaded and left intact
+when the file is saved (a UI or MCP save never materializes an expanded
+placeholder, only the fields it changed):
+
+```yaml
+oauth:
+  issuer: ${OAUTH_ISSUER:http://localhost:8000}
+  clients:
+    - client_id: my-app
+      client_secret: ${MY_APP_SECRET}      # no default: empty when unset
+```
+
+This makes the config directory the whole interface between NanoIDP and
+whatever produces its configuration. Three use cases that need nothing
+beyond it:
+
+- **One file, many environments**: commit `settings.yaml` with placeholders
+  and set the variables per environment (shell, Compose `environment:`,
+  a Kubernetes `env:` block).
+- **Secrets kept out of the file**: point the placeholder at a variable
+  that an init step renders from wherever the secret lives; NanoIDP only
+  ever sees the environment.
+- **Files produced elsewhere**: generate or copy both YAML files into
+  `NANOIDP_CONFIG_DIR` before start (an init container, a mounted volume, a
+  script), then `POST /api/config/reload` or the MCP `reload_config` tool
+  to pick up a later change without a restart. Reloading re-reads the
+  files, re-expands placeholders and re-applies the CLI `--profile`.
+
+NanoIDP does not read from or write to any store other than these files;
+a sync with an external system is the deploy's job, on either side of the
+directory.
+
 ## Environment variables
 
 The environment variables (`NANOIDP_CONFIG_DIR`, `NANOIDP_MCP_ADMIN_SECRET`,
