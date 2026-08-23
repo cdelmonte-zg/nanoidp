@@ -98,7 +98,7 @@ outside the normal config covers it:
 |---|---|---|
 | `NANOIDP_BOOTSTRAP_HOOK="<command>"` or `nanoidp --bootstrap-hook "<command>"` | an `on_before_load` shell command | once, before the first load |
 | `NANOIDP_BOOTSTRAP_PLUGIN=<name>` with `NANOIDP_PLUGIN_<NAME>_<KEY>=<value>` | a plugin and its settings (name upper-cased, `-` as `_`) | loaded once, then takes part in every hook |
-| `bootstrap.yaml` in the configuration directory | `hooks:` and `plugins:` only, same schema as `settings.yaml`; any other key is refused | its `on_before_load` once, its other hooks and plugins always |
+| `bootstrap.yaml` in the configuration directory | `hooks:` and `plugins:` only, same schema and same loader as `settings.yaml`: `${VAR}` placeholders expand, an unknown key is warned with its path and ignored, a wrong type stops startup | its `on_before_load` once, its other hooks and plugins always |
 
 Precedence of the policy values (`strict`, `timeout_seconds`): the
 bootstrap surface is the baseline; `settings.yaml` overrides a value only
@@ -115,6 +115,14 @@ and saves. `nanoidp plugins` shows which surface each entry came from
 from `settings.yaml` cannot apply to the very first load (the file is not
 known yet): to make a failed bootstrap render fatal, set `strict: true` in
 `bootstrap.yaml`.
+
+A plugin that cannot be loaded (its package is not installed, it declares
+another `hook_api_version`, its `configure()` raises) follows the same
+policy as `on_before_load`: logged at ERROR, listed under `plugins_failed`
+by `nanoidp plugins`, `GET /api/config` and the MCP `get_settings` tool,
+and skipped; under `strict` the load fails. A failed `on_before_load` under
+`strict` is reported by `POST /api/config/reload` as a JSON `503` and by the
+MCP `reload_config` tool as an error result, never as an HTML error page.
 
 ## Worked example: version every change in git
 

@@ -8,6 +8,7 @@ from flask import Blueprint, jsonify, request
 from flask.typing import ResponseReturnValue
 
 from ..config import get_config
+from ..hooks import HookError
 from ..services import get_audit_log, get_token_service
 from ._issuer import effective_issuer, effective_saml_entity_id, effective_saml_sso_url
 
@@ -197,7 +198,12 @@ def get_configuration() -> ResponseReturnValue:
 def reload_config() -> ResponseReturnValue:
     """Reload configuration from files."""
     config = get_config()
-    config.reload()
+    try:
+        config.reload()
+    except HookError as exc:
+        # A strict on_before_load (or plugin load) failure is a JSON error,
+        # not Flask's HTML 500: this endpoint's callers parse JSON.
+        return jsonify({"status": "error", "error": str(exc), "hook": "on_before_load"}), 503
     return jsonify({
         "status": "reloaded",
         "users_count": len(config.users),

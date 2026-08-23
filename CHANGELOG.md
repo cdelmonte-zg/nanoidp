@@ -55,9 +55,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `NANOIDP_PLUGIN_<NAME>_<KEY>` settings, and `bootstrap.yaml` in the config
   directory (`hooks:` and `plugins:` only). `nanoidp plugins`, `GET
   /api/config` and the MCP `get_settings` tool report what is loaded, from
-  which surface, with failure counters; `hooks:`/`plugins:` are YAML-only.
-  Reference plugin `examples/plugins/nanoidp-echo`; guide "Extending nanoidp:
-  hooks and plugins".
+  which surface, with failure counters and the plugins that could not be
+  loaded (`plugins_failed`: a missing package or a wrong `hook_api_version`
+  is reported, never fatal unless `strict`); `hooks:`/`plugins:` are
+  YAML-only. `bootstrap.yaml` goes through the same loader as
+  `settings.yaml` (placeholders, unknown-key warnings). A strict
+  `on_before_load` failure is a JSON `503` on `POST /api/config/reload` and
+  an error result from the MCP `reload_config` tool. Audit logging never
+  constructs the configuration and an audit event produced inside a load is
+  not dispatched to hooks. An unchanged `hooks:`/`plugins:` declaration is
+  not re-applied on the refresh that follows a local write, so plugins are
+  not re-instantiated on every save. Reference plugin
+  `examples/plugins/nanoidp-echo`; guide "Extending nanoidp: hooks and
+  plugins".
 - **Import contracts enforced in CI** (#149): `import-linter` now pins the
   package layering (`routes -> services -> config`) and the invariant that
   `serialization.py` has no runtime imports from the package (it is what
@@ -133,7 +143,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   profile_override=)`), the effective profile and its hardening are re-derived
   after every settings load, and a save serializes the DECLARED state
   (`ConfigManager.persistable_settings()`), so neither the override nor
-  the hardening it implies is ever written into the operator's file. `GET /api/config` exposes `security_profile`,
+  the hardening it implies is ever written into the operator's file. `GET /api/config` and the MCP `get_settings` tool expose `security_profile`,
   `profile_override` and the derived `effective` values; the e2e agent checks
   they are stable across a reload.
 - **`users.yaml` now expands `${VAR}` / `${VAR:default}` placeholders** like
