@@ -13,7 +13,7 @@ oauth:
   refresh_token_expiry_minutes: 1440  # 24 hours
   clients:
     - client_id: "spa-client"
-      client_secret: ""  # Public client, no secret needed for PKCE
+      client_secret: "spa-not-a-secret"  # placeholder: PKCE clients get no real secret; a public-client mode (no secret at all) is #188
       description: "React SPA with PKCE"
 
 # CORS configuration for SPA
