@@ -27,9 +27,21 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
+          # The reference plugin, installed the way a user would: the entry
+          # point must be discovered from a real package (#185).
+          pip install examples/plugins/nanoidp-echo
 
       - name: Start server
+        # Bootstrap surface exercised for real: the echo plugin through
+        # NANOIDP_BOOTSTRAP_PLUGIN + NANOIDP_PLUGIN_ECHO_RECORD, and a shell
+        # on_config_saved hook through config/bootstrap.yaml (the unit suite
+        # registers plugins in-process; this is the only place the installed
+        # package and the env/bootstrap.yaml path are tested end to end).
+        env:
+          NANOIDP_BOOTSTRAP_PLUGIN: echo
+          NANOIDP_PLUGIN_ECHO_RECORD: ${{ github.workspace }}/echo-record.jsonl
         run: |
+          printf 'hooks:\n  on_config_saved: "echo saved {kind} {path} >> %s/hooks.log"\n' "$PWD" > config/bootstrap.yaml
           python -m nanoidp > server.log 2>&1 &
           for i in $(seq 1 30); do
             curl -sf http://localhost:8000/api/health && exit 0
@@ -40,6 +52,10 @@ jobs:
           exit 1
 
       - name: Run e2e agent
+        env:
+          NANOIDP_E2E_HOOK_LOG: ${{ github.workspace }}/hooks.log
+          NANOIDP_E2E_PLUGIN: echo
+          NANOIDP_E2E_PLUGIN_RECORD: ${{ github.workspace }}/echo-record.jsonl
         run: python examples/test_agent.py
 
       - name: Start oauth21 server
@@ -112,6 +128,11 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
+          pip install examples/plugins/nanoidp-echo
 
       - name: MCP stdio smoke test
+        env:
+          NANOIDP_BOOTSTRAP_PLUGIN: echo
+          NANOIDP_PLUGIN_ECHO_RECORD: ${{ github.workspace }}/echo-record-mcp.jsonl
+          NANOIDP_E2E_PLUGIN: echo
         run: python examples/mcp_smoke_test.py --config ./config

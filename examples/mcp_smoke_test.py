@@ -71,6 +71,21 @@ async def run(config_dir: str) -> int:
                 return 1
             print("[OK] get_keys_info")
 
+            # NANOIDP_E2E_PLUGIN: the installed reference plugin, bootstrapped
+            # through NANOIDP_BOOTSTRAP_PLUGIN, must be visible to an agent
+            # through get_settings (#185 parity with /api/config).
+            expected_plugin = os.environ.get("NANOIDP_E2E_PLUGIN")
+            if expected_plugin:
+                result = await session.call_tool("get_settings", {})
+                settings = json.loads(result.content[0].text)
+                block = settings.get("hooks") or {}
+                names = [p.get("name") for p in block.get("plugins", [])]
+                failed = [f.get("name") for f in block.get("plugins_failed", [])]
+                if expected_plugin not in names:
+                    print(f"[FAIL] plugin {expected_plugin!r} not in get_settings hooks: {names}, failed={failed}")
+                    return 1
+                print(f"[OK] get_settings lists plugin {expected_plugin!r} (hook API {block.get('hook_api_version')})")
+
     print("\n[SUCCESS] MCP stdio smoke test passed")
     return 0
 
