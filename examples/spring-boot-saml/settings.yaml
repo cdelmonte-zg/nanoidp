@@ -16,8 +16,11 @@ oauth:
       description: "Spring Boot SAML application"
 
 saml:
-  entity_id: "http://localhost:8000/saml"
-  sso_url: "http://localhost:8000/saml/sso"
+  # entity_id / sso_url: absent = derived from the effective issuer as
+  # <issuer>/saml and <issuer>/saml/sso (follows issuer_from_request); set
+  # them only to pin a fixed value
+  # entity_id: "http://localhost:8000/saml"
+  # sso_url: "http://localhost:8000/saml/sso"
   # Change this to match your Spring Boot app's ACS URL
   default_acs_url: "http://localhost:8080/login/saml2/sso/nanoidp"
   # Export roles/groups as SAML attributes (off by default in NanoIDP)

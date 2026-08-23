@@ -74,8 +74,11 @@ oauth:
       description: "Default demo client"
 
 saml:
-  entity_id: "http://localhost:8000/saml"
-  sso_url: "http://localhost:8000/saml/sso"
+  # entity_id / sso_url: absent = derived from the effective issuer as
+  # <issuer>/saml and <issuer>/saml/sso (follows issuer_from_request); set
+  # them only to pin a fixed value
+  # entity_id: "http://localhost:8000/saml"
+  # sso_url: "http://localhost:8000/saml/sso"
   default_acs_url: "http://localhost:8080/login/saml2/sso/nanoidp"
   # Roles/groups are not standard SAML attributes; enable and name them here.
   export_roles: false
