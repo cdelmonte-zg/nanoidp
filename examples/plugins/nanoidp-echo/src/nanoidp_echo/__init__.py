@@ -4,7 +4,8 @@ nanoidp-echo: the reference plugin for nanoidp's hook API v1 (#185).
 It does nothing useful on purpose: every hook call is logged and, when the
 plugin is configured with a ``record`` path, appended to that file as one
 JSON line. Copy this package, rename it, and replace the three methods with
-what your store needs; keep ``name`` and ``hook_api_version``.
+what your store needs; keep ``hook_api_version``. A plugin's identity is
+its entry-point name (the ``plugins.<name>`` key), nothing on the object.
 
 Install next to nanoidp::
 
@@ -44,7 +45,6 @@ logger = logging.getLogger("nanoidp_echo")
 
 
 class EchoPlugin:
-    name = "echo"
     hook_api_version = 1
 
     def __init__(self) -> None:

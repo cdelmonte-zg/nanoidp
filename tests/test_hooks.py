@@ -197,7 +197,7 @@ class TestErrorPolicy:
     def test_bootstrap_strict_blocks_the_first_load(self, tmp_path):
         cfg = _write(tmp_path)
         (tmp_path / "bootstrap.yaml").write_text(yaml.safe_dump({"hooks": {"on_before_load": "exit 3", "strict": True}}))
-        with pytest.raises(HookError, match="exited 3"):
+        with pytest.raises(HookError, match=r"on_before_load shell hook \(bootstrap.yaml\) failed \(exit 3\)"):
             ConfigManager(cfg)
 
     def test_config_saved_failure_default_logs_and_file_is_written(self, tmp_path, caplog):
@@ -253,7 +253,6 @@ class TestErrorPolicy:
 
     def test_plugin_failure_follows_the_same_policy(self, tmp_path):
         class Broken:
-            name = "broken"
             hook_api_version = HOOK_API_VERSION
 
             def on_config_saved(self, path, kind):
@@ -266,8 +265,8 @@ class TestErrorPolicy:
         config.hooks.register_plugin_object("broken", Broken(), SOURCE_SETTINGS)
         config.save()  # default: logged
         assert config.hooks.plugins[0].failures["on_config_saved"] == 2  # users + settings
-        config.hooks.strict = True
-        with pytest.raises(HookError, match="plugin 'broken' on_config_saved failed: store down"):
+        config.hooks.set_policy(SOURCE_SETTINGS, strict=True)
+        with pytest.raises(HookError, match="plugin 'broken' on_config_saved failed$"):
             config.save()
         get_audit_log().log("x", "/x", "GET", "success")  # never raises
         assert config.hooks.plugins[0].failures["on_audit_event"] == 1
@@ -423,3 +422,189 @@ class TestRegistryUnit:
         r.add_shell_hook("on_before_load", "b", SOURCE_SETTINGS)
         r.drop_source(SOURCE_SETTINGS)
         assert [h.command for h in r.shell_hooks] == ["a"]
+
+
+class TestSecretsNeverLeaveTheProcess:
+    """#185 review, blocker: commands are stored after ${VAR} expansion and
+    /api/* is unauthenticated, so neither describe() nor a propagated
+    HookError may carry a command or a hook's stderr."""
+
+    SECRET = "s3cr3t-value"
+
+    def _app(self, tmp_path, monkeypatch, strict=True):
+        from nanoidp.app import create_app
+
+        monkeypatch.setenv("MIRROR_TOKEN", self.SECRET)
+        cfg = _write(tmp_path, {"hooks": {
+            "on_config_saved": 'echo "leaking ${MIRROR_TOKEN}" >&2; curl -s -H "Authorization: Bearer ${MIRROR_TOKEN}" http://127.0.0.1:9/ >/dev/null 2>&1; exit 1',
+            "strict": strict,
+        }})
+        app = create_app(config_dir=cfg)
+        app.config["TESTING"] = True
+        app.config["WTF_CSRF_ENABLED"] = False
+        return app
+
+    def test_api_config_and_mcp_expose_no_command(self, tmp_path, monkeypatch, mcp_call_tool):
+        import asyncio
+
+        import nanoidp.mcp_server as mcp
+
+        app = self._app(tmp_path, monkeypatch)
+        with app.test_client() as client:
+            body = client.get("/api/config").get_data(as_text=True)
+            block = client.get("/api/config").get_json()["hooks"]
+        assert self.SECRET not in body
+        assert all("command" not in h for h in block["shell_hooks"])
+        assert set(block["shell_hooks"][0]) == {"hook", "source", "failures", "once"}
+        mcp._config = ConfigManager(str(tmp_path))
+        result = asyncio.run(mcp_call_tool("get_settings", {}))
+        assert self.SECRET not in result.content[0].text
+        assert "command" not in result.content[0].text
+
+    def test_propagated_error_and_ui_flash_carry_no_command_or_stderr(self, tmp_path, monkeypatch, caplog):
+        from nanoidp.config import get_config
+
+        app = self._app(tmp_path, monkeypatch)
+        get_config().settings.audience = "changed"
+        with caplog.at_level("WARNING"):
+            with pytest.raises(HookError) as exc_info:
+                get_config()._save_settings()
+        message = str(exc_info.value)
+        assert message == "on_config_saved shell hook (settings.yaml) failed (exit 1)"
+        assert self.SECRET not in message and "curl" not in message
+        # the local log is the one place that has the command and stderr
+        assert self.SECRET in caplog.text and "[stderr: leaking" in caplog.text
+        # the UI flash under strict
+        with app.test_client() as client:
+            resp = client.post("/settings", data={"issuer": "http://localhost:8000", "audience": "x"}, follow_redirects=True)
+            page = resp.get_data(as_text=True)
+        assert self.SECRET not in page and "curl" not in page
+        assert "Settings saved locally; mirror hook failed" in page
+
+    def test_plugin_exception_text_is_not_propagated(self, tmp_path):
+        class Leaky:
+            hook_api_version = HOOK_API_VERSION
+
+            def on_config_saved(self, path, kind):
+                raise RuntimeError("https://store/?token=" + TestSecretsNeverLeaveTheProcess.SECRET)
+
+        config = init_config(_write(tmp_path, {"hooks": {"strict": True}}))
+        config.hooks.register_plugin_object("leaky", Leaky(), SOURCE_SETTINGS)
+        with pytest.raises(HookError) as exc_info:
+            config._save_settings()
+        assert str(exc_info.value) == "plugin 'leaky' on_config_saved failed"
+
+    def test_cli_report_is_the_only_place_with_commands(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("MIRROR_TOKEN", self.SECRET)
+        config = ConfigManager(_write(tmp_path, {"hooks": {"on_config_saved": "echo ${MIRROR_TOKEN}"}}))
+        assert "command" not in str(config.hooks.describe())
+        report = config.hooks.format_report()
+        assert "command (local only, may embed secrets): echo " + self.SECRET in report
+
+
+class TestSourcePrecedenceAndLifecycle:
+    """#185 review, blocker: bootstrap policy is the baseline, settings.yaml
+    overrides only what it declares, and a vanished settings.yaml takes its
+    entries and policy with it."""
+
+    def _bootstrap(self, tmp_path, **hooks):
+        (tmp_path / "bootstrap.yaml").write_text(yaml.safe_dump({"hooks": hooks}))
+
+    def test_bootstrap_strict_survives_a_settings_file_without_hooks(self, tmp_path):
+        self._bootstrap(tmp_path, on_config_saved="false", strict=True, timeout_seconds=2)
+        config = ConfigManager(_write(tmp_path))  # no hooks: in settings.yaml
+        assert config.hooks.strict is True and config.hooks.timeout_seconds == 2.0
+        config.settings.audience = "changed"
+        with pytest.raises(HookError, match=r"\(bootstrap.yaml\) failed"):
+            config._save_settings()
+        config.reload()
+        assert config.hooks.strict is True and config.hooks.timeout_seconds == 2.0
+
+    def test_settings_overrides_only_what_it_declares(self, tmp_path):
+        self._bootstrap(tmp_path, on_config_saved="false", strict=True, timeout_seconds=2)
+        config = ConfigManager(_write(tmp_path, {"hooks": {"strict": False}}))
+        assert config.hooks.strict is False
+        assert config.hooks.timeout_seconds == 2.0  # not declared: bootstrap value stays
+        config.settings.audience = "changed"
+        config._save_settings()  # not strict any more: logged, not raised
+
+    def test_vanished_settings_file_drops_its_hooks_plugins_and_policy(self, tmp_path, fake_entry_points):
+        class Tracker:
+            hook_api_version = HOOK_API_VERSION
+
+        fake_entry_points["tracker"] = Tracker
+        self._bootstrap(tmp_path, on_config_saved="true", timeout_seconds=3)
+        cfg = _write(tmp_path, {"hooks": {"on_config_saved": "true", "strict": True, "timeout_seconds": 1}, "plugins": {"tracker": {}}})
+        config = ConfigManager(cfg)
+        assert {h.source for h in config.hooks.shell_hooks} == {SOURCE_BOOTSTRAP_FILE, SOURCE_SETTINGS}
+        assert [p.name for p in config.hooks.plugins] == ["tracker"]
+        assert config.hooks.strict is True and config.hooks.timeout_seconds == 1.0
+        (tmp_path / "settings.yaml").unlink()
+        config.reload()
+        assert {h.source for h in config.hooks.shell_hooks} == {SOURCE_BOOTSTRAP_FILE}
+        assert config.hooks.plugins == []
+        assert config.hooks.strict is False and config.hooks.timeout_seconds == 3.0
+
+    def test_bootstrap_yaml_rejects_non_positive_timeout(self, tmp_path):
+        for value in (0, -1):
+            self._bootstrap(tmp_path, timeout_seconds=value)
+            with pytest.raises(ValidationError):
+                ConfigManager(_write(tmp_path))
+
+
+class TestConfigDirPlaceholderOnSave:
+    def test_config_dir_is_available_to_on_config_saved_and_audit(self, tmp_path):
+        log = tmp_path / "hooks.log"
+        cfg = _write(tmp_path, {"hooks": {
+            "on_config_saved": f"echo 'saved {{config_dir}} {{kind}}' >> {log}",
+            "on_audit_event": f"echo 'audit {{config_dir}} {{event_type}}' >> {log}",
+        }})
+        config = init_config(cfg)
+        config._save_settings()
+        get_audit_log().log("token_request", "/token", "POST", "success")
+        assert f"saved {tmp_path} settings" in _lines(log)
+        assert f"audit {tmp_path} token_request" in _lines(log)
+
+    def test_git_worked_example_runs(self, tmp_path):
+        import shutil
+        import subprocess
+
+        if shutil.which("git") is None:
+            pytest.skip("git not installed")
+        cfg = _write(tmp_path, {"hooks": {
+            "on_config_saved": "git -C {config_dir} add {path} && git -C {config_dir} commit -q -m 'nanoidp: {kind} saved'",
+            "strict": True,
+        }})
+        subprocess.run(["git", "-C", cfg, "init", "-q"], check=True)
+        subprocess.run(["git", "-C", cfg, "config", "user.email", "t@example.org"], check=True)
+        subprocess.run(["git", "-C", cfg, "config", "user.name", "t"], check=True)
+        config = ConfigManager(cfg)
+        config.settings.audience = "versioned"
+        config._save_settings()  # strict: a failing git command would raise
+        log = subprocess.run(["git", "-C", cfg, "log", "--oneline"], capture_output=True, text=True, check=True).stdout
+        assert "nanoidp: settings saved" in log
+
+
+class TestStrictSaveKeepsDiskAndRuntimeAligned:
+    def test_yaml_writer_reloads_before_propagating(self, tmp_path):
+        from nanoidp.config import get_config
+        from nanoidp.services.yaml_writer import YamlWriter
+
+        init_config(_write(tmp_path, {"hooks": {"on_config_saved": "false", "strict": True}}))
+        assert get_config().settings.login_mode == "password"
+        with pytest.raises(HookError):
+            YamlWriter(str(tmp_path)).update_login_settings(mode="persona")
+        assert yaml.safe_load((tmp_path / "settings.yaml").read_text())["login"]["mode"] == "persona"
+        assert get_config().settings.login_mode == "persona"  # runtime == disk
+
+    def test_ui_settings_save_under_strict_shows_new_value(self, tmp_path):
+        from nanoidp.app import create_app
+        from nanoidp.config import get_config
+
+        app = create_app(config_dir=_write(tmp_path, {"hooks": {"on_config_saved": "false", "strict": True}}))
+        app.config["TESTING"] = True
+        with app.test_client() as client:
+            page = client.post("/settings", data={"issuer": "http://localhost:8000", "audience": "aligned"}, follow_redirects=True).get_data(as_text=True)
+        assert "Settings saved locally; mirror hook failed" in page
+        assert get_config().settings.audience == "aligned"
+        assert yaml.safe_load((tmp_path / "settings.yaml").read_text())["oauth"]["audience"] == "aligned"

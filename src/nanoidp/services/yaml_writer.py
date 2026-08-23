@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 
 from ..config import OAuthClient, Settings, User, get_config
 from ..config_documents import document_defaults
+from ..hooks import HookError
 from ..serialization import (
     atomic_write_yaml,
     client_id_matches,
@@ -37,7 +38,15 @@ class YamlWriter:
         notify the on_config_saved hooks through ConfigManager (#185)."""
         atomic_write_yaml(file_path, data)
         kind = "users" if file_path.name == "users.yaml" else "settings"
-        get_config().notify_saved(file_path, kind)
+        try:
+            get_config().notify_saved(file_path, kind)
+        except HookError:
+            # Under hooks.strict the mirror failed AFTER the local write. The
+            # caller's own reload() will not run once we raise, so reload
+            # here first: disk and runtime must carry the same (new) value,
+            # only the mirror is behind (#185 review).
+            get_config().reload()
+            raise
 
     def _load_users_yaml(self) -> Dict[str, Any]:
         """Load the current users.yaml content."""

@@ -25,20 +25,35 @@ JSON on stdin), and Python plugins discovered through the ``nanoidp.plugins``
 entry-point group. Order per hook: shell hook first, then plugins in
 declaration order.
 
-Error policy, per hook (identical for shell and Python):
+Error policy, per hook (identical for shell and Python, except that
+``timeout_seconds`` only applies to shell hooks: a plugin manages its own
+timeouts):
 
 - ``on_before_load`` is the only hook that may block an operation, because it
   runs before any mutation. Default: log and continue with whatever is in
   the directory; ``hooks.strict: true``: the load fails with the hook's error.
 - ``on_config_saved`` runs after the atomic write, so the local save is
   always committed. Default: log. ``strict``: the error is propagated to the
-  caller after the write (the file on disk is what was written).
+  caller after the write; the caller reloads first so disk and runtime both
+  carry the new value and only the mirror failed.
 - ``on_audit_event`` never propagates, strict or not: an audit plugin failure
   must not fail a ``/token`` whose token is already issued. Failures are
   counted and surfaced by ``nanoidp plugins`` and ``GET /api/config``.
 
-Timeouts are failures. No threads or async in the core; a plugin that wants
-asynchrony does it on its side.
+Timeouts are failures (shell hooks). No threads or async in the core; a
+plugin that wants asynchrony or a timeout does it on its side.
+
+Secrets: commands are stored after ``${VAR}`` expansion, so they may carry
+tokens. ``describe()`` (what ``GET /api/config`` and MCP expose) therefore
+never includes a command, and a propagated ``HookError`` names the hook and
+its source only; the command and the hook's stderr go to the local server
+log, at WARNING. Only ``nanoidp plugins`` (the operator's terminal) prints
+commands.
+
+Precedence: the bootstrap surface (``bootstrap.yaml``, env) is the baseline
+for the policy values ``strict`` and ``timeout_seconds``; ``settings.yaml``
+overrides a value only when it declares it explicitly, and dropping the
+settings source (a reload after the file disappeared) restores the baseline.
 
 Bootstrap: ``on_before_load`` runs before ``settings.yaml`` is read, but hook
 configuration is declared in ``settings.yaml``, so the main use case (render
@@ -102,9 +117,9 @@ class ShellHook:
     ran: bool = False
 
     def describe(self) -> Dict[str, Any]:
+        """Public metadata: never the command, which may embed expanded secrets."""
         return {
             "hook": self.hook,
-            "command": self.command,
             "source": self.source,
             "failures": self.failures,
             "once": self.once,
@@ -113,6 +128,8 @@ class ShellHook:
 
 @dataclass
 class LoadedPlugin:
+    # The entry-point name, which is also the ``plugins.<name>`` key: the
+    # plugin's one identity. A ``name`` attribute on the object is ignored.
     name: str
     obj: Any
     api_version: int
@@ -142,16 +159,46 @@ class HookRegistry:
     changed); bootstrap entries persist for the life of the process.
     """
 
-    def __init__(self) -> None:
+    DEFAULT_STRICT = False
+    DEFAULT_TIMEOUT_SECONDS = 10.0
+    # Highest precedence first: an explicitly declared settings.yaml value
+    # overrides bootstrap.yaml's, which overrides the default.
+    _POLICY_PRECEDENCE = (SOURCE_SETTINGS, SOURCE_BOOTSTRAP_FILE)
+
+    def __init__(self, config_dir: Optional[Path] = None) -> None:
+        self.config_dir: Optional[Path] = config_dir
         self.shell_hooks: List[ShellHook] = []
         self.plugins: List[LoadedPlugin] = []
-        self.strict: bool = False
-        self.timeout_seconds: float = 10.0
+        # Policy values per source, only those a source declared explicitly.
+        self._policy: Dict[str, Dict[str, Any]] = {}
         # Failure counters of entries dropped by drop_source(), keyed so the
         # same declaration re-read from settings.yaml on reload keeps its
         # history instead of reporting a fresh zero.
         self._retired_shell: Dict[tuple, int] = {}
         self._retired_plugins: Dict[tuple, Dict[str, int]] = {}
+
+    # ----------------------------------------------------------------- policy
+
+    def _policy_value(self, key: str, default: Any) -> Any:
+        for source in self._POLICY_PRECEDENCE:
+            declared = self._policy.get(source, {})
+            if key in declared:
+                return declared[key]
+        return default
+
+    @property
+    def strict(self) -> bool:
+        return bool(self._policy_value("strict", self.DEFAULT_STRICT))
+
+    @property
+    def timeout_seconds(self) -> float:
+        return float(self._policy_value("timeout_seconds", self.DEFAULT_TIMEOUT_SECONDS))
+
+    def set_policy(self, source: str, **declared: Any) -> None:
+        """Record the policy values ``source`` declared explicitly (and only those)."""
+        self._policy.setdefault(source, {}).update(
+            {k: v for k, v in declared.items() if v is not None}
+        )
 
     # ------------------------------------------------------------------ setup
 
@@ -206,22 +253,37 @@ class HookRegistry:
                 self._retired_plugins[(p.name, p.source)] = dict(p.failures)
         self.shell_hooks = [h for h in self.shell_hooks if h.source != source]
         self.plugins = [p for p in self.plugins if p.source != source]
+        # A source that is gone no longer has a say in strict/timeout: the
+        # bootstrap baseline (or the default) applies again.
+        self._policy.pop(source, None)
 
     def configure_from_sections(
         self,
-        hooks: Mapping[str, Any],
+        hooks: Any,
         plugins: Mapping[str, Any],
         source: str,
     ) -> None:
-        """Apply a validated ``hooks:`` / ``plugins:`` pair from ``source``."""
+        """Apply a validated ``hooks:`` / ``plugins:`` pair from ``source``.
+
+        ``hooks`` is a ``HooksSection`` (preferred: only the policy values it
+        declares explicitly, per ``model_fields_set``, override lower
+        sources) or a plain mapping (every present key counts as declared).
+        """
+        if hasattr(hooks, "model_fields_set"):
+            declared = set(hooks.model_fields_set)
+            values = {k: getattr(hooks, k) for k in declared}
+        else:
+            values = dict(hooks)
+            declared = set(values)
         for hook in HOOK_NAMES:
-            command = hooks.get(hook)
+            command = values.get(hook)
             if command:
                 self.add_shell_hook(hook, command, source)
-        if "strict" in hooks and hooks["strict"] is not None:
-            self.strict = bool(hooks["strict"])
-        if "timeout_seconds" in hooks and hooks["timeout_seconds"] is not None:
-            self.timeout_seconds = float(hooks["timeout_seconds"])
+        self.set_policy(
+            source,
+            strict=values.get("strict") if "strict" in declared else None,
+            timeout_seconds=values.get("timeout_seconds") if "timeout_seconds" in declared else None,
+        )
         for name, config in plugins.items():
             self.add_plugin(name, source, config or {})
 
@@ -236,12 +298,21 @@ class HookRegistry:
             propagate=self.strict,
         )
 
+    def _config_dir_placeholder(self, fallback: Optional[Path] = None) -> str:
+        if self.config_dir is not None:
+            return str(self.config_dir)
+        return str(fallback) if fallback is not None else ""
+
     def run_config_saved(self, path: Path, kind: str) -> None:
         """The write is already committed; under ``strict`` a failure is raised
         to the caller AFTER the file is on disk."""
         self._dispatch(
             "on_config_saved",
-            shell_placeholders={"path": str(path), "kind": kind},
+            shell_placeholders={
+                "config_dir": self._config_dir_placeholder(path.parent),
+                "path": str(path),
+                "kind": kind,
+            },
             plugin_args=(path, kind),
             propagate=self.strict,
         )
@@ -251,7 +322,10 @@ class HookRegistry:
         try:
             self._dispatch(
                 "on_audit_event",
-                shell_placeholders={"event_type": str(event.get("event_type", ""))},
+                shell_placeholders={
+                    "config_dir": self._config_dir_placeholder(),
+                    "event_type": str(event.get("event_type", "")),
+                },
                 plugin_args=(dict(event),),
                 propagate=False,
                 stdin_json=dict(event),
@@ -282,10 +356,12 @@ class HookRegistry:
                 continue
             try:
                 fn(*plugin_args)
-            except Exception as exc:
+            except Exception:
                 plugin.failures[hook] += 1
-                message = f"plugin {plugin.name!r} {hook} failed: {exc}"
-                logger.warning(message)
+                message = f"plugin {plugin.name!r} {hook} failed"
+                # The exception text may carry whatever the plugin was sent
+                # (URLs with tokens, store errors): local log only.
+                logger.warning(message, exc_info=True)
                 errors.append(message)
         if errors and propagate:
             raise HookError("; ".join(errors))
@@ -302,6 +378,11 @@ class HookRegistry:
         # (${VAR}, jq filters) that must not be interpreted as placeholders.
         for key, value in placeholders.items():
             command = command.replace("{" + key + "}", value)
+        # Two messages on purpose: the one returned (and, under strict,
+        # propagated to the UI/API/MCP caller) names the hook and its source
+        # only; the one logged carries the command and stderr, which may
+        # embed secrets expanded from ${VAR}, and stays in the local log.
+        label = f"{shell_hook.hook} shell hook ({shell_hook.source})"
         try:
             result = subprocess.run(
                 command,
@@ -313,32 +394,30 @@ class HookRegistry:
                 input=json.dumps(stdin_json) if stdin_json is not None else None,
             )
         except subprocess.TimeoutExpired:
-            message = (
-                f"{shell_hook.hook} shell hook ({shell_hook.source}) timed out after "
-                f"{self.timeout_seconds}s: {shell_hook.command}"
-            )
-            logger.warning(message)
-            return message
+            logger.warning("%s timed out after %ss: %s", label, self.timeout_seconds, shell_hook.command)
+            return f"{label} failed (timed out after {self.timeout_seconds}s)"
         except OSError as exc:
-            message = f"{shell_hook.hook} shell hook ({shell_hook.source}) could not run: {exc}"
-            logger.warning(message)
-            return message
+            logger.warning("%s could not run: %s: %s", label, exc, shell_hook.command)
+            return f"{label} failed (could not run)"
         if result.returncode != 0:
             stderr = (result.stderr or "").strip()
-            message = (
-                f"{shell_hook.hook} shell hook ({shell_hook.source}) exited "
-                f"{result.returncode}: {shell_hook.command}"
-                + (f" [stderr: {stderr}]" if stderr else "")
+            logger.warning(
+                "%s exited %s: %s%s",
+                label,
+                result.returncode,
+                shell_hook.command,
+                f" [stderr: {stderr}]" if stderr else "",
             )
-            logger.warning(message)
-            return message
-        logger.debug("%s shell hook ok: %s", shell_hook.hook, shell_hook.command)
+            return f"{label} failed (exit {result.returncode})"
+        logger.debug("%s ok: %s", label, shell_hook.command)
         return None
 
     # ---------------------------------------------------------- introspection
 
     def describe(self) -> Dict[str, Any]:
-        """What ``nanoidp plugins``, ``GET /api/config`` and MCP report."""
+        """What ``GET /api/config`` and MCP report: metadata only, no commands
+        (they are stored after ``${VAR}`` expansion and may embed secrets;
+        ``/api/*`` is unauthenticated by design)."""
         return {
             "hook_api_version": HOOK_API_VERSION,
             "strict": self.strict,
@@ -348,8 +427,11 @@ class HookRegistry:
         }
 
     def format_report(self) -> str:
-        """Human-readable form of ``describe()`` for the CLI."""
+        """Human-readable form for the CLI. Unlike ``describe()`` it prints the
+        commands: ``nanoidp plugins`` runs in the operator's own terminal, the
+        only place where a command that may embed a secret is shown."""
         info = self.describe()
+        commands = {(h.hook, h.source): h.command for h in self.shell_hooks}
         lines = [
             f"hook API version: {info['hook_api_version']}",
             f"strict: {info['strict']}  timeout_seconds: {info['timeout_seconds']}",
@@ -361,7 +443,9 @@ class HookRegistry:
         for h in info["shell_hooks"]:
             once = "  [bootstrap, runs once]" if h["once"] else ""
             lines.append(f"  {h['hook']:<16} {h['source']:<14} failures={h['failures']}{once}")
-            lines.append(f"    {h['command']}")
+            lines.append(
+                f"    command (local only, may embed secrets): {commands[(h['hook'], h['source'])]}"
+            )
         lines.append("")
         lines.append("plugins:")
         if not info["plugins"]:
@@ -391,18 +475,14 @@ def bootstrap_registry(config_dir: Path, environ: Optional[Mapping[str, str]] = 
     process.
     """
     env = os.environ if environ is None else environ
-    registry = HookRegistry()
+    registry = HookRegistry(config_dir=config_dir)
 
     bootstrap_file = config_dir / BOOTSTRAP_FILE
     if bootstrap_file.exists():
         with open(bootstrap_file, "r") as f:
             raw = yaml.safe_load(f) or {}
         document = BootstrapDocument.model_validate(raw)
-        registry.configure_from_sections(
-            document.hooks.model_dump(),
-            document.plugins,
-            SOURCE_BOOTSTRAP_FILE,
-        )
+        registry.configure_from_sections(document.hooks, document.plugins, SOURCE_BOOTSTRAP_FILE)
         # bootstrap.yaml's on_before_load runs before the first load only,
         # like the env hook: settings.yaml owns reloads.
         for hook in registry.shell_hooks:

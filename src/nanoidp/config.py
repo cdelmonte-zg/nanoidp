@@ -168,6 +168,9 @@ class ConfigManager:
 
         if not settings_file.exists():
             logger.warning(f"Settings file not found: {settings_file}, using defaults")
+            # A vanished settings.yaml takes its hooks, plugins and policy
+            # with it (#185 review); bootstrap entries stay.
+            self.hooks.drop_source(SOURCE_SETTINGS)
             self._set_default_settings()
             return
 
@@ -192,13 +195,17 @@ class ConfigManager:
         """Replace the settings.yaml-sourced hooks/plugins with the file's
         current declaration (#185); bootstrap entries are untouched."""
         self.hooks.drop_source(SOURCE_SETTINGS)
-        self.hooks.configure_from_sections(hooks.model_dump(), plugins, SOURCE_SETTINGS)
+        # The HooksSection itself, not model_dump(): only the policy values
+        # the file declares explicitly override the bootstrap baseline.
+        self.hooks.configure_from_sections(hooks, plugins, SOURCE_SETTINGS)
 
     def notify_saved(self, path: Path, kind: str) -> None:
         """The single on_config_saved call site for every write path (#185):
         ConfigManager's own saves and YamlWriter's. Called AFTER the atomic
         write; under hooks.strict the hook's failure is raised to the caller
-        while the file on disk stays what was written."""
+        while the file on disk stays what was written. ConfigManager's own
+        saves serialize in-memory state, so disk and runtime already agree
+        when the error propagates; YamlWriter reloads before re-raising."""
         self.hooks.run_config_saved(path, kind)
 
     def _set_default_settings(self) -> None:

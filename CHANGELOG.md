@@ -44,7 +44,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   configured under `plugins.<name>:`. Per-hook error policy: `on_before_load`
   may block under `hooks.strict`, `on_config_saved` is propagated to the
   caller under `strict` after the write (the local save is always
-  committed), `on_audit_event` never propagates. Bootstrap surface for hooks
+  committed and the running configuration reloaded from it, so only the
+  mirror is behind), `on_audit_event` never propagates. Commands are never
+  reported by `/api/config` or MCP (they may embed expanded secrets) and a
+  propagated error names the hook and its source only; the bootstrap
+  surface is the baseline for `strict`/`timeout_seconds`, `settings.yaml`
+  overrides only what it declares. Bootstrap surface for hooks
   that must run before `settings.yaml` exists: `NANOIDP_BOOTSTRAP_HOOK` /
   `--bootstrap-hook`, `NANOIDP_BOOTSTRAP_PLUGIN` with
   `NANOIDP_PLUGIN_<NAME>_<KEY>` settings, and `bootstrap.yaml` in the config

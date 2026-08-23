@@ -15,9 +15,9 @@ Three hooks, called synchronously:
 
 | Hook | When | Arguments | Typical use |
 |---|---|---|---|
-| `on_before_load` | before `settings.yaml` and `users.yaml` are read: startup and every reload | `config_dir` | render the files from a store into the directory |
-| `on_config_saved` | after an atomic write of either file (web UI, MCP, `save`) | `path`, `kind` (`settings` or `users`) | push to a store, `git commit`, notify |
-| `on_audit_event` | after an audit entry is recorded | the event as a mapping | ship audit elsewhere |
+| `on_before_load` | before `settings.yaml` and `users.yaml` are read: startup and every reload | plugin: `config_dir`; shell: `{config_dir}` | render the files from a store into the directory |
+| `on_config_saved` | after an atomic write of either file (web UI, MCP, `save`) | plugin: `path`, `kind` (`settings` or `users`); shell: `{config_dir}`, `{path}`, `{kind}` | push to a store, `git commit`, notify |
+| `on_audit_event` | after an audit entry is recorded | plugin: the event as a mapping; shell: `{config_dir}`, `{event_type}` plus the event as JSON on stdin | ship audit elsewhere |
 
 Two ways to implement it, sharing one dispatcher (shell hook first, then
 plugins in declaration order):
@@ -30,13 +30,21 @@ hooks:
   on_config_saved: "vault kv put secret/idp/{kind} @{path}"
   on_audit_event: "jq -c . >> /var/log/nanoidp-audit.jsonl"   # event JSON on stdin
   strict: false          # see the error policy below
-  timeout_seconds: 10
+  timeout_seconds: 10    # shell hooks only
 ```
 
-Placeholders: `{config_dir}`, `{path}`, `{kind}`, `{event_type}`. They are
-replaced textually, so other braces (`${VAR}`, `jq` filters) are left alone.
-The command runs through the shell with nanoidp's environment; for
+Placeholders are listed per hook in the table above. They are replaced
+textually, so other braces (`${VAR}`, `jq` filters) are left alone. The
+command runs through the shell with nanoidp's environment; for
 `on_audit_event` the event is also written to the command's stdin as JSON.
+
+A command is stored after `${VAR}` expansion, so it may embed a token. It
+is therefore never reported outside the process: `GET /api/config` and the
+MCP `get_settings` tool show a hook's name, source and failure counter but
+not its command, and the error a caller sees under `strict` names the hook
+and its source only. The command and the hook's stderr go to the server
+log at WARNING, and `nanoidp plugins`, which runs in your own terminal,
+is the one place that prints commands.
 
 **Python plugins**, packaged separately and discovered through the
 `nanoidp.plugins` entry-point group:
@@ -49,15 +57,20 @@ plugins:
 
 `plugins:` is the only section of `settings.yaml` whose inner keys nanoidp
 does not validate: the shape is `name -> mapping`, the keys are the plugin's.
+A plugin's identity is its entry-point name, which is also that key; the
+object itself carries only `hook_api_version` and the hooks it implements.
 
 ## Error policy, per hook
 
-The policy is the same for shell hooks and plugins; a timeout is a failure.
+The policy is the same for shell hooks and plugins. `timeout_seconds`
+applies to shell hooks only, and a timeout is a failure; a Python plugin
+must manage its own network timeouts and queueing, nanoidp does not
+interrupt it.
 
 | Hook | default | `hooks.strict: true` |
 |---|---|---|
 | `on_before_load` | log, continue with whatever is in the directory | the load (startup or reload) fails with the hook's error |
-| `on_config_saved` | log | the error is propagated to the caller **after** the write: the file on disk is what was written |
+| `on_config_saved` | log | the error is propagated to the caller **after** the write. Disk and runtime stay aligned: the file on disk is what was written and the running configuration is reloaded from it before the error is raised, so only the mirror is behind. The web UI says "Settings saved locally; mirror hook failed" |
 | `on_audit_event` | log | log; never propagates |
 
 `on_before_load` is the only hook that can block an operation, because it
@@ -86,6 +99,15 @@ outside the normal config covers it:
 | `NANOIDP_BOOTSTRAP_HOOK="<command>"` or `nanoidp --bootstrap-hook "<command>"` | an `on_before_load` shell command | once, before the first load |
 | `NANOIDP_BOOTSTRAP_PLUGIN=<name>` with `NANOIDP_PLUGIN_<NAME>_<KEY>=<value>` | a plugin and its settings (name upper-cased, `-` as `_`) | loaded once, then takes part in every hook |
 | `bootstrap.yaml` in the configuration directory | `hooks:` and `plugins:` only, same schema as `settings.yaml`; any other key is refused | its `on_before_load` once, its other hooks and plugins always |
+
+Precedence of the policy values (`strict`, `timeout_seconds`): the
+bootstrap surface is the baseline; `settings.yaml` overrides a value only
+when it declares it explicitly, and a `settings.yaml` that disappears (a
+render that failed, a sync that left the directory half written) takes its
+hooks, plugins and policy with it on the next reload, leaving the bootstrap
+ones in force. A renderer that replaces or syncs the whole configuration
+directory must preserve `bootstrap.yaml`, or that deployment should use the
+env/CLI bootstrap instead.
 
 After the first load, `settings.yaml` may declare the same hook for reloads
 and saves. `nanoidp plugins` shows which surface each entry came from
@@ -139,8 +161,8 @@ and records it to a file. It is the whole template:
 from pathlib import Path
 
 class VaultPlugin:
-    name = "myvault"
-    hook_api_version = 1          # nanoidp refuses any other value
+    hook_api_version = 1          # nanoidp refuses any other value; the
+                                  # plugin's name is its entry-point name
 
     def configure(self, settings: dict) -> None:   # receives plugins.myvault, optional
         self.path = settings["path"]
@@ -171,9 +193,9 @@ block a save, queue it on the plugin's side.
 
 `nanoidp plugins [--config DIR]`, `GET /api/config` (`hooks` block) and the
 MCP `get_settings` tool show the hook API version, `strict`, the timeout,
-every shell hook with its source and failure counter, and every plugin with
-its `hook_api_version`, the hooks it implements, its source and its failure
-counters per hook. `hooks:` and `plugins:` are YAML-only: the web UI's
+every shell hook with its source and failure counter (never its command,
+see above), and every plugin with its `hook_api_version`, the hooks it
+implements, its source and its failure counters per hook. `hooks:` and `plugins:` are YAML-only: the web UI's
 settings page and the MCP `update_settings` tool report them but cannot
 change them, because a command editable through the surface it observes
 would be a remote-execution primitive.

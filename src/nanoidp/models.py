@@ -348,7 +348,11 @@ class Settings(BaseModel):
         description="When on, an on_before_load failure fails the load and an on_config_saved "
         "failure is propagated to the caller after the write. on_audit_event never propagates.",
     )
-    hooks_timeout_seconds: float = Field(default=10.0, gt=0, description="Per-hook timeout for shell hooks")
+    hooks_timeout_seconds: float = Field(
+        default=10.0,
+        gt=0,
+        description="Timeout for shell hooks only; a Python plugin manages its own timeouts",
+    )
     plugins: Dict[str, Dict[str, Any]] = Field(
         default_factory=dict,
         description="Python plugins to load from the 'nanoidp.plugins' entry-point group, "

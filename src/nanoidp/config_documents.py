@@ -180,8 +180,10 @@ class LoginSection(BaseModel):
 class HooksSection(BaseModel):
     """``hooks:`` (#185): shell commands run at the three extension points.
 
-    Absent = no hooks. ``strict`` and ``timeout_seconds`` apply to plugins
-    too. YAML-only (and ``bootstrap.yaml``/env): never settable from the UI
+    Absent = no hooks. ``strict`` applies to plugins too; ``timeout_seconds``
+    is for shell hooks only (a plugin manages its own timeouts). Policy
+    values declared here override ``bootstrap.yaml``'s; undeclared ones do
+    not (``model_fields_set`` decides). YAML-only (and ``bootstrap.yaml``/env): never settable from the UI
     or MCP, since a command editable through the surface it observes would
     be a remote-execution primitive.
     """
@@ -192,7 +194,7 @@ class HooksSection(BaseModel):
     on_config_saved: Optional[str] = None
     on_audit_event: Optional[str] = None
     strict: bool = False
-    timeout_seconds: float = 10.0
+    timeout_seconds: float = Field(default=10.0, gt=0)
 
 
 def _validate_plugins_mapping(value: Any) -> Dict[str, Dict[str, Any]]:
