@@ -105,7 +105,30 @@ SOURCE_SETTINGS = "settings.yaml"
 
 
 class HookError(RuntimeError):
-    """A hook failed and the policy for that hook says the caller must know."""
+    """A hook failed and the policy for that hook says the caller must know.
+
+    ``message`` is always a synthetic string built by the registry (hook
+    name, source, exit code); it never embeds a command, stderr or a
+    plugin's exception text, so callers may put it in an HTTP/MCP
+    response. ``kind`` says which phase failed: the hook name
+    (``on_before_load``, ``on_config_saved``) or ``plugin_load`` for a
+    plugin that could not be registered during a load.
+    """
+
+    def __init__(self, message: str, kind: str = "hook") -> None:
+        super().__init__(message)
+        self.message = message
+        self.kind = kind
+
+
+class PluginLoadError(ValueError):
+    """A plugin could not be registered, for a reason nanoidp itself
+    diagnosed. ``public_reason`` is safe to expose (it is built from names
+    and versions, never from plugin-provided text)."""
+
+    def __init__(self, message: str, public_reason: str) -> None:
+        super().__init__(message)
+        self.public_reason = public_reason
 
 
 @dataclass
@@ -222,12 +245,13 @@ class HookRegistry:
     def add_plugin(self, name: str, source: str, config: Optional[Mapping[str, Any]] = None) -> LoadedPlugin:
         """Load ``name`` from the ``nanoidp.plugins`` entry-point group."""
         if any(p.name == name for p in self.plugins):
-            raise ValueError(f"Plugin {name!r} is already loaded")
+            raise PluginLoadError(f"Plugin {name!r} is already loaded", "already loaded")
         candidates = [ep for ep in metadata.entry_points(group=ENTRY_POINT_GROUP) if ep.name == name]
         if not candidates:
-            raise ValueError(
+            raise PluginLoadError(
                 f"Plugin {name!r} not found: no '{ENTRY_POINT_GROUP}' entry point with that "
-                f"name is installed (pip install the package that provides it)"
+                f"name is installed (pip install the package that provides it)",
+                "not installed",
             )
         factory = candidates[0].load()
         # An entry point may point at a class (instantiate it) or at a
@@ -241,9 +265,10 @@ class HookRegistry:
         """Register an already-constructed plugin (tests, in-process use)."""
         api_version = getattr(obj, "hook_api_version", None)
         if api_version != HOOK_API_VERSION:
-            raise ValueError(
+            raise PluginLoadError(
                 f"Plugin {name!r} declares hook_api_version={api_version!r}; this nanoidp "
-                f"implements hook API version {HOOK_API_VERSION}. Upgrade the plugin or nanoidp."
+                f"implements hook API version {HOOK_API_VERSION}. Upgrade the plugin or nanoidp.",
+                f"incompatible hook_api_version={api_version!r} (expected {HOOK_API_VERSION})",
             )
         plugin = LoadedPlugin(name=name, obj=obj, api_version=api_version, source=source, config=dict(config or {}))
         plugin.failures.update(self._retired_plugins.pop((name, source), {}))
@@ -312,13 +337,23 @@ class HookRegistry:
             try:
                 self.add_plugin(name, source, config or {})
             except Exception as exc:
-                reason = str(exc) or exc.__class__.__name__
-                logger.error("plugin %r (%s) could not be loaded: %s", name, source, reason)
+                # The public reason is one of nanoidp's own short diagnoses;
+                # the exception text (import error, constructor, configure(),
+                # which may embed the plugin's settings and therefore secrets)
+                # goes to the local log only (#200 review).
+                if isinstance(exc, PluginLoadError):
+                    reason = exc.public_reason
+                else:
+                    reason = "initialization failed"
+                logger.error(
+                    "plugin %r (%s) could not be loaded: %s", name, source, str(exc) or exc.__class__.__name__
+                )
                 self._failed_plugins.setdefault(source, []).append({"name": name, "reason": reason})
                 failed.append(name)
         if failed and self.strict:
             raise HookError(
-                f"plugin(s) {', '.join(repr(n) for n in failed)} from {source} could not be loaded"
+                f"plugin(s) {', '.join(repr(n) for n in failed)} from {source} could not be loaded",
+                kind="plugin_load",
             )
 
     # --------------------------------------------------------------- dispatch
@@ -418,7 +453,7 @@ class HookRegistry:
                 logger.warning(message, exc_info=True)
                 errors.append(message)
         if errors and propagate:
-            raise HookError("; ".join(errors))
+            raise HookError("; ".join(errors), kind=hook)
 
     def _run_shell(
         self,

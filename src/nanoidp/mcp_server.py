@@ -1312,7 +1312,7 @@ async def _execute_tool(name: str, arguments: dict[str, Any], config: ConfigMana
         try:
             config.reload()
         except HookError as exc:
-            return {"success": False, "error": f"Reload failed: {exc}"}
+            return {"success": False, "error": f"Reload failed: {exc.message}", "kind": exc.kind}
         return {"success": True, "message": "Configuration reloaded"}
 
     elif name == "update_settings":

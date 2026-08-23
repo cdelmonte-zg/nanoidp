@@ -201,9 +201,11 @@ def reload_config() -> ResponseReturnValue:
     try:
         config.reload()
     except HookError as exc:
-        # A strict on_before_load (or plugin load) failure is a JSON error,
-        # not Flask's HTML 500: this endpoint's callers parse JSON.
-        return jsonify({"status": "error", "error": str(exc), "hook": "on_before_load"}), 503
+        # A strict on_before_load or plugin-load failure is a JSON error, not
+        # Flask's HTML 500: this endpoint's callers parse JSON. exc.message is
+        # the registry's synthetic text (never a command, stderr or plugin
+        # exception text) and exc.kind names the phase that failed.
+        return jsonify({"status": "error", "error": exc.message, "kind": exc.kind}), 503
     return jsonify({
         "status": "reloaded",
         "users_count": len(config.users),

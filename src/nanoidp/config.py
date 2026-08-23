@@ -201,10 +201,13 @@ class ConfigManager:
         """Replace the settings.yaml-sourced hooks/plugins with the file's
         current declaration (#185); bootstrap entries are untouched. Skipped
         when the declaration is identical to the one already applied."""
+        # Plugins as an ORDERED tuple, not a dict: dict equality ignores
+        # order, and the v1 contract runs plugins in declaration order, so a
+        # file that only reorders them must be re-applied (#200 review).
         snapshot = (
             hooks.model_dump(),
             frozenset(hooks.model_fields_set),
-            {k: dict(v) for k, v in plugins.items()},
+            tuple((name, dict(cfg)) for name, cfg in plugins.items()),
         )
         if snapshot == self._hooks_snapshot:
             return
