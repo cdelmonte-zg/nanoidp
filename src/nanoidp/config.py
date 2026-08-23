@@ -314,7 +314,7 @@ class ConfigManager:
 
     def _default_settings(self) -> Settings:
         """The Settings a directory without settings.yaml gets."""
-        return SettingsDocument(
+        settings = SettingsDocument(
             authority_prefixes={
                 "roles": "ROLE_",
                 "groups": "GROUP_",
@@ -323,6 +323,17 @@ class ConfigManager:
             },
             allowed_identity_classes=["INTERNAL", "EXTERNAL", "PARTNER", "SERVICE"],
         ).to_settings()
+        # The demo client the old fallback always shipped (#204 review: the
+        # transactional refactor must not change what a directory without
+        # settings.yaml gets).
+        settings.clients = [
+            OAuthClient(
+                client_id="demo-client",
+                client_secret="demo-secret",
+                description="Default demo client",
+            )
+        ]
+        return settings
 
     def _default_users(self) -> Dict[str, User]:
         """The users a directory without users.yaml gets."""

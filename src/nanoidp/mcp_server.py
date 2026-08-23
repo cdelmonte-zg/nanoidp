@@ -691,8 +691,9 @@ _TOOLS: list[Tool] = [
         "a startup or the next reload would hit; bootstrap.yaml findings are what "
         "would stop the NEXT startup (the bootstrap surface loads at startup only). Read-only and inert: it re-reads the files through the same "
         "loaders, runs no hook and loads no plugin. 'valid' is false on any error, "
-        "and on a warning too when the directory declares config_validation: strict "
-        "(or 'strict' is passed), which is when a start would refuse.",
+        "and on a warning too under strict mode, which is when a start would refuse. "
+        "'strict' defaults to this server's effective validation mode; pass it "
+        "explicitly to override.",
         input_schema={
             "type": "object",
             "properties": {
@@ -1344,7 +1345,12 @@ async def _execute_tool(name: str, arguments: dict[str, Any], config: ConfigMana
         # The CLI's code path exactly (nanoidp.config_validation): no
         # ConfigManager is built, no hook runs, no plugin is imported, and
         # the running configuration is not touched or reloaded.
-        return validate_config_result(config.config_dir, bool(arguments.get("strict", False)))
+        # strict defaults to the manager's effective mode, so "what the next
+        # reload would hit" stays true for a ConfigManager started with
+        # --strict-config (#204 review); an explicit argument still wins.
+        strict_arg = arguments.get("strict")
+        effective = config.strict_config if strict_arg is None else bool(strict_arg)
+        return validate_config_result(config.config_dir, effective)
 
     elif name == "update_settings":
         settings = config.settings

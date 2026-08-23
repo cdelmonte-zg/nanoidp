@@ -86,6 +86,7 @@ def _validate_file(
     model_loader: Any,
     findings: List[Finding],
     expected_version: Optional[int] = None,
+    check_version: bool = True,
 ) -> Tuple[Optional[Any], Optional[int]]:
     """Run one file through the real loader, collecting instead of raising.
 
@@ -99,11 +100,13 @@ def _validate_file(
     if data is None:
         return None, None
 
-    try:
-        version = check_config_version(data, path)
-    except ValueError as exc:
-        findings.append(Finding(ERROR, str(exc), path.name))
-        return None, None
+    version: Optional[int] = None
+    if check_version:
+        try:
+            version = check_config_version(data, path)
+        except ValueError as exc:
+            findings.append(Finding(ERROR, str(exc), path.name))
+            return None, None
 
     if expected_version is not None and version != expected_version:
         findings.append(
@@ -178,7 +181,11 @@ def validate_config_dir(config_dir: Path | str) -> List[Finding]:
     if bootstrap_path.exists():
         # Shape only: hooks and plugins declared here are never dispatched
         # or imported by a validation run (see the module docstring).
-        _validate_file(bootstrap_path, load_bootstrap_document, findings)
+        # bootstrap.yaml has no config_version in its schema and the real
+        # startup path (bootstrap_registry) never version-checks it: a
+        # config_version key there is an unknown key, same as at startup
+        # (#204 review: same semantics as the loader, not stricter ones).
+        _validate_file(bootstrap_path, load_bootstrap_document, findings, check_version=False)
 
     return findings
 

@@ -371,3 +371,62 @@ class TestDirectoryLoadIsTransactional:
             get_config().reload()
         assert get_config().settings.security_profile == "stricter-dev"
         assert get_config().settings.require_pkce is True
+
+
+class TestRegressionRound2:
+    def test_directory_without_settings_still_gets_the_demo_client(self, tmp_path):
+        """#204 review round 2: the transactional refactor dropped the
+        demo-client from the missing-settings fallback."""
+        import yaml as _yaml
+
+        from nanoidp.config import ConfigManager
+
+        (tmp_path / "users.yaml").write_text(_yaml.safe_dump({"users": {}}))
+        manager = ConfigManager(str(tmp_path))
+        assert [c.client_id for c in manager.settings.clients] == ["demo-client"]
+        assert manager.check_client("demo-client", "demo-secret")
+
+    def test_bootstrap_config_version_is_an_unknown_key_not_an_error(self, tmp_path):
+        """validate-config must mirror the startup semantics: the bootstrap
+        loader never version-checks, so config_version there is an unknown
+        key (warning), not a version error."""
+        import yaml as _yaml
+
+        from nanoidp.config_validation import ERROR, WARNING, validate_config_dir
+
+        (tmp_path / "settings.yaml").write_text(_yaml.safe_dump({"server": {"host": "127.0.0.1", "port": 8000}}))
+        (tmp_path / "users.yaml").write_text(_yaml.safe_dump({"users": {}}))
+        (tmp_path / "bootstrap.yaml").write_text(_yaml.safe_dump({"config_version": 2, "hooks": {}}))
+        findings = validate_config_dir(tmp_path)
+        bootstrap = [f for f in findings if f.file == "bootstrap.yaml"]
+        assert bootstrap and all(f.level == WARNING for f in bootstrap)
+        assert any("unknown key config_version" in f.message for f in bootstrap)
+        assert not [f for f in findings if f.level == ERROR]
+
+    def test_mcp_validate_config_defaults_to_the_managers_mode(self, tmp_path):
+        import asyncio
+
+        import yaml as _yaml
+
+        from nanoidp import mcp_server
+        from nanoidp.config import init_config
+
+        (tmp_path / "settings.yaml").write_text(
+            _yaml.safe_dump({"server": {"host": "127.0.0.1", "port": 8000}})
+        )
+        (tmp_path / "users.yaml").write_text(_yaml.safe_dump({"users": {}}))
+        # A strict manager refuses to LOAD a typo, so build it on a clean
+        # directory first, then put the typo on disk: validate_config reads
+        # the files, not the runtime.
+        manager = init_config(str(tmp_path), strict_config=True)
+        mcp_server._config = manager
+        (tmp_path / "settings.yaml").write_text(
+            _yaml.safe_dump({"server": {"host": "127.0.0.1", "port": 8000}, "oauth": {"isuer": "x"}})
+        )
+        try:
+            result = asyncio.run(mcp_server._execute_tool("validate_config", {}, manager))
+            assert result["valid"] is False  # warnings fail under the manager's strict mode
+            result = asyncio.run(mcp_server._execute_tool("validate_config", {"strict": False}, manager))
+            assert result["valid"] is True  # explicit argument still wins
+        finally:
+            mcp_server._config = None
