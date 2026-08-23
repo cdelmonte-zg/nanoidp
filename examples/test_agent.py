@@ -3404,7 +3404,48 @@ class NanoIDPTestAgent:
                     f"/api/config lacks a hooks block with hook_api_version 1: {block!r}",
                     before,
                 )
+            # NANOIDP_E2E_PLUGIN names a plugin that MUST be loaded (the e2e
+            # workflow installs examples/plugins/nanoidp-echo and bootstraps
+            # it); without the variable the plugin part is skipped, the block
+            # itself is always checked.
+            expected_plugin = os.environ.get("NANOIDP_E2E_PLUGIN")
+            if expected_plugin:
+                loaded = {p.get("name"): p for p in block.get("plugins", [])}
+                plugin = loaded.get(expected_plugin)
+                failed = [f.get("name") for f in block.get("plugins_failed", [])]
+                # The plugin must come from NANOIDP_BOOTSTRAP_PLUGIN (source
+                # bootstrap-env), not from a settings.yaml declaration: the
+                # bootstrap surface is what this check exists to prove.
+                if plugin is None or plugin.get("hook_api_version") != 1 or plugin.get(
+                    "source"
+                ) != "bootstrap-env" or not {
+                    "on_before_load", "on_config_saved", "on_audit_event"
+                } <= set(plugin.get("hooks", [])):
+                    return self._add_result(
+                        "API Hooks Block",
+                        TestCategory.API,
+                        False,
+                        f"plugin {expected_plugin!r} not loaded as expected: {plugin!r}, failed={failed}",
+                        block,
+                    )
             saved_hooks = [h for h in block.get("shell_hooks", []) if h.get("hook") == "on_config_saved"]
+            log_path = os.environ.get("NANOIDP_E2E_HOOK_LOG")
+            if log_path:
+                # The e2e workflow declares the hook in config/bootstrap.yaml:
+                # with the log path set, the hook is mandatory and must carry
+                # that source, so a bootstrap.yaml that silently stopped
+                # loading cannot pass as "nothing configured".
+                bootstrap_hooks = [h for h in saved_hooks if h.get("source") == "bootstrap.yaml"]
+                if not bootstrap_hooks:
+                    return self._add_result(
+                        "API Hooks Block",
+                        TestCategory.API,
+                        False,
+                        "NANOIDP_E2E_HOOK_LOG is set but no on_config_saved hook from "
+                        f"bootstrap.yaml is registered: {saved_hooks!r}",
+                        block,
+                    )
+                saved_hooks = bootstrap_hooks
             if not saved_hooks:
                 return self._add_result(
                     "API Hooks Block",
@@ -3414,7 +3455,6 @@ class NanoIDPTestAgent:
                     f"(block present, {len(block.get('plugins', []))} plugins)",
                     {"skipped": True, "hooks": block},
                 )
-            log_path = os.environ.get("NANOIDP_E2E_HOOK_LOG")
             lines_before = self._count_lines(log_path)
             saml_config = before.get("saml", {})
             # A no-op settings round-trip: same values posted back, derived
@@ -3444,16 +3484,49 @@ class NanoIDPTestAgent:
             lines_after = self._count_lines(log_path)
             ran_clean = failures_after == failures_before
             logged = lines_after > lines_before if log_path else True
+            # The plugin's own record file (NANOIDP_PLUGIN_ECHO_RECORD on the
+            # server side) must have gained an on_config_saved line for this
+            # save and carry on_audit_event lines: the installed package was
+            # really dispatched, not just listed.
+            record_ok = True
+            record_note = ""
+            record_path = os.environ.get("NANOIDP_E2E_PLUGIN_RECORD")
+            if expected_plugin and record_path:
+                entries = self._read_jsonl(record_path)
+                saved_entries = [e for e in entries if e.get("hook") == "on_config_saved"]
+                audit_entries = [e for e in entries if e.get("hook") == "on_audit_event"]
+                record_ok = bool(saved_entries) and bool(audit_entries) and any(
+                    e.get("kind") == "settings" for e in saved_entries
+                )
+                record_note = f", plugin record: {len(saved_entries)} saves / {len(audit_entries)} audit events"
+            elif expected_plugin:
+                record_note = ", plugin listed (no record file to check)"
             return self._add_result(
                 "API Hooks Block",
                 TestCategory.API,
-                ran_clean and logged,
+                ran_clean and logged and record_ok,
                 f"on_config_saved ran on a settings save: failures {failures_before}->{failures_after}"
-                + (f", log lines {lines_before}->{lines_after}" if log_path else ""),
+                + (f", log lines {lines_before}->{lines_after}" if log_path else "")
+                + record_note,
                 {"before": block, "after": after},
             )
         except Exception as e:
             return self._add_result("API Hooks Block", TestCategory.API, False, str(e))
+
+    @staticmethod
+    def _read_jsonl(path: Optional[str]) -> list:
+        if not path or not os.path.exists(path):
+            return []
+        entries = []
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    try:
+                        entries.append(json.loads(line))
+                    except ValueError:
+                        continue
+        return entries
 
     @staticmethod
     def _count_lines(path: Optional[str]) -> int:
