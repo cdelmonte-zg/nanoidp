@@ -14,10 +14,10 @@ import nanoidp.mcp_server as mcp_server_module
 import nanoidp.services.crypto as crypto_module
 import nanoidp.services.token as token_module
 import nanoidp.services.yaml_writer as yaml_writer_module
-
-_REPO_CONFIG_DIR = Path(__file__).resolve().parent.parent / "config"
 from nanoidp.app import create_app
 from nanoidp.config import OAuthClient, User
+
+_REPO_CONFIG_DIR = Path(__file__).resolve().parent.parent / "config"
 
 
 async def call_mcp_tool(name: str, arguments: Optional[dict] = None):
