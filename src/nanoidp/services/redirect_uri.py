@@ -143,12 +143,13 @@ def _strip_loopback_port(uri: str) -> str | None:
         return None
     if port is None:
         return uri
-    suffix = f":{port}"
-    netloc = parsed.netloc
-    if not netloc.endswith(suffix):
-        # e.g. ":0080" would parse as 80 but is not the literal suffix;
-        # refuse rather than guess.
-        return None
+    # Remove the port component as WRITTEN, not str(port): RFC 3986 3.2.3
+    # defines port as *DIGIT, so ":0080" is a valid port component that
+    # differs from ":80" only in the component RFC 8252 8.4 tells us to
+    # ignore (#81 review). parsed.port above already validated it; for an
+    # IPv6 literal the last ":" in the authority is the one after "]".
+    raw_port = parsed.netloc.rsplit(":", 1)[1]
+    suffix = f":{raw_port}"
     return uri[:authority_end - len(suffix)] + uri[authority_end:]
 
 

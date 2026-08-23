@@ -412,7 +412,6 @@ class TestLoopbackPortExceptionTouchesOnlyThePort:
             "HTTP://127.0.0.1:123/cb",      # scheme case preserved
             "http://127.0.0.1:123/cb/",     # trailing slash
             "http://127.0.0.1:123/CB",      # path case
-            "http://127.0.0.1:0080/cb",     # zero-padded port is not a port literal
             "http://user@127.0.0.1:123/cb", # userinfo differs
         ],
     )
@@ -421,7 +420,15 @@ class TestLoopbackPortExceptionTouchesOnlyThePort:
 
     @pytest.mark.parametrize(
         "requested",
-        ["http://127.0.0.1:123/cb", "http://127.0.0.1:65535/cb", "http://127.0.0.1/cb"],
+        [
+            "http://127.0.0.1:123/cb",
+            "http://127.0.0.1:65535/cb",
+            "http://127.0.0.1/cb",
+            # RFC 3986 3.2.3: port = *DIGIT, so a zero-padded port is a valid
+            # port component and only the port differs (RFC 8252 8.4).
+            "http://127.0.0.1:0080/cb",
+            "http://127.0.0.1:00/cb",
+        ],
     )
     def test_accepted(self, requested):
         assert redirect_uri_matches(requested, self.REGISTERED)
@@ -430,6 +437,7 @@ class TestLoopbackPortExceptionTouchesOnlyThePort:
         assert redirect_uri_matches("http://[::1]:4242/cb", "http://[::1]:0/cb")
         assert not redirect_uri_matches("http://[::1]:4242/cb?", "http://[::1]:0/cb")
         assert not redirect_uri_matches("http://[::1]:evil/cb", "http://[::1]:0/cb")
+        assert redirect_uri_matches("http://[::1]:0042/cb", "http://[::1]:0/cb")
 
     def test_registered_with_invalid_port_never_matches(self):
         assert not redirect_uri_matches("http://127.0.0.1:123/cb", "http://127.0.0.1:evil/cb")
