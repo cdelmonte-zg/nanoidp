@@ -131,6 +131,10 @@ def get_configuration() -> ResponseReturnValue:
     return jsonify({
         # Config schema version the loaded files follow (#175); absent = 1.
         "config_version": config.config_version,
+        # Effective validation mode (#175 piece 4): strict from the CLI flag
+        # or settings.yaml's config_validation; reported like security_profile
+        # so the contract is observable.
+        "config_validation": "strict" if config.strict_config else "warn",
         "server": {
             "host": settings.host,
             "port": settings.port,

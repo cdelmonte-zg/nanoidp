@@ -225,3 +225,27 @@ class TestSettingsFormParity:
         }
         assert not broken, f"rename table points at non-existent keys: {broken}"
         assert used, "no surface fields found: the parity test would pass vacuously"
+
+
+class TestConfigValidationIsObservable:
+    """#175 piece 4 follow-up: the effective validation mode is reported like
+    security_profile, on both surfaces (the MCP side is covered by the
+    api/mcp equality test in test_hooks.py)."""
+
+    def test_api_config_reports_the_effective_mode(self, tmp_path):
+        import yaml
+
+        from nanoidp.app import create_app
+
+        settings = {"server": {"host": "127.0.0.1", "port": 8000}}
+        (tmp_path / "settings.yaml").write_text(yaml.safe_dump(settings))
+        (tmp_path / "users.yaml").write_text(yaml.safe_dump({"users": {}}))
+        app = create_app(config_dir=str(tmp_path))
+        app.config["TESTING"] = True
+        with app.test_client() as client:
+            assert client.get("/api/config").get_json()["config_validation"] == "warn"
+
+        app = create_app(config_dir=str(tmp_path), strict_config=True)
+        app.config["TESTING"] = True
+        with app.test_client() as client:
+            assert client.get("/api/config").get_json()["config_validation"] == "strict"
