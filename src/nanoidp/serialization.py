@@ -32,7 +32,7 @@ import re
 import shutil
 import tempfile
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict
+from typing import TYPE_CHECKING, Any, Dict, Mapping, Optional
 
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap
@@ -361,8 +361,20 @@ def user_to_yaml(user: User) -> Dict[str, Any]:
     return entry
 
 
+# Fallback used when a caller passes no ``defaults`` mapping. The source of
+# truth is ``config_documents.document_defaults()`` (the document models);
+# this module cannot import it at runtime (import contract, #149), so
+# callers hand it in and these two literals only cover legacy call sites.
+_FALLBACK_DEFAULTS: Dict[str, Any] = {
+    "security_profile": "dev",
+    "login.mode": "password",
+}
+
+
 def apply_settings_document(
-    document: Dict[str, Any], settings: Settings
+    document: Dict[str, Any],
+    settings: Settings,
+    defaults: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Update the settings.yaml keys this codebase manages, in place.
 
@@ -479,7 +491,9 @@ def apply_settings_document(
         else:
             document.pop("allowed_identity_classes", None)
 
-    security_profile_default = "dev"
+    # "Omit at default" decisions read the loader's defaults (#175 piece 2).
+    resolved_defaults = defaults if defaults is not None else _FALLBACK_DEFAULTS
+    security_profile_default = resolved_defaults["security_profile"]
     current_security_profile = document.get("security_profile", security_profile_default)
     if not is_unchanged(current_security_profile, settings.security_profile):
         if settings.security_profile != security_profile_default:
@@ -487,7 +501,7 @@ def apply_settings_document(
         else:
             document.pop("security_profile", None)
 
-    login_mode_default = "password"
+    login_mode_default = resolved_defaults["login.mode"]
     merge_optional_nested_field(document, "login", "mode", settings.login_mode, login_mode_default)
 
     return document

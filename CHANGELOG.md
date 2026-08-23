@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Configuration files load through document models** (#175, piece 2).
+  `settings.yaml` and `users.yaml` are now parsed into Pydantic document
+  models that mirror the YAML sections one to one
+  (`nanoidp.config_documents`), and the domain `Settings` / `User` objects
+  are built from them; the hand-written `.get(key, default)` mapping in
+  `config.py` is gone and the defaults live on the models, which the writer
+  reads as well. No file format change and no behavioural change for files
+  that loaded before. One visible improvement: an unknown key (a typo such
+  as `oauth.isuer`, or a key nanoidp does not know) is now logged as a
+  warning with its dotted path and ignored, instead of vanishing silently;
+  keys that shipped presets carry but the loader never consumed
+  (`cors_allowed_origins`, `device_flow`, `logging.format`,
+  `oauth.refresh_token_expiry_minutes`, `session.permanent`) are declared so
+  they do not warn. Fields inside a user entry keep folding into
+  `attributes`, as always. Stricter handling is a later piece.
+
 ### Config schema
 - `config_version` 1 introduced (#175, piece 1). No changes required to
   existing files: a file without the key is version 1. The version is the

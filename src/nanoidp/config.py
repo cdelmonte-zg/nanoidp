@@ -14,6 +14,12 @@ import yaml
 
 # Re-exported for compatibility: the models were defined here until #86, and
 # every consumer (routes, services, MCP, tests) imports them from this module.
+from .config_documents import (
+    SettingsDocument,
+    document_defaults,
+    load_settings_document,
+    load_users_document,
+)
 from .models import (  # noqa: F401
     SECURITY_PROFILES,
     OAuthClient,
@@ -161,115 +167,18 @@ class ConfigManager:
         self.config_version = check_config_version(data, settings_file)
         data = _expand_env_vars(data)
 
-        server = data.get("server", {})
-        oauth = data.get("oauth", {})
-        saml = data.get("saml", {})
-        jwt_config = data.get("jwt", {})
-        session = data.get("session", {})
-        logging_config = data.get("logging", {})
-        # `or {}` (not the `, {}` default) because a bare `login:` line in
-        # YAML parses to `{"login": None}`, not a missing key.
-        login = data.get("login") or {}
-
-        # Parse OAuth clients
-        clients = []
-        for client_data in oauth.get("clients", []):
-            client_id = client_data.get("client_id", "")
-            clients.append(OAuthClient(
-                client_id=client_id,
-                client_secret=client_data.get("client_secret", ""),
-                description=client_data.get("description", ""),
-                background_color=client_data.get("background_color"),
-                header_color=client_data.get("header_color"),
-                footer_color=client_data.get("footer_color"),
-                show_client_id=client_data.get("show_client_id", True),
-                show_description=client_data.get("show_description", False),
-                additional_audiences=_coerce_additional_audiences(
-                    client_data.get("additional_audiences", []), client_id
-                ),
-                redirect_uris=_coerce_client_str_list(
-                    client_data.get("redirect_uris", []), client_id, "redirect_uris"
-                ),
-            ))
-
-        # A client_id must be unique. Duplicates - including two ${VAR}
-        # placeholders that expand to the same value - make client lookup
-        # ambiguous and cause the settings-save merge to match the wrong raw
-        # entry, which can materialize an env-backed secret (#127/#151). Fail
-        # fast rather than silently corrupt settings.yaml on the next save.
-        seen_client_ids: set[str] = set()
-        for parsed_client in clients:
-            if parsed_client.client_id in seen_client_ids:
-                raise ValueError(
-                    f"Duplicate OAuth client_id '{parsed_client.client_id}' in "
-                    "settings.yaml; client ids must be unique (check for env "
-                    "placeholders that expand to the same value)"
-                )
-            seen_client_ids.add(parsed_client.client_id)
-
-        self.settings = Settings(
-            # Server
-            host=server.get("host", "127.0.0.1"),
-            port=server.get("port", 8000),
-            debug=server.get("debug", False),
-            # OAuth
-            issuer=oauth.get("issuer", "http://localhost:8000"),
-            issuer_from_request=oauth.get("issuer_from_request", False),
-            issuer_allowlist=oauth.get("issuer_allowlist", []) or [],
-            device_verification_base_url=oauth.get("device_verification_base_url"),
-            issuer_from_proxy_headers=oauth.get("issuer_from_proxy_headers", False),
-            audience=oauth.get("audience", "default"),
-            token_expiry_minutes=oauth.get("token_expiry_minutes", 60),
-            refresh_token_rotation=oauth.get("refresh_token_rotation", False),
-            require_pkce=oauth.get("require_pkce", False),
-            clients=clients,
-            logos_dir=oauth.get("logos_dir"),
-            # SAML
-            # Absent or blank = derived from the effective issuer (#181).
-            saml_entity_id=saml.get("entity_id") or None,
-            saml_sso_url=saml.get("sso_url") or None,
-            default_acs_url=saml.get("default_acs_url", "http://localhost:8080/login/saml2/sso/samlIdp"),
-            saml_sign_responses=saml.get("sign_responses", True),
-            saml_export_roles=saml.get("export_roles", False),
-            saml_export_groups=saml.get("export_groups", False),
-            saml_roles_attr_name=saml.get("roles_attr_name", "roles"),
-            saml_groups_attr_name=saml.get("groups_attr_name", "groups"),
-            saml_c14n_algorithm=saml.get("c14n_algorithm", "exc_c14n"),
-            saml_want_authn_requests_signed=saml.get(
-                "want_authn_requests_signed", False
-            ),
-            saml_sp_certificates=saml.get("sp_certificates", []) or [],
-            strict_saml_binding=saml.get("strict_binding", False),
-            # JWT
-            jwt_algorithm=jwt_config.get("algorithm", "RS256"),
-            keys_dir=jwt_config.get("keys_dir", "./keys"),
-            # Login mode (persona = passwordless interactive login, local dev convenience)
-            login_mode=login.get("mode", "password"),
-            # Security profile (top-level; CLI --profile overrides it, #68)
-            security_profile=data.get("security_profile", "dev"),
-            # Authority prefixes
-            authority_prefixes=data.get("authority_prefixes", {}),
-            # Allowed identity classes
-            allowed_identity_classes=data.get("allowed_identity_classes", []),
-            # Session
-            secret_key=session.get("secret_key", "dev-secret-key-change-in-production"),
-            require_ui_login=session.get("require_ui_login", False),
-            enforce_password_check=session.get("enforce_password_check", False),
-            # Logging
-            log_level=logging_config.get("level", "INFO"),
-            log_token_requests=logging_config.get("log_token_requests", True),
-            log_saml_requests=logging_config.get("log_saml_requests", True),
-            verbose_logging=logging_config.get("verbose_logging", True),
-        )
+        # YAML -> document model -> domain model (#175 piece 2). The document
+        # model is the single statement of the file format: unknown keys are
+        # reported with their path, defaults live on the model, and the
+        # domain Settings is built from it with every validator it already
+        # had. ${VAR} expansion and config_version stay at the edge, above.
+        self.settings = load_settings_document(data, settings_file).to_settings()
 
     def _set_default_settings(self) -> None:
         """Set default settings with demo client."""
-        self.settings = Settings(
-            clients=[OAuthClient(
-                client_id="demo-client",
-                client_secret="demo-secret",
-                description="Default demo client"
-            )],
+        # Model defaults (the same the loader applies to a sparse file) plus
+        # the demo client and prefixes a fresh install gets.
+        self.settings = SettingsDocument(
             authority_prefixes={
                 "roles": "ROLE_",
                 "groups": "GROUP_",
@@ -277,7 +186,12 @@ class ConfigManager:
                 "entitlements": "ENT_",
             },
             allowed_identity_classes=["INTERNAL", "EXTERNAL", "PARTNER", "SERVICE"],
-        )
+        ).to_settings()
+        self.settings.clients = [OAuthClient(
+            client_id="demo-client",
+            client_secret="demo-secret",
+            description="Default demo client",
+        )]
 
     def _load_users(self) -> None:
         """Load users from users.yaml."""
@@ -308,38 +222,9 @@ class ConfigManager:
         # settings.yaml (passwords, emails, attributes); until #175 only the
         # settings loader expanded them.
         data = _expand_env_vars(data)
-        self.default_user = data.get("default_user", "admin")
-
-        for username, user_data in data.get("users", {}).items():
-            # Extract known fields
-            known_fields = {
-                "password", "email", "identity_class", "entitlements",
-                "roles", "groups", "tenant", "source_acl", "attributes"
-            }
-
-            # Get explicit attributes or collect unknown fields as attributes
-            attributes = user_data.get("attributes", {})
-
-            # Any field not in known_fields becomes an attribute (for backward compatibility)
-            for key, value in user_data.items():
-                if key not in known_fields and key not in attributes:
-                    attributes[key] = value
-
-            self.users[username] = User(
-                username=username,
-                # Missing key -> None (persona-mode-only user), not "" - a
-                # user without a password must never accidentally validate
-                # against an empty password.
-                password=user_data.get("password"),
-                email=user_data.get("email", f"{username}@example.org"),
-                identity_class=user_data.get("identity_class"),
-                entitlements=user_data.get("entitlements", []),
-                roles=user_data.get("roles", ["USER"]),
-                groups=user_data.get("groups", []),
-                tenant=user_data.get("tenant", "default"),
-                source_acl=user_data.get("source_acl", []),
-                attributes=attributes,
-            )
+        # Same document-model path as settings (#175 piece 2); unknown keys
+        # inside a user entry keep folding into its attributes, as always.
+        self.users, self.default_user = load_users_document(data, users_file).to_users()
 
     def _set_default_users(self) -> None:
         """Set default users."""
@@ -461,7 +346,7 @@ class ConfigManager:
         settings_file = self.config_dir / "settings.yaml"
         document = load_yaml_document(settings_file)
         # Declared state, not effective state (#172): see persistable_settings().
-        apply_settings_document(document, self.persistable_settings())
+        apply_settings_document(document, self.persistable_settings(), defaults=document_defaults())
         atomic_write_yaml(settings_file, document)
 
 

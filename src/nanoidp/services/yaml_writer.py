@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from ..config import OAuthClient, Settings, User, get_config
+from ..config_documents import document_defaults
 from ..serialization import (
     atomic_write_yaml,
     client_id_matches,
@@ -341,7 +342,7 @@ class YamlWriter:
         raises instead of persisting a mode the server can't start with.
         """
         data = self._load_settings_yaml()
-        login_mode_default = "password"
+        login_mode_default = document_defaults()["login.mode"]
 
         if mode:
             Settings.validate_login_mode(mode)
