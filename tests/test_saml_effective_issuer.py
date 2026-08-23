@@ -11,7 +11,9 @@ Core 2.2.5).
 """
 
 import base64
+import inspect
 import re
+from pathlib import Path
 
 import pytest
 import yaml
@@ -324,3 +326,37 @@ class TestMcp:
         props = tool.input_schema["properties"]
         assert "saml_entity_id" in props and "saml_sso_url" in props
 
+
+
+_REPO = Path(__file__).resolve().parent.parent
+# Captured at collection time, before any test runs: the suite's own saves
+# rewrite config/settings.yaml (conftest yaml_writer singleton gap), so
+# reading the file inside a test would see whatever an earlier test wrote,
+# not the committed artifact this guards.
+_SHIPPED_SETTINGS = {
+    name: yaml.safe_load((_REPO / name / "settings.yaml").read_text())
+    for name in ("config", "examples/spring-boot-saml")
+}
+
+
+class TestShippedConfigDerivesSamlUrls:
+    """#181 review: the shipped files must not pin entity_id/sso_url, or the
+    derivation never kicks in for anyone who starts from them. Guards the
+    committed artifacts, not just the code."""
+
+    @pytest.mark.parametrize("config_dir", sorted(_SHIPPED_SETTINGS))
+    def test_shipped_settings_have_no_explicit_saml_urls(self, config_dir):
+        saml = _SHIPPED_SETTINGS[config_dir].get("saml") or {}
+        assert "entity_id" not in saml, config_dir
+        assert "sso_url" not in saml, config_dir
+
+    def test_init_and_wizard_templates_keep_keys_commented(self):
+        import re
+
+        from nanoidp import __main__ as main_mod
+        from nanoidp import wizard
+
+        for mod in (main_mod, wizard):
+            src = inspect.getsource(mod)
+            assert not re.search(r"^\s*entity_id:", src, re.M), mod.__name__
+            assert not re.search(r"^\s*sso_url:", src, re.M), mod.__name__

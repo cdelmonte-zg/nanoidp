@@ -57,8 +57,6 @@ saml:
   export_groups: false
   roles_attr_name: roles
   groups_attr_name: groups
-  entity_id: http://localhost:8000/saml
-  sso_url: http://localhost:8000/saml/sso
 jwt:
   algorithm: RS256
   keys_dir: ./keys
