@@ -65,7 +65,6 @@ class YamlWriter:
 
         self._atomic_write(self.users_file, data)
 
-        # Reload config to pick up changes
         get_config().reload()
 
     def delete_user(self, username: str) -> None:
@@ -89,7 +88,6 @@ class YamlWriter:
 
         self._atomic_write(self.users_file, data)
 
-        # Reload config to pick up changes
         get_config().reload()
 
     def set_default_user(self, username: str) -> None:
