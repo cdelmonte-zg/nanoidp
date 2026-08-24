@@ -116,6 +116,23 @@
             </div>
             {% endif %}
             {% endif %}
+
+            {% if management_secret_configured %}
+            <hr class="my-4">
+            <p class="text-muted small mb-2">
+                <i class="bi bi-shield-lock me-1"></i>Mutating actions on this instance require the
+                management secret, separately from signing in above.
+            </p>
+            <form method="POST" action="{{ url_for('ui.management_unlock') }}">
+                <div class="form-floating mb-3">
+                    <input type="password" class="form-control" id="management_secret" name="management_secret" placeholder="Management secret" required>
+                    <label for="management_secret"><i class="bi bi-key-fill me-2"></i>Management secret</label>
+                </div>
+                <button type="submit" class="btn btn-outline-secondary w-100 py-2">
+                    <i class="bi bi-unlock me-2"></i>Unlock management actions
+                </button>
+            </form>
+            {% endif %}
         </div>
     </div>
 

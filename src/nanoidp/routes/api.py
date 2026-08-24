@@ -10,11 +10,13 @@ from flask.typing import ResponseReturnValue
 from ..config import get_config
 from ..hooks import HookError
 from ..services import get_audit_log, get_token_service
+from ._auth import management_secret_required_for_api
 from ._issuer import effective_issuer, effective_saml_entity_id, effective_saml_sso_url
 
 logger = logging.getLogger(__name__)
 
 api_bp = Blueprint("api", __name__, url_prefix="/api")
+api_bp.before_request(management_secret_required_for_api)
 
 
 @api_bp.route("/health")

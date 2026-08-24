@@ -500,6 +500,18 @@
             "title": "Enforce Password Check",
             "type": "boolean"
           },
+          "management_secret": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Management Secret"
+          },
           "permanent": {
             "default": null,
             "title": "Permanent"

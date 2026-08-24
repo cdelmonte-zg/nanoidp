@@ -64,67 +64,91 @@ class TestMutatingToolsDefinition:
 
 
 class TestAdminSecretCheck:
-    """Tests for _check_admin_secret function."""
+    """Tests for _check_admin_secret function.
+
+    _check_admin_secret(config, tool_name, arguments) reads config.settings.
+    management_secret straight off the passed-in ConfigManager (#163 B5
+    fix), not an env var read through a global singleton - so these pass a
+    bare config double rather than patching os.environ.
+    """
+
+    def _config(self, secret):
+        config = MagicMock()
+        config.settings.management_secret = secret
+        return config
 
     def test_no_secret_configured_allows_all(self):
         """Test that without secret configured, all operations are allowed."""
-        with patch.dict(os.environ, {}, clear=True):
-            # Remove any existing secret
-            os.environ.pop("NANOIDP_MCP_ADMIN_SECRET", None)
-
-            allowed, error = _check_admin_secret("create_user", {})
-            assert allowed is True
-            assert error == ""
+        allowed, error = _check_admin_secret(self._config(None), "create_user", {})
+        assert allowed is True
+        assert error == ""
 
     def test_read_only_tool_allowed_without_secret(self):
         """Test that read-only tools don't need secret."""
-        with patch.dict(os.environ, {"NANOIDP_MCP_ADMIN_SECRET": "mysecret"}):
-            allowed, error = _check_admin_secret("list_users", {})
-            assert allowed is True
-            assert error == ""
+        allowed, error = _check_admin_secret(self._config("mysecret"), "list_users", {})
+        assert allowed is True
+        assert error == ""
 
     def test_mutating_tool_blocked_without_secret(self):
         """Test that mutating tools are blocked when secret is configured but not provided."""
-        with patch.dict(os.environ, {"NANOIDP_MCP_ADMIN_SECRET": "mysecret"}):
-            allowed, error = _check_admin_secret("create_user", {})
-            assert allowed is False
-            assert "NANOIDP_MCP_ADMIN_SECRET" in error
-            assert "create_user" in error
+        allowed, error = _check_admin_secret(self._config("mysecret"), "create_user", {})
+        assert allowed is False
+        assert "admin_secret" in error
+        assert "create_user" in error
 
     def test_mutating_tool_allowed_with_correct_secret(self):
         """Test that mutating tools are allowed with correct secret."""
-        with patch.dict(os.environ, {"NANOIDP_MCP_ADMIN_SECRET": "mysecret"}):
-            arguments = {"admin_secret": "mysecret", "username": "test"}
-            allowed, error = _check_admin_secret("create_user", arguments)
-            assert allowed is True
-            assert error == ""
-            # Secret should be removed from arguments
-            assert "admin_secret" not in arguments
+        arguments = {"admin_secret": "mysecret", "username": "test"}
+        allowed, error = _check_admin_secret(self._config("mysecret"), "create_user", arguments)
+        assert allowed is True
+        assert error == ""
+        # Secret should be removed from arguments
+        assert "admin_secret" not in arguments
 
     def test_mutating_tool_blocked_with_wrong_secret(self):
         """Test that mutating tools are blocked with wrong secret."""
-        with patch.dict(os.environ, {"NANOIDP_MCP_ADMIN_SECRET": "mysecret"}):
-            arguments = {"admin_secret": "wrongsecret"}
-            allowed, error = _check_admin_secret("create_user", arguments)
-            assert allowed is False
-            assert "Invalid admin_secret" in error
+        arguments = {"admin_secret": "wrongsecret"}
+        allowed, error = _check_admin_secret(self._config("mysecret"), "create_user", arguments)
+        assert allowed is False
+        assert "Invalid admin_secret" in error
 
     def test_secret_removed_from_arguments(self):
         """Test that admin_secret is removed from arguments after check."""
-        with patch.dict(os.environ, {"NANOIDP_MCP_ADMIN_SECRET": "mysecret"}):
-            arguments = {"admin_secret": "mysecret", "username": "test", "password": "pass"}
-            _check_admin_secret("create_user", arguments)
-            assert "admin_secret" not in arguments
-            assert "username" in arguments
-            assert "password" in arguments
+        arguments = {"admin_secret": "mysecret", "username": "test", "password": "pass"}
+        _check_admin_secret(self._config("mysecret"), "create_user", arguments)
+        assert "admin_secret" not in arguments
+        assert "username" in arguments
+        assert "password" in arguments
+
+    def test_non_ascii_secret_or_candidate_does_not_crash(self):
+        """#163 B2 regression: secrets.compare_digest raises TypeError on
+        non-ASCII str operands; the fix compares UTF-8 bytes instead."""
+        allowed, error = _check_admin_secret(
+            self._config("segretò"), "create_user", {"admin_secret": "wrong"}
+        )
+        assert allowed is False
+        assert "Invalid admin_secret" in error
+
+        allowed, error = _check_admin_secret(
+            self._config("segretò"), "create_user", {"admin_secret": "segretò"}
+        )
+        assert allowed is True
+
+    def test_non_str_candidate_does_not_crash(self):
+        """#163 B2 regression: a non-string admin_secret (e.g. an int) must
+        compare False, not raise TypeError."""
+        allowed, error = _check_admin_secret(
+            self._config("mysecret"), "create_user", {"admin_secret": 123}
+        )
+        assert allowed is False
+        assert "Invalid admin_secret" in error
 
     @pytest.mark.parametrize("tool_name", list(MUTATING_TOOLS))
     def test_all_mutating_tools_require_secret(self, tool_name):
         """Test that all mutating tools require secret when configured."""
-        with patch.dict(os.environ, {"NANOIDP_MCP_ADMIN_SECRET": "secret123"}):
-            allowed, error = _check_admin_secret(tool_name, {})
-            assert allowed is False
-            assert tool_name in error
+        allowed, error = _check_admin_secret(self._config("secret123"), tool_name, {})
+        assert allowed is False
+        assert tool_name in error
 
 
 class TestMCPAuditLogging:

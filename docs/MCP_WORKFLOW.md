@@ -210,7 +210,13 @@ Prompt: "I need to test role-based access. Create a user 'role-test' with
 
 ### Admin Secret Protection
 
-When `NANOIDP_MCP_ADMIN_SECRET` is set, mutating tools require the secret:
+When [`management_secret`](SECURITY.md#management-secret) is configured -
+via `settings.yaml`'s `session.management_secret`, the
+`NANOIDP_MANAGEMENT_SECRET` env var, or the legacy `NANOIDP_MCP_ADMIN_SECRET`
+env var (this setting's MCP-only predecessor, still supported as an alias) -
+mutating tools require the secret as the `admin_secret` tool argument. The
+same setting also gates `/api/*` and the web UI's mutating form actions -
+see [Management Secret](SECURITY.md#management-secret) for the full picture.
 
 ```json
 {
@@ -219,7 +225,7 @@ When `NANOIDP_MCP_ADMIN_SECRET` is set, mutating tools require the secret:
       "command": "nanoidp-mcp",
       "env": {
         "NANOIDP_CONFIG_DIR": "./config",
-        "NANOIDP_MCP_ADMIN_SECRET": "your-secret-here"
+        "NANOIDP_MANAGEMENT_SECRET": "your-secret-here"
       }
     }
   }
@@ -267,6 +273,6 @@ NANOIDP_CONFIG_DIR=./config nanoidp-mcp
 ### Permission Denied for Mutating Tools
 
 Either:
-1. Provide `admin_secret` in tool arguments (if `NANOIDP_MCP_ADMIN_SECRET` is set)
-2. Or remove `NANOIDP_MCP_ADMIN_SECRET` env var for development
+1. Provide `admin_secret` in tool arguments (if `management_secret` is configured)
+2. Or unset `management_secret` (settings.yaml, `NANOIDP_MANAGEMENT_SECRET`, or the legacy `NANOIDP_MCP_ADMIN_SECRET`) for development
 3. Or check you're not running in `--readonly` mode

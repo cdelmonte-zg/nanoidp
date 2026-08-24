@@ -324,6 +324,40 @@ class Settings(BaseModel):
         "password_hashing is off (that path is intentionally plaintext, dev "
         "mode). YAML-only, like require_ui_login and secret_key.",
     )
+    management_secret: Optional[str] = Field(
+        default=None,
+        description="Shared secret gating state-changing calls across all three "
+        "management surfaces: the MCP server's MUTATING_TOOLS, api_bp's "
+        "POST/PUT/DELETE routes, and ui_bp's mutating form actions. Off by "
+        "default - unset, nothing is enforced, identical to today. Each "
+        "surface proves knowledge of it differently: MCP via the existing "
+        "'admin_secret' tool argument, api_bp via an 'X-Management-Secret' "
+        "request header (also satisfied by an already-unlocked ui_bp session, "
+        "so the dashboard's own same-origin fetch() calls keep working), "
+        "ui_bp via a one-time unlock form that then trusts the session - "
+        "session['management_verified'] holds an HMAC of this secret itself "
+        "(keyed by secret_key), not a bare flag, so forging it requires "
+        "knowing the secret too, not just secret_key (see docs/SECURITY.md, "
+        "'Session Cookie Trust'). require_ui_login's session['user'] has no "
+        "such binding. Independent of require_ui_login: that gate is the "
+        "UI's session front door (controls who can view the dashboard), this "
+        "is the write guard (controls who can change anything) - either, "
+        "both, or neither can be on; ui.management_unlock is exempt from "
+        "require_ui_login's redirect regardless, since gating one independent "
+        "axis on the other would make it unreachable. Loadable from "
+        "settings.yaml (session.management_secret) - an explicit key here, "
+        "even empty/null, wins over the env vars below - or the "
+        "NANOIDP_MANAGEMENT_SECRET env var; NANOIDP_MCP_ADMIN_SECRET (the "
+        "MCP-only predecessor of this setting) keeps working as an alias so "
+        "existing MCP setups aren't broken. YAML-only, like require_ui_login "
+        "and secret_key - never on the Settings page or in the MCP "
+        "update_settings schema, since a secret editable through the surface "
+        "it protects isn't a secret. Must be printable ASCII: Werkzeug "
+        "decodes request headers as latin-1, so a non-ASCII secret can never "
+        "be matched via the X-Management-Secret header - enforced at "
+        "startup, not just on that one surface, so header, form and MCP "
+        "JSON all see the same secret.",
+    )
 
 
     # Logging
@@ -392,6 +426,24 @@ class Settings(BaseModel):
         valid_modes = {"password", "persona"}
         if v not in valid_modes:
             raise ValueError(f"Login mode must be one of: {valid_modes}")
+        return v
+
+    @field_validator("management_secret")
+    @classmethod
+    def validate_management_secret_is_ascii(cls, v: Optional[str]) -> Optional[str]:
+        """Werkzeug decodes request headers as latin-1, so a non-ASCII
+        management_secret never matches over the X-Management-Secret header -
+        only the unlock form and MCP's JSON argument could reach it, leaving
+        the header path (and any non-browser API client) permanently unable
+        to authenticate (#163 review, round 2). Fail loud at startup rather
+        than ship a secret that silently only half-works."""
+        if v is not None and not (v.isascii() and v.isprintable()):
+            raise ValueError(
+                "management_secret must be printable ASCII - a non-ASCII or "
+                "control character can never be matched via the "
+                "X-Management-Secret request header (Werkzeug decodes "
+                "headers as latin-1)"
+            )
         return v
 
     # ------------------------------------------------------------------

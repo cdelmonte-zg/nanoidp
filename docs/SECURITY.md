@@ -14,7 +14,7 @@ By design, NanoIDP prioritizes developer convenience over security hardening. It
 
 NanoIDP binds to `127.0.0.1` (loopback only) by default, so out of the box it is reachable only from the local machine.
 
-This matters because the management API (`/api/*`) is **unauthenticated by design** (see [MCP Server Security](#mcp-server-security) for the equivalent concern on the MCP side). Those endpoints can mint a validly signed access token for any user, including `admin`, rotate the signing keys, and clear the audit log. Loopback binding keeps that surface off the network.
+This matters because the management API (`/api/*`) is **unauthenticated by design** (see [MCP Server Security](#mcp-server-security) for the equivalent concern on the MCP side). Those endpoints can mint a validly signed access token for any user, including `admin`, rotate the signing keys, and clear the audit log. Loopback binding keeps that surface off the network. If you need it reachable by more than one host, also consider [`management_secret`](#management-secret), which requires a shared secret for these mutating calls specifically (reads stay open either way).
 
 ### Exposing on a network
 
@@ -51,12 +51,27 @@ session:
 | `false` (default) | The config web UI is unauthenticated, like today |
 | `true` | Every web UI page except `/login` itself redirects to `/login` until a session exists |
 
+`/management/unlock` (the [`management_secret`](#management-secret) unlock
+form) is exempt from this redirect too, whether or not a login session
+exists yet - `management_secret` is an independent axis (see below), and
+gating it on a login session it doesn't depend on would make the unlock form
+`/login` renders whenever `management_secret` is configured silently do
+nothing.
+
 **What it does not protect**: the separate management API (`/api/*`) stays
 unauthenticated regardless of this setting - it's a distinct Flask blueprint
 that a UI-only login gate structurally cannot reach. If you enable
 `require_ui_login` because the dashboard is reachable by more than just you,
 also keep `/api/*` off the network (see [Network Binding](#network-binding)
-above) or in front of your own auth layer; this setting does nothing for it.
+above), set [`management_secret`](#management-secret) to gate its mutations,
+or put it behind your own auth layer; this setting does nothing for it.
+
+**Relationship to `management_secret`**: these are independent axes.
+`require_ui_login` is the UI's session front door - it controls who can view
+the dashboard at all. `management_secret` (below) is the write guard - it
+controls who can change anything, on all three management surfaces, whether
+or not `require_ui_login` is on. With both off, nothing is enforced, same as
+today.
 
 **Persona mode interaction**: logging in via `/login` or via the SAML SSO
 inline login at `/saml/sso` both satisfy this gate - they authenticate
@@ -71,6 +86,120 @@ against anyone who can reach the port.
 on the Settings page or the MCP `update_settings` tool. It's a fixed operator
 decision about the trust boundary of the surface itself, not something meant
 to be flipped from inside the surface it protects.
+
+**Session trust caveat**: this gate's protection depends entirely on
+`secret_key` being a real, private value - see
+[Session Cookie Trust](#session-cookie-trust-secret_key) below.
+
+---
+
+## Session Cookie Trust (`secret_key`)
+
+Both `require_ui_login` (above) and `management_secret`'s web UI leg (below)
+work by reading something out of the Flask session - a client-side cookie
+Flask *signs* but does not encrypt, using `secret_key`. Anyone who knows
+`secret_key` can construct arbitrary session content and have Flask accept it
+as genuine, including `session['user']` (what `require_ui_login` checks).
+
+```yaml
+session:
+  secret_key: "a real, private value"   # default: a public, well-known string
+```
+
+`secret_key` ships with a public default
+(`dev-secret-key-change-in-production`, identical in every install unless
+changed) so NanoIDP works out of the box. That's harmless as long as nothing
+security-relevant depends on the session; `require_ui_login` and
+`management_secret` both now do. NanoIDP logs a startup warning when
+`secret_key` is left at its default while either is configured.
+
+The two gates are not equally exposed by this. `require_ui_login`'s
+`session['user']` is a bare value with no independent verification - with a
+default `secret_key`, anyone who can reach the port can forge it and skip the
+login gate entirely. `management_secret`'s session flag
+(`session['management_verified']`) is additionally bound to
+`management_secret` itself via an HMAC (see
+[Management Secret](#management-secret)), not stored as a bare boolean, so
+knowing only the default `secret_key` is not enough to forge it - the forger
+would also need to know `management_secret`, the thing being protected.
+Set a real `secret_key` before relying on either gate beyond a single
+trusted machine.
+
+The session cookie is also set with `SameSite=Lax`. Once `management_secret`
+is unlocked, the session authorizes `/api/*` mutations
+(`management_secret_required_for_api` accepts an already-unlocked session,
+[above](#management-secret)) in addition to `ui_bp`'s own forms - so the
+cross-site form-POST surface that already existed for the dashboard now
+covers the management API too, on any browser that doesn't default new
+cookies to `Lax` on its own. `SameSite=Lax` closes that: the cookie isn't
+sent on a cross-site POST, only on top-level navigation.
+
+---
+
+## Management Secret
+
+`management_secret` is one shared secret that gates **mutations** across all
+three management surfaces - the MCP server, `/api/*`, and the config web UI -
+instead of each surface growing its own opt-in mechanism independently. It
+does not gate reads: listing users, viewing settings, decoding tokens, and
+the dashboard itself stay reachable exactly as they are today. Off by
+default - unset, nothing is enforced, identical to before this setting
+existed.
+
+```yaml
+session:
+  management_secret: "your-secret-here"   # default: unset
+```
+
+Must be printable ASCII - Werkzeug decodes request headers as latin-1, so a
+non-ASCII secret could never be matched via the `X-Management-Secret` header
+even though the form and MCP's JSON argument would see it correctly;
+rejected at startup with a clear error rather than shipping a secret that
+silently only half-works.
+
+Also loadable from the `NANOIDP_MANAGEMENT_SECRET` environment variable.
+`NANOIDP_MCP_ADMIN_SECRET` - this setting's MCP-only predecessor - keeps
+working as an alias, so existing MCP-only setups aren't broken by upgrading.
+Precedence: an explicit `management_secret` key in settings.yaml's `session:`
+block wins over both env vars *even when its value is empty or `null`* -
+presence in YAML is read as the operator deliberately stating "off", distinct
+from the key being absent. Only when the key is absent entirely do the env
+vars apply, `NANOIDP_MANAGEMENT_SECRET` before the legacy
+`NANOIDP_MCP_ADMIN_SECRET`. Env vars are read once, when configuration loads (startup, or an explicit
+`reload_config`) - not on every request, so changing one in the environment
+has no effect until then.
+
+Each surface proves knowledge of the secret differently, matching how that
+surface already talks to NanoIDP:
+
+| Surface | How the secret is supplied |
+|---------|-----------------------------|
+| MCP server | The existing `admin_secret` tool argument on any [mutating tool](#mutating-tools) - see [Admin Secret Protection](#admin-secret-protection) |
+| `/api/*` | An `X-Management-Secret` request header on any `POST`/`PUT`/`DELETE` |
+| Web UI (`ui_bp`) | A one-time "Unlock management actions" form on `/login`; once submitted correctly, the session is trusted for the rest of its lifetime - the same trust model `require_ui_login` already uses for `session['user']`, so you aren't re-prompted on every click |
+
+A UI mutation attempted before the secret has been unlocked for that session
+redirects to `/login` with a prompt to unlock, rather than silently failing;
+retry the action after unlocking. The web UI's own dashboard pages
+(users, token tester, audit log) call `/api/*` from client-side JavaScript
+using the browser's session cookie, not the header - an already-unlocked
+session satisfies `/api/*`'s gate too, so those buttons keep working after
+one unlock; a non-browser client still needs the header.
+
+What's actually stored in `session['management_verified']` is an HMAC of
+`management_secret` itself (keyed by `secret_key`), not a bare boolean - see
+[Session Cookie Trust](#session-cookie-trust-secret_key) for why that
+distinction matters.
+
+**Relationship to `require_ui_login`**: independent axes - see
+[Config UI Login Gate](#config-ui-login-gate) above.
+`require_ui_login` is the session front door (who can view the dashboard);
+`management_secret` is the write guard (who can change anything). Either,
+both, or neither can be enabled.
+
+**YAML-only**: like `secret_key`, `require_ui_login`, and `security_profile`,
+this is not exposed on the Settings page or the MCP `update_settings` tool -
+a secret editable through the surface it protects isn't a secret.
 
 ---
 
@@ -300,7 +429,10 @@ The following MCP tools modify configuration and require extra caution:
 
 ### Admin Secret Protection
 
-When `NANOIDP_MCP_ADMIN_SECRET` is set, mutating operations require the secret:
+When [`management_secret`](#management-secret) is configured, mutating
+operations require the secret via the `admin_secret` tool argument.
+`NANOIDP_MCP_ADMIN_SECRET` still works too - it's this setting's original,
+MCP-only name, kept as an alias:
 
 ```json
 {
@@ -394,7 +526,8 @@ discovery/token issuer mismatch.
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `NANOIDP_CONFIG_DIR` | Configuration directory path | `./config` |
-| `NANOIDP_MCP_ADMIN_SECRET` | Secret required for mutating MCP operations | (none) |
+| `NANOIDP_MANAGEMENT_SECRET` | [Secret](#management-secret) required for mutations across MCP, `/api/*`, and the web UI | (none) |
+| `NANOIDP_MCP_ADMIN_SECRET` | Legacy alias for `NANOIDP_MANAGEMENT_SECRET` (MCP-only name, still honored) | (none) |
 | `NANOIDP_MCP_READONLY` | Disable mutating MCP tools when set to `true` | `false` |
 | `PORT` | Server port | `8000` |
 
@@ -404,7 +537,7 @@ discovery/token issuer mismatch.
 
 1. **Use stricter-dev profile** when sharing the instance with team members
 2. **Enable readonly mode** for MCP when only introspection is needed
-3. **Set MCP admin secret** if multiple developers share the same NanoIDP instance
+3. **Set `management_secret`** if multiple developers share the same NanoIDP instance - it gates mutating calls on MCP, `/api/*`, and the web UI alike
 4. **Rotate keys periodically** to test token validation with multiple keys
 5. **Keep the default `127.0.0.1` binding** unless you specifically need network access; only override it on a trusted, isolated network (see [Network Binding](#network-binding))
 6. **Never expose NanoIDP to public networks**: it's designed for local/isolated use only

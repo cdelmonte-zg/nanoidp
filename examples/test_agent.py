@@ -80,6 +80,7 @@ class TestCategory(Enum):
     PERSONA = "Persona Login"
     KEYS = "Key Management"
     API = "REST API"
+    MANAGEMENT = "Management Secret"
 
 
 @dataclass
@@ -131,7 +132,8 @@ class NanoIDPTestAgent:
         client_secret: str = "demo-secret",
         username: str = "admin",
         password: str = "admin",
-        verbose: bool = False
+        verbose: bool = False,
+        management_secret: Optional[str] = None
     ):
         self.base_url = base_url.rstrip("/")
         self.client_id = client_id
@@ -139,8 +141,16 @@ class NanoIDPTestAgent:
         self.username = username
         self.password = password
         self.verbose = verbose
+        self.management_secret = management_secret
         self.session = requests.Session()
         self.session.auth = (client_id, client_secret)
+        # Set once here rather than per-request: covers every api_bp mutation
+        # this agent makes through self.session (#163 review - the header was
+        # previously attached ad hoc on three calls only, and any UI mutation
+        # made through self.session had no equivalent, see
+        # _unlock_management_secret below).
+        if self.management_secret:
+            self.session.headers["X-Management-Secret"] = self.management_secret
 
         # Token storage
         self.access_token: Optional[str] = None
@@ -163,6 +173,25 @@ class NanoIDPTestAgent:
         """Log verbose output."""
         if self.verbose:
             print(f"    [DEBUG] {msg}")
+
+    def _unlock_management_secret(self) -> None:
+        """One-time ui_bp write-guard unlock (routes/ui.py management_unlock).
+
+        Mirrors the X-Management-Secret header set on self.session in
+        __init__ for api_bp: without this, every ui_bp form mutation this
+        agent makes through self.session (settings, users, clients) would be
+        redirected to /login and silently do nothing once management_secret
+        is configured (#163 review, house rule for anything touching the
+        management surfaces). No-op when no secret was given - same as
+        every other run today.
+        """
+        if not self.management_secret:
+            return
+        self.session.post(
+            f"{self.base_url}/management/unlock",
+            data={"management_secret": self.management_secret},
+            timeout=5,
+        )
 
     def _add_result(
         self,
@@ -949,7 +978,11 @@ class NanoIDPTestAgent:
         test_client_id = f"branding-test-{secrets.token_hex(4)}"
         test_description = "Branding e2e test client"
         try:
-            create = requests.post(
+            # self.session (not bare requests) so this rides the same
+            # unlocked management_secret cookie as _unlock_management_secret
+            # set up (#163 review) - only relevant when a secret is
+            # configured; a no-op otherwise.
+            create = self.session.post(
                 f"{self.base_url}/clients/create",
                 data={
                     "client_id": test_client_id,
@@ -1003,7 +1036,7 @@ class NanoIDPTestAgent:
                 "Client Branding", TestCategory.OAUTH, False, f"Error: {e}"
             )
         finally:
-            requests.post(
+            self.session.post(
                 f"{self.base_url}/clients/{test_client_id}/delete", timeout=5
             )
 
@@ -2961,7 +2994,7 @@ class NanoIDPTestAgent:
             # Cleanup runs regardless of how far the checks above got, so a
             # failed assertion never leaves the running server in persona
             # mode or with a leftover test user.
-            requests.post(f"{self.base_url}/users/{persona_user}/delete", timeout=5)
+            self.session.post(f"{self.base_url}/users/{persona_user}/delete", timeout=5)
             self.session.post(
                 f"{self.base_url}/settings",
                 data={"login_mode": "password"},
@@ -3025,10 +3058,11 @@ class NanoIDPTestAgent:
             before_data = before.json()
             old_kid = before_data.get("active_kid", before_data.get("current_kid"))
 
-            # Perform rotation
+            # Perform rotation. X-Management-Secret (if any) is already on
+            # self.session.headers - see __init__.
             response = self.session.post(
                 f"{self.base_url}/api/keys/rotate",
-                timeout=10
+                timeout=10,
             )
 
             if response.status_code == 200:
@@ -3199,7 +3233,7 @@ class NanoIDPTestAgent:
             response = self.session.post(
                 f"{self.base_url}/api/users/{self.username}/token",
                 json={"exp_minutes": 5},
-                timeout=5
+                timeout=5,
             )
             if response.status_code == 200:
                 data = response.json()
@@ -3318,7 +3352,7 @@ class NanoIDPTestAgent:
         try:
             response = self.session.post(
                 f"{self.base_url}/api/config/reload",
-                timeout=5
+                timeout=5,
             )
             if response.status_code == 200:
                 data = response.json()
@@ -3596,6 +3630,84 @@ class NanoIDPTestAgent:
             )
         except Exception as e:
             return self._add_result("API Audit Stats", TestCategory.API, False, str(e))
+
+    # =========================================================================
+    # MANAGEMENT SECRET TESTS
+    # =========================================================================
+    #
+    # Positive coverage (the secret works when supplied correctly) already
+    # happens implicitly: every api_bp/ui_bp mutation above rides
+    # self.session, which carries X-Management-Secret and the unlocked
+    # ui_bp session (see __init__ / _unlock_management_secret). These two
+    # tests are the negative side - a client with neither must be rejected -
+    # which nothing else here exercises (#163 review: "there is also no
+    # negative check"). Both are skipped (reported as passing, with
+    # data={"skipped": True}) when the agent wasn't given a management_secret
+    # to begin with, since there's nothing gated to prove in that mode.
+
+    def test_management_secret_required_for_api_mutation(self) -> TestResult:
+        """A mutating /api/* call with no X-Management-Secret header must be
+        rejected (401), using a bare requests.Session with none of this
+        agent's own session state."""
+        if not self.management_secret:
+            return self._add_result(
+                "Management Secret Required (API)",
+                TestCategory.MANAGEMENT,
+                True,
+                "Skipped: no management_secret configured",
+                {"skipped": True}
+            )
+        try:
+            anon = requests.Session()
+            response = anon.post(f"{self.base_url}/api/config/reload", timeout=5)
+            return self._add_result(
+                "Management Secret Required (API)",
+                TestCategory.MANAGEMENT,
+                response.status_code == 401,
+                f"Status: {response.status_code} (expected 401)",
+                {"status": response.status_code}
+            )
+        except Exception as e:
+            return self._add_result(
+                "Management Secret Required (API)", TestCategory.MANAGEMENT, False, str(e)
+            )
+
+    def test_management_secret_required_for_ui_mutation(self) -> TestResult:
+        """A ui_bp form mutation from a session that never unlocked
+        management_secret must be redirected to /login, not silently
+        applied."""
+        if not self.management_secret:
+            return self._add_result(
+                "Management Secret Required (UI)",
+                TestCategory.MANAGEMENT,
+                True,
+                "Skipped: no management_secret configured",
+                {"skipped": True}
+            )
+        try:
+            anon = requests.Session()
+            response = anon.post(
+                f"{self.base_url}/users/create",
+                data={"username": "should-not-be-created", "password": "pw"},
+                allow_redirects=False,
+                timeout=5,
+            )
+            redirected_to_login = (
+                response.status_code == 302
+                and "/login" in response.headers.get("Location", "")
+            )
+            return self._add_result(
+                "Management Secret Required (UI)",
+                TestCategory.MANAGEMENT,
+                redirected_to_login,
+                f"Status: {response.status_code}, Location: "
+                f"{response.headers.get('Location')} (expected 302 to /login)",
+                {"status": response.status_code, "location": response.headers.get("Location")}
+            )
+        except Exception as e:
+            return self._add_result(
+                "Management Secret Required (UI)", TestCategory.MANAGEMENT, False, str(e)
+            )
 
     # =========================================================================
     # TEST RUNNER
@@ -3882,6 +3994,11 @@ class NanoIDPTestAgent:
         print(f"  User:     {self.username}")
         print(f"  Verbose:  {self.verbose}")
 
+        # Unlocks ui_bp's write guard on self.session up front (no-op unless
+        # management_secret was given) - every ui_bp mutation below (settings,
+        # persona user, client branding) rides this same session (#163 review).
+        self._unlock_management_secret()
+
         # Define test groups
         test_groups = [
             (TestCategory.CORE, "Core Infrastructure", [
@@ -3949,6 +4066,10 @@ class NanoIDPTestAgent:
                 self.test_api_hooks_block,
                 self.test_api_audit_log,
                 self.test_api_audit_stats,
+            ]),
+            (TestCategory.MANAGEMENT, "Management Secret", [
+                self.test_management_secret_required_for_api_mutation,
+                self.test_management_secret_required_for_ui_mutation,
             ]),
         ]
 
@@ -4047,6 +4168,11 @@ Examples:
         help="Output results as JSON"
     )
     parser.add_argument(
+        "--management-secret",
+        default=os.getenv("NANOIDP_MANAGEMENT_SECRET"),
+        help="Management secret for mutating /api/* calls, if the target instance has one configured (default: NANOIDP_MANAGEMENT_SECRET env var)"
+    )
+    parser.add_argument(
         "--oauth21",
         action="store_true",
         help="Run only the oauth21-profile suite (server must run with "
@@ -4077,7 +4203,8 @@ Examples:
         client_secret=args.client_secret,
         username=args.user,
         password=args.password,
-        verbose=args.verbose
+        verbose=args.verbose,
+        management_secret=args.management_secret
     )
 
     if args.oauth21:
