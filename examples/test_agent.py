@@ -858,7 +858,11 @@ class NanoIDPTestAgent:
         test_client_id = f"native-test-{secrets.token_hex(4)}"
         custom_scheme = "com.example.app:/oauth2redirect"
         try:
-            create = requests.post(
+            # self.session (not bare requests) so this rides the same
+            # unlocked management_secret cookie as _unlock_management_secret
+            # set up (#163 review) - only relevant when a secret is
+            # configured; a no-op otherwise.
+            create = self.session.post(
                 f"{self.base_url}/clients/create",
                 data={
                     "client_id": test_client_id,
@@ -964,7 +968,7 @@ class NanoIDPTestAgent:
                 "Native App Redirect URIs", TestCategory.OAUTH, False, f"Error: {e}"
             )
         finally:
-            requests.post(
+            self.session.post(
                 f"{self.base_url}/clients/{test_client_id}/delete", timeout=5
             )
 
