@@ -11,8 +11,10 @@ Usage:
 import argparse
 import os
 import sys
+from typing import Optional
 
 from nanoidp import __version__
+from nanoidp.config_schema import SCHEMA_ARTIFACT, SCHEMA_MODELS
 from nanoidp.models import SECURITY_PROFILES
 
 # Add src to path for development
@@ -140,6 +142,33 @@ Default credentials:
 """)
 
 
+def validate_config_command(config_dir: Optional[str], strict: bool) -> int:
+    """``nanoidp validate-config``: lint a config directory, print one line
+    per finding, return the exit code.
+
+    Nothing is started and nothing is executed: no ConfigManager, no hook
+    dispatch, no plugin import (see ``nanoidp.config_validation``). That is
+    what makes it safe as a pre-commit or CI step on a directory whose
+    bootstrap.yaml names commands.
+    """
+    from nanoidp.config_validation import effective_strict, report, validate_config_dir
+
+    # Same precedence the server's own discovery uses (ConfigManager).
+    directory: str = (
+        config_dir
+        or os.getenv("NANOIDP_CONFIG_DIR")
+        or os.getenv("MOCK_IDP_CONFIG_DIR")
+        or "./config"
+    )
+    strict_run = effective_strict(directory, strict)
+    findings = validate_config_dir(directory)
+    lines, code = report(findings, strict_run)
+    print(f"validate-config: {directory} (strict)" if strict_run else f"validate-config: {directory}")
+    for line in lines:
+        print(line)
+    return code
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="NanoIDP - Lightweight Identity Provider for testing OAuth2/OIDC and SAML integrations"
@@ -182,6 +211,42 @@ def main() -> None:
         help="Path to configuration directory",
     )
 
+    # config-schema subcommand (#175 piece 3)
+    schema_parser = subparsers.add_parser(
+        "config-schema",
+        help="Print the JSON Schema of the configuration files, generated from the "
+        "document models (settings.yaml, users.yaml, bootstrap.yaml)",
+    )
+    schema_parser.add_argument(
+        "--file",
+        choices=sorted(SCHEMA_MODELS),
+        default=None,
+        help="Print only this file's schema instead of the full document",
+    )
+    schema_parser.add_argument(
+        "--write",
+        action="store_true",
+        help=f"Write the full document to {SCHEMA_ARTIFACT} in the source checkout "
+        "instead of printing it (works from a checkout only)",
+    )
+
+    # validate-config subcommand (#175 piece 4)
+    validate_parser = subparsers.add_parser(
+        "validate-config",
+        help="Validate settings.yaml, users.yaml and bootstrap.yaml without starting "
+        "the server; no hook is run and no plugin is loaded",
+    )
+    validate_parser.add_argument(
+        "--config",
+        default=None,
+        help="Path to configuration directory",
+    )
+    validate_parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="Exit 1 on warnings too (what --strict-config does at startup)",
+    )
+
     # Main server arguments (when no subcommand)
     parser.add_argument(
         "--bootstrap-hook",
@@ -221,6 +286,15 @@ def main() -> None:
         "YAML value applies (default: dev)",
     )
 
+    parser.add_argument(
+        "--strict-config",
+        action="store_true",
+        help="Refuse to start when a configuration file contains an unknown key, "
+        "instead of logging a warning and ignoring it. Overrides settings.yaml's "
+        "config_validation for this run only and is never written back; wrong "
+        "types are errors either way",
+    )
+
     args = parser.parse_args()
 
     # Handle init command
@@ -232,6 +306,32 @@ def main() -> None:
         """)
         init_config(args.config_dir)
         return
+
+    # Handle config-schema command
+    if args.command == "config-schema":
+        from nanoidp.config_schema import build_schema_document, file_schema, render, write_artifact
+        if args.write:
+            if args.file:
+                print(
+                    "config-schema --write always writes the full document; "
+                    "drop --file (or redirect a single file's schema yourself)",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            try:
+                target = write_artifact()
+            except (RuntimeError, OSError) as exc:
+                print(f"error: {exc}", file=sys.stderr)
+                sys.exit(1)
+            print(f"  [written] {target}")
+            return
+        document = file_schema(args.file) if args.file else build_schema_document()
+        print(render(document), end="")
+        return
+
+    # Handle validate-config command
+    if args.command == "validate-config":
+        sys.exit(validate_config_command(args.config, args.strict))
 
     # Handle plugins command
     if args.command == "plugins":
@@ -264,6 +364,8 @@ def main() -> None:
         debug=args.debug,
         config_dir=args.config,
         profile=args.profile,
+        # Only a given flag is an override; without it settings.yaml decides.
+        strict_config=True if args.strict_config else None,
     )
 
 

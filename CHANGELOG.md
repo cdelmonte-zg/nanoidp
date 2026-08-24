@@ -32,6 +32,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (checked before `${VAR}` expansion).
 
 ### Added
+- **Generated config schema, `validate-config` and strict validation** (#175,
+  pieces 3 and 4). Three additions to the config contract, none of which
+  restates it a seventh time:
+  - `nanoidp config-schema` prints the JSON Schema of `settings.yaml`,
+    `users.yaml` and `bootstrap.yaml`, generated from the document models
+    (`--file` for one of them, `--write` to regenerate the committed
+    artifact from a source checkout). The artifact is
+    `docs/schema/config.v1.json`: one standalone schema per file under the
+    keys `settings`, `users` and `bootstrap`, next to the `config_version`
+    they describe, ready to point an editor's YAML-schema support at. A test
+    fails when the committed file no longer matches the models, and parity
+    tests fail when the MCP `update_settings` tool or the web UI's settings
+    form grows a knob that is not a key of the contract - or offers one of
+    the YAML-only fields (`secret_key`, `require_ui_login`, `hooks`,
+    `plugins`).
+  - `config_validation: warn|strict` (top level of `settings.yaml`, default
+    `warn`) and the server flag `--strict-config` decide what an unknown key
+    does: log its path and keep loading, or refuse to start and refuse every
+    later reload with the same message. The flag wins over the file for that
+    run only and is never written back, like `--profile` (#172). One
+    contract per directory: `users.yaml` and `bootstrap.yaml` follow what
+    `settings.yaml` declares. Wrong types stay errors in both modes.
+  - `nanoidp validate-config [--config DIR] [--strict]` lints a
+    configuration directory without starting anything: one line per finding,
+    exit 0 when clean or with warnings only, exit 1 on errors and on
+    warnings under `--strict`. It reads the three files through the same
+    loaders the server uses and nothing else - no `ConfigManager`, no hook
+    dispatched, no plugin imported, `bootstrap.yaml` checked for its shape
+    only - so it is safe as a pre-commit or CI step on a directory whose
+    hooks name commands. MCP agents get the same check as the read-only
+    `validate_config` tool (`{valid, findings}`), which brings the MCP
+    surface to 26 tools.
 - **Hooks and plugins v1** (#185): extension points for external
   configuration stores, not backends. Three synchronous hooks with
   `HOOK_API_VERSION = 1`: `on_before_load(config_dir)` before the files are

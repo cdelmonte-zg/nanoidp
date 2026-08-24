@@ -33,7 +33,7 @@ from __future__ import annotations
 import copy
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Type, TypeVar
+from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple, Type, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
@@ -50,6 +50,9 @@ logger = logging.getLogger(__name__)
 DocumentT = TypeVar("DocumentT", bound=BaseModel)
 
 _FORBID = ConfigDict(extra="forbid")
+
+# Accepted values of the top-level ``config_validation`` key (#175 piece 4).
+VALIDATION_MODES = ("warn", "strict")
 
 
 class ServerSection(BaseModel):
@@ -241,6 +244,14 @@ class SettingsDocument(BaseModel):
     logging: LoggingSection = Field(default_factory=LoggingSection)
     login: LoginSection = Field(default_factory=LoginSection)
     security_profile: str = "dev"
+    # How the loader reacts to an unknown key in this configuration directory
+    # (#175 piece 4). "warn" (default) logs it with its dotted path and
+    # ignores it; "strict" refuses to load. The server's --strict-config flag
+    # wins over this value for that run and is never written back. The value
+    # is read from the raw YAML before the document is validated, because it
+    # decides how this very validation reports; it applies to users.yaml and
+    # bootstrap.yaml too, one contract per directory.
+    config_validation: str = "warn"
     authority_prefixes: Dict[str, str] = Field(default_factory=dict)
     allowed_identity_classes: List[str] = Field(default_factory=list)
     # Accepted for compatibility, not consumed (module docstring).
@@ -259,6 +270,15 @@ class SettingsDocument(BaseModel):
     @classmethod
     def _plugins_shape(cls, value: Any) -> Dict[str, Dict[str, Any]]:
         return _validate_plugins_mapping(value)
+
+    @field_validator("config_validation")
+    @classmethod
+    def _known_validation_mode(cls, value: str) -> str:
+        if value not in VALIDATION_MODES:
+            raise ValueError(
+                f"config_validation must be one of {', '.join(VALIDATION_MODES)}"
+            )
+        return value
 
     @model_validator(mode="before")
     @classmethod
@@ -459,14 +479,34 @@ def _drop_path(data: Any, loc: Tuple[Any, ...]) -> None:
         target.pop(loc[-1], None)
 
 
-def _load_document(model: Type[DocumentT], data: Dict[str, Any], file_path: Path) -> DocumentT:
+def unknown_key_message(file_path: Path, loc: Tuple[Any, ...]) -> str:
+    """The one wording of an unknown-key finding, shared by the warning, the
+    strict error and ``nanoidp validate-config`` (#175 piece 4)."""
+    return f"{file_path}: unknown key {_dotted(loc)}"
+
+
+def _load_document(
+    model: Type[DocumentT],
+    data: Dict[str, Any],
+    file_path: Path,
+    *,
+    strict: bool = False,
+    on_unknown: Optional[Callable[[str], None]] = None,
+) -> DocumentT:
     """Validate ``data`` against ``model``.
 
-    Unknown keys (``extra_forbidden``) are reported as a WARNING with their
-    dotted path, removed, and validation is retried, so a typo such as
-    ``oauth.isuer`` no longer vanishes silently (#175) while files that load
-    today keep loading. Any other error (wrong type, invalid value) raises a
-    ``ValueError`` naming the file and the path; stricter handling is piece 4.
+    Unknown keys (``extra_forbidden``) are reported with their dotted path,
+    removed, and validation is retried, so a typo such as ``oauth.isuer`` no
+    longer vanishes silently (#175) while files that load today keep loading.
+    Any other error (wrong type, invalid value) raises a ``ValueError``
+    naming the file and the path.
+
+    ``strict`` (``config_validation: strict`` or ``--strict-config``, #175
+    piece 4) turns the unknown key into that same ``ValueError`` instead:
+    same text, no ``(ignored)`` suffix, raised at load and at every reload.
+    ``on_unknown`` receives the message instead of the logger when a caller
+    collects findings rather than starting the server
+    (``nanoidp validate-config``).
     """
     working = data
     for _attempt in range(2):
@@ -481,27 +521,69 @@ def _load_document(model: Type[DocumentT], data: Dict[str, Any], file_path: Path
                     f"{file_path}: invalid value at {_dotted(first['loc']) or '<root>'}: "
                     f"{first['msg']}"
                 ) from exc
+            if strict:
+                raise ValueError(unknown_key_message(file_path, unknown[0]["loc"])) from exc
             working = copy.deepcopy(working) if working is data else working
             for error in unknown:
-                logger.warning(
-                    f"{file_path}: unknown key {_dotted(error['loc'])} (ignored)"
-                )
+                message = unknown_key_message(file_path, error["loc"])
+                if on_unknown is not None:
+                    on_unknown(message)
+                else:
+                    logger.warning(f"{message} (ignored)")
                 _drop_path(working, error["loc"])
     return model.model_validate(working)  # pragma: no cover - second pass raised
 
 
-def load_settings_document(data: Dict[str, Any], file_path: Path) -> SettingsDocument:
-    return _load_document(SettingsDocument, data, file_path)
+def load_settings_document(
+    data: Dict[str, Any],
+    file_path: Path,
+    *,
+    strict: bool = False,
+    on_unknown: Optional[Callable[[str], None]] = None,
+) -> SettingsDocument:
+    return _load_document(
+        SettingsDocument, data, file_path, strict=strict, on_unknown=on_unknown
+    )
 
 
-def load_users_document(data: Dict[str, Any], file_path: Path) -> UsersDocument:
-    return _load_document(UsersDocument, data, file_path)
+def load_users_document(
+    data: Dict[str, Any],
+    file_path: Path,
+    *,
+    strict: bool = False,
+    on_unknown: Optional[Callable[[str], None]] = None,
+) -> UsersDocument:
+    return _load_document(
+        UsersDocument, data, file_path, strict=strict, on_unknown=on_unknown
+    )
 
 
-def load_bootstrap_document(data: Dict[str, Any], file_path: Path) -> BootstrapDocument:
+def load_bootstrap_document(
+    data: Dict[str, Any],
+    file_path: Path,
+    *,
+    strict: bool = False,
+    on_unknown: Optional[Callable[[str], None]] = None,
+) -> BootstrapDocument:
     """``bootstrap.yaml`` goes through the same unknown-key / wrong-type
-    reporting as ``settings.yaml`` (review before 2.7.0rc4)."""
-    return _load_document(BootstrapDocument, data, file_path)
+    reporting as ``settings.yaml`` (review before 2.7.0rc4), and the same
+    strictness: it is declared in settings.yaml, one contract per directory."""
+    return _load_document(
+        BootstrapDocument, data, file_path, strict=strict, on_unknown=on_unknown
+    )
+
+
+def declared_validation_mode(data: Mapping[str, Any]) -> str:
+    """The ``config_validation`` a raw settings.yaml mapping declares.
+
+    Read from the raw YAML, before the document is built, because it decides
+    how that build reports an unknown key - and before the registry reads
+    ``bootstrap.yaml``, which is loaded first but follows settings.yaml's
+    choice. An unrecognized value returns the default and is left to the
+    document validator, which reports it with its path like any bad value.
+    """
+    value = data.get("config_validation")
+    return value if value in VALIDATION_MODES else "warn"
 
 
 def document_defaults() -> Dict[str, Any]:

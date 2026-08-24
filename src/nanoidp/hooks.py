@@ -598,7 +598,11 @@ class HookRegistry:
 # ------------------------------------------------------------------ bootstrap
 
 
-def bootstrap_registry(config_dir: Path, environ: Optional[Mapping[str, str]] = None) -> HookRegistry:
+def bootstrap_registry(
+    config_dir: Path,
+    environ: Optional[Mapping[str, str]] = None,
+    strict_config: bool = False,
+) -> HookRegistry:
     """Build the registry from the bootstrap surface, before settings.yaml exists.
 
     Sources, in order: ``bootstrap.yaml`` in the config directory (``hooks:``
@@ -610,6 +614,10 @@ def bootstrap_registry(config_dir: Path, environ: Optional[Mapping[str, str]] = 
     as ``_``, keys lower-cased). A bootstrap plugin is a plugin like any
     other: loaded once, it takes part in every hook for the life of the
     process.
+
+    ``strict_config`` is settings.yaml's effective ``config_validation``
+    (#175 piece 4): under strict an unknown key in ``bootstrap.yaml`` refuses
+    to start instead of warning, one contract for the whole directory.
     """
     env = os.environ if environ is None else environ
     registry = HookRegistry(config_dir=config_dir)
@@ -622,7 +630,7 @@ def bootstrap_registry(config_dir: Path, environ: Optional[Mapping[str, str]] = 
         with open(bootstrap_file, "r") as f:
             raw = yaml.safe_load(f) or {}
         raw = expand_env_vars(raw)
-        document = load_bootstrap_document(raw, bootstrap_file)
+        document = load_bootstrap_document(raw, bootstrap_file, strict=strict_config)
         registry.configure_from_sections(document.hooks, document.plugins, SOURCE_BOOTSTRAP_FILE)
         # bootstrap.yaml's on_before_load runs before the first load only,
         # like the env hook: settings.yaml owns reloads.

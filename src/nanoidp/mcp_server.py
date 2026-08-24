@@ -58,6 +58,7 @@ from mcp.types import (
 
 from . import __version__
 from .config import ConfigManager, OAuthClient, User, init_config
+from .config_validation import validate_config_result
 from .hooks import HookError
 from .models import HEX_COLOR_PATTERN, normalize_saml_attr_name
 from .services import (
@@ -683,6 +684,30 @@ _TOOLS: list[Tool] = [
         },
     ),
     Tool(
+        name="validate_config",
+        description="Validate the running configuration directory (settings.yaml, "
+        "users.yaml, bootstrap.yaml): unknown keys as warnings, wrong types and "
+        "refused values as errors. settings.yaml and users.yaml findings are what "
+        "a startup or the next reload would hit; bootstrap.yaml findings are what "
+        "would stop the NEXT startup (the bootstrap surface loads at startup only). Read-only and inert: it re-reads the files through the same "
+        "loaders, runs no hook and loads no plugin. 'valid' is false on any error, "
+        "and on a warning too under strict mode, which is when a start would refuse. "
+        "'strict' defaults to this server's effective validation mode; pass it "
+        "explicitly to override.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "strict": {
+                    "type": "boolean",
+                    "description": "Treat warnings as failures, like the server's "
+                    "--strict-config. A directory declaring config_validation: "
+                    "strict is strict regardless.",
+                },
+            },
+            "required": [],
+        },
+    ),
+    Tool(
         name="update_settings",
         description="Update NanoIDP settings (issuer, audience, token expiry, SAML options, etc.). "
         "hooks: and plugins: (#185) are YAML-only, like secret_key and require_ui_login: "
@@ -1258,6 +1283,7 @@ async def _execute_tool(name: str, arguments: dict[str, Any], config: ConfigMana
         return {
             # Same key as GET /api/config (#175): the contract an agent targets.
             "config_version": config.config_version,
+            "config_validation": "strict" if config.strict_config else "warn",
             "issuer": settings.issuer,
             "issuer_from_request": settings.issuer_from_request,
             "issuer_allowlist": settings.issuer_allowlist,
@@ -1314,6 +1340,17 @@ async def _execute_tool(name: str, arguments: dict[str, Any], config: ConfigMana
         except HookError as exc:
             return {"success": False, "error": f"Reload failed: {exc.message}", "kind": exc.kind}
         return {"success": True, "message": "Configuration reloaded"}
+
+    elif name == "validate_config":
+        # The CLI's code path exactly (nanoidp.config_validation): no
+        # ConfigManager is built, no hook runs, no plugin is imported, and
+        # the running configuration is not touched or reloaded.
+        # strict defaults to the manager's effective mode, so "what the next
+        # reload would hit" stays true for a ConfigManager started with
+        # --strict-config (#204 review); an explicit argument still wins.
+        strict_arg = arguments.get("strict")
+        effective = config.strict_config if strict_arg is None else bool(strict_arg)
+        return validate_config_result(config.config_dir, effective)
 
     elif name == "update_settings":
         settings = config.settings

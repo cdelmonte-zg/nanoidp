@@ -29,6 +29,7 @@ readonly mode, and the exposure warnings, see the
 | `update_settings` | Update IdP settings |
 | `save_config` | Persist the current configuration to the YAML files |
 | `reload_config` | Reload configuration from files |
+| `validate_config` | Lint the running config directory without starting or executing anything (no hook, no plugin): `{valid, findings}` |
 | `get_oidc_discovery` | Get OIDC discovery document (same document as `/.well-known/openid-configuration`) |
 | `get_jwks` | Get JSON Web Key Set |
 | `get_audit_log` | Get audit log entries (filter by limit, event type, username) |

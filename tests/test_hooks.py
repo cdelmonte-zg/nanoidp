@@ -807,7 +807,7 @@ class TestReviewBeforeRc4:
         mcp._config = ConfigManager(str(tmp_path), profile_override="stricter-dev")
         result = asyncio.run(mcp_call_tool("get_settings", {}))
         payload = yaml.safe_load(result.content[0].text)
-        for key in ("security_profile", "profile_override", "effective", "config_version", "hooks"):
+        for key in ("security_profile", "profile_override", "effective", "config_version", "config_validation", "hooks"):
             assert payload[key] == api[key], key
         assert payload["effective"]["require_pkce"] is True
 
