@@ -98,7 +98,7 @@ outside the normal config covers it:
 |---|---|---|
 | `NANOIDP_BOOTSTRAP_HOOK="<command>"` or `nanoidp --bootstrap-hook "<command>"` | an `on_before_load` shell command | once, before the first load |
 | `NANOIDP_BOOTSTRAP_PLUGIN=<name>` with `NANOIDP_PLUGIN_<NAME>_<KEY>=<value>` | a plugin and its settings (name upper-cased, `-` as `_`) | loaded once, then takes part in every hook |
-| `bootstrap.yaml` in the configuration directory | `hooks:` and `plugins:` only, same schema and same loader as `settings.yaml`: `${VAR}` placeholders expand, an unknown key is warned with its path and ignored, a wrong type stops startup | its `on_before_load` once, its other hooks and plugins always |
+| `bootstrap.yaml` in the configuration directory | `hooks:` and `plugins:` only, same schema and same loader as `settings.yaml`: `${VAR}` placeholders expand, an unknown key is warned with its path and ignored (under `config_validation: strict` it stops startup, like everywhere else), a wrong type stops startup | its `on_before_load` once, its other hooks and plugins always |
 
 Precedence of the policy values (`strict`, `timeout_seconds`): the
 bootstrap surface is the baseline; `settings.yaml` overrides a value only
