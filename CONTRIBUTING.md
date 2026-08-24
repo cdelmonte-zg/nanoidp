@@ -144,41 +144,16 @@ nanoidp/
 
 ## Releasing (maintainers)
 
-NanoIDP uses GitHub Actions for automated releases to both PyPI and GHCR.
-
-```bash
-# 1. Update version in pyproject.toml
-# 2. Update CHANGELOG.md
-# 3. Commit changes
-git add -A && git commit -m "Release v1.0.1"
-
-# 4. Create and push tag
-git tag v1.0.1
-git push origin main --tags
-```
-
-The workflow automatically:
-
-1. Runs all tests
-2. Builds the package
-3. Publishes to TestPyPI
-4. Publishes to PyPI (only for non-prerelease tags)
-5. Builds and publishes Docker images to GHCR
-
-Container tags are derived from the git tag (for example `v1.0.1`); the `latest` tag is only published for non-prerelease tags.
-
-### Pre-release Testing
-
-For testing releases before publishing to PyPI:
-
-```bash
-# Create a pre-release tag (publishes to TestPyPI and GHCR)
-git tag v1.0.1-rc1
-git push origin v1.0.1-rc1
-
-# Install from TestPyPI to verify
-pip install -i https://test.pypi.org/simple/ nanoidp==1.0.1rc1
-```
+Releases are cut by pushing a `v*` tag; two workflows publish to PyPI and
+GHCR and a wheel-smoke job exercises the built artifact before anything is
+published. The full process, with the exact commands, the verification
+checklist and the recovery procedures, lives in
+[docs/RELEASING.md](docs/RELEASING.md). In short: bump `pyproject.toml`
+through a PR, tag the merged commit (`v2.7.0-rc5` for a pre-release with a
+hyphen, `v2.7.0` for a final), create the GitHub release, then verify that
+every workflow job ran and that the published artifacts install and behave
+(pre-releases reach PyPI too and need `pip install --pre`; `:latest` on GHCR
+moves only on final tags).
 
 ## License
 
