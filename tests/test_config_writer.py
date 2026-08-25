@@ -6,7 +6,10 @@ files on disk - no ``ConfigManager``/``YamlWriter`` involved yet (phases 2-3
 migrate those callers onto this primitive).
 """
 
+import multiprocessing
 import threading
+import time
+from pathlib import Path
 
 import pytest
 
@@ -16,6 +19,23 @@ from nanoidp.services.config_writer import (
     compare_and_replace,
     current_revision,
 )
+
+
+def _mp_worker(file_path_str, base_revision, barrier, value, result_queue):
+    """Module-level so it can be used as a multiprocessing target regardless
+    of start method. Sleeps inside mutate to widen the check-to-replace
+    window (#229 review round 2's probe)."""
+
+    def mutate(doc):
+        time.sleep(0.05)
+        doc.update({"counter": value})
+
+    barrier.wait()
+    try:
+        compare_and_replace(Path(file_path_str), base_revision, mutate)
+        result_queue.put(("ok", value))
+    except ConflictError:
+        result_queue.put(("conflict", value))
 
 
 class TestCurrentRevision:
@@ -186,3 +206,40 @@ class TestConcurrentReadsOutsideTheLock:
                 t.join()
 
         assert errors == []
+
+
+class TestCrossProcessConflictDetection:
+    """Regression pin for the #229 review round-2 finding: compare_and_replace's
+    thread lock only serializes threads within one process, so two separate
+    OS processes each get their own _write_lock and can both pass the
+    revision check before either has written - the reviewer's
+    multiprocessing probe (Barrier + a sleep inside mutate to widen the
+    check-to-replace window) lost an update 10/10 trials without a
+    cross-process lock. fcntl.flock on a lock file in the config directory
+    (_cross_process_lock) closes it."""
+
+    def test_two_processes_racing_the_same_file_one_wins_one_conflicts(self, tmp_path):
+        f = tmp_path / "settings.yaml"
+        f.write_text("counter: 0\n")
+        base = current_revision(f)
+
+        ctx = multiprocessing.get_context("fork")
+        barrier = ctx.Barrier(2)
+        result_queue = ctx.Queue()
+
+        procs = [
+            ctx.Process(target=_mp_worker, args=(str(f), base, barrier, value, result_queue))
+            for value in (1, 2)
+        ]
+        for p in procs:
+            p.start()
+        for p in procs:
+            p.join(timeout=10)
+
+        results = [result_queue.get(timeout=5) for _ in procs]
+        outcomes = [outcome for outcome, _ in results]
+        assert outcomes.count("ok") == 1
+        assert outcomes.count("conflict") == 1
+
+        winner_value = next(value for outcome, value in results if outcome == "ok")
+        assert f.read_text().strip() == f"counter: {winner_value}"

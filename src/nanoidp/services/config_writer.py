@@ -27,22 +27,37 @@ parsed document: hashing what's actually on disk means any two readers of
 the same file always compute the same revision, with no dependence on
 ruamel's dump formatting.
 
-The check-load-mutate-write sequence runs under a single process-local lock
-(``_write_lock``, same pattern as ``config.py``'s ``_config_lock``, and
-deliberately one lock for every file rather than one per path: ``save()``
-writes two files back to back, ``reload_local()`` stages the whole
-directory (#204), and #192 will need a cross-file check that only works
-under one lock). Without it, two in-process threads can both read the
-same "actual" revision before either has written and both pass the
-check - that part is purely about the check-then-write race (TOCTOU); it
-is not what makes concurrent YAML parsing safe (see below). The lock only
-serializes callers within this process - there is no cross-process file
-lock anywhere in this codebase, so it narrows rather than eliminates the
-race between a caller reading a revision and calling
-``compare_and_replace`` with it. That window is still cut from "however
-long an HTTP request or an MCP tool call takes between a read and a
-write" down to "however long one write takes" - the actual lost-update
-scenario #229 is closing.
+The check-load-mutate-write sequence runs under two locks, both held for
+the whole section and both deliberately one lock for every file in the
+directory rather than one per path (``save()`` writes two files back to
+back, ``reload_local()`` stages the whole directory (#204), and #192
+will need a cross-file check that only works under one lock each):
+
+- ``_write_lock``, a ``threading.Lock`` (same pattern as ``config.py``'s
+  ``_config_lock``), serializing threads within this process.
+- an advisory ``fcntl.flock`` on a lock file in the config directory
+  (``.nanoidp-write.lock``), serializing separate OS processes - the
+  actual case #229 was opened for (a UI worker and an MCP process, or
+  two MCP processes, sharing one config directory). The thread lock
+  alone does not cover this: two processes each get their own
+  ``_write_lock`` and race exactly as before without the file lock
+  (#229 review round 2, reproduced with ``multiprocessing`` and a
+  ``Barrier`` - both writers saw "ok", one update silently lost, 10/10
+  trials). Both locks are kept, not just the file lock, because
+  ``fcntl.flock`` is scoped to the open file description: a second
+  ``flock()`` from the same process is not guaranteed to exclude the
+  first the way it does across processes, so cross-thread safety within
+  one process still needs the plain thread lock. POSIX only
+  (``fcntl``) - the platforms this project runs on in CI (Linux/macOS).
+  A Windows deployment would need ``msvcrt.locking`` behind the same
+  helper; not implemented, so this is a hard requirement, not a silent
+  degradation, on a platform where ``fcntl`` cannot even be imported.
+
+Readers do not take the file lock: the atomic replace (``os.replace``)
+already guarantees a reader sees a complete file, one revision or the
+next, never a partial one - the lock's job is only to make the
+check-then-replace section atomic against another writer, not to gate
+reads.
 
 Concurrent YAML parsing/dumping is a separate hazard the lock above does
 not touch, because reads never take it: ``reload_local()``, every
@@ -73,11 +88,14 @@ not distinguish "absent" from "present but empty".
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import hashlib
 import logging
+import os
 import threading
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Iterator, Optional
 
 from ..serialization import atomic_write_yaml, load_yaml_document
 
@@ -85,7 +103,31 @@ logger = logging.getLogger(__name__)
 
 Revision = str
 
+_LOCK_FILENAME = ".nanoidp-write.lock"
+
 _write_lock = threading.Lock()
+
+
+@contextlib.contextmanager
+def _cross_process_lock(directory: Path) -> Iterator[None]:
+    """Advisory, cross-process exclusive lock for one config directory.
+
+    One lock file per directory (not per target file, same reasoning as
+    ``_write_lock``), opened fresh and ``flock``-ed for the duration of
+    the caller's section, released in ``finally`` even if the caller
+    raises (a stale lock file left over from a partial write is harmless -
+    it is never read for content, only locked).
+    """
+    lock_path = directory / _LOCK_FILENAME
+    fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
 
 
 class ConflictError(RuntimeError):
@@ -131,7 +173,7 @@ def compare_and_replace(
     written, after the revision check passes - a conflict never leaves a
     partial write or a half-applied mutation.
     """
-    with _write_lock:
+    with _write_lock, _cross_process_lock(file_path.parent):
         actual = current_revision(file_path)
         if expected_revision is not None and expected_revision != actual:
             raise ConflictError(
