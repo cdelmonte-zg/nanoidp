@@ -8,7 +8,7 @@ import uuid
 import zlib
 from base64 import b64decode, b64encode
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, cast
 
 from flask import Blueprint, Response, abort, render_template, request, session
 from flask.typing import ResponseReturnValue
@@ -38,9 +38,11 @@ def secure_fromstring(xml_bytes: bytes) -> etree._Element:
     """Parse XML securely, preventing XXE attacks."""
     return etree.fromstring(xml_bytes, parser=_secure_parser)
 
+
 # Try to import signxml for SAML signing
 try:
     from signxml import CanonicalizationMethod, XMLSigner, methods
+
     SIGNXML_AVAILABLE = True
 except ImportError:
     SIGNXML_AVAILABLE = False
@@ -71,6 +73,7 @@ def _get_c14n_algorithm(config_value: str) -> "CanonicalizationMethod":
         return CanonicalizationMethod.CANONICAL_XML_1_1
     # Default to Exclusive C14N for SAML standard compliance
     return CanonicalizationMethod.EXCLUSIVE_XML_CANONICALIZATION_1_0
+
 
 saml_bp = Blueprint("saml", __name__, url_prefix="/saml")
 
@@ -277,14 +280,20 @@ def _build_saml_response(
     ctxc.text = authn_context
 
     if attributes:
-        attrs = etree.SubElement(assertion, "{urn:oasis:names:tc:SAML:2.0:assertion}AttributeStatement")
+        attrs = etree.SubElement(
+            assertion, "{urn:oasis:names:tc:SAML:2.0:assertion}AttributeStatement"
+        )
         for k, v in attributes.items():
             if v is None:
                 continue
-            attr = etree.SubElement(attrs, "{urn:oasis:names:tc:SAML:2.0:assertion}Attribute", Name=k)
+            attr = etree.SubElement(
+                attrs, "{urn:oasis:names:tc:SAML:2.0:assertion}Attribute", Name=k
+            )
             if isinstance(v, (list, tuple)):
                 for item in v:
-                    av = etree.SubElement(attr, "{urn:oasis:names:tc:SAML:2.0:assertion}AttributeValue")
+                    av = etree.SubElement(
+                        attr, "{urn:oasis:names:tc:SAML:2.0:assertion}AttributeValue"
+                    )
                     av.text = str(item)
             else:
                 av = etree.SubElement(attr, "{urn:oasis:names:tc:SAML:2.0:assertion}AttributeValue")
@@ -306,8 +315,10 @@ def _build_saml_response(
         )
         signed = signer.sign(
             # signxml's typed API takes the certificate as a PEM string
-            assertion, key=crypto.priv_pem, cert=cert_pem.decode("ascii"),
-            reference_uri=assertion_id
+            assertion,
+            key=crypto.priv_pem,
+            cert=cert_pem.decode("ascii"),
+            reference_uri=assertion_id,
         )
         resp.remove(assertion)
         resp.append(signed)
@@ -344,7 +355,9 @@ def metadata() -> ResponseReturnValue:
         idpsso.set("WantAuthnRequestsSigned", "true")
 
     # KeyDescriptor
-    kd = etree.SubElement(idpsso, "{urn:oasis:names:tc:SAML:2.0:metadata}KeyDescriptor", use="signing")
+    kd = etree.SubElement(
+        idpsso, "{urn:oasis:names:tc:SAML:2.0:metadata}KeyDescriptor", use="signing"
+    )
     ki = etree.SubElement(kd, "{http://www.w3.org/2000/09/xmldsig#}KeyInfo")
     x509d = etree.SubElement(ki, "{http://www.w3.org/2000/09/xmldsig#}X509Data")
     x509c = etree.SubElement(x509d, "{http://www.w3.org/2000/09/xmldsig#}X509Certificate")
@@ -376,186 +389,191 @@ def cert() -> ResponseReturnValue:
     return Response(crypto.cert_pem, mimetype="application/x-pem-file")
 
 
-@saml_bp.route("/sso", methods=["GET", "POST"])
-def sso() -> ResponseReturnValue:
-    """SAML SSO endpoint.
+def _verify_authn_request_signature(
+    config: Any, saml_request_b64: str, relay_state: str
+) -> Optional[ResponseReturnValue]:
+    """AuthnRequest signature verification (#69), opt-in via
+    saml.want_authn_requests_signed. Verified where the request ENTERS:
 
-    Handles both SP-initiated SSO flows:
-    - HTTP-Redirect binding (GET with DEFLATE compressed SAMLRequest)
-    - HTTP-POST binding (POST with uncompressed SAMLRequest)
+    - GET = Redirect binding: query-string signature (Bindings §3.4.4.1).
+      The signature only exists on the original URL and cannot survive the
+      login-form roundtrip, so the verified request is bound SERVER-SIDE in
+      the session; the POST login leg (saml_original_verb=GET) is admitted
+      only for values byte-identical to a request this session already
+      verified, and fails closed otherwise (#69 review: hidden form fields
+      are client-controlled and must not be trusted on their own).
+    - POST without saml_original_verb = POST-binding entry: enveloped XML
+      signature (Core §5).
+    - POST login leg of a POST-binding request (saml_original_verb=POST):
+      the signature still travels inside the XML, so it is re-verified.
 
-    If user is not authenticated, shows login form inline (no redirect)
-    to preserve the original binding context.
+    Returns the rejection response, or None when the request may proceed
+    (verification passed, or the opt-in is off).
     """
-    config = get_config()
+    if not config.settings.saml_want_authn_requests_signed:
+        return None
 
-    saml_request_b64 = request.form.get("SAMLRequest") or request.args.get("SAMLRequest")
-    relay_state = request.form.get("RelayState") or request.args.get("RelayState", "")
-
-    if not saml_request_b64:
-        return abort(400, description="missing SAMLRequest")
-
-    # AuthnRequest signature verification (#69), opt-in via
-    # saml.want_authn_requests_signed. Verified where the request ENTERS:
-    # - GET = Redirect binding: query-string signature (Bindings §3.4.4.1).
-    #   The signature only exists on the original URL and cannot survive the
-    #   login-form roundtrip, so the verified request is bound SERVER-SIDE in
-    #   the session; the POST login leg (saml_original_verb=GET) is admitted
-    #   only for values byte-identical to a request this session already
-    #   verified, and fails closed otherwise (#69 review: hidden form fields
-    #   are client-controlled and must not be trusted on their own).
-    # - POST without saml_original_verb = POST-binding entry: enveloped XML
-    #   signature (Core §5).
-    # - POST login leg of a POST-binding request (saml_original_verb=POST):
-    #   the signature still travels inside the XML, so it is re-verified.
-    if config.settings.saml_want_authn_requests_signed:
-        form_leg_verb = (request.form.get("saml_original_verb") or "").upper()
-        try:
-            if request.method == "GET":
-                verify_redirect_signature(
-                    request.query_string.decode("latin-1"),
-                    load_sp_certificates(config.settings.saml_sp_certificates),
+    form_leg_verb = (request.form.get("saml_original_verb") or "").upper()
+    try:
+        if request.method == "GET":
+            verify_redirect_signature(
+                request.query_string.decode("latin-1"),
+                load_sp_certificates(config.settings.saml_sp_certificates),
+            )
+            # A later Redirect-leg POST may only replay exactly this
+            # verified request. Overwritten by each newly verified GET.
+            session["saml_verified_redirect"] = {
+                "SAMLRequest": saml_request_b64,
+                "RelayState": relay_state,
+            }
+        elif form_leg_verb == "GET":
+            verified = session.get("saml_verified_redirect")
+            if (
+                not isinstance(verified, dict)
+                or verified.get("SAMLRequest") != saml_request_b64
+                or verified.get("RelayState") != relay_state
+            ):
+                raise SAMLSignatureError(
+                    "Redirect-binding login continuation does not match a "
+                    "signature-verified request in this session"
                 )
-                # A later Redirect-leg POST may only replay exactly this
-                # verified request. Overwritten by each newly verified GET.
-                session["saml_verified_redirect"] = {
-                    "SAMLRequest": saml_request_b64,
-                    "RelayState": relay_state,
-                }
-            elif form_leg_verb == "GET":
-                verified = session.get("saml_verified_redirect")
-                if (
-                    not isinstance(verified, dict)
-                    or verified.get("SAMLRequest") != saml_request_b64
-                    or verified.get("RelayState") != relay_state
-                ):
-                    raise SAMLSignatureError(
-                        "Redirect-binding login continuation does not match a "
-                        "signature-verified request in this session"
-                    )
-            else:
-                xml_bytes = _decode_saml_request_bytes(saml_request_b64)
-                verify_post_signature(
-                    xml_bytes,
-                    load_sp_certificates(config.settings.saml_sp_certificates),
-                )
-        except SAMLSignatureError as e:
-            audit_event(
-                "saml_request",
-                "failed",
-                endpoint="/saml/sso",
-                details={"reason": f"AuthnRequest signature rejected: {e}"},
+        else:
+            xml_bytes = _decode_saml_request_bytes(saml_request_b64)
+            verify_post_signature(
+                xml_bytes,
+                load_sp_certificates(config.settings.saml_sp_certificates),
             )
-            return abort(400, description=f"AuthnRequest signature rejected: {e}")
-
-    # Check if user is authenticated
-    username = session.get("user")
-    persona_mode = config.settings.persona_mode_enabled
-
-    # Handle inline login (no redirect to preserve binding)
-    if not username:
-        login_error = None
-
-        # Check if login form was submitted. Persona mode authenticates by
-        # identity selection only; password mode is unchanged.
-        form_username = request.form.get("username", "").strip()
-        form_password = request.form.get("password", "")
-
-        user = config.interactive_authenticate(form_username, form_password)
-
-        if user:
-            session["user"] = form_username
-            # Recorded so the assertion's AuthnContextClassRef below reflects
-            # how this session actually authenticated (#persona login design
-            # contract, point 6) - persona logins must not claim
-            # PasswordProtectedTransport.
-            session["auth_method"] = "persona" if persona_mode else "password"
-            session.permanent = True
-            username = form_username
-            audit_event(
-                "login",
-                "success",
-                endpoint="/saml/sso",
-                username=username,
-            )
-        elif (persona_mode and form_username) or (
-            not persona_mode and form_username and form_password
-        ):
-            # A real (failed) selection/login attempt, not just missing input
-            login_error = "Invalid credentials"
-            audit_event(
-                "login",
-                "failed",
-                endpoint="/saml/sso",
-                username=form_username,
-                details={"reason": "Invalid credentials"},
-            )
-
-        # Still not authenticated - show login form
-        if not username:
-            # Pass original HTTP verb to template for strict mode parsing after inline login
-            # (POST with compressed SAMLRequest from original GET needs to decompress)
-            return render_template(
-                "login.html",
-                error=login_error,
-                saml_request=saml_request_b64,
-                relay_state=relay_state,
-                original_verb=request.method,
-                users=list(config.users.keys()),
-                persona_mode=persona_mode,
-            )
-
-    user = config.get_user(username)
-    if not user:
+    except SAMLSignatureError as e:
         audit_event(
             "saml_request",
             "failed",
             endpoint="/saml/sso",
-            username=username,
-            details={"reason": "User not found"},
+            details={"reason": f"AuthnRequest signature rejected: {e}"},
         )
-        return abort(401, description=f"user '{username}' not found")
+        return abort(400, description=f"AuthnRequest signature rejected: {e}")
+    return None
 
-    # Parse SAMLRequest. Signature verification (when enabled) already
-    # happened at the top of this function (#69); without the opt-in,
-    # Signature/SigAlg query params are accepted and ignored, as before.
-    #
-    # Use original HTTP verb from form if set (inline login case: original GET
-    # compressed SAMLRequest is POSTed back after login form submission).
-    # Normalize to uppercase and validate.
-    form_verb = request.form.get("saml_original_verb")
-    if form_verb and form_verb.upper() not in ("GET", "POST"):
-        return abort(400, description="invalid saml_original_verb")
-    original_verb = (form_verb or request.method or "POST").upper()
-    saml_info = _parse_saml_request(
-        saml_request_b64,
-        http_verb=original_verb,
-        strict=config.settings.strict_saml_binding
+
+def _sso_authenticate_inline(
+    config: Any, saml_request_b64: str, relay_state: str
+) -> tuple[Optional[str], Optional[ResponseReturnValue]]:
+    """The inline-login leg: (username, None) once authenticated, or
+    (None, login-page response) while not.
+
+    Login happens inline (no redirect) to preserve the original binding
+    context. Persona mode authenticates by identity selection only;
+    password mode is unchanged.
+    """
+    username = session.get("user")
+    if username:
+        return username, None
+
+    persona_mode = config.settings.persona_mode_enabled
+    login_error = None
+
+    form_username = request.form.get("username", "").strip()
+    form_password = request.form.get("password", "")
+
+    user = config.interactive_authenticate(form_username, form_password)
+
+    if user:
+        session["user"] = form_username
+        # Recorded so the assertion's AuthnContextClassRef reflects how this
+        # session actually authenticated (#persona login design contract,
+        # point 6) - persona logins must not claim
+        # PasswordProtectedTransport.
+        session["auth_method"] = "persona" if persona_mode else "password"
+        session.permanent = True
+        audit_event(
+            "login",
+            "success",
+            endpoint="/saml/sso",
+            username=form_username,
+        )
+        return form_username, None
+
+    if (persona_mode and form_username) or (not persona_mode and form_username and form_password):
+        # A real (failed) selection/login attempt, not just missing input
+        login_error = "Invalid credentials"
+        audit_event(
+            "login",
+            "failed",
+            endpoint="/saml/sso",
+            username=form_username,
+            details={"reason": "Invalid credentials"},
+        )
+
+    # Still not authenticated - show login form. Pass the original HTTP verb
+    # to the template for strict mode parsing after inline login (POST with
+    # compressed SAMLRequest from an original GET needs to decompress).
+    return None, render_template(
+        "login.html",
+        error=login_error,
+        saml_request=saml_request_b64,
+        relay_state=relay_state,
+        original_verb=request.method,
+        users=list(config.users.keys()),
+        persona_mode=persona_mode,
     )
 
-    # Determine ACS URL
-    requested_acs = saml_info.get("acs_url") if saml_info else None
-    acs_url = requested_acs or config.settings.default_acs_url
 
-    in_response_to = saml_info.get("id") if saml_info else None
+def _sso_build_attributes(config: Any, user: Any) -> Dict[str, Any]:
+    """The assertion's attribute set for this user.
 
-    # Build SAML attributes
-    saml_attrs = {
+    Roles/groups are opt-in: they have no standard SAML attribute name, so
+    the SP-specific name is configured alongside the switch.
+    """
+    saml_attrs: Dict[str, Any] = {
         "identity_class": user.identity_class,
         "entitlements": user.entitlements,
         "email": user.email,
     }
-    # Roles/groups are opt-in: they have no standard SAML attribute name, so the
-    # SP-specific name is configured alongside the switch.
     if config.settings.saml_export_roles and user.roles:
         _add_export_attr(saml_attrs, config.settings.saml_roles_attr_name, user.roles)
     if config.settings.saml_export_groups and user.groups:
-        _add_export_attr(
-            saml_attrs, config.settings.saml_groups_attr_name, user.groups
-        )
-    # Add custom attributes
+        _add_export_attr(saml_attrs, config.settings.saml_groups_attr_name, user.groups)
     if user.attributes:
         saml_attrs.update(user.attributes)
+    return saml_attrs
+
+
+def _sso_parse_request(
+    config: Any, saml_request_b64: str
+) -> tuple[Optional[str], Optional[str], Optional[ResponseReturnValue]]:
+    """Parse the SAMLRequest: (acs_url, in_response_to, None) or (None, None, error).
+
+    Signature verification (when enabled) already happened in
+    _verify_authn_request_signature (#69); without the opt-in,
+    Signature/SigAlg query params are accepted and ignored, as before.
+
+    Uses the original HTTP verb from the form if set (inline login case: an
+    original GET's compressed SAMLRequest is POSTed back after the login
+    form submission). Normalized to uppercase and validated.
+    """
+    form_verb = request.form.get("saml_original_verb")
+    if form_verb and form_verb.upper() not in ("GET", "POST"):
+        return None, None, abort(400, description="invalid saml_original_verb")
+    original_verb = (form_verb or request.method or "POST").upper()
+    saml_info = _parse_saml_request(
+        saml_request_b64, http_verb=original_verb, strict=config.settings.strict_saml_binding
+    )
+
+    requested_acs = saml_info.get("acs_url") if saml_info else None
+    acs_url = requested_acs or config.settings.default_acs_url
+    in_response_to = saml_info.get("id") if saml_info else None
+    return acs_url, in_response_to, None
+
+
+def _sso_success_response(
+    config: Any,
+    user: Any,
+    username: str,
+    acs_url: str,
+    in_response_to: Optional[str],
+    relay_state: str,
+) -> ResponseReturnValue:
+    """Build, audit and auto-submit the SAML Response for an authenticated user."""
+    saml_attrs = _sso_build_attributes(config, user)
 
     name_id = user.email or f"{username}@example.org"
 
@@ -598,7 +616,7 @@ def sso() -> ResponseReturnValue:
     # Auto-submit form (escape user-controlled values to prevent XSS)
     safe_acs_url = html.escape(acs_url, quote=True)
     safe_relay_state = html.escape(relay_state, quote=True)
-    response_html = f"""<!DOCTYPE html>
+    return f"""<!DOCTYPE html>
 <html><body onload="document.forms[0].submit()">
 <form method="post" action="{safe_acs_url}">
   <input type="hidden" name="SAMLResponse" value="{saml_b64}"/>
@@ -607,10 +625,65 @@ def sso() -> ResponseReturnValue:
 </form>
 </body></html>"""
 
-    return response_html
+
+@saml_bp.route("/sso", methods=["GET", "POST"])
+def sso() -> ResponseReturnValue:
+    """SAML SSO endpoint.
+
+    Handles both SP-initiated SSO flows:
+    - HTTP-Redirect binding (GET with DEFLATE compressed SAMLRequest)
+    - HTTP-POST binding (POST with uncompressed SAMLRequest)
+
+    If user is not authenticated, shows login form inline (no redirect)
+    to preserve the original binding context.
+
+    Each step is a named helper; every rejection keeps its historical
+    error and audit behavior (#212).
+    """
+    config = get_config()
+
+    saml_request_b64 = request.form.get("SAMLRequest") or request.args.get("SAMLRequest")
+    relay_state = request.form.get("RelayState") or request.args.get("RelayState", "")
+
+    if not saml_request_b64:
+        return abort(400, description="missing SAMLRequest")
+
+    rejected = _verify_authn_request_signature(config, saml_request_b64, relay_state)
+    if rejected is not None:
+        return rejected
+
+    username, login_page = _sso_authenticate_inline(config, saml_request_b64, relay_state)
+    if login_page is not None:
+        return login_page
+    assert username is not None  # _sso_authenticate_inline returns one or the other
+
+    user = config.get_user(username)
+    if not user:
+        audit_event(
+            "saml_request",
+            "failed",
+            endpoint="/saml/sso",
+            username=username,
+            details={"reason": "User not found"},
+        )
+        return abort(401, description=f"user '{username}' not found")
+
+    acs_url, in_response_to, invalid = _sso_parse_request(config, saml_request_b64)
+    if invalid is not None:
+        return invalid
+
+    # acs_url is None only when the request names no ACS URL AND
+    # saml.default_acs_url is unset - a latent pre-existing 500 (the old
+    # inline code crashed on html.escape(None) the same way), preserved
+    # as-is by this refactor and left for its own fix.
+    return _sso_success_response(
+        config, user, username, cast(str, acs_url), in_response_to, relay_state
+    )
 
 
-def _build_attribute_query_response(user_id: str, attributes: dict, request_id: str, issuer_url: str) -> str:
+def _build_attribute_query_response(
+    user_id: str, attributes: dict, request_id: str, issuer_url: str
+) -> str:
     """
     Build a SAML Response for AttributeQuery (backend-to-backend).
 
@@ -809,13 +882,9 @@ def attribute_query() -> ResponseReturnValue:
             # Roles/groups only when explicitly enabled (see /saml/sso).
             # Lists, not ",".join: same reason as entitlements above (#134).
             if config.settings.saml_export_roles and user.roles:
-                _add_export_attr(
-                    attributes, config.settings.saml_roles_attr_name, user.roles
-                )
+                _add_export_attr(attributes, config.settings.saml_roles_attr_name, user.roles)
             if config.settings.saml_export_groups and user.groups:
-                _add_export_attr(
-                    attributes, config.settings.saml_groups_attr_name, user.groups
-                )
+                _add_export_attr(attributes, config.settings.saml_groups_attr_name, user.groups)
 
             # Add custom attributes
             if user.attributes:
@@ -843,7 +912,9 @@ def attribute_query() -> ResponseReturnValue:
         )
 
         # Sign the response (if configured)
-        signed_response = _sign_attribute_query_response(response_xml, config.settings.saml_sign_responses)
+        signed_response = _sign_attribute_query_response(
+            response_xml, config.settings.saml_sign_responses
+        )
 
         # Wrap in SOAP envelope
         soap_response = f"""<?xml version="1.0" encoding="UTF-8"?>
@@ -861,13 +932,16 @@ def attribute_query() -> ResponseReturnValue:
             details={"attributes_count": len(attributes)},
         )
 
-        logger.info(f"AttributeQuery response issued for user '{user_id}' with {len(attributes)} attributes")
+        logger.info(
+            f"AttributeQuery response issued for user '{user_id}' with {len(attributes)} attributes"
+        )
 
         return Response(soap_response, mimetype="text/xml")
 
     except Exception as e:
         logger.error(f"AttributeQuery error: {e}")
         import traceback
+
         traceback.print_exc()
 
         audit_event(
