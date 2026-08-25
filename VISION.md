@@ -76,18 +76,26 @@ implicitly throughout the project's history; this writes them down.
   guards (`require_ui_login`, `management_secret`) are locks for a
   trusted network, not an access-control system: there are no roles, no
   per-user audit, no tenant isolation, and none are planned.
-- **External configuration backends.** Secrets and users reach nanoidp
-  through YAML files and `${VAR}` placeholders rendered by the deploy
-  (Vault Agent, External Secrets, an init container); nanoidp itself
-  does not read from or write to a secret store or a database. The
-  hooks and plugins shipped in 2.7.0 are the supported way to wire an
-  external store in from outside: nanoidp provides the extension
-  points, the deploy provides the backend.
-- **Database persistence.** YAML files plus in-memory runtime state are a
-  feature. Declared configuration lives in schema-versioned YAML you can
-  read, edit and `git diff`; runtime state (tokens, sessions, audit) lives
-  in memory. Where it goes beyond the process's lifetime is the deploy's
-  concern, not nanoidp's.
+- **External configuration backends.** Declared configuration remains
+  schema-versioned YAML you can read, edit and `git diff`. Secrets and
+  users reach nanoidp through YAML files and `${VAR}` placeholders
+  rendered by the deploy (Vault Agent, External Secrets, an init
+  container); nanoidp does not use a database, Vault or another service
+  as a configuration source of truth, and there is no pluggable
+  configuration backend. The hooks and plugins shipped in 2.7.0 are the
+  way to react to configuration events from outside (mirror, notify,
+  bootstrap): nanoidp provides the extension points, the deploy provides
+  whatever sits behind them.
+- **Production persistence and distributed state.** Runtime state
+  (authorization and device codes, token revocations and refresh-token
+  families, the audit log, runtime-created clients and users) is in
+  memory by default. An optional
+  local SQLite runtime store gives durable runtime state and lets several
+  worker processes on one host share it; it is not a distributed store.
+  Distributed databases, HA and multi-node state coordination are not
+  goals. Durable is not declared: a runtime-created object can survive a
+  restart without becoming part of the operator's configuration unless it
+  is explicitly saved to it.
 - **Real identity backends.** No LDAP/AD federation, no social login.
 - **Spec completeness for its own sake.** Extensions are added when they
   help someone test a client, not to fill a compliance matrix.
@@ -118,11 +126,13 @@ GitHub issues attached to the corresponding
    the auth cases of agentic systems, with MCP clients and servers as
    ordinary OAuth parties: per-client scopes, RFC 8707 resource
    indicators, public clients with mandatory PKCE, RFC 9207, opt-in
-   in-memory Dynamic Client Registration with a CIMD-ready registry, a
-   mock protected MCP server as an e2e fixture, and a config/state
-   split for multi-agent use (runtime writes with conflict detection
-   and an actor recorded in the audit log). nanoidp stays a dev/testing
-   IdP extended to these cases, not "an IdP for AI".
+   Dynamic Client Registration with a CIMD-ready registry, a mock
+   protected MCP server as an e2e fixture, a runtime store as the
+   boundary for execution state (memory by default, SQLite opt-in for
+   several workers on one host), and a config/state split for
+   multi-agent use (runtime-created objects with conflict detection,
+   export/import, and an actor recorded in the audit log). nanoidp stays
+   a dev/testing IdP extended to these cases, not "an IdP for AI".
 
 Anything not covered here is fair game for discussion: open an issue. The
 principles above, not this list, are the contract.
