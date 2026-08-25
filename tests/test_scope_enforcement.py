@@ -136,6 +136,36 @@ class TestResolveScopeHelper:
         assert result.ok
         assert result.granted is None
 
+    def test_validate_only_does_not_default_omitted_scope_for_restricted_client(self):
+        """#186 review B1: at a RE-check (refresh, auth-code redemption), an
+        absent original scope must stay absent, never widened to the
+        client's current allowed_scopes."""
+        result = resolve_scope(None, self._client(["openid", "profile"]), self.VOCAB, True, validate_only=True)
+        assert result.ok
+        assert result.granted is None
+
+    def test_validate_only_ignores_default_when_omitted_too(self):
+        result = resolve_scope(
+            None, self._client(), self.VOCAB, True,
+            default_when_omitted="openid", validate_only=True,
+        )
+        assert result.ok
+        assert result.granted is None
+
+    def test_validate_only_still_validates_a_present_scope(self):
+        result = resolve_scope("email", self._client(["openid"]), self.VOCAB, True, validate_only=True)
+        assert not result.ok
+
+    def test_validate_only_accepts_a_present_allowed_scope(self):
+        result = resolve_scope("openid", self._client(["openid"]), self.VOCAB, True, validate_only=True)
+        assert result.ok
+        assert result.granted == "openid"
+
+    def test_validate_only_enforcement_off_passes_through(self):
+        result = resolve_scope(None, self._client(["openid"]), self.VOCAB, False, validate_only=True)
+        assert result.ok
+        assert result.granted is None
+
 
 class TestDiscoveryScopesSupported:
     def test_reflects_settings(self):
@@ -362,3 +392,94 @@ class TestScopeEnforcementOffEscapeHatch:
         )
         assert response.status_code == 200
         assert json.loads(response.data)["scope"] == "anything-goes"
+
+
+class TestRefreshTokenScopeReValidation:
+    """The refresh grant's own coverage (#186 review: previously untested).
+
+    resolve_scope() is called twice on this path: the existing
+    narrow-only-never-widen check (unchanged logic, now RFC-shaped errors),
+    then a re-validation against the CURRENT vocabulary/allowed_scopes via
+    validate_only=True (B1 fix) - an absent original scope must stay absent
+    rather than being defaulted to the client's current allowed set.
+    """
+
+    def _password_grant(self, client, scope=None):
+        data = {"grant_type": "password", "username": "admin", "password": "admin"}
+        if scope is not None:
+            data["scope"] = scope
+        resp = client.post("/token", data=data, headers=SCOPED_AUTH)
+        assert resp.status_code == 200
+        return json.loads(resp.data)
+
+    def test_legacy_no_scope_refresh_token_does_not_widen(self, client, app):
+        """B1 repro: a refresh token minted with no scope at all (enforcement
+        off at issuance - the pre-#186 world, or any token minted before
+        allowed_scopes was set) must refresh to another no-scope token, not
+        the client's current full allowed set - and must never mint an
+        ID Token that the original (scopeless) grant never had."""
+        with app.app_context():
+            get_config().settings.scope_enforcement = False
+        minted = self._password_grant(client)
+        assert "scope" not in minted
+        assert "id_token" not in minted
+        refresh_token = minted["refresh_token"]
+
+        with app.app_context():
+            get_config().settings.scope_enforcement = True
+
+        resp = client.post(
+            "/token",
+            data={"grant_type": "refresh_token", "refresh_token": refresh_token},
+            headers=SCOPED_AUTH,
+        )
+        assert resp.status_code == 200
+        refreshed = json.loads(resp.data)
+        assert "scope" not in refreshed
+        assert "id_token" not in refreshed
+
+    def test_narrowing_rejection_is_rfc_shaped_invalid_scope(self, client):
+        """The pre-#186 narrowing check ('exceeds originally granted scope')
+        now answers with the RFC 6749 5.2 JSON error body, not a bare 400."""
+        minted = self._password_grant(client, scope="openid")
+        resp = client.post(
+            "/token",
+            data={
+                "grant_type": "refresh_token",
+                "refresh_token": minted["refresh_token"],
+                "scope": "openid profile",
+            },
+            headers=SCOPED_AUTH,
+        )
+        assert resp.status_code == 400
+        data = json.loads(resp.data)
+        assert data["error"] == "invalid_scope"
+        assert "error_description" in data
+
+    def test_revalidation_rejects_scope_no_longer_allowed(self, client, app):
+        """The original grant was valid at the time; allowed_scopes shrank
+        since (an operator edit) - the re-check must catch it on refresh,
+        even though the client didn't request anything new."""
+        minted = self._password_grant(client, scope="openid")
+
+        with app.app_context():
+            get_config().get_client("scoped-client").allowed_scopes = ["profile"]
+
+        resp = client.post(
+            "/token",
+            data={"grant_type": "refresh_token", "refresh_token": minted["refresh_token"]},
+            headers=SCOPED_AUTH,
+        )
+        assert resp.status_code == 400
+        assert json.loads(resp.data)["error"] == "invalid_scope"
+
+    def test_revalidation_accepts_still_allowed_scope(self, client):
+        """Sanity: the re-check doesn't reject a refresh that's still fine."""
+        minted = self._password_grant(client, scope="openid")
+        resp = client.post(
+            "/token",
+            data={"grant_type": "refresh_token", "refresh_token": minted["refresh_token"]},
+            headers=SCOPED_AUTH,
+        )
+        assert resp.status_code == 200
+        assert json.loads(resp.data)["scope"] == "openid"

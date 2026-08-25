@@ -44,29 +44,46 @@ def resolve_scope(
     enforcement_active: bool,
     *,
     default_when_omitted: Optional[str] = None,
+    validate_only: bool = False,
 ) -> ScopeResult:
-    """Validate (and default) one requested scope string for one client.
+    """Validate (and, at a request surface, default) one scope string.
 
     - Enforcement off: ``requested`` (or ``default_when_omitted`` if it was
-      omitted) passes through untouched - no vocabulary check, no per-client
-      check, and ``client.allowed_scopes`` is not consulted at all, so a
-      client's allow-list has no effect while enforcement is off.
-    - Enforcement on, omitted (falsy ``requested``): a client with a
-      non-empty ``allowed_scopes`` defaults to its full allowed set (space
-      joined); an unrestricted client falls back to ``default_when_omitted``,
-      same as when enforcement is off.
-    - Enforcement on, present: every space-separated token must be in
+      omitted and ``validate_only`` is not set) passes through untouched - no
+      vocabulary check, no per-client check, and ``client.allowed_scopes`` is
+      not consulted at all, so a client's allow-list has no effect while
+      enforcement is off.
+    - Enforcement on, omitted (falsy ``requested``), ``validate_only=False``
+      (the default - use at a request surface: /authorize,
+      /device_authorization, and the password/client_credentials grants): a
+      client with a non-empty ``allowed_scopes`` defaults to its full allowed
+      set (space joined); an unrestricted client falls back to
+      ``default_when_omitted``, same as when enforcement is off.
+    - Enforcement on, omitted, ``validate_only=True`` (use at a RE-check of an
+      already-granted scope: the refresh grant and authorization_code
+      redemption): omitted stays omitted, unchecked and undefaulted. A grant
+      minted with no scope at all - a legacy refresh token predating this
+      setting, or one issued before ``allowed_scopes`` was set - has nothing
+      to validate and must not have one manufactured for it; defaulting an
+      absent *original* scope to the client's current full allowed set would
+      let a refresh silently GRANT MORE than the original authorization ever
+      did (#186 review, B1) - the opposite of the narrowing this grant is
+      supposed to enforce.
+    - Present (either mode): every space-separated token must be in
       ``vocabulary`` - a scope outside the global vocabulary is
       ``invalid_scope`` for every client, the "small behaviour change" #186
       calls out - and, when ``client.allowed_scopes`` is non-empty, every
       token must ALSO be in it.
     """
     if not enforcement_active:
-        return ScopeResult(granted=requested or default_when_omitted)
+        return ScopeResult(granted=requested if validate_only else requested or default_when_omitted)
 
-    effective = requested or (
-        " ".join(client.allowed_scopes) if client.allowed_scopes else default_when_omitted
-    )
+    if validate_only:
+        effective = requested
+    else:
+        effective = requested or (
+            " ".join(client.allowed_scopes) if client.allowed_scopes else default_when_omitted
+        )
     if not effective:
         return ScopeResult(granted=effective)
 

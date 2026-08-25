@@ -595,6 +595,11 @@ def _grant_refresh_token(ctx: _GrantContext) -> GrantResult:
     # (issue #186): both may have changed since the original grant, so
     # narrowing alone (above) isn't enough to guarantee the refreshed token
     # still only carries scopes this client may currently have.
+    # validate_only=True: an absent scope here means the ORIGINAL grant had
+    # none (a legacy refresh token predating this setting, or one issued
+    # before allowed_scopes was set) - it must stay absent, not be defaulted
+    # to the client's current full allowed set, or a refresh could silently
+    # GRANT MORE than the original authorization ever did (#186 review, B1).
     client = ctx.config.get_client(ctx.client_id)
     if client is not None:
         scope_result = resolve_scope(
@@ -602,6 +607,7 @@ def _grant_refresh_token(ctx: _GrantContext) -> GrantResult:
             client,
             ctx.config.settings.scopes_supported,
             ctx.config.settings.scope_enforcement_active,
+            validate_only=True,
         )
         if not scope_result.ok:
             audit_event(
@@ -837,6 +843,10 @@ def _grant_authorization_code(ctx: _GrantContext) -> GrantResult:
     # code and this exchange, so the check at issuance time isn't enough to
     # guarantee the token still only carries scopes this client may
     # currently have.
+    # validate_only=True: an absent scope here means /authorize granted none
+    # (not reachable today - it always resolves a non-empty scope before
+    # minting a code - but kept safe against a future refactor, same
+    # reasoning as the refresh grant's re-check, #186 review B1).
     code_scope: Optional[str] = auth_code.scope if auth_code.scope is not None else None
     client = ctx.config.get_client(ctx.client_id)
     if client is not None:
@@ -845,6 +855,7 @@ def _grant_authorization_code(ctx: _GrantContext) -> GrantResult:
             client,
             ctx.config.settings.scopes_supported,
             ctx.config.settings.scope_enforcement_active,
+            validate_only=True,
         )
         if not scope_result.ok:
             audit_event(
