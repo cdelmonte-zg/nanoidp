@@ -8,7 +8,7 @@ import uuid
 import zlib
 from base64 import b64decode, b64encode
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Optional, cast
+from typing import Any, Dict, Optional
 
 from flask import Blueprint, Response, abort, render_template, request, session
 from flask.typing import ResponseReturnValue
@@ -672,13 +672,32 @@ def sso() -> ResponseReturnValue:
     if invalid is not None:
         return invalid
 
-    # acs_url is None only when the request names no ACS URL AND
-    # saml.default_acs_url is unset - a latent pre-existing 500 (the old
-    # inline code crashed on html.escape(None) the same way), preserved
-    # as-is by this refactor and left for its own fix.
-    return _sso_success_response(
-        config, user, username, cast(str, acs_url), in_response_to, relay_state
-    )
+    # No ACS URL to send the assertion to: the request names none and
+    # saml.default_acs_url is blank. Reject cleanly (#227). The None arm of
+    # this used to 500 on html.escape(None) but became unreachable when the
+    # document models gave default_acs_url a non-None default (#175); the
+    # arm that IS reachable is an explicit default_acs_url: "" (a valid str),
+    # which used to render an auto-submit form posting to action="" - the
+    # IdP's own page - instead of failing. The message names both missing
+    # sources, in the spirit of "metadata never lies": neither should errors.
+    if not acs_url:
+        audit_event(
+            "saml_request",
+            "failed",
+            endpoint="/saml/sso",
+            username=username,
+            details={
+                "reason": "AuthnRequest has no AssertionConsumerServiceURL "
+                "and saml.default_acs_url is not configured"
+            },
+        )
+        return abort(
+            400,
+            description="AuthnRequest has no AssertionConsumerServiceURL "
+            "and saml.default_acs_url is not configured",
+        )
+
+    return _sso_success_response(config, user, username, acs_url, in_response_to, relay_state)
 
 
 def _build_attribute_query_response(
