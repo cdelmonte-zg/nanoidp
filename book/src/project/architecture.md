@@ -66,7 +66,7 @@ Shared route infrastructure, all underscore-prefixed:
 |---|---|
 | `routes/_auth.py` | The management-gate choke point: `require_ui_login` session gate and the opt-in `management_secret` write guard for `/api/*`, the UI unlock, and MCP |
 | `routes/_issuer.py` | Effective-issuer resolution, shared by every endpoint that mints a token or advertises the issuer (#133: they must never disagree) |
-| `routes/_audit.py` | `audit_event(...)`: the one way routes write audit entries |
+| `routes/_audit.py` | `audit_event(...)`: shared helper for route-level audit events (not yet universal: `/api/keys/rotate` still logs directly) |
 
 Protocol logic and runtime state (`services/`), each module small and
 single-purpose:
