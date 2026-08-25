@@ -6,7 +6,7 @@ import json
 import logging
 import os
 from dataclasses import dataclass
-from typing import Callable, Dict, Optional, Union
+from typing import Callable, Dict, Optional, Tuple, Union
 from urllib.parse import urlencode
 
 import jwt as pyjwt
@@ -25,7 +25,7 @@ from flask import (
 from flask.typing import ResponseReturnValue
 
 from ..branding import effective_logos_dir, resolve_client_logo
-from ..config import ConfigManager, User, get_config
+from ..config import ConfigManager, OAuthClient, User, get_config
 from ..services import (
     DevicePollOutcome,
     DeviceVerifyOutcome,
@@ -80,16 +80,12 @@ def _parse_claims_parameter(raw: Optional[str]) -> Optional[Dict[str, list]]:
     return result or None
 
 
-
-
 @oauth_bp.route("/.well-known/openid-configuration")
 def oidc_config() -> ResponseReturnValue:
     """OIDC Discovery endpoint."""
     config = get_config()
     return jsonify(
-        build_discovery_document(
-            config.settings, issuer=effective_issuer(config.settings)
-        )
+        build_discovery_document(config.settings, issuer=effective_issuer(config.settings))
     )
 
 
@@ -102,6 +98,346 @@ def jwks() -> ResponseReturnValue:
     config = get_config()
     crypto = get_crypto_service(config.settings.keys_dir)
     return jsonify(crypto.get_jwks())
+
+
+@dataclass
+class _AuthorizeParams:
+    """The nine /authorize request parameters, read once per request.
+
+    On GET they come from the query string; on the login-form POST leg they
+    come from the form with the session as fallback (the GET leg stored them
+    there). ``scope`` starts as the raw request value and is replaced by the
+    resolved/granted value once _validate_authorize_scope has run.
+    """
+
+    response_type: str
+    client_id: str
+    redirect_uri: str
+    scope: str
+    state: str
+    code_challenge: str
+    code_challenge_method: str
+    nonce: str
+    claims_param: str
+
+
+def _read_authorize_params() -> _AuthorizeParams:
+    """Extract the request parameters and persist them for the POST leg.
+
+    Storing on GET happens before any validation, exactly as it always has:
+    an invalid request still leaves its parameters in the session, and the
+    login POST leg re-validates everything from scratch.
+    """
+    params = request.args if request.method == "GET" else request.form
+
+    p = _AuthorizeParams(
+        response_type=params.get("response_type", session.get("oauth_response_type", "")),
+        client_id=params.get("client_id", session.get("oauth_client_id", "")),
+        redirect_uri=params.get("redirect_uri", session.get("oauth_redirect_uri", "")),
+        scope=params.get("scope", session.get("oauth_scope", "")),
+        state=params.get("state", session.get("oauth_state", "")),
+        code_challenge=params.get("code_challenge", session.get("oauth_code_challenge", "")),
+        code_challenge_method=params.get(
+            "code_challenge_method", session.get("oauth_code_challenge_method", "")
+        ),
+        nonce=params.get("nonce", session.get("oauth_nonce", "")),
+        claims_param=params.get("claims", session.get("oauth_claims", "")),
+    )
+
+    if request.method == "GET":
+        session["oauth_response_type"] = p.response_type
+        session["oauth_client_id"] = p.client_id
+        session["oauth_redirect_uri"] = p.redirect_uri
+        session["oauth_scope"] = p.scope
+        session["oauth_state"] = p.state
+        session["oauth_code_challenge"] = p.code_challenge
+        session["oauth_code_challenge_method"] = p.code_challenge_method
+        session["oauth_nonce"] = p.nonce
+        session["oauth_claims"] = p.claims_param
+
+    return p
+
+
+def _authorize_reject(
+    client_id: str, reason: str, error: str, description: str
+) -> ResponseReturnValue:
+    """Audit-then-reject, the shape every post-client-lookup check shares.
+
+    The pre-lookup checks (response_type, missing client_id/redirect_uri,
+    redirect_uri syntax) intentionally do NOT audit - they never have - so
+    they build their responses directly instead of calling this.
+    """
+    audit_event(
+        "authorization_request",
+        "failed",
+        endpoint="/authorize",
+        client_id=client_id,
+        details={"reason": reason},
+    )
+    return jsonify({"error": error, "error_description": description}), 400
+
+
+def _validate_authorize_client(
+    config: ConfigManager, p: _AuthorizeParams
+) -> Tuple[Optional[OAuthClient], Optional[ResponseReturnValue]]:
+    """Required-parameter checks and client lookup: (client, None) or (None, error)."""
+    if p.response_type != "code":
+        return None, (
+            jsonify(
+                {
+                    "error": "unsupported_response_type",
+                    "error_description": "Only 'code' response_type is supported",
+                }
+            ),
+            400,
+        )
+
+    if not p.client_id:
+        return None, (
+            jsonify({"error": "invalid_request", "error_description": "client_id is required"}),
+            400,
+        )
+
+    if not p.redirect_uri:
+        return None, (
+            jsonify({"error": "invalid_request", "error_description": "redirect_uri is required"}),
+            400,
+        )
+
+    client = config.get_client(p.client_id)
+    if not client:
+        return None, _authorize_reject(
+            p.client_id, "Unknown client", "invalid_client", "Unknown client_id"
+        )
+    return client, None
+
+
+def _validate_authorize_scope(
+    config: ConfigManager, p: _AuthorizeParams, client: OAuthClient
+) -> Optional[ResponseReturnValue]:
+    """Scope validation (issue #186): a requested scope outside the global
+    vocabulary, or outside this client's own allowed_scopes when set, is
+    invalid_scope (RFC 6749 §4.1.2.1). An omitted scope defaults to the
+    client's full allowed set when restricted, or "openid" as before (#186).
+    Checked before redirect_uri so an invalid_scope on an unregistered client
+    reports the more specific problem first. Mutates p.scope to the granted
+    value on success."""
+    scope_result = resolve_scope(
+        p.scope,
+        client,
+        config.settings.scopes_supported,
+        config.settings.scope_enforcement_active,
+        default_when_omitted="openid",
+    )
+    if not scope_result.ok:
+        return _authorize_reject(
+            p.client_id,
+            scope_result.error_description or "invalid scope",
+            "invalid_scope",
+            scope_result.error_description or "invalid scope",
+        )
+    p.scope = scope_result.granted or ""
+    return None
+
+
+def _validate_authorize_redirect_uri(
+    config: ConfigManager, p: _AuthorizeParams, client: OAuthClient
+) -> Optional[ResponseReturnValue]:
+    """The three redirect_uri checks, in their historical order.
+
+    Syntactic validation (RFC 6749 §3.1.2): an absolute URI with no
+    fragment. A scheme is required; an authority is not, so native-app
+    private-use scheme URIs like com.example.app:/oauth2redirect (RFC 8252
+    §7.1) pass (#81), while a private-use scheme without a period (myapp://)
+    is rejected per §7.1's minimum rule. See services/redirect_uri.py.
+
+    Matching against registered redirect URIs (issue #67). RFC 6749
+    §3.1.2.3 / OAuth 2.1 §4.1.1 require simple string comparison - no
+    prefix, host or path normalization - with the single exception RFC
+    8252 §7.3 mandates for native apps: a registered loopback URI
+    (http://127.0.0.1:{port}/..., http://[::1]:{port}/...) matches any
+    port (#81). Clients without registered URIs keep the permissive dev
+    behavior (hardening is opt-in, principle 3). A mismatch MUST NOT
+    redirect (§3.1.2.4): the error is returned directly, never sent to
+    the unvalidated URI.
+
+    Under the oauth21 profile, registration is not optional: a client used
+    at /authorize must have redirect_uris pinned (#68; OAuth 2.1 §2.3
+    requires the AS to compare against registered values, which presumes
+    they exist). Enforced here, not at config load, so other grants keep
+    working for unregistered clients.
+    """
+    rejection = redirect_uri_rejection_reason(p.redirect_uri)
+    if rejection is not None:
+        return jsonify({"error": "invalid_request", "error_description": rejection}), 400
+
+    if client.redirect_uris and not redirect_uri_is_registered(
+        p.redirect_uri, client.redirect_uris
+    ):
+        return _authorize_reject(
+            p.client_id,
+            "redirect_uri not registered for client",
+            "invalid_request",
+            "redirect_uri is not registered for this client",
+        )
+
+    if config.settings.security_profile == "oauth21" and not client.redirect_uris:
+        return _authorize_reject(
+            p.client_id,
+            "oauth21 profile requires registered redirect_uris",
+            "invalid_request",
+            "the oauth21 profile requires this client to have " "registered redirect_uris",
+        )
+    return None
+
+
+def _validate_authorize_pkce(
+    config: ConfigManager, p: _AuthorizeParams
+) -> Optional[ResponseReturnValue]:
+    """PKCE enforcement (issues #47, #68). Via the require_pkce setting (on by
+    default in the stricter-dev profile) or implied by the oauth21 profile
+    (OAuth 2.1 §4.1.1 makes PKCE mandatory), an authorization request
+    without a code_challenge is rejected, so developers can verify their
+    client actually sends PKCE."""
+    if config.settings.pkce_required and not p.code_challenge:
+        return _authorize_reject(
+            p.client_id,
+            "PKCE code_challenge required (require_pkce or oauth21)",
+            "invalid_request",
+            "PKCE code_challenge is required " "(require_pkce setting or oauth21 profile)",
+        )
+
+    if not p.code_challenge:
+        return None
+
+    # RFC 7636 §4.3: an omitted code_challenge_method defaults to 'plain',
+    # and the verifier honors that - so the method must be normalized
+    # BEFORE validation or the stricter-dev rejection could be bypassed by
+    # simply omitting the parameter (#56). Unsupported methods are
+    # rejected at the authorization endpoint per §4.4.1.
+    effective_method = p.code_challenge_method or "plain"
+    if effective_method not in ("plain", "S256"):
+        return _authorize_reject(
+            p.client_id,
+            f"Unsupported code_challenge_method: {effective_method}",
+            "invalid_request",
+            f"Unsupported code_challenge_method " f"'{effective_method}'; use S256 or plain",
+        )
+
+    # The 'plain' method is only acceptable when S256 is unavailable
+    # (RFC 7636 §4.2); the stricter-dev (#47) and oauth21 (#68, OAuth 2.1
+    # §7.5.2) profiles reject it outright, whether requested explicitly
+    # or via the implicit default.
+    if effective_method == "plain" and not config.settings.pkce_plain_allowed:
+        return _authorize_reject(
+            p.client_id,
+            "PKCE method 'plain' rejected by " f"{config.settings.security_profile} profile",
+            "invalid_request",
+            "code_challenge_method 'plain' (including the "
+            "implicit default when the parameter is omitted) "
+            f"is not allowed by the {config.settings.security_profile} "
+            "profile; use S256",
+        )
+    return None
+
+
+def _handle_authorize_login(
+    config: ConfigManager, p: _AuthorizeParams
+) -> Tuple[Optional[str], Optional[ResponseReturnValue]]:
+    """The POST login leg: (None, redirect) on success, (error_msg, None) to
+    fall through to the login page (failed or incomplete credentials)."""
+    username = request.form.get("username", "").strip()
+    password = request.form.get("password", "")
+    persona_mode = config.settings.persona_mode_enabled
+
+    user = config.interactive_authenticate(username, password)
+
+    if user:
+        # Authentication successful - generate authorization code
+        auth_code_store = get_auth_code_store()
+        code = auth_code_store.create_code(
+            client_id=p.client_id,
+            redirect_uri=p.redirect_uri,
+            username=user.username,
+            scope=p.scope,
+            code_challenge=p.code_challenge if p.code_challenge else None,
+            code_challenge_method=p.code_challenge_method if p.code_challenge_method else None,
+            nonce=p.nonce if p.nonce else None,
+            state=p.state if p.state else None,
+            claims=_parse_claims_parameter(p.claims_param),
+        )
+
+        # Clear OAuth session data
+        for key in list(session.keys()):
+            if key.startswith("oauth_"):
+                session.pop(key, None)
+
+        # Build redirect URL with code
+        redirect_params = {"code": code}
+        if p.state:
+            redirect_params["state"] = p.state
+
+        callback_url = f"{p.redirect_uri}?{urlencode(redirect_params)}"
+
+        audit_event(
+            "authorization_request",
+            "success",
+            endpoint="/authorize",
+            username=user.username,
+            client_id=p.client_id,
+            details={
+                "scope": p.scope,
+                "pkce": bool(p.code_challenge),
+            },
+        )
+
+        if config.settings.verbose_logging:
+            logger.info(
+                f"Authorization code issued for user '{user.username}', client '{p.client_id}'"
+            )
+        else:
+            logger.info("Authorization code issued")
+
+        return None, redirect(callback_url)
+
+    if (persona_mode and username) or (not persona_mode and username and password):
+        # A real (failed) selection/login attempt, not just missing input
+        audit_event(
+            "authorization_request",
+            "failed",
+            endpoint="/authorize",
+            username=username,
+            client_id=p.client_id,
+            details={"reason": "Invalid credentials"},
+        )
+        return "Invalid username or password", None
+
+    return ("Select a user" if persona_mode else "Username and password are required"), None
+
+
+def _render_authorize_login(
+    config: ConfigManager,
+    p: _AuthorizeParams,
+    client: Optional[OAuthClient],
+    error_msg: Optional[str],
+) -> ResponseReturnValue:
+    """The login page (GET, or a POST that did not authenticate)."""
+    logo_url = None
+    if client:
+        logos_dir = effective_logos_dir(config.settings.logos_dir, current_app.static_folder)
+        if resolve_client_logo(logos_dir, client.client_id):
+            logo_url = url_for("oauth.client_logo", client_id=client.client_id)
+
+    return render_template(
+        "authorize.html",
+        client_id=p.client_id,
+        client=client,
+        logo_url=logo_url,
+        scope=p.scope,
+        error=error_msg,
+        persona_mode=config.settings.persona_mode_enabled,
+        users=list(config.users.keys()),
+    )
 
 
 @oauth_bp.route("/authorize", methods=["GET", "POST"])
@@ -124,306 +460,35 @@ def authorize() -> ResponseReturnValue:
     - code_challenge: PKCE challenge
     - code_challenge_method: "plain" or "S256"
     - nonce: OIDC nonce for ID token
+
+    Each step below is a named helper; every rejection keeps its historical
+    error body and audit behavior (#212).
     """
     config = get_config()
+    p = _read_authorize_params()
 
-    # Get OAuth parameters (from query string for GET, form for POST)
-    if request.method == "GET":
-        params = request.args
-    else:
-        # For POST, check form first, then fall back to session
-        params = request.form
+    client, error = _validate_authorize_client(config, p)
+    if error is not None:
+        return error
+    assert client is not None  # _validate_authorize_client returns one or the other
 
-    response_type = params.get("response_type", session.get("oauth_response_type", ""))
-    client_id = params.get("client_id", session.get("oauth_client_id", ""))
-    redirect_uri = params.get("redirect_uri", session.get("oauth_redirect_uri", ""))
-    scope = params.get("scope", session.get("oauth_scope", ""))
-    state = params.get("state", session.get("oauth_state", ""))
-    code_challenge = params.get("code_challenge", session.get("oauth_code_challenge", ""))
-    code_challenge_method = params.get("code_challenge_method", session.get("oauth_code_challenge_method", ""))
-    nonce = params.get("nonce", session.get("oauth_nonce", ""))
-    claims_param = params.get("claims", session.get("oauth_claims", ""))
-
-    # Store OAuth params in session for POST handling
-    if request.method == "GET":
-        session["oauth_response_type"] = response_type
-        session["oauth_client_id"] = client_id
-        session["oauth_redirect_uri"] = redirect_uri
-        session["oauth_scope"] = scope
-        session["oauth_state"] = state
-        session["oauth_code_challenge"] = code_challenge
-        session["oauth_code_challenge_method"] = code_challenge_method
-        session["oauth_nonce"] = nonce
-        session["oauth_claims"] = claims_param
-
-    # Validate required parameters
-    if response_type != "code":
-        return jsonify({
-            "error": "unsupported_response_type",
-            "error_description": "Only 'code' response_type is supported"
-        }), 400
-
-    if not client_id:
-        return jsonify({
-            "error": "invalid_request",
-            "error_description": "client_id is required"
-        }), 400
-
-    if not redirect_uri:
-        return jsonify({
-            "error": "invalid_request",
-            "error_description": "redirect_uri is required"
-        }), 400
-
-    # Validate client exists
-    client = config.get_client(client_id)
-    if not client:
-        audit_event(
-            "authorization_request",
-            "failed",
-            endpoint="/authorize",
-            client_id=client_id,
-            details={"reason": "Unknown client"},
-        )
-        return jsonify({
-            "error": "invalid_client",
-            "error_description": "Unknown client_id"
-        }), 400
-
-    # Scope validation (issue #186): a requested scope outside the global
-    # vocabulary, or outside this client's own allowed_scopes when set, is
-    # invalid_scope (RFC 6749 §4.1.2.1). An omitted scope defaults to the
-    # client's full allowed set when restricted, or "openid" as before
-    # (#186). Checked before redirect_uri so an invalid_scope on an
-    # unregistered client reports the more specific problem first.
-    scope_result = resolve_scope(
-        scope,
-        client,
-        config.settings.scopes_supported,
-        config.settings.scope_enforcement_active,
-        default_when_omitted="openid",
-    )
-    if not scope_result.ok:
-        audit_event(
-            "authorization_request",
-            "failed",
-            endpoint="/authorize",
-            client_id=client_id,
-            details={"reason": scope_result.error_description},
-        )
-        return jsonify({
-            "error": "invalid_scope",
-            "error_description": scope_result.error_description
-        }), 400
-    scope = scope_result.granted or ""
-
-    # Syntactic validation (RFC 6749 §3.1.2): an absolute URI with no
-    # fragment. A scheme is required; an authority is not, so native-app
-    # private-use scheme URIs like com.example.app:/oauth2redirect (RFC 8252
-    # §7.1) pass (#81), while a private-use scheme without a period (myapp://)
-    # is rejected per §7.1's minimum rule. See services/redirect_uri.py.
-    rejection = redirect_uri_rejection_reason(redirect_uri)
-    if rejection is not None:
-        return jsonify({
-            "error": "invalid_request",
-            "error_description": rejection
-        }), 400
-
-    # Matching against registered redirect URIs (issue #67). RFC 6749
-    # §3.1.2.3 / OAuth 2.1 §4.1.1 require simple string comparison - no
-    # prefix, host or path normalization - with the single exception RFC
-    # 8252 §7.3 mandates for native apps: a registered loopback URI
-    # (http://127.0.0.1:{port}/..., http://[::1]:{port}/...) matches any
-    # port (#81). Clients without registered URIs keep the permissive dev
-    # behavior (hardening is opt-in, principle 3). A mismatch MUST NOT
-    # redirect (§3.1.2.4): the error is returned directly, never sent to
-    # the unvalidated URI.
-    if client.redirect_uris and not redirect_uri_is_registered(
-        redirect_uri, client.redirect_uris
-    ):
-        audit_event(
-            "authorization_request",
-            "failed",
-            endpoint="/authorize",
-            client_id=client_id,
-            details={"reason": "redirect_uri not registered for client"},
-        )
-        return jsonify({
-            "error": "invalid_request",
-            "error_description": "redirect_uri is not registered for this client"
-        }), 400
-
-    # Under the oauth21 profile, registration is not optional: a client used
-    # at /authorize must have redirect_uris pinned (#68; OAuth 2.1 §2.3
-    # requires the AS to compare against registered values, which presumes
-    # they exist). Enforced here, not at config load, so other grants keep
-    # working for unregistered clients.
-    if config.settings.security_profile == "oauth21" and not client.redirect_uris:
-        audit_event(
-            "authorization_request",
-            "failed",
-            endpoint="/authorize",
-            client_id=client_id,
-            details={"reason": "oauth21 profile requires registered redirect_uris"},
-        )
-        return jsonify({
-            "error": "invalid_request",
-            "error_description": "the oauth21 profile requires this client to have "
-                                 "registered redirect_uris"
-        }), 400
-
-    # PKCE enforcement (issues #47, #68). Via the require_pkce setting (on by
-    # default in the stricter-dev profile) or implied by the oauth21 profile
-    # (OAuth 2.1 §4.1.1 makes PKCE mandatory), an authorization request
-    # without a code_challenge is rejected, so developers can verify their
-    # client actually sends PKCE.
-    if config.settings.pkce_required and not code_challenge:
-        audit_event(
-            "authorization_request",
-            "failed",
-            endpoint="/authorize",
-            client_id=client_id,
-            details={"reason": "PKCE code_challenge required (require_pkce or oauth21)"},
-        )
-        return jsonify({
-            "error": "invalid_request",
-            "error_description": "PKCE code_challenge is required "
-                                 "(require_pkce setting or oauth21 profile)"
-        }), 400
-
-    if code_challenge:
-        # RFC 7636 §4.3: an omitted code_challenge_method defaults to 'plain',
-        # and the verifier honors that - so the method must be normalized
-        # BEFORE validation or the stricter-dev rejection could be bypassed by
-        # simply omitting the parameter (#56). Unsupported methods are
-        # rejected at the authorization endpoint per §4.4.1.
-        effective_method = code_challenge_method or "plain"
-        if effective_method not in ("plain", "S256"):
-            audit_event(
-                "authorization_request",
-                "failed",
-                endpoint="/authorize",
-                client_id=client_id,
-                details={"reason": f"Unsupported code_challenge_method: {effective_method}"},
-            )
-            return jsonify({
-                "error": "invalid_request",
-                "error_description": f"Unsupported code_challenge_method "
-                                     f"'{effective_method}'; use S256 or plain"
-            }), 400
-
-        # The 'plain' method is only acceptable when S256 is unavailable
-        # (RFC 7636 §4.2); the stricter-dev (#47) and oauth21 (#68, OAuth 2.1
-        # §7.5.2) profiles reject it outright, whether requested explicitly
-        # or via the implicit default.
-        if (
-            effective_method == "plain"
-            and not config.settings.pkce_plain_allowed
-        ):
-            audit_event(
-                "authorization_request",
-                "failed",
-                endpoint="/authorize",
-                client_id=client_id,
-                details={
-                    "reason": "PKCE method 'plain' rejected by "
-                    f"{config.settings.security_profile} profile"
-                },
-            )
-            return jsonify({
-                "error": "invalid_request",
-                "error_description": "code_challenge_method 'plain' (including the "
-                                     "implicit default when the parameter is omitted) "
-                                     f"is not allowed by the {config.settings.security_profile} "
-                                     "profile; use S256"
-            }), 400
+    error = _validate_authorize_scope(config, p, client)
+    if error is not None:
+        return error
+    error = _validate_authorize_redirect_uri(config, p, client)
+    if error is not None:
+        return error
+    error = _validate_authorize_pkce(config, p)
+    if error is not None:
+        return error
 
     error_msg = None
-    persona_mode = config.settings.persona_mode_enabled
-
-    # Handle POST (login form submission)
     if request.method == "POST":
-        username = request.form.get("username", "").strip()
-        password = request.form.get("password", "")
+        error_msg, response = _handle_authorize_login(config, p)
+        if response is not None:
+            return response
 
-        user = config.interactive_authenticate(username, password)
-
-        if user:
-            # Authentication successful - generate authorization code
-            auth_code_store = get_auth_code_store()
-            code = auth_code_store.create_code(
-                client_id=client_id,
-                redirect_uri=redirect_uri,
-                username=user.username,
-                scope=scope,
-                code_challenge=code_challenge if code_challenge else None,
-                code_challenge_method=code_challenge_method if code_challenge_method else None,
-                nonce=nonce if nonce else None,
-                state=state if state else None,
-                claims=_parse_claims_parameter(claims_param),
-            )
-
-            # Clear OAuth session data
-            for key in list(session.keys()):
-                if key.startswith("oauth_"):
-                    session.pop(key, None)
-
-            # Build redirect URL with code
-            redirect_params = {"code": code}
-            if state:
-                redirect_params["state"] = state
-
-            callback_url = f"{redirect_uri}?{urlencode(redirect_params)}"
-
-            audit_event(
-                "authorization_request",
-                "success",
-                endpoint="/authorize",
-                username=user.username,
-                client_id=client_id,
-                details={
-                    "scope": scope,
-                    "pkce": bool(code_challenge),
-                },
-            )
-
-            if config.settings.verbose_logging:
-                logger.info(f"Authorization code issued for user '{user.username}', client '{client_id}'")
-            else:
-                logger.info("Authorization code issued")
-
-            return redirect(callback_url)
-        elif (persona_mode and username) or (not persona_mode and username and password):
-            # A real (failed) selection/login attempt, not just missing input
-            error_msg = "Invalid username or password"
-            audit_event(
-                "authorization_request",
-                "failed",
-                endpoint="/authorize",
-                username=username,
-                client_id=client_id,
-                details={"reason": "Invalid credentials"},
-            )
-        else:
-            error_msg = "Select a user" if persona_mode else "Username and password are required"
-
-    # Show login page (GET or failed POST)
-    logo_url = None
-    if client:
-        logos_dir = effective_logos_dir(config.settings.logos_dir, current_app.static_folder)
-        if resolve_client_logo(logos_dir, client.client_id):
-            logo_url = url_for("oauth.client_logo", client_id=client.client_id)
-
-    return render_template(
-        "authorize.html",
-        client_id=client_id,
-        client=client,
-        logo_url=logo_url,
-        scope=scope,
-        error=error_msg,
-        persona_mode=persona_mode,
-        users=list(config.users.keys()),
-    )
+    return _render_authorize_login(config, p, client, error_msg)
 
 
 @oauth_bp.route("/client-logos/<client_id>")
@@ -583,10 +648,15 @@ def _grant_refresh_token(ctx: _GrantContext) -> GrantResult:
                     "rejected_scopes": rejected,
                 },
             )
-            return jsonify({
-                "error": "invalid_scope",
-                "error_description": "Requested scope exceeds originally granted scope"
-            }), 400
+            return (
+                jsonify(
+                    {
+                        "error": "invalid_scope",
+                        "error_description": "Requested scope exceeds originally granted scope",
+                    }
+                ),
+                400,
+            )
         scope = requested_scope
     else:
         scope = original_scope or None
@@ -621,10 +691,12 @@ def _grant_refresh_token(ctx: _GrantContext) -> GrantResult:
                     "grant_type": ctx.grant_type,
                 },
             )
-            return jsonify({
-                "error": "invalid_scope",
-                "error_description": scope_result.error_description
-            }), 400
+            return (
+                jsonify(
+                    {"error": "invalid_scope", "error_description": scope_result.error_description}
+                ),
+                400,
+            )
         scope = scope_result.granted
 
     # A refreshed ID Token must carry the ORIGINAL authentication time
@@ -723,9 +795,7 @@ def _grant_password(ctx: _GrantContext) -> GrantResult:
                 "grant_type": ctx.grant_type,
             },
         )
-        return abort(
-            400, description="username and password required for password grant"
-        )
+        return abort(400, description="username and password required for password grant")
 
     user = ctx.config.authenticate(username, password)
     if not user:
@@ -761,10 +831,12 @@ def _grant_password(ctx: _GrantContext) -> GrantResult:
                     "grant_type": ctx.grant_type,
                 },
             )
-            return jsonify({
-                "error": "invalid_scope",
-                "error_description": scope_result.error_description
-            }), 400
+            return (
+                jsonify(
+                    {"error": "invalid_scope", "error_description": scope_result.error_description}
+                ),
+                400,
+            )
         requested_scope = scope_result.granted
 
     # An authenticated end-user is present, so honour an openid scope and
@@ -820,7 +892,10 @@ def _grant_authorization_code(ctx: _GrantContext) -> GrantResult:
             "failed",
             endpoint="/token",
             client_id=ctx.client_id,
-            details={"reason": "Invalid or expired authorization code", "grant_type": ctx.grant_type},
+            details={
+                "reason": "Invalid or expired authorization code",
+                "grant_type": ctx.grant_type,
+            },
         )
         return abort(400, description="Invalid or expired authorization code")
 
@@ -869,10 +944,12 @@ def _grant_authorization_code(ctx: _GrantContext) -> GrantResult:
                     "grant_type": ctx.grant_type,
                 },
             )
-            return jsonify({
-                "error": "invalid_scope",
-                "error_description": scope_result.error_description
-            }), 400
+            return (
+                jsonify(
+                    {"error": "invalid_scope", "error_description": scope_result.error_description}
+                ),
+                400,
+            )
         code_scope = scope_result.granted
 
     requested_claims = auth_code.claims or {}
@@ -917,10 +994,12 @@ def _grant_client_credentials(ctx: _GrantContext) -> GrantResult:
                     "grant_type": ctx.grant_type,
                 },
             )
-            return jsonify({
-                "error": "invalid_scope",
-                "error_description": scope_result.error_description
-            }), 400
+            return (
+                jsonify(
+                    {"error": "invalid_scope", "error_description": scope_result.error_description}
+                ),
+                400,
+            )
         requested_scope = scope_result.granted
         if requested_scope:
             # client_credentials has no end-user context (RFC 6749 §4.4 has
@@ -958,10 +1037,10 @@ def _grant_device_code(ctx: _GrantContext) -> GrantResult:
             client_id=ctx.client_id,
             details={"reason": "Missing device_code", "grant_type": ctx.grant_type},
         )
-        return jsonify({
-            "error": "invalid_request",
-            "error_description": "device_code is required"
-        }), 400
+        return (
+            jsonify({"error": "invalid_request", "error_description": "device_code is required"}),
+            400,
+        )
 
     # The store runs the whole lookup-check-claim sequence under its lock so
     # two concurrent polls can't both claim the same authorized code
@@ -978,35 +1057,44 @@ def _grant_device_code(ctx: _GrantContext) -> GrantResult:
             client_id=ctx.client_id,
             details={"reason": "Invalid device_code", "grant_type": ctx.grant_type},
         )
-        return jsonify({
-            "error": "invalid_grant",
-            "error_description": "Invalid device code"
-        }), 400
+        return jsonify({"error": "invalid_grant", "error_description": "Invalid device code"}), 400
     if outcome is DevicePollOutcome.WRONG_CLIENT:
-        return jsonify({
-            "error": "invalid_grant",
-            "error_description": "Device code was not issued to this client"
-        }), 400
+        return (
+            jsonify(
+                {
+                    "error": "invalid_grant",
+                    "error_description": "Device code was not issued to this client",
+                }
+            ),
+            400,
+        )
     if outcome is DevicePollOutcome.EXPIRED:
-        return jsonify({
-            "error": "expired_token",
-            "error_description": "Device code has expired"
-        }), 400
+        return (
+            jsonify({"error": "expired_token", "error_description": "Device code has expired"}),
+            400,
+        )
     if outcome is DevicePollOutcome.PENDING:
-        return jsonify({
-            "error": "authorization_pending",
-            "error_description": "User has not yet authorized the device"
-        }), 400
+        return (
+            jsonify(
+                {
+                    "error": "authorization_pending",
+                    "error_description": "User has not yet authorized the device",
+                }
+            ),
+            400,
+        )
     if outcome is DevicePollOutcome.DENIED:
-        return jsonify({
-            "error": "access_denied",
-            "error_description": "User denied the authorization request"
-        }), 400
+        return (
+            jsonify(
+                {
+                    "error": "access_denied",
+                    "error_description": "User denied the authorization request",
+                }
+            ),
+            400,
+        )
     if outcome is DevicePollOutcome.USER_NOT_FOUND:
-        return jsonify({
-            "error": "server_error",
-            "error_description": "User not found"
-        }), 500
+        return jsonify({"error": "server_error", "error_description": "User not found"}), 500
     if outcome is DevicePollOutcome.AUTHORIZED and user and grant:
         # The device flow authenticates an end-user, so honour the requested
         # scope and emit an ID Token when 'openid' was asked for (issue #36).
@@ -1017,10 +1105,10 @@ def _grant_device_code(ctx: _GrantContext) -> GrantResult:
             scope=grant.scope,
             auth_time=grant.auth_time,
         )
-    return jsonify({
-        "error": "server_error",
-        "error_description": "Unknown device code status"
-    }), 500
+    return (
+        jsonify({"error": "server_error", "error_description": "Unknown device code status"}),
+        500,
+    )
 
 
 _GRANT_HANDLERS: Dict[str, Callable[[_GrantContext], GrantResult]] = {
@@ -1062,7 +1150,9 @@ def token() -> ResponseReturnValue:
             client_id=auth.username,
             details={"reason": "client_id mismatch", "body_client_id": body_client_id},
         )
-        return abort(401, description="client_id in request body does not match authenticated client")
+        return abort(
+            401, description="client_id in request body does not match authenticated client"
+        )
 
     # For grant types that require client authentication, enforce it
     if not auth and grant_type != "authorization_code":
@@ -1232,7 +1322,10 @@ def userinfo() -> ResponseReturnValue:
             endpoint="/userinfo",
             details={"reason": str(e)},
         )
-        return jsonify({"error": "invalid_token", "error_description": "Token validation failed"}), 401
+        return (
+            jsonify({"error": "invalid_token", "error_description": "Token validation failed"}),
+            401,
+        )
 
     # UserInfo requires an *access* token (OIDC Core §5.3.1). Reject ID/refresh
     # tokens even if they verify against the resource audience (issue #34).
@@ -1249,12 +1342,18 @@ def userinfo() -> ResponseReturnValue:
             endpoint="/userinfo",
             details={"reason": "Not an access token", "token_use": payload.get("token_use")},
         )
-        return jsonify({"error": "invalid_token", "error_description": "An access token is required"}), 401
+        return (
+            jsonify({"error": "invalid_token", "error_description": "An access token is required"}),
+            401,
+        )
 
     # Check if token is revoked
     jti = payload.get("jti")
     if get_revocation_store().is_revoked(jti):
-        return jsonify({"error": "invalid_token", "error_description": "Token has been revoked"}), 401
+        return (
+            jsonify({"error": "invalid_token", "error_description": "Token has been revoked"}),
+            401,
+        )
 
     # Get user info
     username = payload.get("sub")
@@ -1456,6 +1555,7 @@ def revoke() -> ResponseReturnValue:
         else:
             # If no JTI, add the token hash to blacklist
             import hashlib
+
             token_hash = hashlib.sha256(token.encode()).hexdigest()
             get_revocation_store().revoke(token_hash)
 
@@ -1479,6 +1579,7 @@ def revoke() -> ResponseReturnValue:
 # ============================================================================
 # OIDC End Session / Logout (OpenID Connect RP-Initiated Logout 1.0)
 # ============================================================================
+
 
 @oauth_bp.route("/logout", methods=["GET", "POST"])
 @oauth_bp.route("/end_session", methods=["GET", "POST"])
@@ -1550,6 +1651,7 @@ def end_session() -> ResponseReturnValue:
 # Device Authorization Grant (RFC 8628)
 # ============================================================================
 
+
 @oauth_bp.route("/device_authorization", methods=["POST"])
 @oauth_bp.route("/device/code", methods=["POST"])
 def device_authorization() -> ResponseReturnValue:
@@ -1601,10 +1703,12 @@ def device_authorization() -> ResponseReturnValue:
                 client_id=client_id,
                 details={"reason": scope_result.error_description},
             )
-            return jsonify({
-                "error": "invalid_scope",
-                "error_description": scope_result.error_description
-            }), 400
+            return (
+                jsonify(
+                    {"error": "invalid_scope", "error_description": scope_result.error_description}
+                ),
+                400,
+            )
         requested_scope = scope_result.granted or ""
     scope = requested_scope
 
@@ -1628,21 +1732,20 @@ def device_authorization() -> ResponseReturnValue:
     settings = config.settings
     verification_base = settings.issuer
     if settings.issuer_from_request:
-        verification_base = (
-            settings.device_verification_base_url
-            or effective_issuer(settings)
-        )
+        verification_base = settings.device_verification_base_url or effective_issuer(settings)
     verification_uri = f"{verification_base}/device"
     verification_uri_complete = f"{verification_uri}?user_code={user_code}"
 
-    return jsonify({
-        "device_code": device_code,
-        "user_code": user_code,
-        "verification_uri": verification_uri,
-        "verification_uri_complete": verification_uri_complete,
-        "expires_in": DEVICE_CODE_EXPIRES_IN,
-        "interval": DEVICE_POLL_INTERVAL,
-    })
+    return jsonify(
+        {
+            "device_code": device_code,
+            "user_code": user_code,
+            "verification_uri": verification_uri,
+            "verification_uri_complete": verification_uri_complete,
+            "expires_in": DEVICE_CODE_EXPIRES_IN,
+            "interval": DEVICE_POLL_INTERVAL,
+        }
+    )
 
 
 @oauth_bp.route("/device", methods=["GET", "POST"])
