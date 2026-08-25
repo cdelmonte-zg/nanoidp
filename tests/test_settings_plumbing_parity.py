@@ -1,0 +1,71 @@
+"""
+The settings plumbing derives from one table, and the table derives from
+the models (#214).
+
+serialization.OWNED_SETTINGS is the single description of which
+settings.yaml keys the codebase manages; apply_settings_document and
+yaml_writer's update_oauth_settings/update_saml_settings drive from it,
+and mcp_server._UPDATE_SETTINGS_FIELDS is the MCP tool's writable-field
+list. These tests pin every one of those surfaces to the document models
+and the Settings model, so a new setting that misses a surface (or a
+table row that names a key the models do not know) fails the suite
+instead of silently drifting - the same treatment the client fields get
+in tests/test_client_field_parity.py.
+"""
+
+import inspect
+
+from nanoidp import config_documents as cd
+from nanoidp.mcp_server import _TOOL_SCHEMAS, _UPDATE_SETTINGS_FIELDS
+from nanoidp.models import Settings
+from nanoidp.serialization import OWNED_SETTINGS
+from nanoidp.services.yaml_writer import YamlWriter
+
+_SECTION_MODELS = {
+    "server": cd.ServerSection,
+    "oauth": cd.OAuthSection,
+    "saml": cd.SamlSection,
+    "logging": cd.LoggingSection,
+    "": cd.SettingsDocument,
+}
+
+
+class TestOwnedSettingsDeriveFromTheModels:
+    def test_every_row_names_a_settings_attribute(self):
+        for row in OWNED_SETTINGS:
+            assert row.attr in Settings.model_fields, row
+
+    def test_every_row_names_a_document_model_field(self):
+        for row in OWNED_SETTINGS:
+            model = _SECTION_MODELS[row.section]
+            assert row.key in model.model_fields, row
+
+    def test_rows_are_unique_per_key(self):
+        keys = [(row.section, row.key) for row in OWNED_SETTINGS]
+        assert len(keys) == len(set(keys))
+
+
+class TestYamlWriterMatchesTheTable:
+    def _writer_params(self, method_name):
+        signature = inspect.signature(getattr(YamlWriter, method_name))
+        return set(signature.parameters) - {"self"}
+
+    def test_update_oauth_settings_covers_exactly_the_oauth_rows(self):
+        # `clients` is a merged list with its own save_client path, not a
+        # scalar row, and stays out of both the table and this method.
+        table = {row.key for row in OWNED_SETTINGS if row.section == "oauth"}
+        assert self._writer_params("update_oauth_settings") == table
+
+    def test_update_saml_settings_covers_exactly_the_saml_rows(self):
+        table = {row.key for row in OWNED_SETTINGS if row.section == "saml"}
+        assert self._writer_params("update_saml_settings") == table
+
+
+class TestMcpUpdateSettingsMatchesItsSchema:
+    def test_field_tuple_equals_the_tool_schema(self):
+        schema = set(_TOOL_SCHEMAS["update_settings"]["properties"])
+        assert set(_UPDATE_SETTINGS_FIELDS) == schema
+
+    def test_every_field_is_a_settings_attribute(self):
+        for field in _UPDATE_SETTINGS_FIELDS:
+            assert field in Settings.model_fields, field

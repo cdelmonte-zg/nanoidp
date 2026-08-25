@@ -31,6 +31,7 @@ import os
 import re
 import shutil
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Mapping, Optional
 
@@ -50,7 +51,7 @@ _yaml_rt.indent(mapping=2, sequence=2, offset=0)
 _yaml_rt.preserve_quotes = True
 _yaml_rt.width = 4096  # avoid re-wrapping long values (URLs, descriptions)
 
-_ENV_VAR_RE = re.compile(r'\$\{([A-Za-z_][A-Za-z0-9_]*)(?::([^}]*))?\}')
+_ENV_VAR_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::([^}]*))?\}")
 
 
 def expand_env_vars(value: Any) -> Any:
@@ -62,11 +63,13 @@ def expand_env_vars(value: Any) -> Any:
     Only string leaf values are processed; dicts/lists are traversed recursively.
     """
     if isinstance(value, str):
+
         def _replace(m: re.Match) -> str:
             var_name, default = m.group(1), m.group(2)
             if default is None:
                 return os.environ.get(var_name, "")
             return os.environ.get(var_name, default)
+
         return _ENV_VAR_RE.sub(_replace, value)
     if isinstance(value, dict):
         return {k: expand_env_vars(v) for k, v in value.items()}
@@ -133,7 +136,6 @@ def merge_optional_nested_field(
         document[section_key].pop(field_key, None)
         if not document[section_key]:
             document.pop(section_key, None)
-
 
 
 def _quoted(value: str) -> SingleQuotedScalarString:
@@ -310,18 +312,16 @@ def merge_oauth_clients(
     still unchanged, but genuine edits replace the matching fields without
     rebuilding the whole list. Added clients are appended; removed ones drop out.
     """
-    raw_entries = [r for r in raw_clients if isinstance(r, dict)] if isinstance(
-        raw_clients, list
-    ) else []
+    raw_entries = (
+        [r for r in raw_clients if isinstance(r, dict)] if isinstance(raw_clients, list) else []
+    )
 
     merged: list[Dict[str, Any]] = []
 
     for client in settings_clients:
         # Match by expanded client_id so a raw ``${CLIENT_ID:app1}`` entry is
         # recognised as the same client and its placeholders are preserved (#127).
-        raw_entry = next(
-            (r for r in raw_entries if client_id_matches(r, client.client_id)), None
-        )
+        raw_entry = next((r for r in raw_entries if client_id_matches(r, client.client_id)), None)
         if raw_entry is None:
             merged.append(client_to_yaml(client))
         else:
@@ -358,8 +358,7 @@ def user_to_yaml(user: User) -> Dict[str, Any]:
         entry["source_acl"] = user.source_acl
     if user.attributes:
         entry["attributes"] = {
-            k: (_quoted(v) if isinstance(v, str) else v)
-            for k, v in user.attributes.items()
+            k: (_quoted(v) if isinstance(v, str) else v) for k, v in user.attributes.items()
         }
     return entry
 
@@ -372,6 +371,72 @@ _FALLBACK_DEFAULTS: Dict[str, Any] = {
     "security_profile": "dev",
     "login.mode": "password",
 }
+
+
+@dataclass(frozen=True)
+class OwnedSetting:
+    """One settings.yaml key this codebase manages (#214).
+
+    The single description of where a Settings attribute lives in the file
+    and how its absence is encoded; ``apply_settings_document`` below and
+    ``yaml_writer.update_oauth_settings``/``update_saml_settings`` both
+    drive from ``OWNED_SETTINGS`` instead of repeating one if-block per
+    field. A test asserts every row against the document models
+    (config_documents), so the models stay the single source of truth.
+
+    ``doc_mode`` is how ``apply_settings_document`` encodes the attribute:
+    - "plain": always written when changed.
+    - "omit_when_falsy": a falsy value means the key is absent from the
+      file (``empty`` is the falsy stand-in used for the unchanged check).
+    - "omit_when_none": None means absent (derived values, #181); any
+      non-None value, including "", is written.
+    The writer's per-call semantics are simpler and shared: a kwarg that is
+    None was not on the form (leave the file alone, #131); for non-plain
+    rows a falsy provided value clears the key.
+    """
+
+    section: str  # "" = a top-level key
+    key: str
+    attr: str  # the Settings attribute name
+    doc_mode: str = "plain"
+    empty: Any = None
+
+
+OWNED_SETTINGS: tuple[OwnedSetting, ...] = (
+    OwnedSetting("server", "host", "host"),
+    OwnedSetting("server", "port", "port"),
+    OwnedSetting("oauth", "issuer", "issuer"),
+    OwnedSetting("oauth", "issuer_from_request", "issuer_from_request"),
+    OwnedSetting("oauth", "issuer_allowlist", "issuer_allowlist", "omit_when_falsy", []),
+    OwnedSetting(
+        "oauth",
+        "device_verification_base_url",
+        "device_verification_base_url",
+        "omit_when_falsy",
+        "",
+    ),
+    OwnedSetting("oauth", "issuer_from_proxy_headers", "issuer_from_proxy_headers"),
+    OwnedSetting("oauth", "audience", "audience"),
+    OwnedSetting("oauth", "token_expiry_minutes", "token_expiry_minutes"),
+    OwnedSetting("oauth", "refresh_token_rotation", "refresh_token_rotation"),
+    OwnedSetting("oauth", "require_pkce", "require_pkce"),
+    OwnedSetting("oauth", "logos_dir", "logos_dir", "omit_when_falsy", ""),
+    OwnedSetting("saml", "entity_id", "saml_entity_id", "omit_when_none"),
+    OwnedSetting("saml", "sso_url", "saml_sso_url", "omit_when_none"),
+    OwnedSetting("saml", "default_acs_url", "default_acs_url"),
+    OwnedSetting("saml", "sign_responses", "saml_sign_responses"),
+    OwnedSetting("saml", "export_roles", "saml_export_roles"),
+    OwnedSetting("saml", "export_groups", "saml_export_groups"),
+    OwnedSetting("saml", "roles_attr_name", "saml_roles_attr_name"),
+    OwnedSetting("saml", "groups_attr_name", "saml_groups_attr_name"),
+    OwnedSetting("saml", "c14n_algorithm", "saml_c14n_algorithm"),
+    OwnedSetting("saml", "strict_binding", "strict_saml_binding"),
+    OwnedSetting("saml", "want_authn_requests_signed", "saml_want_authn_requests_signed"),
+    OwnedSetting("saml", "sp_certificates", "saml_sp_certificates", "omit_when_falsy", []),
+    OwnedSetting("logging", "verbose_logging", "verbose_logging"),
+    OwnedSetting("", "authority_prefixes", "authority_prefixes"),
+    OwnedSetting("", "allowed_identity_classes", "allowed_identity_classes", "omit_when_falsy", []),
+)
 
 
 def apply_settings_document(
@@ -391,108 +456,38 @@ def apply_settings_document(
     Each field is only overwritten when its expanded on-disk value actually
     differs from the new one (#127), so untouched ``${VAR}`` placeholders,
     comments and quote style survive a save that changed something else.
-    """
-    server = document.setdefault("server", {})
-    if not is_unchanged(server.get("host"), settings.host):
-        server["host"] = settings.host
-    if not is_unchanged(server.get("port"), settings.port):
-        server["port"] = settings.port
 
+    The per-field encodings live on ``OWNED_SETTINGS`` (#214); only the two
+    defaults-dependent keys (``security_profile``, ``login.mode``) are
+    handled explicitly below.
+    """
+    for field in OWNED_SETTINGS:
+        target = document if not field.section else document.setdefault(field.section, {})
+        value = getattr(settings, field.attr)
+        if field.doc_mode == "plain":
+            if not is_unchanged(target.get(field.key), value):
+                target[field.key] = value
+        elif field.doc_mode == "omit_when_falsy":
+            if not is_unchanged(target.get(field.key), value or field.empty):
+                if value:
+                    target[field.key] = value
+                else:
+                    target.pop(field.key, None)
+        else:  # omit_when_none: derived-when-absent (#181)
+            if value is None:
+                target.pop(field.key, None)
+            elif not is_unchanged(target.get(field.key), value):
+                target[field.key] = value
+
+    # Clients are a merged list, not a scalar key: each entry round-trips
+    # through merge_client_entry, so they stay outside OWNED_SETTINGS.
     oauth = document.setdefault("oauth", {})
-    if not is_unchanged(oauth.get("issuer"), settings.issuer):
-        oauth["issuer"] = settings.issuer
-    if not is_unchanged(oauth.get("issuer_from_request"), settings.issuer_from_request):
-        oauth["issuer_from_request"] = settings.issuer_from_request
-    if not is_unchanged(oauth.get("issuer_allowlist"), settings.issuer_allowlist or []):
-        if settings.issuer_allowlist:
-            oauth["issuer_allowlist"] = settings.issuer_allowlist
-        else:
-            oauth.pop("issuer_allowlist", None)
-    device_verification_base_url = settings.device_verification_base_url or ""
-    if not is_unchanged(
-        oauth.get("device_verification_base_url"),
-        device_verification_base_url,
-    ):
-        if settings.device_verification_base_url:
-            oauth["device_verification_base_url"] = settings.device_verification_base_url
-        else:
-            oauth.pop("device_verification_base_url", None)
-    if not is_unchanged(
-        oauth.get("issuer_from_proxy_headers"), settings.issuer_from_proxy_headers
-    ):
-        oauth["issuer_from_proxy_headers"] = settings.issuer_from_proxy_headers
-    if not is_unchanged(oauth.get("audience"), settings.audience):
-        oauth["audience"] = settings.audience
-    if not is_unchanged(oauth.get("token_expiry_minutes"), settings.token_expiry_minutes):
-        oauth["token_expiry_minutes"] = settings.token_expiry_minutes
-    if not is_unchanged(
-        oauth.get("refresh_token_rotation"), settings.refresh_token_rotation
-    ):
-        oauth["refresh_token_rotation"] = settings.refresh_token_rotation
-    if not is_unchanged(oauth.get("require_pkce"), settings.require_pkce):
-        oauth["require_pkce"] = settings.require_pkce
-    logos_dir = settings.logos_dir or ""
-    if not is_unchanged(oauth.get("logos_dir"), logos_dir):
-        if settings.logos_dir:
-            oauth["logos_dir"] = settings.logos_dir
-        else:
-            oauth.pop("logos_dir", None)
     new_clients = merge_oauth_clients(oauth.get("clients", []), settings.clients)
     if new_clients != oauth.get("clients", []):
         if new_clients:
             oauth["clients"] = new_clients
         else:
             oauth.pop("clients", None)
-
-    saml = document.setdefault("saml", {})
-    # entity_id / sso_url: None means "derived from the effective issuer"
-    # (#181) and is represented by the key being absent - a derived value is
-    # never materialized into the file, so it keeps following the issuer.
-    for key, value in (("entity_id", settings.saml_entity_id), ("sso_url", settings.saml_sso_url)):
-        if value is None:
-            saml.pop(key, None)
-        elif not is_unchanged(saml.get(key), value):
-            saml[key] = value
-    if not is_unchanged(saml.get("default_acs_url"), settings.default_acs_url):
-        saml["default_acs_url"] = settings.default_acs_url
-    if not is_unchanged(saml.get("sign_responses"), settings.saml_sign_responses):
-        saml["sign_responses"] = settings.saml_sign_responses
-    if not is_unchanged(saml.get("export_roles"), settings.saml_export_roles):
-        saml["export_roles"] = settings.saml_export_roles
-    if not is_unchanged(saml.get("export_groups"), settings.saml_export_groups):
-        saml["export_groups"] = settings.saml_export_groups
-    if not is_unchanged(saml.get("roles_attr_name"), settings.saml_roles_attr_name):
-        saml["roles_attr_name"] = settings.saml_roles_attr_name
-    if not is_unchanged(saml.get("groups_attr_name"), settings.saml_groups_attr_name):
-        saml["groups_attr_name"] = settings.saml_groups_attr_name
-    if not is_unchanged(saml.get("c14n_algorithm"), settings.saml_c14n_algorithm):
-        saml["c14n_algorithm"] = settings.saml_c14n_algorithm
-    if not is_unchanged(saml.get("strict_binding"), settings.strict_saml_binding):
-        saml["strict_binding"] = settings.strict_saml_binding
-    if not is_unchanged(
-        saml.get("want_authn_requests_signed"), settings.saml_want_authn_requests_signed
-    ):
-        saml["want_authn_requests_signed"] = settings.saml_want_authn_requests_signed
-    if not is_unchanged(saml.get("sp_certificates"), settings.saml_sp_certificates or []):
-        if settings.saml_sp_certificates:
-            saml["sp_certificates"] = settings.saml_sp_certificates
-        else:
-            saml.pop("sp_certificates", None)
-
-    logging_section = document.setdefault("logging", {})
-    if not is_unchanged(logging_section.get("verbose_logging"), settings.verbose_logging):
-        logging_section["verbose_logging"] = settings.verbose_logging
-
-    if not is_unchanged(document.get("authority_prefixes"), settings.authority_prefixes):
-        document["authority_prefixes"] = settings.authority_prefixes
-
-    if not is_unchanged(
-        document.get("allowed_identity_classes"), settings.allowed_identity_classes or []
-    ):
-        if settings.allowed_identity_classes:
-            document["allowed_identity_classes"] = settings.allowed_identity_classes
-        else:
-            document.pop("allowed_identity_classes", None)
 
     # "Omit at default" decisions read the loader's defaults (#175 piece 2).
     resolved_defaults = defaults if defaults is not None else _FALLBACK_DEFAULTS
@@ -517,9 +512,7 @@ def apply_users_document(
 
     The full user map is owned; unknown top-level keys are preserved.
     """
-    document["users"] = {
-        username: user_to_yaml(user) for username, user in users.items()
-    }
+    document["users"] = {username: user_to_yaml(user) for username, user in users.items()}
     document["default_user"] = default_user
     return document
 
