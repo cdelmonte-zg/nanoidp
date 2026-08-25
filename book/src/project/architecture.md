@@ -82,7 +82,7 @@ single-purpose:
 | `services/redirect_uri.py` | Redirect-URI registration matching, including RFC 8252 native-app rules |
 | `services/saml_verification.py` | Signed-AuthnRequest verification |
 | `services/audit.py` | The audit log (in-memory ring, export) |
-| `services/yaml_writer.py` | The only code that writes the YAML files back |
+| `services/yaml_writer.py` | Writes the YAML files back for the UI's per-field saves. Not the only write path: `ConfigManager.save()` persists whole documents through `serialization.atomic_write_yaml` too - both build their entries in `serialization.py`, but the read-modify-write itself has two owners today (a known debt, tracked for a single write pipeline with conflict detection) |
 
 The config layer and the pure bottom:
 
@@ -94,7 +94,7 @@ The config layer and the pure bottom:
 | `config_validation.py` | `nanoidp validate-config`: lint a config directory without starting anything (hooks never execute) |
 | `hooks.py` | `HookRegistry`: the extension points (`on_before_load`, `on_config_saved`, `on_audit_event`), shell hooks, entry-point plugins, the bootstrap surface |
 | `models.py` | The domain dataclass-style models: `Settings`, `User`, `OAuthClient` |
-| `serialization.py` | Domain objects <-> YAML dicts, both directions, no runtime package imports |
+| `serialization.py` | Domain objects <-> YAML dicts, both directions, no runtime package imports; `OWNED_SETTINGS` is the one table of managed settings.yaml keys, pinned to the models by parity tests (#214) |
 | `exceptions.py` | The exception taxonomy |
 | `branding.py` | Per-client logo resolution (local assets only, containment-checked) |
 
@@ -106,8 +106,12 @@ There are exactly two kinds of state, and they never share a store:
   `users.yaml`, plus the optional `bootstrap.yaml` for hooks/plugins).
   It is schema-versioned (`config_version`), validated through the
   document models, editable by hand, and meant to be committed to git.
-  The UI and MCP write it back through `services/yaml_writer.py` and
-  nothing else does.
+  The UI's per-field saves go through `services/yaml_writer.py`; the
+  MCP `save_config` tool and reloads persist whole documents through
+  `ConfigManager.save()`. Both delegate their entry-building to
+  `serialization.py`, so the two paths cannot drift on content - but
+  they are two separate read-modify-write owners, with no cross-request
+  conflict detection (last write wins).
 - **Runtime state** lives in memory inside `services/`: authorization
   codes, device codes, revocation and rotation families, the audit
   log, and Flask sessions. It is lost on restart by design; an
@@ -163,8 +167,13 @@ A new client field touches all of these:
 Then: tests for the YAML round-trip and the persist-through-edit and
 regenerate-secret paths, MCP parity coverage, and an
 `examples/test_agent.py` scenario, in the same PR (features ship
-whole). Issue #214 tracks whether this flow should collapse into a
-declarative registry.
+whole). #214 settled how this flow is protected: no code-generating
+registry - the declarative surfaces (the YAML load contract, the MCP
+read surface and tool schemas, the form template) are pinned to
+`OAuthClient.model_fields` by `tests/test_client_field_parity.py`, the
+regenerate-secret leg is safe by construction (`model_copy`), and the
+imperative legs (form parsers, MCP handler bodies, the YAML entry
+builders) stay covered by the per-feature tests this list requires.
 
 ## Tests
 
