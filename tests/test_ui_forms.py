@@ -86,19 +86,30 @@ class TestLoginLogout:
         with client.session_transaction() as sess:
             assert "user" not in sess
 
-    def test_logout_clears_session(self, client):
-        # /logout is handled by oauth_bp's OIDC end-session endpoint, which
-        # shadows the ui.logout route entirely (both register the same rule;
-        # oauth_bp wins). ui.logout is unreachable dead code - a known
-        # non-blocking finding from the #176 review. What matters to the UI
-        # is the observable contract: hitting /logout drops the session.
-        # The status is deliberately loose (200 today, 302 if the shadowing
-        # is ever fixed and ui.logout's redirect takes over).
+    def test_oidc_end_session_clears_session(self, client):
+        # /logout belongs solely to oauth_bp's OIDC end-session endpoint
+        # since #221 moved the UI logout to its own rule; the earlier loose
+        # (200, 302) assertion here can be exact again.
         _login(client)
         resp = client.get("/logout")
-        assert resp.status_code in (200, 302)
+        assert resp.status_code == 200
         with client.session_transaction() as sess:
             assert "user" not in sess
+
+    def test_ui_logout_redirects_to_dashboard_and_audits(self, app, client):
+        from nanoidp.services import get_audit_log
+
+        _login(client)
+        resp = client.get("/ui/logout")
+        assert resp.status_code == 302
+        assert resp.headers["Location"].endswith("/")
+        with client.session_transaction() as sess:
+            assert "user" not in sess
+        # The audit event ui.logout was supposed to write for years but never
+        # could while the route was shadowed (#221).
+        with app.app_context():
+            entries = get_audit_log().get_entries(limit=10, event_type="logout")
+        assert any(e.get("username") == "admin" for e in entries)
 
 
 class TestUserForms:
