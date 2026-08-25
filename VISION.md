@@ -91,7 +91,8 @@ implicitly throughout the project's history; this writes them down.
   families, the audit log, runtime-created clients and users) is in
   memory by default. An optional
   local SQLite runtime store gives durable runtime state and lets several
-  worker processes on one host share it; it is not a distributed store.
+  nanoidp processes on one host share it (HTTP workers and the separate
+  `nanoidp-mcp` process alike); it is not a distributed store.
   Distributed databases, HA and multi-node state coordination are not
   goals. Durable is not declared: a runtime-created object can survive a
   restart without becoming part of the operator's configuration unless it
