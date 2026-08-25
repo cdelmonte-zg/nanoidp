@@ -1401,6 +1401,58 @@ def _tool_validate_config(arguments: dict[str, Any], config: ConfigManager) -> d
     return validate_config_result(config.config_dir, effective)
 
 
+def _blank_to_none(name: str, value: Any) -> Any:
+    """ "" = clear: back to the derived/unset value (#181), mirroring the UI."""
+    return value or None
+
+
+def _normalize_update_list(name: str, value: Any) -> Any:
+    return _normalize_str_list(value, name)
+
+
+def _normalize_update_attr_name(name: str, value: Any) -> Any:
+    return normalize_saml_attr_name(name, value)
+
+
+# update_settings' writable fields, in the response's updated_fields order.
+# Names double as Settings attribute names; tests/test_settings_plumbing_parity.py
+# asserts this tuple against the tool's input_schema, so the two cannot drift.
+_UPDATE_SETTINGS_FIELDS: tuple[str, ...] = (
+    "issuer",
+    "issuer_from_request",
+    "issuer_allowlist",
+    "device_verification_base_url",
+    "issuer_from_proxy_headers",
+    "audience",
+    "token_expiry_minutes",
+    "saml_entity_id",
+    "saml_sso_url",
+    "saml_sign_responses",
+    "saml_export_roles",
+    "saml_export_groups",
+    "saml_roles_attr_name",
+    "saml_groups_attr_name",
+    "saml_c14n_algorithm",
+    "strict_saml_binding",
+    "saml_want_authn_requests_signed",
+    "saml_sp_certificates",
+    "verbose_logging",
+    "refresh_token_rotation",
+    "require_pkce",
+    "login_mode",
+)
+
+_UPDATE_SETTINGS_NORMALIZERS: dict[str, Callable[[str, Any], Any]] = {
+    "issuer_allowlist": _normalize_update_list,
+    "saml_sp_certificates": _normalize_update_list,
+    "saml_roles_attr_name": _normalize_update_attr_name,
+    "saml_groups_attr_name": _normalize_update_attr_name,
+    "device_verification_base_url": _blank_to_none,
+    "saml_entity_id": _blank_to_none,
+    "saml_sso_url": _blank_to_none,
+}
+
+
 def _tool_update_settings(arguments: dict[str, Any], config: ConfigManager) -> dict[str, Any]:
     settings = config.settings
 
@@ -1409,81 +1461,15 @@ def _tool_update_settings(arguments: dict[str, Any], config: ConfigManager) -> d
     # login_mode, so call_tool()'s jsonschema pass already rejects an
     # invalid value before this handler ever runs.
     updated = []
-    if "issuer" in arguments:
-        settings.issuer = arguments["issuer"]
-        updated.append("issuer")
-    if "issuer_from_request" in arguments:
-        settings.issuer_from_request = arguments["issuer_from_request"]
-        updated.append("issuer_from_request")
-    if "issuer_allowlist" in arguments:
-        settings.issuer_allowlist = _normalize_str_list(
-            arguments["issuer_allowlist"], "issuer_allowlist"
-        )
-        updated.append("issuer_allowlist")
-    if "device_verification_base_url" in arguments:
-        settings.device_verification_base_url = arguments["device_verification_base_url"] or None
-        updated.append("device_verification_base_url")
-    if "issuer_from_proxy_headers" in arguments:
-        settings.issuer_from_proxy_headers = arguments["issuer_from_proxy_headers"]
-        updated.append("issuer_from_proxy_headers")
-    if "audience" in arguments:
-        settings.audience = arguments["audience"]
-        updated.append("audience")
-    if "token_expiry_minutes" in arguments:
-        settings.token_expiry_minutes = arguments["token_expiry_minutes"]
-        updated.append("token_expiry_minutes")
-    if "saml_entity_id" in arguments:
-        # "" = back to derived (#181), mirroring the UI form's blank field
-        settings.saml_entity_id = arguments["saml_entity_id"] or None
-        updated.append("saml_entity_id")
-    if "saml_sso_url" in arguments:
-        settings.saml_sso_url = arguments["saml_sso_url"] or None
-        updated.append("saml_sso_url")
-    if "saml_sign_responses" in arguments:
-        settings.saml_sign_responses = arguments["saml_sign_responses"]
-        updated.append("saml_sign_responses")
-    if "saml_export_roles" in arguments:
-        settings.saml_export_roles = arguments["saml_export_roles"]
-        updated.append("saml_export_roles")
-    if "saml_export_groups" in arguments:
-        settings.saml_export_groups = arguments["saml_export_groups"]
-        updated.append("saml_export_groups")
-    if "saml_roles_attr_name" in arguments:
-        settings.saml_roles_attr_name = normalize_saml_attr_name(
-            "saml_roles_attr_name", arguments["saml_roles_attr_name"]
-        )
-        updated.append("saml_roles_attr_name")
-    if "saml_groups_attr_name" in arguments:
-        settings.saml_groups_attr_name = normalize_saml_attr_name(
-            "saml_groups_attr_name", arguments["saml_groups_attr_name"]
-        )
-        updated.append("saml_groups_attr_name")
-    if "saml_c14n_algorithm" in arguments:
-        settings.saml_c14n_algorithm = arguments["saml_c14n_algorithm"]
-        updated.append("saml_c14n_algorithm")
-    if "strict_saml_binding" in arguments:
-        settings.strict_saml_binding = arguments["strict_saml_binding"]
-        updated.append("strict_saml_binding")
-    if "saml_want_authn_requests_signed" in arguments:
-        settings.saml_want_authn_requests_signed = arguments["saml_want_authn_requests_signed"]
-        updated.append("saml_want_authn_requests_signed")
-    if "saml_sp_certificates" in arguments:
-        settings.saml_sp_certificates = _normalize_str_list(
-            arguments["saml_sp_certificates"], "saml_sp_certificates"
-        )
-        updated.append("saml_sp_certificates")
-    if "verbose_logging" in arguments:
-        settings.verbose_logging = arguments["verbose_logging"]
-        updated.append("verbose_logging")
-    if "refresh_token_rotation" in arguments:
-        settings.refresh_token_rotation = arguments["refresh_token_rotation"]
-        updated.append("refresh_token_rotation")
-    if "require_pkce" in arguments:
-        settings.require_pkce = arguments["require_pkce"]
-        updated.append("require_pkce")
-    if "login_mode" in arguments:
-        settings.login_mode = arguments["login_mode"]
-        updated.append("login_mode")
+    for field in _UPDATE_SETTINGS_FIELDS:
+        if field not in arguments:
+            continue
+        value = arguments[field]
+        normalize = _UPDATE_SETTINGS_NORMALIZERS.get(field)
+        if normalize is not None:
+            value = normalize(field, value)
+        setattr(settings, field, value)
+        updated.append(field)
 
     return {
         "success": True,

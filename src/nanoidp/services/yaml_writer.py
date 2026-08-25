@@ -11,6 +11,7 @@ from ..config import OAuthClient, Settings, User, get_config
 from ..config_documents import document_defaults
 from ..hooks import HookError
 from ..serialization import (
+    OWNED_SETTINGS,
     atomic_write_yaml,
     client_id_matches,
     client_to_yaml,
@@ -88,7 +89,6 @@ class YamlWriter:
 
         self._atomic_write(self.users_file, data)
 
-
     def delete_user(self, username: str) -> None:
         """
         Delete a user from users.yaml.
@@ -109,7 +109,6 @@ class YamlWriter:
             data["default_user"] = remaining_users[0] if remaining_users else ""
 
         self._atomic_write(self.users_file, data)
-
 
     def set_default_user(self, username: str) -> None:
         """Set the default user for client_credentials grant."""
@@ -173,6 +172,33 @@ class YamlWriter:
 
     # ==================== Settings Operations ====================
 
+    def _apply_provided_settings(self, section_name: str, provided: "Dict[str, Any]") -> None:
+        """Apply form-provided values for one settings.yaml section (#214).
+
+        The per-field encoding comes from serialization.OWNED_SETTINGS, the
+        same table apply_settings_document drives from - one row per owned
+        key instead of one hand-written if-block per field. Semantics per
+        value: None was not on the form and leaves the file alone (#131);
+        for a non-"plain" row a provided-but-falsy value clears the key
+        (absent = default/derived); everything else is written only when
+        the expanded on-disk value actually differs (#127), so untouched
+        ``${VAR}`` placeholders and comments survive.
+        """
+        data = self._load_settings_yaml()
+        section = data.setdefault(section_name, {})
+        rows = {f.key: f for f in OWNED_SETTINGS if f.section == section_name}
+        for key, value in provided.items():
+            if value is None:
+                continue
+            field = rows[key]
+            compare = value if (field.doc_mode == "plain" or value) else field.empty
+            if not is_unchanged(section.get(key), compare):
+                if field.doc_mode != "plain" and not value:
+                    section.pop(key, None)
+                else:
+                    section[key] = value
+        self._atomic_write(self.settings_file, data)
+
     def update_oauth_settings(
         self,
         issuer: Optional[str] = None,
@@ -186,64 +212,27 @@ class YamlWriter:
         refresh_token_rotation: Optional[bool] = None,
         logos_dir: Optional[str] = None,
     ) -> None:
-        """Update OAuth settings.
+        """Update OAuth settings (per-field encodings: OWNED_SETTINGS, #214).
 
         Skips writing a field whose expanded on-disk value already matches
         what's being submitted, so unchanged ``${VAR}`` placeholders and
         comments survive a form save that only changed other fields (#127).
         """
-        data = self._load_settings_yaml()
-        oauth = data.setdefault("oauth", {})
-
-        if issuer is not None and not is_unchanged(oauth.get("issuer"), issuer):
-            oauth["issuer"] = issuer
-        if issuer_from_request is not None and not is_unchanged(
-            oauth.get("issuer_from_request"), issuer_from_request
-        ):
-            oauth["issuer_from_request"] = issuer_from_request
-        if issuer_allowlist is not None:
-            if issuer_allowlist:
-                if not is_unchanged(oauth.get("issuer_allowlist"), issuer_allowlist):
-                    oauth["issuer_allowlist"] = issuer_allowlist
-            else:
-                oauth.pop("issuer_allowlist", None)
-        if device_verification_base_url is not None:
-            next_url = device_verification_base_url or ""
-            if not is_unchanged(
-                oauth.get("device_verification_base_url"),
-                next_url,
-            ):
-                if device_verification_base_url:
-                    oauth["device_verification_base_url"] = device_verification_base_url
-                else:
-                    oauth.pop("device_verification_base_url", None)
-        if issuer_from_proxy_headers is not None and not is_unchanged(
-            oauth.get("issuer_from_proxy_headers"), issuer_from_proxy_headers
-        ):
-            oauth["issuer_from_proxy_headers"] = issuer_from_proxy_headers
-        if audience is not None and not is_unchanged(oauth.get("audience"), audience):
-            oauth["audience"] = audience
-        if token_expiry_minutes is not None and not is_unchanged(
-            oauth.get("token_expiry_minutes"), token_expiry_minutes
-        ):
-            oauth["token_expiry_minutes"] = token_expiry_minutes
-        if require_pkce is not None and not is_unchanged(
-            oauth.get("require_pkce"), require_pkce
-        ):
-            oauth["require_pkce"] = require_pkce
-        if refresh_token_rotation is not None and not is_unchanged(
-            oauth.get("refresh_token_rotation"), refresh_token_rotation
-        ):
-            oauth["refresh_token_rotation"] = refresh_token_rotation
-        if logos_dir is not None:
-            next_logos_dir = logos_dir or ""
-            if not is_unchanged(oauth.get("logos_dir"), next_logos_dir):
-                if logos_dir:
-                    oauth["logos_dir"] = logos_dir
-                else:
-                    oauth.pop("logos_dir", None)
-
-        self._atomic_write(self.settings_file, data)
+        self._apply_provided_settings(
+            "oauth",
+            {
+                "issuer": issuer,
+                "issuer_from_request": issuer_from_request,
+                "issuer_allowlist": issuer_allowlist,
+                "device_verification_base_url": device_verification_base_url,
+                "issuer_from_proxy_headers": issuer_from_proxy_headers,
+                "audience": audience,
+                "token_expiry_minutes": token_expiry_minutes,
+                "require_pkce": require_pkce,
+                "refresh_token_rotation": refresh_token_rotation,
+                "logos_dir": logos_dir,
+            },
+        )
 
     def update_saml_settings(
         self,
@@ -260,68 +249,28 @@ class YamlWriter:
         roles_attr_name: Optional[str] = None,
         groups_attr_name: Optional[str] = None,
     ) -> None:
-        """Update SAML settings (same unchanged-field guard as #127 above)."""
-        data = self._load_settings_yaml()
-        saml = data.setdefault("saml", {})
+        """Update SAML settings (same #127 guard; encodings: OWNED_SETTINGS).
 
-        # Blank clears the key: absent = derived from the effective issuer
-        # (#181), the same "present-but-blank = clear" contract as #131.
-        for key, value in (("entity_id", entity_id), ("sso_url", sso_url)):
-            if value is None:
-                continue
-            if not value:
-                saml.pop(key, None)
-            elif not is_unchanged(saml.get(key), value):
-                saml[key] = value
-        if default_acs_url is not None and not is_unchanged(
-            saml.get("default_acs_url"), default_acs_url
-        ):
-            saml["default_acs_url"] = default_acs_url
-        if sign_responses is not None and not is_unchanged(
-            saml.get("sign_responses"), sign_responses
-        ):
-            saml["sign_responses"] = sign_responses
-        if strict_binding is not None and not is_unchanged(
-            saml.get("strict_binding"), strict_binding
-        ):
-            saml["strict_binding"] = strict_binding
-        if want_authn_requests_signed is not None and not is_unchanged(
-            saml.get("want_authn_requests_signed"), want_authn_requests_signed
-        ):
-            saml["want_authn_requests_signed"] = want_authn_requests_signed
-        if sp_certificates is not None:
-            if sp_certificates:
-                if not is_unchanged(saml.get("sp_certificates"), sp_certificates):
-                    saml["sp_certificates"] = sp_certificates
-            else:
-                saml.pop("sp_certificates", None)
-        if c14n_algorithm is not None and not is_unchanged(
-            saml.get("c14n_algorithm"), c14n_algorithm
-        ):
-            saml["c14n_algorithm"] = c14n_algorithm
-        if export_roles is not None and not is_unchanged(
-            saml.get("export_roles"), export_roles
-        ):
-            saml["export_roles"] = export_roles
-        if export_groups is not None and not is_unchanged(
-            saml.get("export_groups"), export_groups
-        ):
-            saml["export_groups"] = export_groups
-        # Empty string drops the key so the default name applies again.
-        if roles_attr_name is not None:
-            if roles_attr_name:
-                if not is_unchanged(saml.get("roles_attr_name"), roles_attr_name):
-                    saml["roles_attr_name"] = roles_attr_name
-            else:
-                saml.pop("roles_attr_name", None)
-        if groups_attr_name is not None:
-            if groups_attr_name:
-                if not is_unchanged(saml.get("groups_attr_name"), groups_attr_name):
-                    saml["groups_attr_name"] = groups_attr_name
-            else:
-                saml.pop("groups_attr_name", None)
-
-        self._atomic_write(self.settings_file, data)
+        Blank clears entity_id/sso_url: absent = derived from the effective
+        issuer (#181), the same "present-but-blank = clear" contract as #131.
+        """
+        self._apply_provided_settings(
+            "saml",
+            {
+                "entity_id": entity_id,
+                "sso_url": sso_url,
+                "default_acs_url": default_acs_url,
+                "sign_responses": sign_responses,
+                "strict_binding": strict_binding,
+                "want_authn_requests_signed": want_authn_requests_signed,
+                "sp_certificates": sp_certificates,
+                "c14n_algorithm": c14n_algorithm,
+                "export_roles": export_roles,
+                "export_groups": export_groups,
+                "roles_attr_name": roles_attr_name,
+                "groups_attr_name": groups_attr_name,
+            },
+        )
 
     def update_authority_prefixes(self, prefixes: Dict[str, str]) -> None:
         """Update authority prefix mappings."""
