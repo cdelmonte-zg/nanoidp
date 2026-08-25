@@ -26,5 +26,6 @@
 # Project
 
 - [Vision](project/vision.md)
+- [Architecture](project/architecture.md)
 - [Changelog](project/changelog.md)
 - [Contributing](project/contributing.md)

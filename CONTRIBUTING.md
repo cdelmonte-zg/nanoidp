@@ -2,6 +2,12 @@
 
 Thank you for your interest in contributing to NanoIDP!
 
+Before writing code, read the
+[Architecture page](https://cdelmonte-zg.github.io/nanoidp/project/architecture.html)
+(source: `book/src/project/architecture.md`): it maps the packages, the
+import contracts CI enforces, where state lives, and the multi-site
+flows (like adding a client field) that changes must follow.
+
 ## How to Contribute
 
 ### Reporting Bugs
