@@ -75,7 +75,10 @@ jobs:
         run: |
           smoke/bin/python -c "import nanoidp; print('version:', nanoidp.__version__)"
           smoke/bin/nanoidp --help > /dev/null
-          command -v smoke/bin/nanoidp-mcp > /dev/null
+          # Execute (not just locate) the MCP entry point: --help runs main()'s
+          # argparse from the built wheel, which is what the coverage pragma on
+          # mcp_server.main relies on (#222/#225 review).
+          smoke/bin/nanoidp-mcp --help > /dev/null
           mkdir smoke-cfg && cd smoke-cfg
           ../smoke/bin/nanoidp init
           grep -q '127.0.0.1' config/settings.yaml

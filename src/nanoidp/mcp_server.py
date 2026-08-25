@@ -1633,9 +1633,11 @@ def main() -> None:  # pragma: no cover
     """Run the MCP server.
 
     Excluded from unit coverage on purpose (#222): this is process
-    wiring (argparse + stdio bootstrap), and the publish pipeline's
-    wheel-smoke job already boots the nanoidp-mcp entry point for real
-    before anything is published.
+    wiring (argparse + stdio bootstrap). The publish pipeline's
+    wheel-smoke job executes the nanoidp-mcp entry point from the built
+    wheel (--help, which runs this function's argparse) before anything
+    is published; the stdio serve loop itself is exercised by every real
+    MCP session.
     """
     global _readonly_mode
 
