@@ -27,20 +27,20 @@ from nanoidp.config import get_config
 _REPO_CONFIG_DIR = Path(__file__).resolve().parent.parent / "config"
 
 
-def _make_app(tmp_path, session_overrides=None, keys_in_tmp=False):
+def _make_app(tmp_path, session_overrides=None):
     """An app on its own copied config dir, optionally with gate settings.
 
-    keys_in_tmp points jwt.keys_dir into tmp_path so key generation and
-    rotation never touch the repo's ./keys directory (keys_dir is
-    cwd-relative by default).
+    jwt.keys_dir always points into tmp_path: create_app eagerly initializes
+    the crypto service at settings.keys_dir, which is cwd-relative (./keys)
+    in the preset - without the override every app built here would generate
+    or rotate key material in the repo's own gitignored keys/ directory.
     """
     cfg = tmp_path / "cfg"
     cfg.mkdir(exist_ok=True)
     for name in ("settings.yaml", "users.yaml"):
         shutil.copy(_REPO_CONFIG_DIR / name, cfg / name)
     data = yaml.safe_load((cfg / "settings.yaml").read_text())
-    if keys_in_tmp:
-        data.setdefault("jwt", {})["keys_dir"] = str(tmp_path / "keys")
+    data.setdefault("jwt", {})["keys_dir"] = str(tmp_path / "keys")
     if session_overrides:
         data.setdefault("session", {}).update(session_overrides)
     (cfg / "settings.yaml").write_text(yaml.safe_dump(data))
@@ -92,9 +92,11 @@ class TestLoginLogout:
         # oauth_bp wins). ui.logout is unreachable dead code - a known
         # non-blocking finding from the #176 review. What matters to the UI
         # is the observable contract: hitting /logout drops the session.
+        # The status is deliberately loose (200 today, 302 if the shadowing
+        # is ever fixed and ui.logout's redirect takes over).
         _login(client)
         resp = client.get("/logout")
-        assert resp.status_code == 200
+        assert resp.status_code in (200, 302)
         with client.session_transaction() as sess:
             assert "user" not in sess
 
@@ -211,9 +213,14 @@ class TestClientForms:
         assert created.additional_audiences == ["aud-a", "aud-b"]
 
     def test_create_client_missing_id_or_secret_creates_nothing(self, app, client):
+        with app.app_context():
+            before = len(get_config().settings.clients)
         client.post("/clients/create", data={"client_id": "", "client_secret": "s"})
         client.post("/clients/create", data={"client_id": "half-client", "client_secret": ""})
         assert _get_client_by_id(app, "half-client") is None
+        with app.app_context():
+            # Also catches an empty-string client_id slipping through
+            assert len(get_config().settings.clients) == before
 
     def test_edit_client_blank_secret_keeps_existing(self, app, client):
         client.post("/clients/create", data=self.CREATE)
@@ -253,8 +260,20 @@ class TestClientForms:
             assert len(get_config().settings.clients) == before
 
     def test_regenerate_secret_carries_every_field(self, app, client):
-        """The #32 regression shape: regenerate must not drop the other fields."""
-        client.post("/clients/create", data=self.CREATE)
+        """The #32 regression shape: regenerate must not drop ANY other field.
+
+        Includes the branding fields on purpose: a version of this test that
+        only set the fields the route happened to carry was tautological and
+        stayed green while regenerate silently wiped colors and show_* flags.
+        """
+        branded = dict(
+            self.CREATE,
+            background_color="#112233",
+            header_color="#445566",
+            footer_color="#778899",
+            show_client_id="on",
+        )
+        client.post("/clients/create", data=branded)
         resp = client.post("/clients/ui-client/regenerate-secret")
         assert resp.status_code == 302
         regen = _get_client_by_id(app, "ui-client")
@@ -262,6 +281,10 @@ class TestClientForms:
         assert regen.description == "made by the form"
         assert regen.redirect_uris == ["https://app.example/cb", "http://127.0.0.1:7777/cb"]
         assert regen.additional_audiences == ["aud-a", "aud-b"]
+        assert regen.background_color == "#112233"
+        assert regen.header_color == "#445566"
+        assert regen.footer_color == "#778899"
+        assert regen.show_client_id is True
 
     def test_regenerate_secret_missing_client_redirects(self, client):
         resp = client.post("/clients/ghost/regenerate-secret")
@@ -306,15 +329,20 @@ class TestSettingsForm:
 class TestKeysPages:
     @pytest.fixture
     def keys_client(self, tmp_path):
-        app = _make_app(tmp_path, keys_in_tmp=True)
+        app = _make_app(tmp_path)
         return app, app.test_client()
 
     def test_keys_page_renders_kid(self, keys_client):
+        from nanoidp.services import get_crypto_service
+
         app, client = keys_client
+        with app.app_context():
+            kid = get_crypto_service(get_config().settings.keys_dir).kid
         resp = client.get("/keys")
         assert resp.status_code == 200
+        assert kid.encode() in resp.data
 
-    def test_regenerate_changes_kid(self, keys_client):
+    def test_regenerate_changes_and_persists_kid(self, keys_client, tmp_path):
         from nanoidp.services import get_crypto_service
 
         app, client = keys_client
@@ -323,7 +351,12 @@ class TestKeysPages:
         resp = client.post("/keys/regenerate")
         assert resp.status_code == 302
         with app.app_context():
-            assert get_crypto_service(get_config().settings.keys_dir).kid != kid_before
+            kid_after = get_crypto_service(get_config().settings.keys_dir).kid
+        assert kid_after != kid_before
+        # Not only the in-memory singleton the route just mutated: the new
+        # kid must be on disk, or a restart reverts to the old key and
+        # post-rotation tokens stop verifying against JWKS.
+        assert (tmp_path / "keys" / "kid.txt").read_text().strip() == kid_after
 
     def test_download_public_key_and_certificate(self, keys_client):
         app, client = keys_client
@@ -372,25 +405,48 @@ class TestClaimsPages:
 
 
 class TestAuditPages:
-    def _generate_entries(self, client):
+    def _generate_entries(self, app, client):
+        """Two login events plus one non-login event, so a broken
+        event_type/search filter shows up as the wrong entries coming back,
+        not as a smaller count of the same kind."""
+        from nanoidp.services import get_audit_log
+
         _login(client, password="wrong")  # a failed login is an audit entry
         _login(client)
+        with app.app_context():
+            get_audit_log().log(
+                event_type="token_request",
+                endpoint="/token",
+                method="POST",
+                username="filter-seed",
+                status="success",
+                details={},
+            )
 
-    def test_audit_page_with_filters_and_search(self, client):
-        self._generate_entries(client)
+    def test_audit_page_search_filters_rows(self, app, client):
+        self._generate_entries(app, client)
         assert client.get("/audit").status_code == 200
-        assert client.get("/audit?limit=5&event_type=login&search=admin").status_code == 200
+        resp = client.get("/audit?limit=5&event_type=login&search=admin")
+        assert resp.status_code == 200
+        assert b"filter-seed" not in resp.data
+        resp = client.get("/audit?search=filter-seed")
+        assert b"filter-seed" in resp.data
 
-    def test_export_json_contains_entries(self, client):
-        self._generate_entries(client)
+    def test_export_json_applies_event_type_filter(self, app, client):
+        self._generate_entries(app, client)
         resp = client.get("/audit/export/json?event_type=login")
         assert resp.status_code == 200
         assert resp.mimetype == "application/json"
         entries = json.loads(resp.data)
-        assert any(e["event_type"] == "login" for e in entries)
+        assert entries
+        assert all(e["event_type"] == "login" for e in entries)
+        # The unfiltered export does contain the other kind, so the filter
+        # above provably excluded something.
+        everything = json.loads(client.get("/audit/export/json").data)
+        assert any(e["event_type"] == "token_request" for e in everything)
 
-    def test_export_csv_has_header(self, client):
-        self._generate_entries(client)
+    def test_export_csv_has_header(self, app, client):
+        self._generate_entries(app, client)
         resp = client.get("/audit/export/csv")
         assert resp.status_code == 200
         assert resp.mimetype == "text/csv"
@@ -404,7 +460,7 @@ class TestAuditPages:
     def test_clear_empties_the_log(self, app, client):
         from nanoidp.services import get_audit_log
 
-        self._generate_entries(client)
+        self._generate_entries(app, client)
         resp = client.post("/audit/clear")
         assert resp.status_code == 302
         with app.app_context():
@@ -447,11 +503,32 @@ class TestManagementSecretUiGateAcrossEndpoints:
     """management_secret alone must gate EVERY mutating UI surface.
 
     tests/test_management_secret.py proves the mechanism on /users/create;
-    these prove no other mutating endpoint slipped past the before_request
-    hook, asserting on state, not status codes.
+    the parametrized test below sweeps every POST endpoint ui_bp registers
+    today, and the targeted tests assert on state, not status codes.
+    Caveat the sweep cannot cover: the gate short-circuits on safe methods
+    (_auth.py), so a future mutating route added as GET - the shape
+    /keys/download/<key_type> and /audit/export/<format> already have -
+    would bypass it entirely.
     """
 
     SECRET = "ui-gate-secret"
+
+    # Every mutating (POST) endpoint ui_bp registers, minus the two
+    # deliberate exemptions (ui.login, ui.management_unlock). demo-client
+    # and admin exist in the copied preset config.
+    MUTATING_ENDPOINTS = [
+        ("/users/create", {"username": "x", "password": "p"}),
+        ("/users/admin/edit", {"email": "x@example.org"}),
+        ("/users/admin/delete", {}),
+        ("/clients/create", {"client_id": "x", "client_secret": "s"}),
+        ("/clients/demo-client/edit", {"description": "x"}),
+        ("/clients/demo-client/delete", {}),
+        ("/clients/demo-client/regenerate-secret", {}),
+        ("/settings", {"audience": "x"}),
+        ("/claims", {"prefix_roles": "X_"}),
+        ("/audit/clear", {}),
+        ("/keys/regenerate", {}),
+    ]
 
     @pytest.fixture
     def gated(self, tmp_path):
@@ -462,6 +539,13 @@ class TestManagementSecretUiGateAcrossEndpoints:
         return client.post(
             "/management/unlock", data={"management_secret": secret or self.SECRET}
         )
+
+    @pytest.mark.parametrize("path,data", MUTATING_ENDPOINTS)
+    def test_every_mutating_endpoint_redirects_to_login(self, gated, path, data):
+        app, client = gated
+        resp = client.post(path, data=data)
+        assert resp.status_code == 302
+        assert "/login" in resp.headers["Location"]
 
     def test_client_create_blocked_then_unlocked(self, gated):
         app, client = gated
@@ -486,13 +570,18 @@ class TestManagementSecretUiGateAcrossEndpoints:
         from nanoidp.services import get_audit_log
 
         app, client = gated
+        with app.app_context():
+            before = len(get_audit_log().get_entries(limit=100))
         _login(client, password="wrong")  # audit entry; /login POST is exempt
         with app.app_context():
-            assert len(get_audit_log().get_entries(limit=5)) > 0
+            after = len(get_audit_log().get_entries(limit=100))
+        # The count must have GROWN across the login: a leftover entry from
+        # another test must not be able to satisfy the precondition.
+        assert after > before
         resp = client.post("/audit/clear")
         assert "/login" in resp.headers["Location"]
         with app.app_context():
-            assert len(get_audit_log().get_entries(limit=5)) > 0
+            assert len(get_audit_log().get_entries(limit=100)) == after
 
     def test_wrong_unlock_secret_keeps_the_gate(self, gated):
         app, client = gated

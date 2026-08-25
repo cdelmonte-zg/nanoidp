@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Regenerating a client secret no longer resets the client's branding**
+  (#213 review): `/clients/<id>/regenerate-secret` rebuilt the client with
+  only five fields, silently dropping `background_color`, `header_color`
+  and `footer_color` and resetting `show_client_id`/`show_description` to
+  their defaults - the same rebuild-by-hand shape that lost
+  `additional_audiences` in #32. The route now copies the client and
+  changes only the secret, so every field (present and future) is carried.
+
 ### Security
 - **Opt-in `management_secret` mutation gate** (#163): one shared secret that
   gates state-changing calls across all three management surfaces - the MCP

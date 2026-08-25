@@ -531,13 +531,12 @@ def client_regenerate_secret(client_id: str) -> ResponseReturnValue:
     try:
         new_secret = secrets.token_urlsafe(32)
 
-        updated_client = OAuthClient(
-            client_id=client_id,
-            client_secret=new_secret,
-            description=client.description,
-            additional_audiences=client.additional_audiences,
-            redirect_uris=client.redirect_uris,
-        )
+        # Copy the whole client and change only the secret: rebuilding it
+        # field by field is how #32 lost additional_audiences here, and how
+        # the branding fields (colors, show_* flags) were silently reset
+        # until #215's review caught it. model_copy carries every field,
+        # including ones added after this line was written.
+        updated_client = client.model_copy(update={"client_secret": new_secret})
 
         yaml_writer = get_yaml_writer()
         yaml_writer.save_client(updated_client, is_new=False)

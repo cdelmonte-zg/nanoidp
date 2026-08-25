@@ -11,6 +11,7 @@ import pytest
 
 import nanoidp.config as config_module
 import nanoidp.mcp_server as mcp_server_module
+import nanoidp.services.audit as audit_module
 import nanoidp.services.crypto as crypto_module
 import nanoidp.services.token as token_module
 import nanoidp.services.yaml_writer as yaml_writer_module
@@ -107,6 +108,7 @@ def reset_singletons():
     token_module._token_service = None
     mcp_server_module._config = None
     yaml_writer_module._yaml_writer = None
+    audit_module._audit_log = None
     yield
     # Reset after test
     crypto_module._crypto_service = None
@@ -114,6 +116,7 @@ def reset_singletons():
     token_module._token_service = None
     mcp_server_module._config = None
     yaml_writer_module._yaml_writer = None
+    audit_module._audit_log = None
 
 
 @pytest.fixture
