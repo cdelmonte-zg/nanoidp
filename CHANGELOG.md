@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **/saml/sso rejects a request with nowhere to send the assertion** (#227):
+  an AuthnRequest without `AssertionConsumerServiceURL` against a config
+  whose `saml.default_acs_url` is blank now gets a 400 naming both missing
+  sources (with a failed `saml_request` audit entry), instead of rendering
+  an auto-submit form posting to `action=""` - the IdP's own page.
 - **The dashboard's Logout button logs the UI session out again** (#221).
   The UI logout route registered the same `/logout` rule as the OIDC
   end-session endpoint and always lost: clicking Logout landed on the
