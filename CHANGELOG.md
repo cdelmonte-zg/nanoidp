@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **The dashboard's Logout button logs the UI session out again** (#221).
+  The UI logout route registered the same `/logout` rule as the OIDC
+  end-session endpoint and always lost: clicking Logout landed on the
+  end-session confirmation page and the UI logout audit event was never
+  written. The UI logout now lives at `GET /ui/logout` (the button follows
+  automatically via `url_for`), redirects back to the dashboard, and writes
+  its `logout` audit event; `/logout` (alias `/end_session`) remains the
+  OIDC endpoint, unchanged.
 - **Regenerating a client secret no longer resets the client's branding**
   (#213 review): `/clients/<id>/regenerate-secret` rebuilt the client with
   only five fields, silently dropping `background_color`, `header_color`
