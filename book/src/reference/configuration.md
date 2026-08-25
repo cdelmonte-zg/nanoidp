@@ -271,7 +271,21 @@ oauth:
       footer_color: "#e8f4f8"      # optional; hex only, the card's footer band
       show_client_id: true         # optional; default true
       show_description: true       # optional; default false
+    - client_id: "scoped-client"
+      client_secret: "secret"
+      description: "Client restricted to a scope subset"
+      allowed_scopes:           # optional; see "Registered scopes" below
+        - "openid"
+        - "profile"
   # logos_dir: "./static/logos"    # optional; defaults to src/nanoidp/static/logos
+  # scopes_supported:               # optional; the global scope vocabulary
+  #   - openid                      # (default: openid, profile, email, offline_access)
+  #   - profile
+  #   - email
+  #   - offline_access
+  # scope_enforcement: true          # optional; false is a dev-only escape
+                                      # hatch back to "any scope string is
+                                      # accepted" - see "Registered scopes"
 
 saml:
   # Both optional: when absent they are derived from the effective issuer as
@@ -328,6 +342,21 @@ OAuth 2.1 §4.1.1): no prefix, host or path normalization, and a mismatch
 is answered with `400 invalid_request` directly, never by redirecting to
 the unvalidated URI (§3.1.2.4). Clients without the field keep accepting
 any absolute URI, the permissive dev default.
+
+**Registered scopes** (issue #186): `oauth.scopes_supported` is the global
+scope vocabulary (default: `openid`, `profile`, `email`, `offline_access`,
+also what discovery's `scopes_supported` advertises); a client's
+`allowed_scopes` is an optional subset of it. A requested scope outside the
+vocabulary is `invalid_scope` for every client (RFC 6749 §3.3, §4.1.2.1,
+§5.2) - `scopes_supported` is a contract, not a suggestion. A requested
+scope outside a client's own `allowed_scopes`, when set, is `invalid_scope`
+for that client specifically; a client without the field may obtain any
+vocabulary scope, the permissive dev default (same "empty = unrestricted"
+convention as `redirect_uris` above). Enforced at `/authorize`, every
+`/token` grant (including `client_credentials`, RFC 6749 §4.4), and
+`/device_authorization`. `oauth.scope_enforcement: false` is a dev-only
+escape hatch back to the pre-#186 behavior - any scope string accepted,
+unchecked; refused outside the `dev` profile.
 
 **Native apps (RFC 8252)**: two things a native client needs are built
 in. A private-use scheme URI such as `com.example.app:/oauth2redirect`

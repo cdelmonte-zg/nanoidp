@@ -79,6 +79,17 @@
                         </div>
                     </div>
 
+                    <div class="mb-3">
+                        <label for="allowed_scopes" class="form-label">Allowed Scopes</label>
+                        <textarea class="form-control" id="allowed_scopes" name="allowed_scopes"
+                                  rows="3" placeholder="One scope per line, e.g.&#10;openid&#10;profile">{{ client.allowed_scopes | join('\n') if client else '' }}</textarea>
+                        <div class="form-text">
+                            When set, a requested <code>scope</code> outside this list is <code>invalid_scope</code>
+                            at <code>/authorize</code> and <code>/token</code> (RFC 6749 §4.1.2.1/§5.2). Leave empty to
+                            allow any scope in the global vocabulary (<code>oauth.scopes_supported</code>, dev default).
+                        </div>
+                    </div>
+
                     <hr class="my-4">
                     <h6 class="mb-3">
                         <i class="bi bi-palette me-2"></i>Login Page Branding (Optional)

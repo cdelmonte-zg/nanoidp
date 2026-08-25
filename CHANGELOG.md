@@ -16,6 +16,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `additional_audiences` in #32. The route now copies the client and
   changes only the secret, so every field (present and future) is carried.
 
+### Added
+- **Per-client allowed scopes and `invalid_scope`** (#186). `oauth.scopes_supported`
+  is the global scope vocabulary (default `openid`, `profile`, `email`,
+  `offline_access`, also what discovery's `scopes_supported` now advertises
+  instead of a hardcoded list); a client's new `allowed_scopes` is an
+  optional subset of it. A requested scope outside the vocabulary is
+  `invalid_scope` for every client - a small behavior change, since any
+  scope string used to be accepted unchecked; a scope outside a client's own
+  `allowed_scopes`, when set, is `invalid_scope` for that client
+  specifically. Enforced at `/authorize`, every `/token` grant (including
+  `client_credentials`, RFC 6749 §4.4, which previously dropped any
+  requested scope entirely) and `/device_authorization`; an omitted `scope`
+  defaults to the client's full allowed set, or today's default when
+  unrestricted. Every `/token` rejection - including the pre-existing
+  refresh-token scope-narrowing check - now returns the RFC 6749 §5.2 JSON
+  error shape (`{"error": "invalid_scope", ...}`) instead of a bare 400.
+  `oauth.scope_enforcement: false` is a dev-only escape hatch back to the
+  pre-#186 behavior (any scope string accepted, unchecked); refused outside
+  the `dev` profile. `allowed_scopes` is settable from the clients UI form
+  and the MCP `create_client`/`update_client` tools, same as
+  `additional_audiences`/`redirect_uris`.
+
 ### Security
 - **Opt-in `management_secret` mutation gate** (#163): one shared secret that
   gates state-changing calls across all three management surfaces - the MCP

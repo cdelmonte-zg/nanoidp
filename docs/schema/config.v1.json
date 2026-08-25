@@ -89,6 +89,10 @@
             "default": null,
             "title": "Additional Audiences"
           },
+          "allowed_scopes": {
+            "default": null,
+            "title": "Allowed Scopes"
+          },
           "background_color": {
             "anyOf": [
               {
@@ -355,6 +359,26 @@
             "default": false,
             "title": "Require Pkce",
             "type": "boolean"
+          },
+          "scope_enforcement": {
+            "default": true,
+            "title": "Scope Enforcement",
+            "type": "boolean"
+          },
+          "scopes_supported": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Scopes Supported"
           },
           "token_expiry_minutes": {
             "default": 60,

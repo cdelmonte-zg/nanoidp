@@ -63,6 +63,12 @@ def _coerce_additional_audiences(raw: Any, client_id: str) -> List[str]:
 # read this tuple (#172).
 SECURITY_PROFILES: tuple[str, ...] = ("dev", "stricter-dev", "oauth21")
 
+# Today's fixed scope list (#186), now Settings.scopes_supported's default
+# instead of being hardcoded in discovery.py - so discovery keeps advertising
+# the same four scopes out of the box, but an operator can grow the
+# vocabulary without patching code.
+DEFAULT_SCOPES_SUPPORTED: tuple[str, ...] = ("openid", "profile", "email", "offline_access")
+
 
 class User(BaseModel):
     """Represents a user in the system."""
@@ -154,6 +160,20 @@ class OAuthClient(BaseModel):
             "acceptable scheme is accepted (dev default)."
         ),
     )
+    allowed_scopes: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Per-client scope allow-list (issue #186). When non-empty, "
+            "/authorize and /token (every grant) reject a requested scope "
+            "outside this set with invalid_scope (RFC 6749 4.1.2.1/5.2); an "
+            "omitted 'scope' parameter defaults to this client's full set. "
+            "Empty = this client may obtain any scope in the global "
+            "'oauth.scopes_supported' vocabulary (dev default) - the same "
+            "'empty allow-list = unrestricted' convention as redirect_uris "
+            "above. A scope outside 'oauth.scopes_supported' is always "
+            "invalid_scope, for every client, regardless of this field."
+        ),
+    )
 
 
 class Settings(BaseModel):
@@ -222,6 +242,27 @@ class Settings(BaseModel):
         "refresh token, so its reuse fails (lets clients test rotation handling, #46)",
     )
     clients: List[OAuthClient] = Field(default_factory=list, description="OAuth clients")
+    scopes_supported: List[str] = Field(
+        default_factory=lambda: list(DEFAULT_SCOPES_SUPPORTED),
+        description=(
+            "The global scope vocabulary (issue #186): a requested scope "
+            "outside this list is invalid_scope for every client, regardless "
+            "of that client's own 'allowed_scopes'. Also what discovery's "
+            "'scopes_supported' advertises, so metadata never lies about what "
+            "/authorize and /token will actually grant. YAML-only "
+            "(oauth.scopes_supported) - like secret_key and require_ui_login, "
+            "not on the Settings page or the MCP update_settings tool."
+        ),
+    )
+    scope_enforcement: bool = Field(
+        default=True,
+        description=(
+            "The declared value; combined with security_profile via the "
+            "'scope_enforcement_active' property below - false only actually "
+            "disables enforcement under the 'dev' profile (issue #186). "
+            "YAML-only (oauth.scope_enforcement), like scopes_supported above."
+        ),
+    )
     logos_dir: Optional[str] = Field(
         default=None,
         description="Directory path where per-client logo files are stored for the "
@@ -481,6 +522,18 @@ class Settings(BaseModel):
         (local dev/testing convenience only; unrelated to 'security_profile'
         and to the OAuth password grant - see 'login_mode' above)."""
         return self.login_mode == "persona"
+
+    @property
+    def scope_enforcement_active(self) -> bool:
+        """Effective scope enforcement (#186): the same 'raw field OR profile
+        decides' shape as pkce_required/rotation_enabled above, just with the
+        opposite polarity - this one force-ENABLES rather than force-relaxes.
+        The raw scope_enforcement flag may turn enforcement off, but only
+        under 'dev'; stricter-dev and oauth21 always enforce regardless of
+        the raw value, exactly like a --profile override that mutates
+        security_profile after construction (bypassing field validation)
+        still can't be used to silently smuggle enforcement off."""
+        return self.scope_enforcement or self.security_profile != "dev"
 
     @field_validator("issuer")
     @classmethod

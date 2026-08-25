@@ -38,6 +38,7 @@ from ..services import (
 )
 from ..services.device_code import DEVICE_CODE_EXPIRES_IN, DEVICE_POLL_INTERVAL
 from ..services.redirect_uri import redirect_uri_is_registered, redirect_uri_rejection_reason
+from ..services.scope import resolve_scope
 from ..services.token import resolve_user_claim, sanitize_claim_names
 from ._audit import audit_event
 from ._issuer import effective_issuer
@@ -136,7 +137,7 @@ def authorize() -> ResponseReturnValue:
     response_type = params.get("response_type", session.get("oauth_response_type", ""))
     client_id = params.get("client_id", session.get("oauth_client_id", ""))
     redirect_uri = params.get("redirect_uri", session.get("oauth_redirect_uri", ""))
-    scope = params.get("scope", session.get("oauth_scope", "openid"))
+    scope = params.get("scope", session.get("oauth_scope", ""))
     state = params.get("state", session.get("oauth_state", ""))
     code_challenge = params.get("code_challenge", session.get("oauth_code_challenge", ""))
     code_challenge_method = params.get("code_challenge_method", session.get("oauth_code_challenge_method", ""))
@@ -188,6 +189,33 @@ def authorize() -> ResponseReturnValue:
             "error": "invalid_client",
             "error_description": "Unknown client_id"
         }), 400
+
+    # Scope validation (issue #186): a requested scope outside the global
+    # vocabulary, or outside this client's own allowed_scopes when set, is
+    # invalid_scope (RFC 6749 §4.1.2.1). An omitted scope defaults to the
+    # client's full allowed set when restricted, or "openid" as before
+    # (#186). Checked before redirect_uri so an invalid_scope on an
+    # unregistered client reports the more specific problem first.
+    scope_result = resolve_scope(
+        scope,
+        client,
+        config.settings.scopes_supported,
+        config.settings.scope_enforcement_active,
+        default_when_omitted="openid",
+    )
+    if not scope_result.ok:
+        audit_event(
+            "authorization_request",
+            "failed",
+            endpoint="/authorize",
+            client_id=client_id,
+            details={"reason": scope_result.error_description},
+        )
+        return jsonify({
+            "error": "invalid_scope",
+            "error_description": scope_result.error_description
+        }), 400
+    scope = scope_result.granted or ""
 
     # Syntactic validation (RFC 6749 §3.1.2): an absolute URI with no
     # fragment. A scheme is required; an authority is not, so native-app
@@ -555,12 +583,43 @@ def _grant_refresh_token(ctx: _GrantContext) -> GrantResult:
                     "rejected_scopes": rejected,
                 },
             )
-            return abort(
-                400, description="Requested scope exceeds originally granted scope"
-            )
+            return jsonify({
+                "error": "invalid_scope",
+                "error_description": "Requested scope exceeds originally granted scope"
+            }), 400
         scope = requested_scope
     else:
         scope = original_scope or None
+
+    # Re-validate against the vocabulary and this client's allowed_scopes
+    # (issue #186): both may have changed since the original grant, so
+    # narrowing alone (above) isn't enough to guarantee the refreshed token
+    # still only carries scopes this client may currently have.
+    client = ctx.config.get_client(ctx.client_id)
+    if client is not None:
+        scope_result = resolve_scope(
+            scope,
+            client,
+            ctx.config.settings.scopes_supported,
+            ctx.config.settings.scope_enforcement_active,
+        )
+        if not scope_result.ok:
+            audit_event(
+                "token_request",
+                "failed",
+                endpoint="/token",
+                username=username,
+                client_id=ctx.client_id,
+                details={
+                    "reason": scope_result.error_description,
+                    "grant_type": ctx.grant_type,
+                },
+            )
+            return jsonify({
+                "error": "invalid_scope",
+                "error_description": scope_result.error_description
+            }), 400
+        scope = scope_result.granted
 
     # A refreshed ID Token must carry the ORIGINAL authentication time
     # (OIDC Core §12.2), persisted in the refresh token claims (#42).
@@ -674,6 +733,34 @@ def _grant_password(ctx: _GrantContext) -> GrantResult:
         )
         return abort(401, description="Invalid credentials")
 
+    # Scope validation (issue #186), same rule as every other grant.
+    client = ctx.config.get_client(ctx.client_id)
+    requested_scope = request.form.get("scope")
+    if client is not None:
+        scope_result = resolve_scope(
+            requested_scope,
+            client,
+            ctx.config.settings.scopes_supported,
+            ctx.config.settings.scope_enforcement_active,
+        )
+        if not scope_result.ok:
+            audit_event(
+                "token_request",
+                "failed",
+                endpoint="/token",
+                username=username,
+                client_id=ctx.client_id,
+                details={
+                    "reason": scope_result.error_description,
+                    "grant_type": ctx.grant_type,
+                },
+            )
+            return jsonify({
+                "error": "invalid_scope",
+                "error_description": scope_result.error_description
+            }), 400
+        requested_scope = scope_result.granted
+
     # An authenticated end-user is present, so honour an openid scope and
     # emit an ID Token (issue #36). nonce is non-standard for this grant but
     # accepted as a dev convenience; normalize an empty field to None so we
@@ -682,7 +769,7 @@ def _grant_password(ctx: _GrantContext) -> GrantResult:
         user=user,
         username=username,
         nonce=request.form.get("nonce") or None,
-        scope=request.form.get("scope"),
+        scope=requested_scope,
     )
 
 
@@ -745,12 +832,44 @@ def _grant_authorization_code(ctx: _GrantContext) -> GrantResult:
         )
         return abort(401, description="User not found")
 
+    # Re-validate against the vocabulary and this client's allowed_scopes
+    # (issue #186): both may have changed between /authorize issuing the
+    # code and this exchange, so the check at issuance time isn't enough to
+    # guarantee the token still only carries scopes this client may
+    # currently have.
+    code_scope: Optional[str] = auth_code.scope if auth_code.scope is not None else None
+    client = ctx.config.get_client(ctx.client_id)
+    if client is not None:
+        scope_result = resolve_scope(
+            code_scope,
+            client,
+            ctx.config.settings.scopes_supported,
+            ctx.config.settings.scope_enforcement_active,
+        )
+        if not scope_result.ok:
+            audit_event(
+                "token_request",
+                "failed",
+                endpoint="/token",
+                username=username,
+                client_id=ctx.client_id,
+                details={
+                    "reason": scope_result.error_description,
+                    "grant_type": ctx.grant_type,
+                },
+            )
+            return jsonify({
+                "error": "invalid_scope",
+                "error_description": scope_result.error_description
+            }), 400
+        code_scope = scope_result.granted
+
     requested_claims = auth_code.claims or {}
     return _GrantOutcome(
         user=user,
         username=username,
         nonce=auth_code.nonce if auth_code.nonce is not None else None,
-        scope=auth_code.scope if auth_code.scope is not None else None,
+        scope=code_scope,
         # The user authenticated at the login page when the code was created,
         # not at this token exchange - use that moment as auth_time (#42).
         auth_time=int(auth_code.created_at.timestamp()),
@@ -761,7 +880,48 @@ def _grant_authorization_code(ctx: _GrantContext) -> GrantResult:
 
 
 def _grant_client_credentials(ctx: _GrantContext) -> GrantResult:
-    """client_credentials grant (RFC 6749 §4.4)."""
+    """client_credentials grant (RFC 6749 §4.4).
+
+    §4.4 makes the 'scope' parameter optional for this grant; before #186 it
+    was read nowhere, so a requested scope was silently dropped rather than
+    granted or rejected. Validated the same as every other grant now.
+    """
+    requested_scope = request.form.get("scope")
+    client = ctx.config.get_client(ctx.client_id)
+    if client is not None:
+        scope_result = resolve_scope(
+            requested_scope,
+            client,
+            ctx.config.settings.scopes_supported,
+            ctx.config.settings.scope_enforcement_active,
+        )
+        if not scope_result.ok:
+            audit_event(
+                "token_request",
+                "failed",
+                endpoint="/token",
+                client_id=ctx.client_id,
+                details={
+                    "reason": scope_result.error_description,
+                    "grant_type": ctx.grant_type,
+                },
+            )
+            return jsonify({
+                "error": "invalid_scope",
+                "error_description": scope_result.error_description
+            }), 400
+        requested_scope = scope_result.granted
+        if requested_scope:
+            # client_credentials has no end-user context (RFC 6749 §4.4 has
+            # no ID Token concept), but create_token()'s id_token issuance is
+            # grant-agnostic - it mints one whenever 'openid' is in scope, no
+            # matter the grant. Accepted at validation (it's a real,
+            # vocabulary-listed scope) but silently dropped from what's
+            # actually granted, rather than rejected, matching this grant's
+            # pre-#186 behavior of never producing an ID Token.
+            remaining = [t for t in requested_scope.split() if t != "openid"]
+            requested_scope = " ".join(remaining) or None
+
     # Use default user for client credentials
     default_username = ctx.config.default_user
     user = ctx.config.get_user(default_username)
@@ -773,7 +933,7 @@ def _grant_client_credentials(ctx: _GrantContext) -> GrantResult:
             roles=["user"],
             tenant="default",
         )
-    return _GrantOutcome(user=user, username=user.username)
+    return _GrantOutcome(user=user, username=user.username, scope=requested_scope)
 
 
 def _grant_device_code(ctx: _GrantContext) -> GrantResult:
@@ -1409,7 +1569,33 @@ def device_authorization() -> ResponseReturnValue:
     # check_client fails closed on a missing username, so it is present here;
     # the fallback only narrows the type.
     client_id = auth.username or ""
-    scope = request.form.get("scope", "openid")
+    requested_scope = request.form.get("scope", "")
+
+    # Scope validation (issue #186), same rule as /authorize including the
+    # "openid" default when omitted on an unrestricted client.
+    client = config.get_client(client_id)
+    if client is not None:
+        scope_result = resolve_scope(
+            requested_scope,
+            client,
+            config.settings.scopes_supported,
+            config.settings.scope_enforcement_active,
+            default_when_omitted="openid",
+        )
+        if not scope_result.ok:
+            audit_event(
+                "device_authorization_request",
+                "failed",
+                endpoint="/device_authorization",
+                client_id=client_id,
+                details={"reason": scope_result.error_description},
+            )
+            return jsonify({
+                "error": "invalid_scope",
+                "error_description": scope_result.error_description
+            }), 400
+        requested_scope = scope_result.granted or ""
+    scope = requested_scope
 
     # Create the device authorization; the store prunes stale entries and
     # keeps the user-code index internally (#84, previously module globals).

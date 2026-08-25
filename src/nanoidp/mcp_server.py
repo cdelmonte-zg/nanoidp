@@ -241,6 +241,7 @@ def _client_to_dict(client: OAuthClient) -> dict[str, Any]:
         "show_description": client.show_description,
         "additional_audiences": client.additional_audiences,
         "redirect_uris": client.redirect_uris,
+        "allowed_scopes": client.allowed_scopes,
     }
 
 
@@ -615,6 +616,11 @@ _TOOLS: list[Tool] = [
                     "items": {"type": "string"},
                     "description": "Registered redirect URIs; when non-empty, /authorize enforces exact matching, except a registered loopback URI (http://127.0.0.1:{port}/..., http://[::1]:{port}/...) matches any port per RFC 8252 section 7.3; reverse-domain private-use schemes like com.example.app:/cb are accepted, schemes without a period such as myapp:// are rejected per section 7.1 (optional)",
                 },
+                "allowed_scopes": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Per-client scope allow-list (#186); when non-empty, /authorize and /token reject a requested scope outside this set with invalid_scope (RFC 6749 4.1.2.1/5.2). Empty = any scope in the global oauth.scopes_supported vocabulary is allowed (optional)",
+                },
             },
             "required": ["client_id", "client_secret"],
         },
@@ -666,6 +672,11 @@ _TOOLS: list[Tool] = [
                     "type": "array",
                     "items": {"type": "string"},
                     "description": "Replace the client's registered redirect URIs (loopback URIs match any port per RFC 8252 section 7.3, reverse-domain private-use schemes accepted, myapp:// rejected per section 7.1); empty list removes the restriction (optional)",
+                },
+                "allowed_scopes": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Replace the client's scope allow-list (#186); empty list removes the restriction (optional)",
                 },
             },
             "required": ["client_id"],
@@ -1229,6 +1240,7 @@ def _tool_create_client(arguments: dict[str, Any], config: ConfigManager) -> dic
         show_description=arguments.get("show_description", False),
         additional_audiences=_normalize_audiences(arguments.get("additional_audiences")),
         redirect_uris=_normalize_str_list(arguments.get("redirect_uris"), "redirect_uris"),
+        allowed_scopes=_normalize_str_list(arguments.get("allowed_scopes"), "allowed_scopes"),
     )
     config.settings.clients.append(new_client)
     return {"success": True, "client": _client_to_dict(new_client)}
@@ -1251,6 +1263,11 @@ def _tool_update_client(arguments: dict[str, Any], config: ConfigManager) -> dic
     new_redirect_uris = (
         _normalize_str_list(arguments["redirect_uris"], "redirect_uris")
         if "redirect_uris" in arguments
+        else None
+    )
+    new_allowed_scopes = (
+        _normalize_str_list(arguments["allowed_scopes"], "allowed_scopes")
+        if "allowed_scopes" in arguments
         else None
     )
     new_background_color = (
@@ -1287,6 +1304,8 @@ def _tool_update_client(arguments: dict[str, Any], config: ConfigManager) -> dic
         client.additional_audiences = new_audiences
     if new_redirect_uris is not None:
         client.redirect_uris = new_redirect_uris
+    if new_allowed_scopes is not None:
+        client.allowed_scopes = new_allowed_scopes
 
     return {"success": True, "client": _client_to_dict(client)}
 
@@ -1315,6 +1334,11 @@ def _tool_get_settings(arguments: dict[str, Any], config: ConfigManager) -> dict
         "issuer_from_proxy_headers": settings.issuer_from_proxy_headers,
         "audience": settings.audience,
         "token_expiry_minutes": settings.token_expiry_minutes,
+        # YAML-only (oauth.scopes_supported / oauth.scope_enforcement, #186)
+        # - reported for visibility, like secret_key and require_ui_login,
+        # but not in update_settings' input_schema below.
+        "scopes_supported": settings.scopes_supported,
+        "scope_enforcement": settings.scope_enforcement_active,
         "security_profile": settings.security_profile,
         # Same as GET /api/config (#172): whether the profile comes from
         # the CLI, and the values the effective profile forces.
