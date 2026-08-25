@@ -28,17 +28,47 @@ the same file always compute the same revision, with no dependence on
 ruamel's dump formatting.
 
 The check-load-mutate-write sequence runs under a single process-local lock
-(``_write_lock``, same pattern as ``config.py``'s ``_config_lock``): without
-it, two in-process threads can both read the same "actual" revision before
-either has written and both pass the check, which both defeats the
-conflict guarantee and corrupts the shared ruamel dumper (it isn't
-reentrant across threads). The lock only serializes callers within this
-process - there is no cross-process file lock anywhere in this codebase,
-so it narrows rather than eliminates the race between a caller reading a
-revision and calling ``compare_and_replace`` with it. That window is
-still cut from "however long an HTTP request or an MCP tool call takes
-between a read and a write" down to "however long one write takes" - the
-actual lost-update scenario #229 is closing.
+(``_write_lock``, same pattern as ``config.py``'s ``_config_lock``, and
+deliberately one lock for every file rather than one per path: ``save()``
+writes two files back to back, ``reload_local()`` stages the whole
+directory (#204), and #192 will need a cross-file check that only works
+under one lock). Without it, two in-process threads can both read the
+same "actual" revision before either has written and both pass the
+check - that part is purely about the check-then-write race (TOCTOU); it
+is not what makes concurrent YAML parsing safe (see below). The lock only
+serializes callers within this process - there is no cross-process file
+lock anywhere in this codebase, so it narrows rather than eliminates the
+race between a caller reading a revision and calling
+``compare_and_replace`` with it. That window is still cut from "however
+long an HTTP request or an MCP tool call takes between a read and a
+write" down to "however long one write takes" - the actual lost-update
+scenario #229 is closing.
+
+Concurrent YAML parsing/dumping is a separate hazard the lock above does
+not touch, because reads never take it: ``reload_local()``, every
+``YamlWriter`` loader and every other read path call
+``serialization.load_yaml_document`` outside this module entirely, so a
+lock here could never cover them without every reader taking it too
+(which would serialize the whole app's reads against every write, not
+just writes against each other). That hazard is closed at the source
+instead: ``serialization._new_yaml_rt()`` builds a fresh ``ruamel.yaml``
+``YAML`` instance per call rather than sharing one at module scope, since
+a shared instance's parser/composer/emitter state is not safe under
+concurrent use (#229 review: a shared instance produced 35 errors across
+six exception types under a read/write race probe; a fresh instance per
+call, zero). ``compare_and_replace`` only needs to be safe against other
+callers of itself, which ``_write_lock`` already guarantees; it relies on
+the loader/dumper being independently safe against concurrent reads.
+
+Two edge cases worth knowing about, both accepted for a bytes-based
+revision: a merely-cosmetic rewrite (e.g. a hand-written file using
+4-space sequence indent, where ``_new_yaml_rt()`` always dumps at
+``offset=0``) changes the revision on its first save even though nothing
+semantic changed - there is no phantom writer, just a formatting
+normalization; and a missing file and a zero-byte file share the same
+revision (the hash of empty bytes), so ``expected_revision ==
+current_revision(missing_path)`` guards "create if still absent" but does
+not distinguish "absent" from "present but empty".
 """
 
 from __future__ import annotations
@@ -91,7 +121,7 @@ def current_revision(file_path: Path) -> Revision:
 def compare_and_replace(
     file_path: Path,
     expected_revision: Optional[Revision],
-    mutate: Callable[[Dict[str, Any]], None],
+    mutate: Callable[[Dict[str, Any]], Any],
 ) -> Revision:
     """Load, optionally check, mutate, atomically replace; return the new revision.
 

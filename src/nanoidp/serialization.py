@@ -44,12 +44,29 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Round-trip YAML instance: preserves comments and quote style, and matches
-# the project's existing dash-at-parent-indent list style (#127).
-_yaml_rt = YAML(typ="rt")
-_yaml_rt.indent(mapping=2, sequence=2, offset=0)
-_yaml_rt.preserve_quotes = True
-_yaml_rt.width = 4096  # avoid re-wrapping long values (URLs, descriptions)
+def _new_yaml_rt() -> YAML:
+    """A fresh round-trip YAML instance: preserves comments and quote
+    style, and matches the project's existing dash-at-parent-indent list
+    style (#127).
+
+    Built per call, not once at module scope, because ``ruamel.yaml``'s
+    ``YAML`` instance carries mutable parser/composer/emitter state and is
+    not safe for concurrent use - a single shared instance let a
+    concurrent ``load_yaml_document`` (any read path: ``reload_local()``,
+    ``YamlWriter``'s loaders, every read API) corrupt an unrelated
+    ``load_yaml_document``/``atomic_write_yaml`` call running under
+    ``config_writer``'s write lock, since that lock only serializes
+    writers against each other - it was never taken by reads (#229
+    review: reproduced with 35 errors across six exception types when
+    readers ran concurrently with writes; zero with a fresh instance per
+    call). The cost of constructing one is irrelevant at this write/read
+    rate.
+    """
+    yaml_rt = YAML(typ="rt")
+    yaml_rt.indent(mapping=2, sequence=2, offset=0)
+    yaml_rt.preserve_quotes = True
+    yaml_rt.width = 4096  # avoid re-wrapping long values (URLs, descriptions)
+    return yaml_rt
 
 _ENV_VAR_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::([^}]*))?\}")
 
@@ -218,7 +235,7 @@ def load_yaml_document(file_path: Path) -> Dict[str, Any]:
     if not file_path.exists():
         return CommentedMap()
     with open(file_path, "r") as f:
-        return _yaml_rt.load(f) or CommentedMap()
+        return _new_yaml_rt().load(f) or CommentedMap()
 
 
 def client_to_yaml(client: OAuthClient) -> Dict[str, Any]:
@@ -540,7 +557,7 @@ def atomic_write_yaml(file_path: Path, data: Dict[str, Any]) -> None:
     )
     try:
         with os.fdopen(fd, "w") as f:
-            _yaml_rt.dump(data, f)
+            _new_yaml_rt().dump(data, f)
         os.replace(temp_path, file_path)
         logger.info(f"Successfully wrote {file_path}")
     except Exception as e:

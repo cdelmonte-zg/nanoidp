@@ -10,6 +10,7 @@ import threading
 
 import pytest
 
+from nanoidp.serialization import load_yaml_document
 from nanoidp.services.config_writer import (
     ConflictError,
     compare_and_replace,
@@ -144,3 +145,44 @@ class TestCompareAndReplaceConcurrency:
 
         winner_value = next(v for outcome, v in results if outcome == "ok")
         assert f.read_text().strip() == f"counter: {winner_value}"
+
+
+class TestConcurrentReadsOutsideTheLock:
+    """Regression pin for the #229 review finding: reads never take
+    compare_and_replace's write lock (reload_local(), YamlWriter's
+    loaders and every other read path call
+    serialization.load_yaml_document directly), so the lock alone cannot
+    make a concurrent load_yaml_document safe against a racing write -
+    that has to hold at the loader/dumper level (a fresh ruamel YAML
+    instance per call, not one shared at module scope). Without that fix,
+    this probe reliably raised errors of six different kinds, including
+    one inside compare_and_replace's own load_yaml_document call, corrupted
+    by a reader that was never inside the lock to begin with."""
+
+    def test_readers_outside_the_lock_do_not_corrupt_a_racing_write(self, tmp_path):
+        f = tmp_path / "settings.yaml"
+        f.write_text("oauth:\n  issuer: 'http://localhost:8000'\n  audience: 'default'\n")
+
+        errors = []
+        stop = threading.Event()
+
+        def read_loop():
+            while not stop.is_set():
+                try:
+                    load_yaml_document(f)
+                except Exception as exc:
+                    errors.append(exc)
+
+        readers = [threading.Thread(target=read_loop) for _ in range(4)]
+        for t in readers:
+            t.start()
+
+        try:
+            for i in range(300):
+                compare_and_replace(f, None, lambda doc, i=i: doc.update({"counter": i}))
+        finally:
+            stop.set()
+            for t in readers:
+                t.join()
+
+        assert errors == []
