@@ -87,8 +87,9 @@ implicitly throughout the project's history; this writes them down.
   bootstrap): nanoidp provides the extension points, the deploy provides
   whatever sits behind them.
 - **Production persistence and distributed state.** Runtime state
-  (authorization and device codes, revocations, the audit log,
-  runtime-created clients and users) is in memory by default. An optional
+  (authorization and device codes, token revocations and refresh-token
+  families, the audit log, runtime-created clients and users) is in
+  memory by default. An optional
   local SQLite runtime store gives durable runtime state and lets several
   worker processes on one host share it; it is not a distributed store.
   Distributed databases, HA and multi-node state coordination are not
