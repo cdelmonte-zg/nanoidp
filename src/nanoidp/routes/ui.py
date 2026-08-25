@@ -414,6 +414,7 @@ def client_create() -> ResponseReturnValue:
                 request.form.get("additional_audiences", "")
             ),
             redirect_uris=_parse_textarea_list(request.form.get("redirect_uris", "")),
+            allowed_scopes=_parse_textarea_list(request.form.get("allowed_scopes", "")),
         )
 
         yaml_writer = get_yaml_writer()
@@ -479,6 +480,7 @@ def client_edit(client_id: str) -> ResponseReturnValue:
                 request.form.get("additional_audiences", "")
             ),
             redirect_uris=_parse_textarea_list(request.form.get("redirect_uris", "")),
+            allowed_scopes=_parse_textarea_list(request.form.get("allowed_scopes", "")),
         )
 
         yaml_writer = get_yaml_writer()
@@ -535,7 +537,8 @@ def client_regenerate_secret(client_id: str) -> ResponseReturnValue:
         # field by field is how #32 lost additional_audiences here, and how
         # the branding fields (colors, show_* flags) were silently reset
         # until #215's review caught it. model_copy carries every field,
-        # including ones added after this line was written.
+        # including ones added after this line was written (allowed_scopes,
+        # #186, included).
         updated_client = client.model_copy(update={"client_secret": new_secret})
 
         yaml_writer = get_yaml_writer()

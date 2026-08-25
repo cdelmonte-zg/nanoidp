@@ -972,6 +972,128 @@ class NanoIDPTestAgent:
                 f"{self.base_url}/clients/{test_client_id}/delete", timeout=5
             )
 
+    def test_scope_enforcement(self) -> TestResult:
+        """Per-client allowed scopes and invalid_scope (issue #186).
+
+        Registers a client restricted to ['openid', 'profile'] (clients UI
+        form), then checks /authorize, /token (client_credentials) and
+        /device_authorization all reject a scope outside that set with
+        invalid_scope, and accept one inside it.
+        """
+        test_client_id = f"scope-test-{secrets.token_hex(4)}"
+        test_client_secret = "scope-test-secret"
+        redirect_uri = "http://localhost:3000/callback"
+        try:
+            create = self.session.post(
+                f"{self.base_url}/clients/create",
+                data={
+                    "client_id": test_client_id,
+                    "client_secret": test_client_secret,
+                    "description": "Scope enforcement e2e test client",
+                    "allowed_scopes": "openid\nprofile",
+                },
+                allow_redirects=False,
+                timeout=5,
+            )
+            if create.status_code not in (302, 303):
+                return self._add_result(
+                    "Scope Enforcement", TestCategory.OAUTH, False,
+                    f"Client creation failed: status={create.status_code}",
+                )
+
+            def authorize(scope: str) -> requests.Response:
+                return requests.get(
+                    f"{self.base_url}/authorize",
+                    params={
+                        "response_type": "code",
+                        "client_id": test_client_id,
+                        "redirect_uri": redirect_uri,
+                        "scope": scope,
+                    },
+                    allow_redirects=False,
+                    timeout=5,
+                )
+
+            def is_invalid_scope(resp: requests.Response) -> bool:
+                if resp.status_code != 400:
+                    return False
+                try:
+                    return resp.json().get("error") == "invalid_scope"
+                except ValueError:
+                    return False
+
+            authorize_disallowed = authorize("email")
+            authorize_allowed = authorize("openid")
+
+            client_credentials_disallowed = self.session.post(
+                f"{self.base_url}/token",
+                data={"grant_type": "client_credentials", "scope": "email"},
+                auth=(test_client_id, test_client_secret),
+                timeout=5,
+            )
+            client_credentials_allowed = self.session.post(
+                f"{self.base_url}/token",
+                data={"grant_type": "client_credentials", "scope": "profile"},
+                auth=(test_client_id, test_client_secret),
+                timeout=5,
+            )
+
+            device_disallowed = self.session.post(
+                f"{self.base_url}/device_authorization",
+                data={"scope": "email"},
+                auth=(test_client_id, test_client_secret),
+                timeout=5,
+            )
+            device_allowed = self.session.post(
+                f"{self.base_url}/device_authorization",
+                data={"scope": "profile"},
+                auth=(test_client_id, test_client_secret),
+                timeout=5,
+            )
+
+            checks = {
+                "authorize_disallowed_scope_rejected": is_invalid_scope(authorize_disallowed),
+                "authorize_allowed_scope_accepted": authorize_allowed.status_code == 200,
+                "client_credentials_disallowed_scope_rejected": (
+                    client_credentials_disallowed.status_code == 400
+                    and client_credentials_disallowed.json().get("error") == "invalid_scope"
+                ),
+                "client_credentials_allowed_scope_accepted": (
+                    client_credentials_allowed.status_code == 200
+                    and client_credentials_allowed.json().get("scope") == "profile"
+                ),
+                "device_authorization_disallowed_scope_rejected": (
+                    device_disallowed.status_code == 400
+                    and device_disallowed.json().get("error") == "invalid_scope"
+                ),
+                "device_authorization_allowed_scope_accepted": device_allowed.status_code == 200,
+            }
+
+            success = all(checks.values())
+            return self._add_result(
+                "Scope Enforcement",
+                TestCategory.OAUTH,
+                success,
+                "issue #186: a scope outside allowed_scopes is invalid_scope at "
+                "/authorize, /token and /device_authorization; one inside it is granted",
+                {**checks, "statuses": {
+                    "authorize_disallowed": authorize_disallowed.status_code,
+                    "authorize_allowed": authorize_allowed.status_code,
+                    "client_credentials_disallowed": client_credentials_disallowed.status_code,
+                    "client_credentials_allowed": client_credentials_allowed.status_code,
+                    "device_disallowed": device_disallowed.status_code,
+                    "device_allowed": device_allowed.status_code,
+                }},
+            )
+        except Exception as e:
+            return self._add_result(
+                "Scope Enforcement", TestCategory.OAUTH, False, f"Error: {e}"
+            )
+        finally:
+            self.session.post(
+                f"{self.base_url}/clients/{test_client_id}/delete", timeout=5
+            )
+
     def test_client_branding(self) -> TestResult:
         """Per-client login page branding is created and rendered end-to-end (#150).
 
@@ -4018,6 +4140,7 @@ class NanoIDPTestAgent:
                 self.test_authorization_code_pkce,
                 self.test_redirect_uri_exact_matching,
                 self.test_native_app_redirect_uris,
+                self.test_scope_enforcement,
                 self.test_client_branding,
                 self.test_id_token_audience,
                 self.test_id_token_time_claims,

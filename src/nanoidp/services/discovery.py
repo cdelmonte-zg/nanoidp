@@ -47,7 +47,8 @@ def build_discovery_document(
         # deprecated by the OAuth 2.0 Security BCP and intentionally absent.
         "response_types_supported": ["code"],
         "id_token_signing_alg_values_supported": ["RS256"],
-        "scopes_supported": ["openid", "profile", "email", "offline_access"],
+        # Settings-driven (#186), default unchanged - see Settings.scopes_supported.
+        "scopes_supported": settings.scopes_supported,
         "claims_supported": [
             "sub", "iss", "aud", "azp", "exp", "iat", "nbf",
             "auth_time", "nonce", "at_hash",

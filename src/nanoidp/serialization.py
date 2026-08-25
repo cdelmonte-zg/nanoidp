@@ -245,6 +245,8 @@ def client_to_yaml(client: OAuthClient) -> Dict[str, Any]:
         entry["additional_audiences"] = client.additional_audiences
     if client.redirect_uris:
         entry["redirect_uris"] = client.redirect_uris
+    if client.allowed_scopes:
+        entry["allowed_scopes"] = client.allowed_scopes
     return entry
 
 
@@ -287,6 +289,7 @@ def merge_client_entry(raw_entry: Dict[str, Any], client: OAuthClient) -> Dict[s
     for field_name, new_list_value in (
         ("additional_audiences", client.additional_audiences),
         ("redirect_uris", client.redirect_uris),
+        ("allowed_scopes", client.allowed_scopes),
     ):
         if not is_unchanged(raw_entry.get(field_name), new_list_value):
             if new_list_value:

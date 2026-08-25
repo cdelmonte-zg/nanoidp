@@ -92,10 +92,11 @@ That is expected. The **standard OpenID Connect profile/email claims**
 custom claims where configured) are **not embedded in the tokens**. For the
 authorization code flow they are served from the **UserInfo endpoint**,
 using the access token (OpenID Connect Core 1.0 §5.4). The discovery
-document advertises what is available - `scopes_supported` (`openid`,
-`profile`, `email`, `offline_access`) and `claims_supported` - but those
-scope-based claims are returned from `GET /userinfo`, not from the tokens
-themselves.
+document advertises what is available - `scopes_supported` (configurable,
+default `openid`, `profile`, `email`, `offline_access` - see "Registered
+scopes" in the [configuration reference](configuration.md)) and
+`claims_supported` - but those scope-based claims are returned from
+`GET /userinfo`, not from the tokens themselves.
 
 ```bash
 curl 'http://localhost:8000/userinfo' \
@@ -125,6 +126,13 @@ standard OIDC claims are gated by the granted scope (OIDC Core §5.4):
 carried on the access token as the `scope` claim (RFC 9068 §2.2.3).
 NanoIDP-specific claims (`roles`, `groups`, `tenant`, `identity_class`,
 `attributes`) have no standard scope and are always returned.
+
+This is a distinct mechanism from per-client scope *enforcement* (see the
+configuration reference), issue #186: scope gating decides which claims an
+already-granted scope unlocks at `/userinfo`; enforcement decides whether a
+client may be granted that scope at all, at `/authorize` and `/token`. A
+scope that fails enforcement is rejected outright (`invalid_scope`) long
+before this gating would ever see it.
 
 ## Requesting claims in the ID Token (`claims` parameter)
 

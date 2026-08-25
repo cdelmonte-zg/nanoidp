@@ -39,6 +39,12 @@ oauth:
     redirect_uris:
     - com.example.app:/oauth2redirect
     - http://127.0.0.1:0/callback
+  - client_id: scoped-client
+    client_secret: scoped-secret
+    description: 'Client restricted to a scope subset (issue #186)'
+    allowed_scopes:
+    - openid
+    - profile
   issuer_from_request: false
   issuer_from_proxy_headers: false
   # logos_dir: ./static/logos  # optional override; defaults to src/nanoidp/static/logos

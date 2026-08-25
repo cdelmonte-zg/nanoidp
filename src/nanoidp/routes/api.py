@@ -153,6 +153,10 @@ def get_configuration() -> ResponseReturnValue:
             "audience": settings.audience,
             "token_expiry_minutes": settings.token_expiry_minutes,
             "clients_count": len(settings.clients),
+            # YAML-only (#186) - reported for visibility like the rest of
+            # this block, never settable through this endpoint.
+            "scopes_supported": settings.scopes_supported,
+            "scope_enforcement": settings.scope_enforcement_active,
         },
         "saml": {
             # Effective values for THIS request (#181): explicit YAML value,

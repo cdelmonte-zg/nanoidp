@@ -39,6 +39,7 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple, Type, Ty
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from .models import (
+    DEFAULT_SCOPES_SUPPORTED,
     OAuthClient,
     Settings,
     User,
@@ -82,6 +83,7 @@ class ClientEntry(BaseModel):
     show_description: bool = False
     additional_audiences: Any = None
     redirect_uris: Any = None
+    allowed_scopes: Any = None
 
     def to_client(self) -> OAuthClient:
         return OAuthClient(
@@ -98,6 +100,9 @@ class ClientEntry(BaseModel):
             ),
             redirect_uris=_coerce_client_str_list(
                 self.redirect_uris, self.client_id, "redirect_uris"
+            ),
+            allowed_scopes=_coerce_client_str_list(
+                self.allowed_scopes, self.client_id, "allowed_scopes"
             ),
         )
 
@@ -117,6 +122,11 @@ class OAuthSection(BaseModel):
     # Absent = no clients; an explicit `clients:` (null) is a type error, as
     # it was for the old loader (#197 review: null and missing differ).
     clients: List[ClientEntry] = Field(default_factory=list)
+    # Absent = the DEFAULT_SCOPES_SUPPORTED vocabulary (#186); None here (not
+    # a default_factory of the tuple) so to_settings() can tell "declared
+    # empty list" from "not declared" the same way issuer_allowlist does.
+    scopes_supported: Optional[List[str]] = None
+    scope_enforcement: bool = True
     logos_dir: Optional[str] = None
     # Present in shipped presets, never consumed by the loader (accepted for
     # compatibility; see the module docstring).
@@ -330,6 +340,12 @@ class SettingsDocument(BaseModel):
             refresh_token_rotation=self.oauth.refresh_token_rotation,
             require_pkce=self.oauth.require_pkce,
             clients=clients,
+            scopes_supported=(
+                self.oauth.scopes_supported
+                if self.oauth.scopes_supported is not None
+                else list(DEFAULT_SCOPES_SUPPORTED)
+            ),
+            scope_enforcement=self.oauth.scope_enforcement,
             logos_dir=self.oauth.logos_dir,
             saml_entity_id=self.saml.entity_id or None,
             saml_sso_url=self.saml.sso_url or None,
