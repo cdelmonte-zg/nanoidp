@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- **Opt-in `management_secret` mutation gate** (#163): one shared secret that
+  gates state-changing calls across all three management surfaces - the MCP
+  server (via the existing `admin_secret` tool argument, which now reads from
+  this setting instead of a standalone env var), `/api/*` (via a new
+  `X-Management-Secret` request header on mutating calls), and the config web
+  UI (a one-time "unlock" form at `/login` that then trusts the session for
+  further mutating requests). Off by default - unset, nothing changes.
+  Configurable via `settings.yaml`'s `session.management_secret` or the
+  `NANOIDP_MANAGEMENT_SECRET` env var; the previous MCP-only
+  `NANOIDP_MCP_ADMIN_SECRET` still works as an alias, though an explicit
+  `management_secret: null`/`""` in `settings.yaml` now wins over either env
+  var rather than falling through to it. Independent of `require_ui_login`:
+  that gate is the UI's session front door (who can view the dashboard),
+  this is the write guard (who can change anything) - either, both, or
+  neither can be enabled; the unlock form stays reachable even when
+  `require_ui_login` is also on. YAML-only, same treatment as
+  `require_ui_login`/`secret_key`. Hardened since first landing: the UI
+  unlock flag is now an HMAC of the secret itself (not a bare session
+  boolean), so it can't be forged just by knowing `secret_key`'s public
+  default; a non-ASCII or non-string secret compares safely instead of
+  500ing; an unlocked UI session now also satisfies the `/api/*` gate, so
+  the dashboard's own buttons (generate token, clear audit log) keep working
+  after one unlock; and the MCP check now always reads the `ConfigManager`
+  actually serving the request.
+
+## [2.7.0] - 2026-08-25
+
 ### Changed
 - **Configuration files load through document models** (#175, piece 2).
   `settings.yaml` and `users.yaml` are now parsed into Pydantic document
@@ -211,30 +239,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   contract (#131) silently wiped `default_acs_url` from `settings.yaml`.
 
 ### Security
-- **Opt-in `management_secret` mutation gate** (#163): one shared secret that
-  gates state-changing calls across all three management surfaces - the MCP
-  server (via the existing `admin_secret` tool argument, which now reads from
-  this setting instead of a standalone env var), `/api/*` (via a new
-  `X-Management-Secret` request header on mutating calls), and the config web
-  UI (a one-time "unlock" form at `/login` that then trusts the session for
-  further mutating requests). Off by default - unset, nothing changes.
-  Configurable via `settings.yaml`'s `session.management_secret` or the
-  `NANOIDP_MANAGEMENT_SECRET` env var; the previous MCP-only
-  `NANOIDP_MCP_ADMIN_SECRET` still works as an alias, though an explicit
-  `management_secret: null`/`""` in `settings.yaml` now wins over either env
-  var rather than falling through to it. Independent of `require_ui_login`:
-  that gate is the UI's session front door (who can view the dashboard),
-  this is the write guard (who can change anything) - either, both, or
-  neither can be enabled; the unlock form stays reachable even when
-  `require_ui_login` is also on. YAML-only, same treatment as
-  `require_ui_login`/`secret_key`. Hardened since first landing: the UI
-  unlock flag is now an HMAC of the secret itself (not a bare session
-  boolean), so it can't be forged just by knowing `secret_key`'s public
-  default; a non-ASCII or non-string secret compares safely instead of
-  500ing; an unlocked UI session now also satisfies the `/api/*` gate, so
-  the dashboard's own buttons (generate token, clear audit log) keep working
-  after one unlock; and the MCP check now always reads the `ConfigManager`
-  actually serving the request.
 - **Opt-in login gate for the config web UI**: new `session.require_ui_login`
   setting (off by default) makes `/login` actually enforce a logged-in
   session on the dashboard, users, clients, settings, keys, claims, audit log
@@ -948,6 +952,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Key rotation with JWKS support for multiple keys
 - External key import support
 
+[2.7.0]: https://github.com/cdelmonte-zg/nanoidp/compare/v2.6.0...v2.7.0
 [2.6.0]: https://github.com/cdelmonte-zg/nanoidp/compare/v2.5.0...v2.6.0
 [2.5.0]: https://github.com/cdelmonte-zg/nanoidp/compare/v2.4.0...v2.5.0
 [2.4.0]: https://github.com/cdelmonte-zg/nanoidp/compare/v2.3.0...v2.4.0
