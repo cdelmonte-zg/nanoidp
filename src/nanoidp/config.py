@@ -35,9 +35,7 @@ from .serialization import (
     IMPLICIT_CONFIG_VERSION,
     apply_settings_document,
     apply_users_document,
-    atomic_write_yaml,
     check_config_version,
-    load_yaml_document,
 )
 from .serialization import expand_env_vars as _expand_env_vars
 
@@ -306,10 +304,17 @@ class ConfigManager:
     def notify_saved(self, path: Path, kind: str) -> None:
         """The single on_config_saved call site for every write path (#185):
         ConfigManager's own saves and YamlWriter's. Called AFTER the atomic
-        write; under hooks.strict the hook's failure is raised to the caller
-        while the file on disk stays what was written. ConfigManager's own
-        saves serialize in-memory state, so disk and runtime already agree
-        when the error propagates; YamlWriter reloads before re-raising."""
+        write; under hooks.strict the hook's failure is raised as
+        HookError. Every caller refreshes from local disk
+        (reload_local()) before letting that propagate, so disk and
+        runtime already agree by the time whoever called
+        save()/YamlWriter sees the error - only the mirror push is what
+        actually failed. save() does this once after both its files are
+        written (#229 - see save() itself: reloading after each file
+        individually would let the users.yaml reload discard the
+        in-memory settings.yaml change still waiting to be saved);
+        YamlWriter._atomic_write does it right after its own single
+        write."""
         self.hooks.run_config_saved(path, kind)
 
     def _default_settings(self) -> Settings:
@@ -450,31 +455,73 @@ class ConfigManager:
         self._load_config(run_before_load=False)
         logger.info("Configuration refreshed from local files")
 
-    def save(self) -> None:
-        """Save current configuration to YAML files."""
-        self._save_users()
-        self._save_settings()
+    def save(
+        self,
+        expected_users_revision: Optional[str] = None,
+        expected_settings_revision: Optional[str] = None,
+    ) -> None:
+        """Save current configuration to YAML files.
+
+        expected_*_revision, when given, must equal that file's current
+        revision (services.config_writer.current_revision) at write time
+        or the save is refused with ConflictError and the file is left
+        untouched (#229). None (the default) keeps today's unconditional
+        last-write-wins - every caller still does this until phases 4-5
+        thread a real revision through the UI/MCP.
+
+        Refreshes the runtime from disk once, after both files are
+        written - not after each file individually, which would let the
+        users.yaml reload's fresh Settings/User objects discard the very
+        in-memory settings.yaml change this call is still in the middle
+        of persisting. Under hooks.strict a hook failure on either write
+        propagates immediately, before the next file is even attempted
+        (documented in test_hooks.py as "stops at the first failed
+        write") and before this refresh runs - unchanged from before
+        #229, since neither file's write is skipped for the reload's
+        sake.
+        """
+        self._save_users(expected_users_revision)
+        self._save_settings(expected_settings_revision)
+        self.reload_local()
         logger.info(f"Configuration saved to {self.config_dir}")
 
-    def _save_users(self) -> None:
-        """Save users to users.yaml (shared builder, read-modify-write, #83)."""
+    def _save_users(self, expected_revision: Optional[str] = None) -> None:
+        """Save users to users.yaml via the shared compare-and-replace
+        primitive (#229): still one shared builder, read-modify-write
+        (#83), now also refusing a write against a stale
+        expected_revision instead of silently overwriting it. The runtime
+        refresh is save()'s job, once both files are written."""
+        # late import to avoid circular dependency
+        from .services.config_writer import compare_and_replace
+
         users_file = self.config_dir / "users.yaml"
-        document = load_yaml_document(users_file)
-        apply_users_document(document, self.users, self.default_user)
-        atomic_write_yaml(users_file, document)
+        compare_and_replace(
+            users_file,
+            expected_revision,
+            lambda doc: apply_users_document(doc, self.users, self.default_user),
+        )
         self.notify_saved(users_file, "users")
 
-    def _save_settings(self) -> None:
-        """Save settings to settings.yaml (shared builder, #83).
+    def _save_settings(self, expected_revision: Optional[str] = None) -> None:
+        """Save settings to settings.yaml via the shared compare-and-replace
+        primitive (#229). The runtime refresh is save()'s job, once both
+        files are written.
 
         Read-modify-write: keys this codebase doesn't manage (jwt, session,
         logging.level, custom keys) are preserved instead of deleted (#87).
         """
+        # late import to avoid circular dependency
+        from .services.config_writer import compare_and_replace
+
         settings_file = self.config_dir / "settings.yaml"
-        document = load_yaml_document(settings_file)
         # Declared state, not effective state (#172): see persistable_settings().
-        apply_settings_document(document, self.persistable_settings(), defaults=document_defaults())
-        atomic_write_yaml(settings_file, document)
+        compare_and_replace(
+            settings_file,
+            expected_revision,
+            lambda doc: apply_settings_document(
+                doc, self.persistable_settings(), defaults=document_defaults()
+            ),
+        )
         self.notify_saved(settings_file, "settings")
 
 
