@@ -9,8 +9,8 @@
 </p>
 
 <p align="center">
-  A lightweight, configurable Identity Provider for development and testing.<br>
-  Supports OAuth2/OIDC and SAML 2.0 protocols with a full-featured web UI for configuration.
+  Test real OAuth2/OIDC, SAML 2.0 and MCP authorization flows locally,<br>
+  without running a production IAM stack.
 </p>
 
 <p align="center">
@@ -19,22 +19,14 @@
 
 > Design principles, non-goals and medium-term direction live in [VISION.md](VISION.md).
 
-## Features
+Need a real OAuth2/OIDC or SAML counterpart for an integration test, a demo or
+an agent, without standing up Keycloak or provisioning a cloud tenant?
 
-- **OAuth2 / OIDC** - OAuth2/OIDC support for development and integration testing: Authorization Code, Password, Client Credentials, Refresh Token, and Device Authorization grants
-- **PKCE Support** - Proof Key for Code Exchange (RFC 7636) with S256 and plain methods
-- **Security Profiles** - `stricter-dev` (runtime hardening) and `oauth21` (draft OAuth 2.1 protocol strictness: PKCE-only S256, rotation, no password grant, registered redirect URIs)
-- **Token Management** - Introspection (RFC 7662) and Revocation (RFC 7009) endpoints
-- **OIDC Logout** - End Session endpoint for RP-initiated logout
-- **Device Flow** - Device Authorization Grant (RFC 8628) for CLI/IoT applications
-- **SAML 2.0** - SSO and AttributeQuery endpoints with configurable signed assertions and opt-in verification of signed AuthnRequests
-- **MCP Server** - Model Context Protocol integration for Claude Code
-- **Web UI** - Full configuration interface for users, clients, settings, and more
-- **Persona Login Mode** - Passwordless interactive login: pick a configured user from a list instead of typing a password (`login.mode: persona`), opt-in and off by default, for quick local testing
-- **YAML Configuration** - File-based configuration, no database required
-- **Attribute-based Access Control** - Flexible authority prefixes and claims mapping
-- **Audit Logging** - Track all authentication events
-- **Docker Support** - Ready to deploy with Docker/Docker Compose
+NanoIDP is an identity test environment: a spec-honest OAuth2/OIDC and
+SAML 2.0 provider you install with `pip`, configure with two YAML files and
+throw away when the test is done. What it advertises is what it implements,
+so your client is tested against the specification, not against a mock's
+guesses. It is a development and testing tool, not a production IdP.
 
 ## Quick Start
 
@@ -50,7 +42,7 @@ Get a first token:
 ```bash
 curl -X POST 'http://localhost:8000/token' \
   -u 'demo-client:demo-secret' \
-  -d 'grant_type=password&username=admin&password=admin&scope=openid'
+  -d 'grant_type=client_credentials'
 ```
 
 The admin UI runs at `http://localhost:8000`. Prefer Docker?
@@ -61,9 +53,32 @@ docker run --rm -p 8000:8000 \
   ghcr.io/cdelmonte-zg/nanoidp:latest
 ```
 
-Full walkthrough (wizard, custom config paths, docker-compose):
+From here: the
+[Quickstart](https://cdelmonte-zg.github.io/nanoidp/getting-started/quickstart.html)
+walks through users, clients and the Authorization Code + PKCE flow;
+[Requesting tokens](https://cdelmonte-zg.github.io/nanoidp/guides/token-requests.html)
+has a copy-paste request for every grant;
 [Install](https://cdelmonte-zg.github.io/nanoidp/getting-started/install.html)
-and [Quickstart](https://cdelmonte-zg.github.io/nanoidp/getting-started/quickstart.html).
+covers the wizard, custom config paths and docker-compose.
+
+## What you can test against it
+
+- **OAuth2 / OIDC**: Authorization Code with PKCE, Client Credentials,
+  Refresh Token with rotation, Device Authorization (RFC 8628) and the
+  Password grant for legacy clients; introspection (RFC 7662), revocation
+  (RFC 7009) and RP-initiated logout; per-client scopes and audiences,
+  claims mapping and authority prefixes; an opt-in `oauth21` profile that
+  enforces draft OAuth 2.1 strictness.
+- **SAML 2.0**: SSO and AttributeQuery with signed assertions, and opt-in
+  verification of signed AuthnRequests.
+- **Agents and MCP**: an MCP server that lets an agent create users and
+  clients, mint tokens and read the audit log, with a read-only mode; MCP
+  tools and the HTTP API expose the same capabilities.
+- **Running it**: two schema-versioned YAML files with validation, security
+  profiles, a passwordless persona login for demos, an audit log, hooks and
+  plugins for wiring the deploy in, a Docker image.
+
+Every item above has its reference page in the documentation below.
 
 ## Documentation
 
@@ -71,7 +86,7 @@ The full documentation lives at
 **<https://cdelmonte-zg.github.io/nanoidp/>**:
 
 - [Requesting tokens](https://cdelmonte-zg.github.io/nanoidp/guides/token-requests.html): curl examples for every grant, introspection, revocation
-- [MCP with Claude Code](https://cdelmonte-zg.github.io/nanoidp/guides/MCP_WORKFLOW.html): drive NanoIDP from an agent
+- [MCP workflow](https://cdelmonte-zg.github.io/nanoidp/guides/MCP_WORKFLOW.html): drive NanoIDP from Claude Code or any MCP host
 - [Security guide](https://cdelmonte-zg.github.io/nanoidp/guides/SECURITY.html): profiles, key management, MCP hardening
 - [Configuration](https://cdelmonte-zg.github.io/nanoidp/reference/configuration.html): `users.yaml`, `settings.yaml`, logging
 - [Endpoints](https://cdelmonte-zg.github.io/nanoidp/reference/endpoints.html): OAuth2/OIDC, SAML, REST API
