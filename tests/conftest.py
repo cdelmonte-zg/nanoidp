@@ -91,6 +91,12 @@ def reset_singletons():
     mcp_server keeps its own separate config singleton (populated via
     _ensure_config()), which must be reset the same way or a test that drives
     it caches a ConfigManager into that global for the rest of the session.
+    get_yaml_writer()'s singleton resolves config_dir from whichever
+    ConfigManager is active when it's first constructed and then keeps
+    writing there forever; left unreset, a test that builds its own
+    tmp_path-backed app can silently persist through an earlier test's
+    cached writer into the repo's real config/*.yaml instead of its own
+    isolated directory.
     """
     # get_yaml_writer()'s singleton captures config_dir from whichever
     # ConfigManager is active when first built and keeps writing there; left

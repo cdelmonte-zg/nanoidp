@@ -333,64 +333,109 @@ class TestMCPReadonlyMode:
 
 
 class TestMCPAdminSecret:
-    """Tests for MCP admin secret protection."""
+    """Tests for MCP admin secret protection.
+
+    _check_admin_secret(config, tool_name, arguments) reads config.settings.
+    management_secret directly (#163 B5 fix) rather than the env var through
+    a global singleton, so these pass a bare config double instead of
+    patching os.environ.
+    """
+
+    def _config(self, secret):
+        from unittest.mock import MagicMock
+
+        config = MagicMock()
+        config.settings.management_secret = secret
+        return config
 
     def test_update_settings_requires_admin_secret_when_configured(self):
-        """Test that update_settings requires admin_secret when env var is set."""
-        import os
-
         from nanoidp.mcp_server import _check_admin_secret
 
-        original_secret = os.environ.get("NANOIDP_MCP_ADMIN_SECRET")
+        config = self._config("test-secret-123")
 
-        try:
-            # Set admin secret
-            os.environ["NANOIDP_MCP_ADMIN_SECRET"] = "test-secret-123"
+        # Without admin_secret parameter
+        arguments = {}
+        allowed, error_msg = _check_admin_secret(config, "update_settings", arguments)
+        assert allowed is False
+        assert "admin_secret" in error_msg.lower()
 
-            # Without admin_secret parameter
-            arguments = {}
-            allowed, error_msg = _check_admin_secret("update_settings", arguments)
-            assert allowed is False
-            assert "admin_secret" in error_msg.lower()
+        # With wrong admin_secret
+        arguments = {"admin_secret": "wrong-secret"}
+        allowed, error_msg = _check_admin_secret(config, "update_settings", arguments)
+        assert allowed is False
+        assert "invalid" in error_msg.lower()
 
-            # With wrong admin_secret
-            arguments = {"admin_secret": "wrong-secret"}
-            allowed, error_msg = _check_admin_secret("update_settings", arguments)
-            assert allowed is False
-            assert "invalid" in error_msg.lower()
-
-            # With correct admin_secret
-            arguments = {"admin_secret": "test-secret-123"}
-            allowed, error_msg = _check_admin_secret("update_settings", arguments)
-            assert allowed is True
-            assert error_msg == ""
-        finally:
-            if original_secret is None:
-                os.environ.pop("NANOIDP_MCP_ADMIN_SECRET", None)
-            else:
-                os.environ["NANOIDP_MCP_ADMIN_SECRET"] = original_secret
+        # With correct admin_secret
+        arguments = {"admin_secret": "test-secret-123"}
+        allowed, error_msg = _check_admin_secret(config, "update_settings", arguments)
+        assert allowed is True
+        assert error_msg == ""
 
     def test_get_settings_does_not_require_admin_secret(self):
-        """Test that get_settings works without admin_secret."""
-        import os
-
         from nanoidp.mcp_server import _check_admin_secret
 
-        original_secret = os.environ.get("NANOIDP_MCP_ADMIN_SECRET")
+        config = self._config("test-secret-123")
 
-        try:
-            os.environ["NANOIDP_MCP_ADMIN_SECRET"] = "test-secret-123"
+        # get_settings should be allowed without admin_secret
+        arguments = {}
+        allowed, error_msg = _check_admin_secret(config, "get_settings", arguments)
+        assert allowed is True
+        assert error_msg == ""
 
-            # get_settings should be allowed without admin_secret
-            arguments = {}
-            allowed, error_msg = _check_admin_secret("get_settings", arguments)
-            assert allowed is True
-            assert error_msg == ""
-        finally:
-            if original_secret is None:
-                os.environ.pop("NANOIDP_MCP_ADMIN_SECRET", None)
-            else:
-                os.environ["NANOIDP_MCP_ADMIN_SECRET"] = original_secret
+    def test_non_ascii_secret_does_not_crash(self):
+        """#163 B2 regression: secrets.compare_digest raises TypeError on
+        non-ASCII str; the fix compares UTF-8 bytes instead."""
+        from nanoidp.mcp_server import _check_admin_secret
+
+        config = self._config("segretò")
+
+        allowed, error_msg = _check_admin_secret(config, "create_user", {"admin_secret": "wrong"})
+        assert allowed is False
+        assert "Invalid admin_secret" in error_msg
+
+        allowed, error_msg = _check_admin_secret(
+            config, "create_user", {"admin_secret": "segretò"}
+        )
+        assert allowed is True
+
+    def test_non_str_candidate_does_not_crash(self):
+        """#163 B2 regression: a non-string admin_secret (e.g. an int) must
+        compare False, not raise TypeError."""
+        from nanoidp.mcp_server import _check_admin_secret
+
+        config = self._config("mysecret")
+
+        allowed, error_msg = _check_admin_secret(config, "create_user", {"admin_secret": 123})
+        assert allowed is False
+        assert "Invalid admin_secret" in error_msg
+
+    def test_reads_the_passed_config_not_the_global_singleton(self, monkeypatch, tmp_path):
+        """#163 B5 regression: _check_admin_secret must key off the ConfigManager
+        it's given (what _ensure_config() actually returns), not
+        routes._auth.get_management_secret() - which reads
+        nanoidp.config.get_config()'s own global, a different object from
+        mcp_server._config whenever the two have been set independently (as
+        tests that monkeypatch mcp._config directly already do)."""
+        import nanoidp.config as config_module
+        from nanoidp.config import ConfigManager
+        from nanoidp.mcp_server import _check_admin_secret
+
+        no_secret_dir = tmp_path / "no_secret"
+        no_secret_dir.mkdir()
+        has_secret_dir = tmp_path / "has_secret"
+        has_secret_dir.mkdir()
+        (has_secret_dir / "settings.yaml").write_text("session:\n  management_secret: mysecret\n")
+
+        # The global nanoidp.config singleton has no secret configured.
+        monkeypatch.setattr(config_module, "_config", ConfigManager(str(no_secret_dir)))
+
+        # mcp_server's own config (what _ensure_config() would hand to
+        # call_tool) does - _check_admin_secret must gate off THIS.
+        own_config = ConfigManager(str(has_secret_dir))
+
+        allowed, error_msg = _check_admin_secret(own_config, "create_user", {})
+        assert allowed is False
+        assert "admin_secret" in error_msg
 
 
 class TestMCPVerboseLoggingIntegration:

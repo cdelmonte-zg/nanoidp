@@ -7,8 +7,10 @@ Security Note:
     isolated development environments. It exposes powerful administrative tools.
 
     Security modes:
-    - When NANOIDP_MCP_ADMIN_SECRET is set, mutating operations require
-      the admin_secret parameter to match.
+    - When management_secret is configured (settings.yaml, NANOIDP_MANAGEMENT_SECRET,
+      or the legacy NANOIDP_MCP_ADMIN_SECRET env var), mutating operations
+      require the admin_secret parameter to match. The same setting also
+      gates api_bp and ui_bp mutations - see Settings.management_secret.
     - When --readonly flag or NANOIDP_MCP_READONLY=true, mutating tools
       are completely disabled.
 
@@ -61,6 +63,7 @@ from .config import ConfigManager, OAuthClient, User, init_config
 from .config_validation import validate_config_result
 from .hooks import HookError
 from .models import HEX_COLOR_PATTERN, normalize_saml_attr_name
+from .routes._auth import verify_secret
 from .services import (
     build_discovery_document,
     get_audit_log,
@@ -97,19 +100,34 @@ MUTATING_TOOLS = {
 }
 
 
-def _check_admin_secret(tool_name: str, arguments: dict[str, Any]) -> Tuple[bool, str]:
-    """Check if admin secret is required and valid.
+def _check_admin_secret(
+    config: ConfigManager, tool_name: str, arguments: dict[str, Any]
+) -> Tuple[bool, str]:
+    """Check if the management secret is required and valid for this tool.
+
+    Source of truth is the caller's own ConfigManager (config.settings.
+    management_secret), NOT routes._auth.get_management_secret(). That
+    helper reads nanoidp.config.get_config()'s module-global singleton, which
+    is a different object from mcp_server._config whenever anything (a test,
+    or a future code path) sets mcp_server._config directly instead of via
+    init_config() - in production the two happen to be the same object today,
+    but this function must not depend on that (#163 review, blocking: was
+    silently evaluating the gate against whichever ConfigManager get_config()
+    last built, not the one actually serving this MCP request). Callers pass
+    _ensure_config()'s return value. Still only gates MUTATING_TOOLS and
+    still pops 'admin_secret' off arguments so downstream tool schemas never
+    see it.
 
     Args:
+        config: The ConfigManager serving this request (from _ensure_config())
         tool_name: Name of the tool being called
         arguments: Tool arguments (admin_secret will be removed if present)
 
     Returns:
         Tuple of (allowed: bool, error_message: str)
     """
-    required_secret = os.getenv("NANOIDP_MCP_ADMIN_SECRET")
-
-    if not required_secret:
+    secret = config.settings.management_secret
+    if not secret:
         return True, ""  # No secret configured = allow all (dev mode)
 
     if tool_name not in MUTATING_TOOLS:
@@ -117,8 +135,8 @@ def _check_admin_secret(tool_name: str, arguments: dict[str, Any]) -> Tuple[bool
 
     provided_secret = arguments.pop("admin_secret", None)
     if not provided_secret:
-        return False, f"NANOIDP_MCP_ADMIN_SECRET is set. Provide 'admin_secret' parameter for {tool_name}."
-    if provided_secret != required_secret:
+        return False, f"A management secret is configured. Provide 'admin_secret' parameter for {tool_name}."
+    if not verify_secret(provided_secret, secret):
         return False, "Invalid admin_secret"
 
     return True, ""
@@ -1004,7 +1022,7 @@ async def call_tool(
             return _reject(name, "MCP_READONLY_MODE", error_msg)
 
         # Check admin secret for mutating operations
-        allowed, error_msg = _check_admin_secret(name, arguments)
+        allowed, error_msg = _check_admin_secret(config, name, arguments)
         if not allowed:
             return _reject(name, "MCP_ADMIN_SECRET_REQUIRED", error_msg)
 
@@ -1546,9 +1564,11 @@ def main() -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Security modes:
-  --readonly              Disable mutating tools (create, update, delete, generate)
-  NANOIDP_MCP_READONLY    Same as --readonly (env var)
-  NANOIDP_MCP_ADMIN_SECRET  Require admin_secret parameter for mutating tools
+  --readonly                Disable mutating tools (create, update, delete, generate)
+  NANOIDP_MCP_READONLY      Same as --readonly (env var)
+  NANOIDP_MANAGEMENT_SECRET Require admin_secret parameter for mutating tools
+                            (also gates api_bp/ui_bp mutations - see docs/SECURITY.md)
+  NANOIDP_MCP_ADMIN_SECRET  Legacy alias for NANOIDP_MANAGEMENT_SECRET, still honored
 
 Examples:
   nanoidp-mcp                    # Full access

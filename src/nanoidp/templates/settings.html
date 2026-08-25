@@ -326,6 +326,16 @@
                         {% endif %}
                     </td>
                 </tr>
+                <tr>
+                    <td class="text-muted">Management Secret (<code>management_secret</code>)</td>
+                    <td>
+                        {% if settings.management_secret %}
+                        <span class="badge bg-success"><i class="bi bi-shield-lock-fill me-1"></i>Configured</span>
+                        {% else %}
+                        <span class="badge bg-secondary"><i class="bi bi-shield-exclamation me-1"></i>Not configured</span>
+                        {% endif %}
+                    </td>
+                </tr>
             </tbody>
         </table>
     </div>

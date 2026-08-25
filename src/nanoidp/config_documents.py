@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import copy
 import logging
+import os
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple, Type, TypeVar
 
@@ -159,6 +160,10 @@ class SessionSection(BaseModel):
     secret_key: str = "dev-secret-key-change-in-production"
     require_ui_login: bool = False
     enforce_password_check: bool = False
+    # Absent -> fall back to the env vars in to_settings() (#163); present,
+    # even as null/empty, means the operator deliberately said "off" and the
+    # env vars are not consulted. See "management_secret" in models.py.
+    management_secret: Optional[str] = None
     # Shipped presets carry it; the app sets session.permanent itself.
     permanent: Any = None  # accepted for compatibility, never consumed
 
@@ -349,6 +354,21 @@ class SettingsDocument(BaseModel):
             secret_key=self.session.secret_key,
             require_ui_login=self.session.require_ui_login,
             enforce_password_check=self.session.enforce_password_check,
+            # An explicit key in settings.yaml's session: block wins over the
+            # env vars even when its value is empty/null - presence in YAML
+            # is the operator deliberately stating "off", distinct from the
+            # key being absent (#163 review). Absent the key, fall back to
+            # NANOIDP_MANAGEMENT_SECRET, then the legacy
+            # NANOIDP_MCP_ADMIN_SECRET alias.
+            management_secret=(
+                (self.session.management_secret or None)
+                if "management_secret" in self.session.model_fields_set
+                else (
+                    os.getenv("NANOIDP_MANAGEMENT_SECRET")
+                    or os.getenv("NANOIDP_MCP_ADMIN_SECRET")
+                    or None
+                )
+            ),
             log_level=self.logging.level,
             log_token_requests=self.logging.log_token_requests,
             log_saml_requests=self.logging.log_saml_requests,

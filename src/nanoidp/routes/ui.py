@@ -26,13 +26,19 @@ from ..config import OAuthClient, User, get_config
 from ..hooks import HookError
 from ..services import get_audit_log, get_token_service, get_yaml_writer
 from ._audit import audit_event
-from ._auth import ui_login_required
+from ._auth import (
+    management_secret_required_for_ui,
+    mark_management_verified,
+    ui_login_required,
+    verify_management_secret,
+)
 from ._issuer import effective_saml_entity_id, effective_saml_sso_url
 
 logger = logging.getLogger(__name__)
 
 ui_bp = Blueprint("ui", __name__)
 ui_bp.before_request(ui_login_required)
+ui_bp.before_request(management_secret_required_for_ui)
 
 
 # ==================== Dashboard ====================
@@ -73,6 +79,7 @@ def login() -> ResponseReturnValue:
             error=error,
             users=list(config.users.keys()),
             persona_mode=persona_mode,
+            management_secret_configured=bool(config.settings.management_secret),
         )
 
     # POST: persona mode selects a user by identity, no password prompt;
@@ -128,6 +135,27 @@ def logout() -> ResponseReturnValue:
             username=username,
         )
 
+    return redirect(url_for("ui.index"))
+
+
+@ui_bp.route("/management/unlock", methods=["POST"])
+def management_unlock() -> ResponseReturnValue:
+    """Prove knowledge of management_secret once, for the rest of the session.
+
+    Independent of login()/logout() above - this is the write guard, not the
+    session front door (see management_secret in models.py). Exempted from
+    management_secret_required_for_ui itself, since gating the unlock action
+    on the thing it unlocks would be circular.
+    """
+    candidate = request.form.get("management_secret", "")
+
+    if not verify_management_secret(candidate):
+        # login.html renders an `error` query param, not flash() messages.
+        return redirect(url_for("ui.login", error="Invalid management secret."))
+
+    mark_management_verified()
+    # ui.index extends base.html, which does render flash() messages.
+    flash("Management secret accepted - mutating actions unlocked for this session.", "success")
     return redirect(url_for("ui.index"))
 
 

@@ -20,6 +20,12 @@ from .services import init_crypto_service
 # Global limiter instance (initialized in create_app)
 limiter: Optional[Limiter] = None
 
+# Mirrors Settings.secret_key's default (models.py). Session-signing key that
+# ships public, in source control - fine when nothing session-based is being
+# trusted, not fine once require_ui_login or management_secret's UI leg asks
+# the session to hold something meaningful (#163 review).
+_DEFAULT_SECRET_KEY = "dev-secret-key-change-in-production"
+
 
 def create_app(
     config_dir: Optional[str] = None,
@@ -64,6 +70,33 @@ def create_app(
         static_folder=os.path.join(os.path.dirname(__file__), "static"),
     )
     app.secret_key = settings.secret_key
+    # Browsers that don't default new cookies to Lax (Firefox, at the time of
+    # writing) would otherwise send the session cookie on a cross-site form
+    # POST. An unlocked management_secret session authorizes /api/* mutations
+    # (see routes/_auth.py:management_secret_required_for_api), not just
+    # ui_bp's own forms, so that cross-site surface now covers the management
+    # API too; Lax closes it at the cost of not sending the cookie on a
+    # cross-site GET navigation's initial request, which this app never
+    # relies on. See docs/SECURITY.md, "Session Cookie Trust".
+    app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+
+    # secret_key signs the session cookie; a default (public, in source
+    # control) value means anyone who knows it can forge session state -
+    # including session['user'], bypassing require_ui_login outright.
+    # management_secret's own session flag additionally binds to
+    # management_secret itself (see routes/_auth.py:_management_verified_marker),
+    # so knowing only this default doesn't forge that one - but a real
+    # secret_key is still what either gate's session trust rests on. See
+    # docs/SECURITY.md.
+    if settings.secret_key == _DEFAULT_SECRET_KEY and (
+        settings.require_ui_login or settings.management_secret
+    ):
+        logger.warning(
+            "secret_key is left at its public default while require_ui_login "
+            "and/or management_secret is configured. Set session.secret_key "
+            "in settings.yaml to a real, private value before relying on "
+            "either gate beyond a single trusted machine - see docs/SECURITY.md."
+        )
 
     # Trust X-Forwarded-Proto/Host/For from a single reverse-proxy hop, so
     # request.scheme/host_url (and therefore issuer_from_request, rate-limit
@@ -164,16 +197,30 @@ def run_app(
     # NanoIDP is a dev/test IdP whose management API (/api/*) is unauthenticated
     # by design; binding to all interfaces exposes admin token minting and key
     # rotation to any network-reachable host. The default is 127.0.0.1; warn
-    # loudly when that safe default is overridden.
+    # loudly when that safe default is overridden. management_secret (#163)
+    # gates mutations but not reads, so the warning still applies, just less
+    # severely, when it's configured.
     if effective_host in ("0.0.0.0", "::", ""):
-        logging.getLogger(__name__).warning(
-            "Binding to %s exposes NanoIDP on all network interfaces. The "
-            "/api/* management endpoints are unauthenticated by design, so any "
-            "reachable host can mint admin tokens and rotate signing keys. Use "
-            "127.0.0.1 unless you intend network exposure (e.g. inside a "
-            "container).",
-            effective_host,
-        )
+        if settings.management_secret:
+            logging.getLogger(__name__).warning(
+                "Binding to %s exposes NanoIDP on all network interfaces. "
+                "management_secret is configured, so /api/* mutations "
+                "(minting admin tokens, rotating signing keys, etc.) require "
+                "it - but reads and the UI dashboard remain open to any "
+                "reachable host. Use 127.0.0.1 unless you intend network "
+                "exposure (e.g. inside a container).",
+                effective_host,
+            )
+        else:
+            logging.getLogger(__name__).warning(
+                "Binding to %s exposes NanoIDP on all network interfaces. The "
+                "/api/* management endpoints are unauthenticated by design, so any "
+                "reachable host can mint admin tokens and rotate signing keys. Use "
+                "127.0.0.1 unless you intend network exposure (e.g. inside a "
+                "container), or set management_secret to require a shared secret "
+                "for mutations.",
+                effective_host,
+            )
 
     app.run(
         host=effective_host,
