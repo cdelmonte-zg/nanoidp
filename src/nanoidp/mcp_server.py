@@ -42,7 +42,7 @@ import json
 import logging
 import os
 import re
-from typing import Any, Optional, Tuple
+from typing import Any, Callable, Optional, Tuple
 
 import jwt as pyjwt
 from jsonschema import Draft202012Validator
@@ -135,7 +135,10 @@ def _check_admin_secret(
 
     provided_secret = arguments.pop("admin_secret", None)
     if not provided_secret:
-        return False, f"A management secret is configured. Provide 'admin_secret' parameter for {tool_name}."
+        return (
+            False,
+            f"A management secret is configured. Provide 'admin_secret' parameter for {tool_name}.",
+        )
     if not verify_secret(provided_secret, secret):
         return False, "Invalid admin_secret"
 
@@ -155,7 +158,10 @@ def _check_readonly_mode(tool_name: str) -> Tuple[bool, str]:
         return True, ""
 
     if tool_name in MUTATING_TOOLS:
-        return False, f"Tool '{tool_name}' is disabled in readonly mode. Start without --readonly to enable mutating operations."
+        return (
+            False,
+            f"Tool '{tool_name}' is disabled in readonly mode. Start without --readonly to enable mutating operations.",
+        )
 
     return True, ""
 
@@ -454,7 +460,6 @@ _TOOLS: list[Tool] = [
             "required": ["username"],
         },
     ),
-
     # Token Operations
     Tool(
         name="generate_token",
@@ -538,7 +543,6 @@ _TOOLS: list[Tool] = [
             "required": ["token"],
         },
     ),
-
     # Client Management
     Tool(
         name="list_clients",
@@ -681,7 +685,6 @@ _TOOLS: list[Tool] = [
             "required": ["client_id"],
         },
     ),
-
     # Configuration
     Tool(
         name="get_settings",
@@ -869,7 +872,6 @@ _TOOLS: list[Tool] = [
             "required": [],
         },
     ),
-
     # Discovery
     Tool(
         name="get_oidc_discovery",
@@ -889,7 +891,6 @@ _TOOLS: list[Tool] = [
             "required": [],
         },
     ),
-
     # Audit log (mirrors /api/audit*, issue #48)
     Tool(
         name="get_audit_log",
@@ -931,7 +932,6 @@ _TOOLS: list[Tool] = [
             "required": [],
         },
     ),
-
     # Key management (mirrors /api/keys*, issue #48)
     Tool(
         name="get_keys_info",
@@ -977,6 +977,7 @@ async def list_tools(
 # Tool Implementations
 # =============================================================================
 
+
 def _text_result(payload: dict[str, Any], *, is_error: bool = False) -> CallToolResult:
     """Serialize a tool payload into the JSON text result clients expect."""
     return CallToolResult(
@@ -997,9 +998,7 @@ def _reject(name: str, code: str, message: str) -> CallToolResult:
     return _text_result({"error": message, "code": code, "tool": name}, is_error=True)
 
 
-async def call_tool(
-    ctx: ServerRequestContext, params: CallToolRequestParams
-) -> CallToolResult:
+async def call_tool(ctx: ServerRequestContext, params: CallToolRequestParams) -> CallToolResult:
     """Handle tool calls with readonly and admin secret checks, plus audit logging.
 
     The whole body runs under one try/except: the SDK no longer turns a
@@ -1068,240 +1067,404 @@ server = Server(
 )
 
 
-async def _execute_tool(name: str, arguments: dict[str, Any], config: ConfigManager) -> dict[str, Any]:
-    """Execute a tool and return the result."""
+# User Management
+def _tool_list_users(arguments: dict[str, Any], config: ConfigManager) -> dict[str, Any]:
+    users = [_user_to_dict(user) for user in config.users.values()]
+    return {
+        "count": len(users),
+        "default_user": config.default_user,
+        "users": users,
+    }
 
-    # User Management
-    if name == "list_users":
-        users = [_user_to_dict(user) for user in config.users.values()]
-        return {
-            "count": len(users),
-            "default_user": config.default_user,
-            "users": users,
-        }
 
-    elif name == "get_user":
-        username = arguments["username"]
-        user = config.get_user(username)
-        if user:
-            return {"found": True, "user": _user_to_dict(user)}
-        return {"found": False, "username": username}
+def _tool_get_user(arguments: dict[str, Any], config: ConfigManager) -> dict[str, Any]:
+    username = arguments["username"]
+    user = config.get_user(username)
+    if user:
+        return {"found": True, "user": _user_to_dict(user)}
+    return {"found": False, "username": username}
 
-    elif name == "create_user":
-        username = arguments["username"]
-        if username in config.users:
-            return {"success": False, "error": f"User '{username}' already exists"}
 
-        user = _build_user_from_arguments(username, arguments["password"], arguments)
-        config.users[username] = user
-        return {"success": True, "user": _user_to_dict(user)}
+def _tool_create_user(arguments: dict[str, Any], config: ConfigManager) -> dict[str, Any]:
+    username = arguments["username"]
+    if username in config.users:
+        return {"success": False, "error": f"User '{username}' already exists"}
 
-    elif name == "create_persona_user":
-        username = arguments["username"]
-        if username in config.users:
-            return {"success": False, "error": f"User '{username}' already exists"}
+    user = _build_user_from_arguments(username, arguments["password"], arguments)
+    config.users[username] = user
+    return {"success": True, "user": _user_to_dict(user)}
 
-        user = _build_user_from_arguments(username, None, arguments)
-        config.users[username] = user
-        return {"success": True, "user": _user_to_dict(user)}
 
-    elif name == "delete_user":
-        username = arguments["username"]
-        if username not in config.users:
-            return {"success": False, "error": f"User '{username}' not found"}
-        del config.users[username]
-        return {"success": True, "deleted": username}
+def _tool_create_persona_user(arguments: dict[str, Any], config: ConfigManager) -> dict[str, Any]:
+    username = arguments["username"]
+    if username in config.users:
+        return {"success": False, "error": f"User '{username}' already exists"}
 
-    elif name == "update_user":
-        username = arguments["username"]
-        if username not in config.users:
-            return {"success": False, "error": f"User '{username}' not found"}
+    user = _build_user_from_arguments(username, None, arguments)
+    config.users[username] = user
+    return {"success": True, "user": _user_to_dict(user)}
 
-        user = config.users[username]
-        if "password" in arguments:
-            user.password = arguments["password"]
-        if "email" in arguments:
-            user.email = arguments["email"]
-        if "roles" in arguments:
-            user.roles = arguments["roles"]
-        if "groups" in arguments:
-            user.groups = arguments["groups"]
-        if "tenant" in arguments:
-            user.tenant = arguments["tenant"]
-        if "identity_class" in arguments:
-            user.identity_class = arguments["identity_class"]
-        if "entitlements" in arguments:
-            user.entitlements = arguments["entitlements"]
-        if "source_acl" in arguments:
-            user.source_acl = arguments["source_acl"]
 
-        return {"success": True, "user": _user_to_dict(user)}
+def _tool_delete_user(arguments: dict[str, Any], config: ConfigManager) -> dict[str, Any]:
+    username = arguments["username"]
+    if username not in config.users:
+        return {"success": False, "error": f"User '{username}' not found"}
+    del config.users[username]
+    return {"success": True, "deleted": username}
 
-    # Token Operations
-    elif name == "generate_token":
-        username = arguments["username"]
-        user = config.get_user(username)
-        if not user:
-            return {"success": False, "error": f"User '{username}' not found"}
 
-        token_service = get_token_service()
-        token_response = token_service.create_token(
-            user=user,
-            exp_minutes=arguments.get("expires_in_minutes", config.settings.token_expiry_minutes),
-            extra_claims=arguments.get("extra_claims"),
-            scope=arguments.get("scope"),
-            # _execute_tool is also reachable directly (see tests), bypassing
-            # call_tool's input_schema validation; reject a non-list with a
-            # clean error here too instead of minting a token whose malformed
-            # claim only misbehaves later at /userinfo (same precedent as
-            # additional_audiences, #37).
-            id_token_claims=_normalize_str_list(
-                arguments.get("id_token_claims"), "id_token_claims"
-            ) or None,
-            userinfo_claims=_normalize_str_list(
-                arguments.get("userinfo_claims"), "userinfo_claims"
-            ) or None,
+def _tool_update_user(arguments: dict[str, Any], config: ConfigManager) -> dict[str, Any]:
+    username = arguments["username"]
+    if username not in config.users:
+        return {"success": False, "error": f"User '{username}' not found"}
+
+    user = config.users[username]
+    if "password" in arguments:
+        user.password = arguments["password"]
+    if "email" in arguments:
+        user.email = arguments["email"]
+    if "roles" in arguments:
+        user.roles = arguments["roles"]
+    if "groups" in arguments:
+        user.groups = arguments["groups"]
+    if "tenant" in arguments:
+        user.tenant = arguments["tenant"]
+    if "identity_class" in arguments:
+        user.identity_class = arguments["identity_class"]
+    if "entitlements" in arguments:
+        user.entitlements = arguments["entitlements"]
+    if "source_acl" in arguments:
+        user.source_acl = arguments["source_acl"]
+
+    return {"success": True, "user": _user_to_dict(user)}
+
+
+# Token Operations
+def _tool_generate_token(arguments: dict[str, Any], config: ConfigManager) -> dict[str, Any]:
+    username = arguments["username"]
+    user = config.get_user(username)
+    if not user:
+        return {"success": False, "error": f"User '{username}' not found"}
+
+    token_service = get_token_service()
+    token_response = token_service.create_token(
+        user=user,
+        exp_minutes=arguments.get("expires_in_minutes", config.settings.token_expiry_minutes),
+        extra_claims=arguments.get("extra_claims"),
+        scope=arguments.get("scope"),
+        # _execute_tool is also reachable directly (see tests), bypassing
+        # call_tool's input_schema validation; reject a non-list with a
+        # clean error here too instead of minting a token whose malformed
+        # claim only misbehaves later at /userinfo (same precedent as
+        # additional_audiences, #37).
+        id_token_claims=_normalize_str_list(arguments.get("id_token_claims"), "id_token_claims")
+        or None,
+        userinfo_claims=_normalize_str_list(arguments.get("userinfo_claims"), "userinfo_claims")
+        or None,
+    )
+    result = {
+        "success": True,
+        "access_token": token_response["access_token"],
+        "refresh_token": token_response["refresh_token"],
+        "token_type": token_response["token_type"],
+        "expires_in": token_response["expires_in"],
+    }
+    if "id_token" in token_response:
+        result["id_token"] = token_response["id_token"]
+    return result
+
+
+def _tool_decode_token(arguments: dict[str, Any], config: ConfigManager) -> dict[str, Any]:
+    token = arguments["token"]
+    try:
+        payload = pyjwt.decode(token, options={"verify_signature": False})
+        return {"success": True, "claims": payload}
+    except Exception as e:
+        return {"success": False, "error": f"Failed to decode token: {str(e)}"}
+
+
+def _tool_verify_token(arguments: dict[str, Any], config: ConfigManager) -> dict[str, Any]:
+    token = arguments["token"]
+    crypto = get_crypto_service(config.settings.keys_dir)
+    try:
+        payload = crypto.verify_jwt(token, config.settings.audience)
+        return {"valid": True, "claims": payload}
+    except Exception as e:
+        # A rejected token is verify_token's designed answer, not a tool
+        # failure: use "reason" (not "error") so call_tool does not flag
+        # the result is_error (see the isError contract in the docstring).
+        return {"valid": False, "reason": str(e)}
+
+
+# Client Management
+def _tool_list_clients(arguments: dict[str, Any], config: ConfigManager) -> dict[str, Any]:
+    clients = [_client_to_dict(c) for c in config.settings.clients]
+    return {"count": len(clients), "clients": clients}
+
+
+def _tool_get_client(arguments: dict[str, Any], config: ConfigManager) -> dict[str, Any]:
+    client_id = arguments["client_id"]
+    client = config.get_client(client_id)
+    if client:
+        return {"found": True, "client": _client_to_dict(client)}
+    return {"found": False, "client_id": client_id}
+
+
+def _tool_create_client(arguments: dict[str, Any], config: ConfigManager) -> dict[str, Any]:
+    client_id = arguments["client_id"]
+    # Check if client already exists
+    if config.get_client(client_id):
+        return {"success": False, "error": f"Client '{client_id}' already exists"}
+
+    new_client = OAuthClient(
+        client_id=client_id,
+        client_secret=arguments["client_secret"],
+        description=arguments.get("description", ""),
+        background_color=_normalize_hex_color(
+            arguments.get("background_color"), "background_color"
+        ),
+        header_color=_normalize_hex_color(arguments.get("header_color"), "header_color"),
+        footer_color=_normalize_hex_color(arguments.get("footer_color"), "footer_color"),
+        show_client_id=arguments.get("show_client_id", True),
+        show_description=arguments.get("show_description", False),
+        additional_audiences=_normalize_audiences(arguments.get("additional_audiences")),
+        redirect_uris=_normalize_str_list(arguments.get("redirect_uris"), "redirect_uris"),
+    )
+    config.settings.clients.append(new_client)
+    return {"success": True, "client": _client_to_dict(new_client)}
+
+
+def _tool_update_client(arguments: dict[str, Any], config: ConfigManager) -> dict[str, Any]:
+    client_id = arguments["client_id"]
+    client = config.get_client(client_id)
+    if not client:
+        return {"success": False, "error": f"Client '{client_id}' not found"}
+
+    # Validate/normalize every input up front so a bad value cannot leave the
+    # client half-updated: with validate_assignment=True, assigning each field
+    # can raise, and OAuthClient is mutated in place.
+    new_audiences = (
+        _normalize_audiences(arguments["additional_audiences"])
+        if "additional_audiences" in arguments
+        else None
+    )
+    new_redirect_uris = (
+        _normalize_str_list(arguments["redirect_uris"], "redirect_uris")
+        if "redirect_uris" in arguments
+        else None
+    )
+    new_background_color = (
+        _normalize_hex_color(arguments["background_color"], "background_color")
+        if "background_color" in arguments
+        else None
+    )
+    new_header_color = (
+        _normalize_hex_color(arguments["header_color"], "header_color")
+        if "header_color" in arguments
+        else None
+    )
+    new_footer_color = (
+        _normalize_hex_color(arguments["footer_color"], "footer_color")
+        if "footer_color" in arguments
+        else None
+    )
+
+    if "client_secret" in arguments:
+        client.client_secret = arguments["client_secret"]
+    if "description" in arguments:
+        client.description = arguments["description"]
+    if "background_color" in arguments:
+        client.background_color = new_background_color
+    if "header_color" in arguments:
+        client.header_color = new_header_color
+    if "footer_color" in arguments:
+        client.footer_color = new_footer_color
+    if "show_client_id" in arguments:
+        client.show_client_id = arguments["show_client_id"]
+    if "show_description" in arguments:
+        client.show_description = arguments["show_description"]
+    if new_audiences is not None:
+        client.additional_audiences = new_audiences
+    if new_redirect_uris is not None:
+        client.redirect_uris = new_redirect_uris
+
+    return {"success": True, "client": _client_to_dict(client)}
+
+
+def _tool_delete_client(arguments: dict[str, Any], config: ConfigManager) -> dict[str, Any]:
+    client_id = arguments["client_id"]
+    client = config.get_client(client_id)
+    if not client:
+        return {"success": False, "error": f"Client '{client_id}' not found"}
+
+    config.settings.clients = [c for c in config.settings.clients if c.client_id != client_id]
+    return {"success": True, "deleted": client_id}
+
+
+# Configuration
+def _tool_get_settings(arguments: dict[str, Any], config: ConfigManager) -> dict[str, Any]:
+    settings = config.settings
+    return {
+        # Same key as GET /api/config (#175): the contract an agent targets.
+        "config_version": config.config_version,
+        "config_validation": "strict" if config.strict_config else "warn",
+        "issuer": settings.issuer,
+        "issuer_from_request": settings.issuer_from_request,
+        "issuer_allowlist": settings.issuer_allowlist,
+        "device_verification_base_url": settings.device_verification_base_url,
+        "issuer_from_proxy_headers": settings.issuer_from_proxy_headers,
+        "audience": settings.audience,
+        "token_expiry_minutes": settings.token_expiry_minutes,
+        "security_profile": settings.security_profile,
+        # Same as GET /api/config (#172): whether the profile comes from
+        # the CLI, and the values the effective profile forces.
+        "profile_override": config.profile_override,
+        "effective": {
+            "require_pkce": settings.require_pkce,
+            "password_hashing": settings.password_hashing,
+            "rate_limit_enabled": settings.rate_limit_enabled,
+            "debug": settings.debug,
+        },
+        "login_mode": settings.login_mode,
+        "refresh_token_rotation": settings.refresh_token_rotation,
+        "require_pkce": settings.require_pkce,
+        "jwt_algorithm": settings.jwt_algorithm,
+        "saml": {
+            # MCP has no HTTP request, so derived values (#181) resolve
+            # against the fixed settings.issuer, the same exception the
+            # MCP discovery tools already make for issuer_from_request.
+            "entity_id": settings.resolve_saml_entity_id(settings.issuer),
+            "entity_id_derived": settings.saml_entity_id is None,
+            "sso_url": settings.resolve_saml_sso_url(settings.issuer),
+            "sso_url_derived": settings.saml_sso_url is None,
+            "sign_responses": settings.saml_sign_responses,
+            "c14n_algorithm": settings.saml_c14n_algorithm,
+            "strict_binding": settings.strict_saml_binding,
+            "want_authn_requests_signed": (settings.saml_want_authn_requests_signed),
+            "sp_certificates": settings.saml_sp_certificates,
+            "export_roles": settings.saml_export_roles,
+            "export_groups": settings.saml_export_groups,
+            "roles_attr_name": settings.saml_roles_attr_name,
+            "groups_attr_name": settings.saml_groups_attr_name,
+        },
+        "logging": {
+            "verbose_logging": settings.verbose_logging,
+        },
+        "authority_prefixes": settings.authority_prefixes,
+        "allowed_identity_classes": settings.allowed_identity_classes,
+        # Hooks and plugins (#185): same block as GET /api/config.
+        "hooks": config.hooks.describe(),
+    }
+
+
+def _tool_reload_config(arguments: dict[str, Any], config: ConfigManager) -> dict[str, Any]:
+    try:
+        config.reload()
+    except HookError as exc:
+        return {"success": False, "error": f"Reload failed: {exc.message}", "kind": exc.kind}
+    return {"success": True, "message": "Configuration reloaded"}
+
+
+def _tool_validate_config(arguments: dict[str, Any], config: ConfigManager) -> dict[str, Any]:
+    # The CLI's code path exactly (nanoidp.config_validation): no
+    # ConfigManager is built, no hook runs, no plugin is imported, and
+    # the running configuration is not touched or reloaded.
+    # strict defaults to the manager's effective mode, so "what the next
+    # reload would hit" stays true for a ConfigManager started with
+    # --strict-config (#204 review); an explicit argument still wins.
+    strict_arg = arguments.get("strict")
+    effective = config.strict_config if strict_arg is None else bool(strict_arg)
+    return validate_config_result(config.config_dir, effective)
+
+
+def _tool_update_settings(arguments: dict[str, Any], config: ConfigManager) -> dict[str, Any]:
+    settings = config.settings
+
+    # Settings (unlike OAuthClient) has no validate_assignment, but the
+    # tool's input_schema declares "enum": ["password", "persona"] for
+    # login_mode, so call_tool()'s jsonschema pass already rejects an
+    # invalid value before this handler ever runs.
+    updated = []
+    if "issuer" in arguments:
+        settings.issuer = arguments["issuer"]
+        updated.append("issuer")
+    if "issuer_from_request" in arguments:
+        settings.issuer_from_request = arguments["issuer_from_request"]
+        updated.append("issuer_from_request")
+    if "issuer_allowlist" in arguments:
+        settings.issuer_allowlist = _normalize_str_list(
+            arguments["issuer_allowlist"], "issuer_allowlist"
         )
-        result = {
-            "success": True,
-            "access_token": token_response["access_token"],
-            "refresh_token": token_response["refresh_token"],
-            "token_type": token_response["token_type"],
-            "expires_in": token_response["expires_in"],
-        }
-        if "id_token" in token_response:
-            result["id_token"] = token_response["id_token"]
-        return result
-
-    elif name == "decode_token":
-        token = arguments["token"]
-        try:
-            payload = pyjwt.decode(token, options={"verify_signature": False})
-            return {"success": True, "claims": payload}
-        except Exception as e:
-            return {"success": False, "error": f"Failed to decode token: {str(e)}"}
-
-    elif name == "verify_token":
-        token = arguments["token"]
-        crypto = get_crypto_service(config.settings.keys_dir)
-        try:
-            payload = crypto.verify_jwt(token, config.settings.audience)
-            return {"valid": True, "claims": payload}
-        except Exception as e:
-            # A rejected token is verify_token's designed answer, not a tool
-            # failure: use "reason" (not "error") so call_tool does not flag
-            # the result is_error (see the isError contract in the docstring).
-            return {"valid": False, "reason": str(e)}
-
-    # Client Management
-    elif name == "list_clients":
-        clients = [_client_to_dict(c) for c in config.settings.clients]
-        return {"count": len(clients), "clients": clients}
-
-    elif name == "get_client":
-        client_id = arguments["client_id"]
-        client = config.get_client(client_id)
-        if client:
-            return {"found": True, "client": _client_to_dict(client)}
-        return {"found": False, "client_id": client_id}
-
-    elif name == "create_client":
-        client_id = arguments["client_id"]
-        # Check if client already exists
-        if config.get_client(client_id):
-            return {"success": False, "error": f"Client '{client_id}' already exists"}
-
-        new_client = OAuthClient(
-            client_id=client_id,
-            client_secret=arguments["client_secret"],
-            description=arguments.get("description", ""),
-            background_color=_normalize_hex_color(
-                arguments.get("background_color"), "background_color"
-            ),
-            header_color=_normalize_hex_color(arguments.get("header_color"), "header_color"),
-            footer_color=_normalize_hex_color(arguments.get("footer_color"), "footer_color"),
-            show_client_id=arguments.get("show_client_id", True),
-            show_description=arguments.get("show_description", False),
-            additional_audiences=_normalize_audiences(arguments.get("additional_audiences")),
-            redirect_uris=_normalize_str_list(
-                arguments.get("redirect_uris"), "redirect_uris"
-            ),
+        updated.append("issuer_allowlist")
+    if "device_verification_base_url" in arguments:
+        settings.device_verification_base_url = arguments["device_verification_base_url"] or None
+        updated.append("device_verification_base_url")
+    if "issuer_from_proxy_headers" in arguments:
+        settings.issuer_from_proxy_headers = arguments["issuer_from_proxy_headers"]
+        updated.append("issuer_from_proxy_headers")
+    if "audience" in arguments:
+        settings.audience = arguments["audience"]
+        updated.append("audience")
+    if "token_expiry_minutes" in arguments:
+        settings.token_expiry_minutes = arguments["token_expiry_minutes"]
+        updated.append("token_expiry_minutes")
+    if "saml_entity_id" in arguments:
+        # "" = back to derived (#181), mirroring the UI form's blank field
+        settings.saml_entity_id = arguments["saml_entity_id"] or None
+        updated.append("saml_entity_id")
+    if "saml_sso_url" in arguments:
+        settings.saml_sso_url = arguments["saml_sso_url"] or None
+        updated.append("saml_sso_url")
+    if "saml_sign_responses" in arguments:
+        settings.saml_sign_responses = arguments["saml_sign_responses"]
+        updated.append("saml_sign_responses")
+    if "saml_export_roles" in arguments:
+        settings.saml_export_roles = arguments["saml_export_roles"]
+        updated.append("saml_export_roles")
+    if "saml_export_groups" in arguments:
+        settings.saml_export_groups = arguments["saml_export_groups"]
+        updated.append("saml_export_groups")
+    if "saml_roles_attr_name" in arguments:
+        settings.saml_roles_attr_name = normalize_saml_attr_name(
+            "saml_roles_attr_name", arguments["saml_roles_attr_name"]
         )
-        config.settings.clients.append(new_client)
-        return {"success": True, "client": _client_to_dict(new_client)}
-
-    elif name == "update_client":
-        client_id = arguments["client_id"]
-        client = config.get_client(client_id)
-        if not client:
-            return {"success": False, "error": f"Client '{client_id}' not found"}
-
-        # Validate/normalize every input up front so a bad value cannot leave the
-        # client half-updated: with validate_assignment=True, assigning each field
-        # can raise, and OAuthClient is mutated in place.
-        new_audiences = (
-            _normalize_audiences(arguments["additional_audiences"])
-            if "additional_audiences" in arguments
-            else None
+        updated.append("saml_roles_attr_name")
+    if "saml_groups_attr_name" in arguments:
+        settings.saml_groups_attr_name = normalize_saml_attr_name(
+            "saml_groups_attr_name", arguments["saml_groups_attr_name"]
         )
-        new_redirect_uris = (
-            _normalize_str_list(arguments["redirect_uris"], "redirect_uris")
-            if "redirect_uris" in arguments
-            else None
+        updated.append("saml_groups_attr_name")
+    if "saml_c14n_algorithm" in arguments:
+        settings.saml_c14n_algorithm = arguments["saml_c14n_algorithm"]
+        updated.append("saml_c14n_algorithm")
+    if "strict_saml_binding" in arguments:
+        settings.strict_saml_binding = arguments["strict_saml_binding"]
+        updated.append("strict_saml_binding")
+    if "saml_want_authn_requests_signed" in arguments:
+        settings.saml_want_authn_requests_signed = arguments["saml_want_authn_requests_signed"]
+        updated.append("saml_want_authn_requests_signed")
+    if "saml_sp_certificates" in arguments:
+        settings.saml_sp_certificates = _normalize_str_list(
+            arguments["saml_sp_certificates"], "saml_sp_certificates"
         )
-        new_background_color = (
-            _normalize_hex_color(arguments["background_color"], "background_color")
-            if "background_color" in arguments
-            else None
-        )
-        new_header_color = (
-            _normalize_hex_color(arguments["header_color"], "header_color")
-            if "header_color" in arguments
-            else None
-        )
-        new_footer_color = (
-            _normalize_hex_color(arguments["footer_color"], "footer_color")
-            if "footer_color" in arguments
-            else None
-        )
+        updated.append("saml_sp_certificates")
+    if "verbose_logging" in arguments:
+        settings.verbose_logging = arguments["verbose_logging"]
+        updated.append("verbose_logging")
+    if "refresh_token_rotation" in arguments:
+        settings.refresh_token_rotation = arguments["refresh_token_rotation"]
+        updated.append("refresh_token_rotation")
+    if "require_pkce" in arguments:
+        settings.require_pkce = arguments["require_pkce"]
+        updated.append("require_pkce")
+    if "login_mode" in arguments:
+        settings.login_mode = arguments["login_mode"]
+        updated.append("login_mode")
 
-        if "client_secret" in arguments:
-            client.client_secret = arguments["client_secret"]
-        if "description" in arguments:
-            client.description = arguments["description"]
-        if "background_color" in arguments:
-            client.background_color = new_background_color
-        if "header_color" in arguments:
-            client.header_color = new_header_color
-        if "footer_color" in arguments:
-            client.footer_color = new_footer_color
-        if "show_client_id" in arguments:
-            client.show_client_id = arguments["show_client_id"]
-        if "show_description" in arguments:
-            client.show_description = arguments["show_description"]
-        if new_audiences is not None:
-            client.additional_audiences = new_audiences
-        if new_redirect_uris is not None:
-            client.redirect_uris = new_redirect_uris
-
-        return {"success": True, "client": _client_to_dict(client)}
-
-    elif name == "delete_client":
-        client_id = arguments["client_id"]
-        client = config.get_client(client_id)
-        if not client:
-            return {"success": False, "error": f"Client '{client_id}' not found"}
-
-        config.settings.clients = [c for c in config.settings.clients if c.client_id != client_id]
-        return {"success": True, "deleted": client_id}
-
-    # Configuration
-    elif name == "get_settings":
-        settings = config.settings
-        return {
-            # Same key as GET /api/config (#175): the contract an agent targets.
-            "config_version": config.config_version,
-            "config_validation": "strict" if config.strict_config else "warn",
+    return {
+        "success": True,
+        "updated_fields": updated,
+        "current_settings": {
             "issuer": settings.issuer,
             "issuer_from_request": settings.issuer_from_request,
             "issuer_allowlist": settings.issuer_allowlist,
@@ -1309,250 +1472,138 @@ async def _execute_tool(name: str, arguments: dict[str, Any], config: ConfigMana
             "issuer_from_proxy_headers": settings.issuer_from_proxy_headers,
             "audience": settings.audience,
             "token_expiry_minutes": settings.token_expiry_minutes,
-            "security_profile": settings.security_profile,
-            # Same as GET /api/config (#172): whether the profile comes from
-            # the CLI, and the values the effective profile forces.
-            "profile_override": config.profile_override,
-            "effective": {
-                "require_pkce": settings.require_pkce,
-                "password_hashing": settings.password_hashing,
-                "rate_limit_enabled": settings.rate_limit_enabled,
-                "debug": settings.debug,
-            },
-            "login_mode": settings.login_mode,
             "refresh_token_rotation": settings.refresh_token_rotation,
             "require_pkce": settings.require_pkce,
-            "jwt_algorithm": settings.jwt_algorithm,
-            "saml": {
-                # MCP has no HTTP request, so derived values (#181) resolve
-                # against the fixed settings.issuer, the same exception the
-                # MCP discovery tools already make for issuer_from_request.
-                "entity_id": settings.resolve_saml_entity_id(settings.issuer),
-                "entity_id_derived": settings.saml_entity_id is None,
-                "sso_url": settings.resolve_saml_sso_url(settings.issuer),
-                "sso_url_derived": settings.saml_sso_url is None,
-                "sign_responses": settings.saml_sign_responses,
-                "c14n_algorithm": settings.saml_c14n_algorithm,
-                "strict_binding": settings.strict_saml_binding,
-                "want_authn_requests_signed": (
-                    settings.saml_want_authn_requests_signed
-                ),
-                "sp_certificates": settings.saml_sp_certificates,
-                "export_roles": settings.saml_export_roles,
-                "export_groups": settings.saml_export_groups,
-                "roles_attr_name": settings.saml_roles_attr_name,
-                "groups_attr_name": settings.saml_groups_attr_name,
-            },
-            "logging": {
-                "verbose_logging": settings.verbose_logging,
-            },
-            "authority_prefixes": settings.authority_prefixes,
-            "allowed_identity_classes": settings.allowed_identity_classes,
-            # Hooks and plugins (#185): same block as GET /api/config.
-            "hooks": config.hooks.describe(),
-        }
+            "login_mode": settings.login_mode,
+            "saml_sign_responses": settings.saml_sign_responses,
+            "saml_c14n_algorithm": settings.saml_c14n_algorithm,
+            "strict_saml_binding": settings.strict_saml_binding,
+            "saml_want_authn_requests_signed": (settings.saml_want_authn_requests_signed),
+            "saml_sp_certificates": settings.saml_sp_certificates,
+            "saml_export_roles": settings.saml_export_roles,
+            "saml_export_groups": settings.saml_export_groups,
+            "saml_roles_attr_name": settings.saml_roles_attr_name,
+            "saml_groups_attr_name": settings.saml_groups_attr_name,
+            "verbose_logging": settings.verbose_logging,
+        },
+    }
 
-    elif name == "reload_config":
-        try:
-            config.reload()
-        except HookError as exc:
-            return {"success": False, "error": f"Reload failed: {exc.message}", "kind": exc.kind}
-        return {"success": True, "message": "Configuration reloaded"}
 
-    elif name == "validate_config":
-        # The CLI's code path exactly (nanoidp.config_validation): no
-        # ConfigManager is built, no hook runs, no plugin is imported, and
-        # the running configuration is not touched or reloaded.
-        # strict defaults to the manager's effective mode, so "what the next
-        # reload would hit" stays true for a ConfigManager started with
-        # --strict-config (#204 review); an explicit argument still wins.
-        strict_arg = arguments.get("strict")
-        effective = config.strict_config if strict_arg is None else bool(strict_arg)
-        return validate_config_result(config.config_dir, effective)
+def _tool_save_config(arguments: dict[str, Any], config: ConfigManager) -> dict[str, Any]:
+    try:
+        config.save()
+        return {"success": True, "message": "Configuration saved to YAML files"}
+    except Exception as e:
+        return {"success": False, "error": f"Failed to save config: {str(e)}"}
 
-    elif name == "update_settings":
-        settings = config.settings
 
-        # Settings (unlike OAuthClient) has no validate_assignment, but the
-        # tool's input_schema declares "enum": ["password", "persona"] for
-        # login_mode, so call_tool()'s jsonschema pass already rejects an
-        # invalid value before this handler ever runs.
-        updated = []
-        if "issuer" in arguments:
-            settings.issuer = arguments["issuer"]
-            updated.append("issuer")
-        if "issuer_from_request" in arguments:
-            settings.issuer_from_request = arguments["issuer_from_request"]
-            updated.append("issuer_from_request")
-        if "issuer_allowlist" in arguments:
-            settings.issuer_allowlist = _normalize_str_list(
-                arguments["issuer_allowlist"], "issuer_allowlist"
-            )
-            updated.append("issuer_allowlist")
-        if "device_verification_base_url" in arguments:
-            settings.device_verification_base_url = (
-                arguments["device_verification_base_url"] or None
-            )
-            updated.append("device_verification_base_url")
-        if "issuer_from_proxy_headers" in arguments:
-            settings.issuer_from_proxy_headers = arguments["issuer_from_proxy_headers"]
-            updated.append("issuer_from_proxy_headers")
-        if "audience" in arguments:
-            settings.audience = arguments["audience"]
-            updated.append("audience")
-        if "token_expiry_minutes" in arguments:
-            settings.token_expiry_minutes = arguments["token_expiry_minutes"]
-            updated.append("token_expiry_minutes")
-        if "saml_entity_id" in arguments:
-            # "" = back to derived (#181), mirroring the UI form's blank field
-            settings.saml_entity_id = arguments["saml_entity_id"] or None
-            updated.append("saml_entity_id")
-        if "saml_sso_url" in arguments:
-            settings.saml_sso_url = arguments["saml_sso_url"] or None
-            updated.append("saml_sso_url")
-        if "saml_sign_responses" in arguments:
-            settings.saml_sign_responses = arguments["saml_sign_responses"]
-            updated.append("saml_sign_responses")
-        if "saml_export_roles" in arguments:
-            settings.saml_export_roles = arguments["saml_export_roles"]
-            updated.append("saml_export_roles")
-        if "saml_export_groups" in arguments:
-            settings.saml_export_groups = arguments["saml_export_groups"]
-            updated.append("saml_export_groups")
-        if "saml_roles_attr_name" in arguments:
-            settings.saml_roles_attr_name = normalize_saml_attr_name(
-                "saml_roles_attr_name", arguments["saml_roles_attr_name"]
-            )
-            updated.append("saml_roles_attr_name")
-        if "saml_groups_attr_name" in arguments:
-            settings.saml_groups_attr_name = normalize_saml_attr_name(
-                "saml_groups_attr_name", arguments["saml_groups_attr_name"]
-            )
-            updated.append("saml_groups_attr_name")
-        if "saml_c14n_algorithm" in arguments:
-            settings.saml_c14n_algorithm = arguments["saml_c14n_algorithm"]
-            updated.append("saml_c14n_algorithm")
-        if "strict_saml_binding" in arguments:
-            settings.strict_saml_binding = arguments["strict_saml_binding"]
-            updated.append("strict_saml_binding")
-        if "saml_want_authn_requests_signed" in arguments:
-            settings.saml_want_authn_requests_signed = arguments[
-                "saml_want_authn_requests_signed"
-            ]
-            updated.append("saml_want_authn_requests_signed")
-        if "saml_sp_certificates" in arguments:
-            settings.saml_sp_certificates = _normalize_str_list(
-                arguments["saml_sp_certificates"], "saml_sp_certificates"
-            )
-            updated.append("saml_sp_certificates")
-        if "verbose_logging" in arguments:
-            settings.verbose_logging = arguments["verbose_logging"]
-            updated.append("verbose_logging")
-        if "refresh_token_rotation" in arguments:
-            settings.refresh_token_rotation = arguments["refresh_token_rotation"]
-            updated.append("refresh_token_rotation")
-        if "require_pkce" in arguments:
-            settings.require_pkce = arguments["require_pkce"]
-            updated.append("require_pkce")
-        if "login_mode" in arguments:
-            settings.login_mode = arguments["login_mode"]
-            updated.append("login_mode")
+# Discovery
+def _tool_get_oidc_discovery(arguments: dict[str, Any], config: ConfigManager) -> dict[str, Any]:
+    # Shared with the HTTP /.well-known/openid-configuration endpoint so
+    # the two documents can never drift apart (issue #40).
+    return build_discovery_document(config.settings)
 
-        return {
-            "success": True,
-            "updated_fields": updated,
-            "current_settings": {
-                "issuer": settings.issuer,
-                "issuer_from_request": settings.issuer_from_request,
-                "issuer_allowlist": settings.issuer_allowlist,
-                "device_verification_base_url": settings.device_verification_base_url,
-                "issuer_from_proxy_headers": settings.issuer_from_proxy_headers,
-                "audience": settings.audience,
-                "token_expiry_minutes": settings.token_expiry_minutes,
-                "refresh_token_rotation": settings.refresh_token_rotation,
-                "require_pkce": settings.require_pkce,
-                "login_mode": settings.login_mode,
-                "saml_sign_responses": settings.saml_sign_responses,
-                "saml_c14n_algorithm": settings.saml_c14n_algorithm,
-                "strict_saml_binding": settings.strict_saml_binding,
-                "saml_want_authn_requests_signed": (
-                    settings.saml_want_authn_requests_signed
-                ),
-                "saml_sp_certificates": settings.saml_sp_certificates,
-                "saml_export_roles": settings.saml_export_roles,
-                "saml_export_groups": settings.saml_export_groups,
-                "saml_roles_attr_name": settings.saml_roles_attr_name,
-                "saml_groups_attr_name": settings.saml_groups_attr_name,
-                "verbose_logging": settings.verbose_logging,
-            },
-        }
 
-    elif name == "save_config":
-        try:
-            config.save()
-            return {"success": True, "message": "Configuration saved to YAML files"}
-        except Exception as e:
-            return {"success": False, "error": f"Failed to save config: {str(e)}"}
+def _tool_get_jwks(arguments: dict[str, Any], config: ConfigManager) -> dict[str, Any]:
+    crypto = get_crypto_service(config.settings.keys_dir)
+    return crypto.get_jwks()
 
-    # Discovery
-    elif name == "get_oidc_discovery":
-        # Shared with the HTTP /.well-known/openid-configuration endpoint so
-        # the two documents can never drift apart (issue #40).
-        return build_discovery_document(config.settings)
 
-    elif name == "get_jwks":
-        crypto = get_crypto_service(config.settings.keys_dir)
-        return crypto.get_jwks()
+# Audit log (mirrors /api/audit*, issue #48)
+def _tool_get_audit_log(arguments: dict[str, Any], config: ConfigManager) -> dict[str, Any]:
+    audit = get_audit_log()
+    entries = audit.get_entries(
+        limit=arguments.get("limit", 100),
+        event_type=arguments.get("event_type"),
+        username=arguments.get("username"),
+    )
+    return {"entries": entries, "count": len(entries)}
 
-    # Audit log (mirrors /api/audit*, issue #48)
-    elif name == "get_audit_log":
-        audit = get_audit_log()
-        entries = audit.get_entries(
-            limit=arguments.get("limit", 100),
-            event_type=arguments.get("event_type"),
-            username=arguments.get("username"),
-        )
-        return {"entries": entries, "count": len(entries)}
 
-    elif name == "get_audit_stats":
-        return get_audit_log().get_stats()
+def _tool_get_audit_stats(arguments: dict[str, Any], config: ConfigManager) -> dict[str, Any]:
+    return get_audit_log().get_stats()
 
-    elif name == "clear_audit_log":
-        get_audit_log().clear()
-        return {"success": True, "message": "Audit log cleared"}
 
-    # Key management (mirrors /api/keys*, issue #48)
-    elif name == "get_keys_info":
-        crypto = get_crypto_service(config.settings.keys_dir)
-        return {
-            "active_kid": crypto.kid,
-            "previous_keys_count": len(crypto.previous_keys),
-            "previous_kids": [k.kid for k in crypto.previous_keys],
-            "max_previous_keys": crypto.max_previous_keys,
-        }
+def _tool_clear_audit_log(arguments: dict[str, Any], config: ConfigManager) -> dict[str, Any]:
+    get_audit_log().clear()
+    return {"success": True, "message": "Audit log cleared"}
 
-    elif name == "rotate_keys":
-        crypto = get_crypto_service(config.settings.keys_dir)
-        result = crypto.rotate_keys()
-        get_audit_log().log(
-            event_type="key_rotation",
-            endpoint="mcp:rotate_keys",
-            method="MCP",
-            username="mcp",
-            status="success",
-            details={"old_kid": result["old_kid"], "new_kid": result["new_kid"]},
-        )
-        return {"success": True, **result}
 
-    # Unreachable on the protocol path: call_tool rejects an unknown name with
-    # MCP_UNKNOWN_TOOL before dispatching here. Raising (rather than returning a
-    # divergent {"error": ...} shape) makes a direct mis-call a clear bug.
-    raise ValueError(f"Unknown tool: {name}")
+# Key management (mirrors /api/keys*, issue #48)
+def _tool_get_keys_info(arguments: dict[str, Any], config: ConfigManager) -> dict[str, Any]:
+    crypto = get_crypto_service(config.settings.keys_dir)
+    return {
+        "active_kid": crypto.kid,
+        "previous_keys_count": len(crypto.previous_keys),
+        "previous_kids": [k.kid for k in crypto.previous_keys],
+        "max_previous_keys": crypto.max_previous_keys,
+    }
+
+
+def _tool_rotate_keys(arguments: dict[str, Any], config: ConfigManager) -> dict[str, Any]:
+    crypto = get_crypto_service(config.settings.keys_dir)
+    result = crypto.rotate_keys()
+    get_audit_log().log(
+        event_type="key_rotation",
+        endpoint="mcp:rotate_keys",
+        method="MCP",
+        username="mcp",
+        status="success",
+        details={"old_kid": result["old_kid"], "new_kid": result["new_kid"]},
+    )
+    return {"success": True, **result}
+
+
+# One handler per tool, dispatched by _execute_tool. tests/test_mcp.py
+# asserts this table and _TOOLS declare exactly the same names.
+_TOOL_HANDLERS: dict[str, Callable[[dict[str, Any], ConfigManager], dict[str, Any]]] = {
+    "list_users": _tool_list_users,
+    "get_user": _tool_get_user,
+    "create_user": _tool_create_user,
+    "create_persona_user": _tool_create_persona_user,
+    "delete_user": _tool_delete_user,
+    "update_user": _tool_update_user,
+    "generate_token": _tool_generate_token,
+    "decode_token": _tool_decode_token,
+    "verify_token": _tool_verify_token,
+    "list_clients": _tool_list_clients,
+    "get_client": _tool_get_client,
+    "create_client": _tool_create_client,
+    "update_client": _tool_update_client,
+    "delete_client": _tool_delete_client,
+    "get_settings": _tool_get_settings,
+    "reload_config": _tool_reload_config,
+    "validate_config": _tool_validate_config,
+    "update_settings": _tool_update_settings,
+    "save_config": _tool_save_config,
+    "get_oidc_discovery": _tool_get_oidc_discovery,
+    "get_jwks": _tool_get_jwks,
+    "get_audit_log": _tool_get_audit_log,
+    "get_audit_stats": _tool_get_audit_stats,
+    "clear_audit_log": _tool_clear_audit_log,
+    "get_keys_info": _tool_get_keys_info,
+    "rotate_keys": _tool_rotate_keys,
+}
+
+
+async def _execute_tool(
+    name: str, arguments: dict[str, Any], config: ConfigManager
+) -> dict[str, Any]:
+    """Execute a tool by dispatching to its handler in _TOOL_HANDLERS."""
+    handler = _TOOL_HANDLERS.get(name)
+    if handler is None:
+        # Unreachable on the protocol path: call_tool rejects an unknown name
+        # with MCP_UNKNOWN_TOOL before dispatching here. Raising (rather than
+        # returning a divergent {"error": ...} shape) makes a direct mis-call
+        # a clear bug.
+        raise ValueError(f"Unknown tool: {name}")
+    return handler(arguments, config)
 
 
 # =============================================================================
 # Main Entry Point
 # =============================================================================
+
 
 def main() -> None:
     """Run the MCP server."""
@@ -1574,17 +1625,21 @@ Examples:
   nanoidp-mcp                    # Full access
   nanoidp-mcp --readonly         # Read-only access
   NANOIDP_MCP_READONLY=true nanoidp-mcp  # Read-only via env var
-        """
+        """,
     )
     parser.add_argument(
         "--readonly",
         action="store_true",
-        help="Disable mutating tools (create_user, delete_user, generate_token, etc.)"
+        help="Disable mutating tools (create_user, delete_user, generate_token, etc.)",
     )
     args = parser.parse_args()
 
     # Set readonly mode from CLI flag or environment variable
-    _readonly_mode = args.readonly or os.getenv("NANOIDP_MCP_READONLY", "").lower() in ("true", "1", "yes")
+    _readonly_mode = args.readonly or os.getenv("NANOIDP_MCP_READONLY", "").lower() in (
+        "true",
+        "1",
+        "yes",
+    )
 
     logging.basicConfig(
         level=logging.INFO,

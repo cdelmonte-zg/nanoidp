@@ -167,6 +167,29 @@ class TestMCPToolSchema:
         assert 'update_settings' in mcp_server.MUTATING_TOOLS
 
 
+class TestMCPToolHandlerParity:
+    """_TOOLS and _TOOL_HANDLERS must declare exactly the same names (#211).
+
+    The dispatch table replaced the old if/elif chain; a tool declared
+    without a handler used to fail only at call time (ValueError), and a
+    handler without a declaration would be dead code the schema validator
+    rejects before dispatch. Either mismatch is a bug caught here.
+    """
+
+    def test_every_declared_tool_has_a_handler_and_vice_versa(self):
+        from nanoidp.mcp_server import _TOOL_HANDLERS, _TOOLS
+
+        declared = {tool.name for tool in _TOOLS}
+        handled = set(_TOOL_HANDLERS)
+        assert declared == handled
+
+    def test_mutating_tools_is_a_subset_of_declared_tools(self):
+        from nanoidp.mcp_server import _TOOLS, MUTATING_TOOLS
+
+        declared = {tool.name for tool in _TOOLS}
+        assert set(MUTATING_TOOLS) <= declared
+
+
 class TestMCPHandlerRegistration:
     """The SDK takes handlers as constructor args; nothing else registers them."""
 
