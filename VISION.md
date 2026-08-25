@@ -2,7 +2,8 @@
 
 ## What nanoidp is
 
-nanoidp is a lightweight identity provider for **development and testing**.
+nanoidp is a lightweight identity provider for **development and testing**:
+an identity test environment for applications and agentic systems.
 It gives developers, and through its MCP server AI agents, a real,
 spec-honest OAuth2/OIDC and SAML 2.0 counterpart to integrate against,
 without standing up Keycloak or wiring a cloud tenant: `pip install`, two
@@ -12,9 +13,12 @@ The product is **confidence**: the behaviors nanoidp advertises and
 implements are grounded in the relevant specifications, so clients can
 test against them without depending on accidental or invented semantics.
 
-A secondary, supported use is running local demos and prototyping a
-client's login experience; it stays a dev tool for local use, not a
-hosted product serving real end users.
+Two secondary, supported uses: running local demos and prototyping a
+client's login experience, and serving as the identity provider of a
+shared development stack (a team's Docker Compose or Kubernetes dev
+environment on a trusted network, reachable by several developers and
+their agents). In both it stays a dev tool: the users are developers and
+test personas, never real end users, and the instance is disposable.
 
 ## Principles
 
@@ -28,7 +32,10 @@ implicitly throughout the project's history; this writes them down.
    first-class precisely because clients need to test them; what nanoidp
    does not promise is production-grade operation. Convenience that
    doesn't distort spec behavior is welcome; hardening that costs
-   convenience must be optional.
+   convenience must be optional. The same test applies to the
+   shared-dev-stack use: a change is in scope when it helps a team run
+   and configure a disposable stack, and out of scope when its purpose
+   is to protect real users or data.
 2. **Metadata never lies.** Discovery and documentation advertise exactly
    what the endpoints implement: a missing feature is acceptable, a
    pretended one is not (see #41: `response_type=token` was advertised but
@@ -63,9 +70,24 @@ implicitly throughout the project's history; this writes them down.
 
 ## Non-goals
 
-- **Production use.** No HA, no hardening guarantees, no real user data.
+- **Production or hosted use.** No HA, no hardening guarantees, no real
+  user data. A shared dev stack is supported (above); an instance that
+  serves people who are not its operators is not. Opt-in management
+  guards (`require_ui_login`, `management_secret`) are locks for a
+  trusted network, not an access-control system: there are no roles, no
+  per-user audit, no tenant isolation, and none are planned.
+- **External configuration backends.** Secrets and users reach nanoidp
+  through YAML files and `${VAR}` placeholders rendered by the deploy
+  (Vault Agent, External Secrets, an init container); nanoidp itself
+  does not read from or write to a secret store or a database. The
+  hooks and plugins shipped in 2.7.0 are the supported way to wire an
+  external store in from outside: nanoidp provides the extension
+  points, the deploy provides the backend.
 - **Database persistence.** YAML files plus in-memory runtime state are a
-  feature: state you can read, edit and `git diff`.
+  feature. Declared configuration lives in schema-versioned YAML you can
+  read, edit and `git diff`; runtime state (tokens, sessions, audit) lives
+  in memory. Where it goes beyond the process's lifetime is the deploy's
+  concern, not nanoidp's.
 - **Real identity backends.** No LDAP/AD federation, no social login.
 - **Spec completeness for its own sake.** Extensions are added when they
   help someone test a client, not to fill a compliance matrix.
@@ -92,6 +114,15 @@ GitHub issues attached to the corresponding
    deferred breaking changes for the next major; first entry: refresh
    tokens without a `client_id` binding claim stop being accepted
    (transitional compatibility introduced in 2.2.0).
+6. **[Agentic OAuth / MCP interoperability](https://github.com/cdelmonte-zg/nanoidp/milestone/11)**:
+   the auth cases of agentic systems, with MCP clients and servers as
+   ordinary OAuth parties: per-client scopes, RFC 8707 resource
+   indicators, public clients with mandatory PKCE, RFC 9207, opt-in
+   in-memory Dynamic Client Registration with a CIMD-ready registry, a
+   mock protected MCP server as an e2e fixture, and a config/state
+   split for multi-agent use (runtime writes with conflict detection
+   and an actor recorded in the audit log). nanoidp stays a dev/testing
+   IdP extended to these cases, not "an IdP for AI".
 
 Anything not covered here is fair game for discussion: open an issue. The
 principles above, not this list, are the contract.
