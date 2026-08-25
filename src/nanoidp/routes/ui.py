@@ -121,9 +121,17 @@ def login() -> ResponseReturnValue:
     return redirect(url_for("ui.index"))
 
 
-@ui_bp.route("/logout")
+@ui_bp.route("/ui/logout")
 def logout() -> ResponseReturnValue:
-    """Logout and clear session."""
+    """Log the dashboard session out and return to the dashboard.
+
+    On its own rule (#221): this endpoint used to claim "/logout", where it
+    was unreachable dead code - oauth_bp registers "/logout" as an alias of
+    the OIDC end-session endpoint and create_app registers oauth_bp first,
+    so every request went there. The dashboard's Logout button (base.html,
+    url_for('ui.logout')) therefore landed users on the end-session
+    confirmation page, and this audit event was never written.
+    """
     username = session.get("user")
     session.clear()
 
@@ -131,7 +139,7 @@ def logout() -> ResponseReturnValue:
         audit_event(
             "logout",
             "success",
-            endpoint="/logout",
+            endpoint="/ui/logout",
             username=username,
         )
 

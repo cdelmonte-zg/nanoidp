@@ -12,6 +12,7 @@
 | `POST /introspect` | Token Introspection (RFC 7662) |
 | `POST /revoke` | Token Revocation (RFC 7009) |
 | `GET/POST /logout` | OIDC End Session / Logout (alias: `/end_session`) |
+| `GET /ui/logout` | Dashboard session logout (the web UI's Logout button) |
 | `POST /device_authorization` | Device Authorization (RFC 8628; alias: `/device/code`) |
 | `GET/POST /device` | Device verification page |
 
