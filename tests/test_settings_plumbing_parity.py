@@ -69,3 +69,51 @@ class TestMcpUpdateSettingsMatchesItsSchema:
     def test_every_field_is_a_settings_attribute(self):
         for field in _UPDATE_SETTINGS_FIELDS:
             assert field in Settings.model_fields, field
+
+
+class TestBlankClearsTheSamlAttrNames:
+    """Regression for the #226 review finding: blank means REMOVE the key.
+
+    The writer's historical contract for roles_attr_name/groups_attr_name is
+    "empty string drops the key so the default name applies again"; the
+    first table version flattened them to plain rows and persisted a literal
+    "" instead. The runtime masked it (the Settings validator normalizes
+    blank back to the defaults), so only the persisted document showed the
+    regression - which is exactly what this test reads.
+    """
+
+    def _seed(self, tmp_path):
+        import shutil
+        from pathlib import Path
+
+        import yaml
+
+        from nanoidp.config import ConfigManager
+
+        repo_config = Path(__file__).resolve().parent.parent / "config"
+        for name in ("settings.yaml", "users.yaml"):
+            shutil.copy(repo_config / name, tmp_path / name)
+        data = yaml.safe_load((tmp_path / "settings.yaml").read_text())
+        data["saml"]["roles_attr_name"] = "memberOf"
+        data["saml"]["groups_attr_name"] = "memberGroups"
+        (tmp_path / "settings.yaml").write_text(yaml.safe_dump(data))
+        ConfigManager(str(tmp_path))  # the writer resolves its dir from this
+        return YamlWriter(str(tmp_path))
+
+    def test_blank_removes_the_keys_from_yaml(self, tmp_path):
+        import yaml
+
+        writer = self._seed(tmp_path)
+        writer.update_saml_settings(roles_attr_name="", groups_attr_name="")
+        saml = yaml.safe_load((tmp_path / "settings.yaml").read_text())["saml"]
+        assert "roles_attr_name" not in saml
+        assert "groups_attr_name" not in saml
+
+    def test_custom_value_still_persists(self, tmp_path):
+        import yaml
+
+        writer = self._seed(tmp_path)
+        writer.update_saml_settings(roles_attr_name="entitlementsOf")
+        saml = yaml.safe_load((tmp_path / "settings.yaml").read_text())["saml"]
+        assert saml["roles_attr_name"] == "entitlementsOf"
+        assert saml["groups_attr_name"] == "memberGroups"

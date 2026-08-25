@@ -1,9 +1,14 @@
 """
-Client-field parity across every surface of the 13-point flow (#214).
+Client-field parity across the declared surfaces of the client-field flow (#214).
 
 The registry idea was declined: the manual flow works, but a forgotten leg
-must become a suite failure instead of a review catch (the #32 shape).
-Every field of OAuthClient must therefore appear in:
+should become a suite failure instead of a review catch (the #32 shape)
+wherever that check is cheap. These tests cover the DECLARATIVE surfaces -
+the ones whose field lists can be introspected. They do NOT prove that the
+imperative legs (client_to_yaml, merge_client_entry, the UI form parsers,
+the MCP create/update handler bodies) actually apply a new field; those
+stay covered by the per-feature tests the flow requires. Every field of
+OAuthClient must appear in:
 
 - config_documents.ClientEntry (the YAML load contract),
 - mcp_server._client_to_dict (MCP read surface),
