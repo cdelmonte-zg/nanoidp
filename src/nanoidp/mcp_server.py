@@ -1629,8 +1629,16 @@ async def _execute_tool(
 # =============================================================================
 
 
-def main() -> None:
-    """Run the MCP server."""
+def main() -> None:  # pragma: no cover
+    """Run the MCP server.
+
+    Excluded from unit coverage on purpose (#222): this is process
+    wiring (argparse + stdio bootstrap). The publish pipeline's
+    wheel-smoke job executes the nanoidp-mcp entry point from the built
+    wheel (--help, which runs this function's argparse) before anything
+    is published; the stdio serve loop itself is exercised by every real
+    MCP session.
+    """
     global _readonly_mode
 
     # Parse command-line arguments
@@ -1693,5 +1701,5 @@ Examples:
     asyncio.run(_serve())
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     main()
