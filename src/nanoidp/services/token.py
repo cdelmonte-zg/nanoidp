@@ -217,6 +217,7 @@ class TokenService:
         id_token_claims: Optional[List[str]] = None,
         userinfo_claims: Optional[List[str]] = None,
         issuer: Optional[str] = None,
+        issue_refresh_token: bool = True,
     ) -> Dict[str, Any]:
         """Create a JWT token for a user.
 
@@ -238,6 +239,13 @@ class TokenService:
         caller's own discovery document just advertised (``issuer_from_request``)
         - a token whose ``iss`` doesn't match what discovery said is rejected by
         any spec-compliant client.
+
+        ``issue_refresh_token`` is False for grants without an end user
+        (client_credentials, RFC 6749 §4.4.3: "A refresh token SHOULD NOT be
+        included", #239): the client authenticates itself on every call, so a
+        refresh token would only be a second, long-lived credential bound to a
+        user the grant never involved. When False no refresh JWT is minted and
+        the response carries no ``refresh_token`` key at all.
         """
         settings = self.config.settings
         effective_issuer = issuer or settings.issuer
@@ -370,34 +378,34 @@ class TokenService:
         #   via the OIDC `claims` parameter, so a refreshed ID Token keeps the
         #   requested claims and /userinfo keeps honouring them for the
         #   refreshed access token (OIDC Core §12.2, #112).
-        refresh_extra: Dict[str, Any] = {"token_type": "refresh", "token_use": "refresh"}
-        if scope:
-            refresh_extra["scope"] = scope
-        if effective_auth_time is not None:
-            refresh_extra["auth_time"] = effective_auth_time
-        if client_id:
-            refresh_extra["client_id"] = client_id
-        if id_token_claims:
-            refresh_extra["req_id_token_claims"] = id_token_claims
-        if userinfo_claims:
-            refresh_extra["req_userinfo_claims"] = userinfo_claims
-        refresh_extra["rt_family"] = refresh_family or str(uuid.uuid4())
-        refresh_token = self.crypto.create_jwt(
-            sub=user.username,
-            issuer=effective_issuer,
-            audience=settings.audience,
-            roles=user.roles,
-            tenant=user.tenant,
-            extra=refresh_extra,
-            exp_minutes=7 * 24 * 60,  # 7 days
-        )
-
-        response = {
+        # Skipped entirely for grants with no end-user context (#239).
+        response: Dict[str, Any] = {
             "access_token": token,
             "token_type": "Bearer",
             "expires_in": exp_minutes * 60,
-            "refresh_token": refresh_token,
         }
+        if issue_refresh_token:
+            refresh_extra: Dict[str, Any] = {"token_type": "refresh", "token_use": "refresh"}
+            if scope:
+                refresh_extra["scope"] = scope
+            if effective_auth_time is not None:
+                refresh_extra["auth_time"] = effective_auth_time
+            if client_id:
+                refresh_extra["client_id"] = client_id
+            if id_token_claims:
+                refresh_extra["req_id_token_claims"] = id_token_claims
+            if userinfo_claims:
+                refresh_extra["req_userinfo_claims"] = userinfo_claims
+            refresh_extra["rt_family"] = refresh_family or str(uuid.uuid4())
+            response["refresh_token"] = self.crypto.create_jwt(
+                sub=user.username,
+                issuer=effective_issuer,
+                audience=settings.audience,
+                roles=user.roles,
+                tenant=user.tenant,
+                extra=refresh_extra,
+                exp_minutes=7 * 24 * 60,  # 7 days
+            )
         # RFC 6749 §5.1: report the scope actually granted - it may have been
         # narrowed on refresh (§6) and was previously hardcoded to "openid"
         # regardless of the grant (#56). Omitted when no scope was involved.
