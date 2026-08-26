@@ -13,7 +13,12 @@ from pathlib import Path
 
 import pytest
 
-from nanoidp.config_writer import ConflictError, compare_and_replace, current_revision
+from nanoidp.config_writer import (
+    ConflictError,
+    compare_and_replace,
+    compare_and_replace_many,
+    current_revision,
+)
 from nanoidp.serialization import load_yaml_document
 
 
@@ -239,3 +244,64 @@ class TestCrossProcessConflictDetection:
 
         winner_value = next(value for outcome, value in results if outcome == "ok")
         assert f.read_text().strip() == f"counter: {winner_value}"
+
+
+class TestCompareAndReplaceMany:
+    def test_all_items_written_when_every_revision_matches(self, tmp_path):
+        a = tmp_path / "a.yaml"
+        b = tmp_path / "b.yaml"
+        a.write_text("x: 1\n")
+        b.write_text("y: 1\n")
+        base_a, base_b = current_revision(a), current_revision(b)
+
+        compare_and_replace_many(
+            [
+                (a, base_a, lambda doc: doc.update({"x": 2})),
+                (b, base_b, lambda doc: doc.update({"y": 2})),
+            ]
+        )
+
+        assert a.read_text().strip() == "x: 2"
+        assert b.read_text().strip() == "y: 2"
+
+    def test_conflict_on_second_item_leaves_first_item_untouched(self, tmp_path):
+        a = tmp_path / "a.yaml"
+        b = tmp_path / "b.yaml"
+        a.write_text("x: 1\n")
+        b.write_text("y: 1\n")
+        base_a, base_b = current_revision(a), current_revision(b)
+        b.write_text("y: 999\n")  # someone else writes b first
+
+        with pytest.raises(ConflictError):
+            compare_and_replace_many(
+                [
+                    (a, base_a, lambda doc: doc.update({"x": 2})),
+                    (b, base_b, lambda doc: doc.update({"y": 2})),
+                ]
+            )
+
+        assert a.read_text().strip() == "x: 1"
+        assert b.read_text().strip() == "y: 999"
+
+    def test_a_raising_mutate_leaves_every_item_in_the_batch_untouched(self, tmp_path):
+        """#229 review, non-blocking tightening: mutate is run for every
+        item before any item is written, so a mutate that raises on the
+        second item cannot leave the first one already on disk."""
+        a = tmp_path / "a.yaml"
+        b = tmp_path / "b.yaml"
+        a.write_text("x: 1\n")
+        b.write_text("y: 1\n")
+
+        def boom(doc):
+            raise ValueError("mutate blew up")
+
+        with pytest.raises(ValueError, match="mutate blew up"):
+            compare_and_replace_many(
+                [
+                    (a, None, lambda doc: doc.update({"x": 2})),
+                    (b, None, boom),
+                ]
+            )
+
+        assert a.read_text().strip() == "x: 1"
+        assert b.read_text().strip() == "y: 1"

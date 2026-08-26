@@ -213,21 +213,25 @@ def compare_and_replace_many(items: Sequence[WriteItem]) -> List[Revision]:
     """``compare_and_replace`` across several files as one transaction.
 
     Every item's ``expected_revision`` is checked - against every file's
-    on-disk revision - before any file in the batch is written: a
-    conflict on the second item never leaves the first one already
-    written, the same way a single ``compare_and_replace`` call never
-    leaves a partial write within one file. Items are otherwise
-    independent: different files, different ``mutate`` callables,
-    checked and written in the order given. Returns each item's new
-    revision, in that same order.
+    on-disk revision - before any file is loaded, and every ``mutate``
+    runs, against its own freshly loaded document, before any file is
+    written: a conflict, or a ``mutate`` that raises, leaves every file
+    in the batch untouched, the same way a single ``compare_and_replace``
+    call never leaves a partial write within one file. Only an I/O
+    failure on an individual ``atomic_write_yaml`` call can still leave
+    an earlier item in the batch written while a later one is not - there
+    is no single filesystem transaction spanning multiple files, just
+    three passes ordered to keep every failure mode except that one from
+    reaching disk at all. Items are otherwise independent: different
+    files, different ``mutate`` callables, processed in the order given.
+    Returns each item's new revision, in that same order.
     """
     directories = sorted({file_path.parent for file_path, _, _ in items}, key=str)
     with _write_lock, contextlib.ExitStack() as stack:
         for directory in directories:
             stack.enter_context(_cross_process_lock(directory))
 
-        # Phase 1: every precondition checked before anything is written,
-        # so a conflict on item N leaves items before it untouched too.
+        # Phase 1: every precondition checked before anything is loaded.
         for file_path, expected_revision, _mutate in items:
             actual = current_revision(file_path)
             if expected_revision is not None and expected_revision != actual:
@@ -236,11 +240,17 @@ def compare_and_replace_many(items: Sequence[WriteItem]) -> List[Revision]:
                     f"(expected revision {expected_revision[:12]}, found {actual[:12]})"
                 )
 
-        # Phase 2: every mutation applied and written.
-        new_revisions = []
+        # Phase 2: every document loaded and mutated - nothing written
+        # yet, so a mutate that raises leaves every file untouched too.
+        loaded = []
         for file_path, _expected_revision, mutate in items:
             document = load_yaml_document(file_path)
             mutate(document)
+            loaded.append((file_path, document))
+
+        # Phase 3: every mutated document written.
+        new_revisions = []
+        for file_path, document in loaded:
             atomic_write_yaml(file_path, document)
             new_revisions.append(current_revision(file_path))
         return new_revisions

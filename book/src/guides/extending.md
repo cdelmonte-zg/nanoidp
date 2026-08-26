@@ -77,12 +77,15 @@ interrupt it.
 runs before any mutation. `on_config_saved` runs after the atomic write, so
 the local save is always committed; under `strict` the web UI, `/api` and
 MCP callers surface the failure so the operator learns the mirror did not
-happen, and a multi-step save stops at the first failed write:
-`ConfigManager.save()` writes `users.yaml` then `settings.yaml`, and the
-web UI's settings page writes its sections one atomic write at a time, so
-under `strict` a failing hook leaves the steps after it unsaved (the flash
-message says which write failed). Make the hook idempotent: the next save
-re-mirrors. `on_audit_event` never fails the request that
+happen. `ConfigManager.save()` writes `users.yaml` and `settings.yaml` as
+one transaction (#229): both files are written, both hooks then run, and
+the runtime is refreshed from disk once before a `strict` failure is
+raised - a failing hook on one file does not leave the other unwritten.
+The web UI's settings page is a different, older path (`YamlWriter`):
+it still writes its sections one atomic write at a time, so under
+`strict` a failing hook there leaves the steps after it unsaved (the
+flash message says which write failed). Make the hook idempotent: the
+next save re-mirrors. `on_audit_event` never fails the request that
 produced the event: a token already issued must not turn into a 500 because
 an audit sink is down. Failures are counted per hook and shown by
 `nanoidp plugins` and `GET /api/config`.
