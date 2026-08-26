@@ -1,5 +1,19 @@
 """
-Single write pipeline with optimistic conflict detection (issue #229, phase 1).
+Single write pipeline with optimistic conflict detection (issue #229).
+
+A root-level module, a peer of ``config.py`` and ``serialization.py`` -
+not under ``services/`` - because both ``config.py`` (phase 2) and
+``services/yaml_writer.py`` (phase 3) call into it, and the
+``[tool.importlinter]`` "layers: routes -> services -> config" contract
+in ``pyproject.toml`` puts ``config`` below ``services``: ``config``
+importing anything under ``nanoidp.services`` breaks that contract even
+as a late/deferred import, since import-linter's static analysis does
+not care where in a function the import statement sits (#229 review: a
+late import here was exactly this mistake, caught by ``lint-imports`` in
+CI, not by pytest or mypy). It cannot live inside ``serialization.py``
+either: that module has its own "no runtime package imports" contract
+and is meant to stay a stateless pile of pure functions, and a lock plus
+``fcntl`` is state.
 
 ``ConfigManager.save()`` and ``YamlWriter`` each run their own independent
 load -> mutate -> ``atomic_write_yaml`` -> replace cycle against the same
@@ -18,6 +32,17 @@ the write is refused with ``ConflictError`` and the file is left untouched;
 otherwise the mutation is applied to a freshly loaded document and written
 atomically, exactly like the two write paths already do today.
 
+``compare_and_replace_many`` is the same guarantee across several files at
+once: every ``expected_revision`` is checked before any file is written, so
+a conflict on the second file never leaves the first one already written.
+``ConfigManager.save()`` needs this because it writes ``users.yaml`` and
+``settings.yaml`` as one logical save (#229 review on phase 2, reproduced:
+a stale ``settings.yaml`` revision left a fresh ``users.yaml`` on disk and
+the in-memory settings change silently unsaved) - the same directory-wide
+transactional boundary ``ConfigManager._load_config`` already gives reads
+(#204), now for this write. ``compare_and_replace`` is the ``len(items) ==
+1`` case of the same function.
+
 ``expected_revision=None`` means unconditional - today's last-write-wins -
 so a caller that hasn't been migrated to pass a revision yet keeps its
 current behaviour exactly.
@@ -28,10 +53,14 @@ the same file always compute the same revision, with no dependence on
 ruamel's dump formatting.
 
 The check-load-mutate-write sequence runs under two locks, both held for
-the whole section and both deliberately one lock for every file in the
-directory rather than one per path (``save()`` writes two files back to
-back, ``reload_local()`` stages the whole directory (#204), and #192
-will need a cross-file check that only works under one lock each):
+the whole section (single file or many) and both deliberately one lock
+for every file in a directory rather than one per path (``save()``
+writes two files back to back, ``reload_local()`` stages the whole
+directory (#204), and #192 will need a cross-file check that only works
+under one lock each). ``compare_and_replace_many`` locks every distinct
+parent directory among its items, in sorted order, so two concurrent
+multi-file calls can never deadlock on each other by acquiring the same
+two directory locks in opposite order:
 
 - ``_write_lock``, a ``threading.Lock`` (same pattern as ``config.py``'s
   ``_config_lock``), serializing threads within this process.
@@ -95,9 +124,9 @@ import logging
 import os
 import threading
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterator, Optional
+from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, Tuple
 
-from ..serialization import atomic_write_yaml, load_yaml_document
+from .serialization import atomic_write_yaml, load_yaml_document
 
 logger = logging.getLogger(__name__)
 
@@ -160,6 +189,9 @@ def current_revision(file_path: Path) -> Revision:
     return hashlib.sha256(_read_bytes(file_path)).hexdigest()
 
 
+WriteItem = Tuple[Path, Optional[Revision], Callable[[Dict[str, Any]], Any]]
+
+
 def compare_and_replace(
     file_path: Path,
     expected_revision: Optional[Revision],
@@ -171,16 +203,44 @@ def compare_and_replace(
     ``CommentedMap``, via ``load_yaml_document``) and edits it in place;
     its return value is ignored. It only runs, and the file is only
     written, after the revision check passes - a conflict never leaves a
-    partial write or a half-applied mutation.
+    partial write or a half-applied mutation. The single-item case of
+    ``compare_and_replace_many``.
     """
-    with _write_lock, _cross_process_lock(file_path.parent):
-        actual = current_revision(file_path)
-        if expected_revision is not None and expected_revision != actual:
-            raise ConflictError(
-                f"{file_path.name} changed since it was last read "
-                f"(expected revision {expected_revision[:12]}, found {actual[:12]})"
-            )
-        document = load_yaml_document(file_path)
-        mutate(document)
-        atomic_write_yaml(file_path, document)
-        return current_revision(file_path)
+    return compare_and_replace_many([(file_path, expected_revision, mutate)])[0]
+
+
+def compare_and_replace_many(items: Sequence[WriteItem]) -> List[Revision]:
+    """``compare_and_replace`` across several files as one transaction.
+
+    Every item's ``expected_revision`` is checked - against every file's
+    on-disk revision - before any file in the batch is written: a
+    conflict on the second item never leaves the first one already
+    written, the same way a single ``compare_and_replace`` call never
+    leaves a partial write within one file. Items are otherwise
+    independent: different files, different ``mutate`` callables,
+    checked and written in the order given. Returns each item's new
+    revision, in that same order.
+    """
+    directories = sorted({file_path.parent for file_path, _, _ in items}, key=str)
+    with _write_lock, contextlib.ExitStack() as stack:
+        for directory in directories:
+            stack.enter_context(_cross_process_lock(directory))
+
+        # Phase 1: every precondition checked before anything is written,
+        # so a conflict on item N leaves items before it untouched too.
+        for file_path, expected_revision, _mutate in items:
+            actual = current_revision(file_path)
+            if expected_revision is not None and expected_revision != actual:
+                raise ConflictError(
+                    f"{file_path.name} changed since it was last read "
+                    f"(expected revision {expected_revision[:12]}, found {actual[:12]})"
+                )
+
+        # Phase 2: every mutation applied and written.
+        new_revisions = []
+        for file_path, _expected_revision, mutate in items:
+            document = load_yaml_document(file_path)
+            mutate(document)
+            atomic_write_yaml(file_path, document)
+            new_revisions.append(current_revision(file_path))
+        return new_revisions

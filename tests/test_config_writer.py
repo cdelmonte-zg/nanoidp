@@ -1,9 +1,9 @@
 """
 Tests for the shared compare-and-replace write primitive (issue #229, phase 1).
 
-These exercise ``services/config_writer.py`` in isolation, against plain
-files on disk - no ``ConfigManager``/``YamlWriter`` involved yet (phases 2-3
-migrate those callers onto this primitive).
+These exercise ``config_writer.py`` in isolation, against plain files on
+disk - no ``ConfigManager``/``YamlWriter`` involved yet (phase 3 migrates
+``YamlWriter`` onto this primitive).
 """
 
 import multiprocessing
@@ -13,12 +13,8 @@ from pathlib import Path
 
 import pytest
 
+from nanoidp.config_writer import ConflictError, compare_and_replace, current_revision
 from nanoidp.serialization import load_yaml_document
-from nanoidp.services.config_writer import (
-    ConflictError,
-    compare_and_replace,
-    current_revision,
-)
 
 
 def _mp_worker(file_path_str, base_revision, barrier, value, result_queue):

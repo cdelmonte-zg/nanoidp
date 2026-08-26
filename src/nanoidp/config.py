@@ -22,7 +22,8 @@ from .config_documents import (
     load_settings_document,
     load_users_document,
 )
-from .hooks import SOURCE_SETTINGS, HookRegistry, bootstrap_registry
+from .config_writer import compare_and_replace, compare_and_replace_many
+from .hooks import SOURCE_SETTINGS, HookError, HookRegistry, bootstrap_registry
 from .models import (  # noqa: F401
     SECURITY_PROFILES,
     OAuthClient,
@@ -309,11 +310,14 @@ class ConfigManager:
         (reload_local()) before letting that propagate, so disk and
         runtime already agree by the time whoever called
         save()/YamlWriter sees the error - only the mirror push is what
-        actually failed. save() does this once after both its files are
-        written (#229 - see save() itself: reloading after each file
-        individually would let the users.yaml reload discard the
-        in-memory settings.yaml change still waiting to be saved);
-        YamlWriter._atomic_write does it right after its own single
+        actually failed. save() notifies both of its files, collecting
+        either failure, then refreshes once and raises (#229 - see
+        save() itself: both files are already written as one
+        transaction by the time either hook runs, and reloading after
+        each file individually would let the users.yaml reload discard
+        the in-memory settings.yaml change save() just persisted);
+        YamlWriter._atomic_write does the same write -> notify ->
+        reload_local -> raise contract right after its own single
         write."""
         self.hooks.run_config_saved(path, kind)
 
@@ -460,40 +464,74 @@ class ConfigManager:
         expected_users_revision: Optional[str] = None,
         expected_settings_revision: Optional[str] = None,
     ) -> None:
-        """Save current configuration to YAML files.
+        """Save current configuration to YAML files, as one transaction (#229).
 
-        expected_*_revision, when given, must equal that file's current
-        revision (services.config_writer.current_revision) at write time
-        or the save is refused with ConflictError and the file is left
-        untouched (#229). None (the default) keeps today's unconditional
-        last-write-wins - every caller still does this until phases 4-5
-        thread a real revision through the UI/MCP.
+        Both files' expected_*_revision (when given) are checked against
+        their on-disk revision before either file is written -
+        compare_and_replace_many refuses the whole save with
+        ConflictError, naming the stale file, before touching anything.
+        A stale settings revision must not leave a freshly-written
+        users.yaml on disk with the in-memory settings change silently
+        dropped (#229 review on phase 2) - the same directory-wide
+        transactional boundary _load_config already gives reads (#204),
+        now for this write. None (the default) keeps a file's write
+        unconditional, same as compare_and_replace's own default.
 
-        Refreshes the runtime from disk once, after both files are
-        written - not after each file individually, which would let the
-        users.yaml reload's fresh Settings/User objects discard the very
-        in-memory settings.yaml change this call is still in the middle
-        of persisting. Under hooks.strict a hook failure on either write
-        propagates immediately, before the next file is even attempted
-        (documented in test_hooks.py as "stops at the first failed
-        write") and before this refresh runs - unchanged from before
-        #229, since neither file's write is skipped for the reload's
-        sake.
+        Once both files are written, each fires its own on_config_saved
+        hook; the runtime is then refreshed from disk exactly once - not
+        after each file, which would let the users.yaml reload's fresh
+        Settings/User objects discard the very in-memory settings.yaml
+        change this call just persisted. Under hooks.strict, a hook
+        failure on either file raises HookError after that refresh
+        (matching YamlWriter._atomic_write's write -> notify ->
+        reload_local -> raise contract, per the #229 sign-off) - by the
+        time it does, both files are already on disk and the runtime
+        already reflects them; only the mirror push failed.
         """
-        self._save_users(expected_users_revision)
-        self._save_settings(expected_settings_revision)
+        users_file = self.config_dir / "users.yaml"
+        settings_file = self.config_dir / "settings.yaml"
+
+        compare_and_replace_many(
+            [
+                (
+                    users_file,
+                    expected_users_revision,
+                    lambda doc: apply_users_document(doc, self.users, self.default_user),
+                ),
+                (
+                    settings_file,
+                    expected_settings_revision,
+                    # Declared state, not effective state (#172): see persistable_settings().
+                    lambda doc: apply_settings_document(
+                        doc, self.persistable_settings(), defaults=document_defaults()
+                    ),
+                ),
+            ]
+        )
+
+        hook_error: Optional[HookError] = None
+        try:
+            self.notify_saved(users_file, "users")
+        except HookError as exc:
+            hook_error = exc
+        try:
+            self.notify_saved(settings_file, "settings")
+        except HookError as exc:
+            hook_error = hook_error or exc
         self.reload_local()
+        if hook_error is not None:
+            raise hook_error
         logger.info(f"Configuration saved to {self.config_dir}")
 
     def _save_users(self, expected_revision: Optional[str] = None) -> None:
-        """Save users to users.yaml via the shared compare-and-replace
+        """Save users.yaml alone via the shared compare-and-replace
         primitive (#229): still one shared builder, read-modify-write
         (#83), now also refusing a write against a stale
-        expected_revision instead of silently overwriting it. The runtime
-        refresh is save()'s job, once both files are written."""
-        # late import to avoid circular dependency
-        from .services.config_writer import compare_and_replace
-
+        expected_revision instead of silently overwriting it. save()
+        does not call this - it writes both files as one transaction via
+        compare_and_replace_many; this stays for a caller that
+        legitimately wants only one file written and notified (existing
+        direct-call tests in test_hooks.py)."""
         users_file = self.config_dir / "users.yaml"
         compare_and_replace(
             users_file,
@@ -503,16 +541,13 @@ class ConfigManager:
         self.notify_saved(users_file, "users")
 
     def _save_settings(self, expected_revision: Optional[str] = None) -> None:
-        """Save settings to settings.yaml via the shared compare-and-replace
-        primitive (#229). The runtime refresh is save()'s job, once both
-        files are written.
+        """Save settings.yaml alone via the shared compare-and-replace
+        primitive (#229). save() does not call this - see _save_users's
+        docstring.
 
         Read-modify-write: keys this codebase doesn't manage (jwt, session,
         logging.level, custom keys) are preserved instead of deleted (#87).
         """
-        # late import to avoid circular dependency
-        from .services.config_writer import compare_and_replace
-
         settings_file = self.config_dir / "settings.yaml"
         # Declared state, not effective state (#172): see persistable_settings().
         compare_and_replace(

@@ -2,7 +2,6 @@
 
 from .audit import AuditLog, get_audit_log
 from .auth_code import AuthCodeStore, AuthorizationCode, get_auth_code_store
-from .config_writer import ConflictError, compare_and_replace, current_revision
 from .crypto import CryptoService, get_crypto_service, init_crypto_service
 from .device_code import (
     DeviceCodeGrant,
@@ -37,7 +36,4 @@ __all__ = [
     "get_device_code_store",
     "RevocationStore",
     "get_revocation_store",
-    "ConflictError",
-    "compare_and_replace",
-    "current_revision",
 ]

@@ -1,16 +1,16 @@
 """
-Tests for issue #229 phase 2: ConfigManager.save() (and the underlying
-_save_users/_save_settings) now route through the shared
-compare_and_replace primitive (services/config_writer.py) and accept an
-optional expected_*_revision, refusing a stale write with ConflictError
-instead of silently overwriting it.
+Tests for issue #229 phase 2: ConfigManager.save() now writes users.yaml
+and settings.yaml as one transaction through compare_and_replace_many
+(config_writer.py), and accepts an optional expected_*_revision per file,
+refusing the whole save with ConflictError - before either file is
+written - instead of silently overwriting one.
 """
 
 import pytest
 import yaml
 
 from nanoidp.config import ConfigManager
-from nanoidp.services.config_writer import ConflictError, current_revision
+from nanoidp.config_writer import ConflictError, current_revision
 
 
 def _seed(tmp_path):
@@ -92,6 +92,33 @@ class TestSaveUsersConflictDetection:
         config.users["admin"].email = "changed@example.org"
         with pytest.raises(ConflictError):
             config.save(expected_users_revision=base)
+
+
+class TestSaveIsTransactionalAcrossBothFiles:
+    """Regression pin for the #229 review finding on phase 2: save() used
+    to write users.yaml, then check settings.yaml's revision - a stale
+    settings revision left a fresh users.yaml on disk with the in-memory
+    settings change silently dropped. Both revisions must be checked
+    before either file is written."""
+
+    def test_stale_settings_revision_leaves_users_untouched_too(self, tmp_path):
+        config_dir = _seed(tmp_path)
+        config = ConfigManager(str(config_dir))
+        stale_settings_revision = current_revision(config_dir / "settings.yaml")
+
+        # someone else writes settings.yaml first
+        settings_file = config_dir / "settings.yaml"
+        settings_file.write_text(settings_file.read_text() + "\nlogging:\n  verbose_logging: false\n")
+
+        config.users["admin"].email = "changed@example.org"
+        config.settings.audience = "changed"
+        with pytest.raises(ConflictError):
+            config.save(expected_settings_revision=stale_settings_revision)
+
+        on_disk_users = yaml.safe_load((config_dir / "users.yaml").read_text())
+        on_disk_settings = yaml.safe_load(settings_file.read_text())
+        assert on_disk_users["users"]["admin"].get("email", "") != "changed@example.org"
+        assert (on_disk_settings.get("oauth") or {}).get("audience") != "changed"
 
 
 class TestSaveRefreshesRuntimeOnceAfterBothFiles:
