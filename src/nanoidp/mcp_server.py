@@ -59,8 +59,9 @@ from mcp.types import (
 )
 
 from . import __version__
-from .config import ConfigManager, OAuthClient, User, init_config
+from .config import ConfigManager, OAuthClient, ReloadAfterSaveError, User, init_config
 from .config_validation import validate_config_result
+from .config_writer import ConflictError
 from .hooks import HookError
 from .models import HEX_COLOR_PATTERN, normalize_saml_attr_name
 from .routes._auth import verify_secret
@@ -876,7 +877,19 @@ _TOOLS: list[Tool] = [
     ),
     Tool(
         name="save_config",
-        description="Save current configuration to YAML files (persists changes)",
+        description=(
+            "Save current configuration to YAML files (persists changes made "
+            "via create/update tools without persist=True support). Writes "
+            "users.yaml and settings.yaml as one transaction (#229) and then "
+            "refreshes the running configuration from what was just written. "
+            "A failure response's 'kind' distinguishes three outcomes: "
+            "'conflict' (nothing was written - unused by this tool today, "
+            "reserved for a future precondition), a hook 'kind' under "
+            "hooks.strict (both files ARE written; only the mirror push "
+            "failed), or 'reload_after_save'/'lock_...' (the write succeeded "
+            "but the runtime could not adopt it - do not retry expecting a "
+            "different result, the file on disk is authoritative)."
+        ),
         input_schema={
             "type": "object",
             "properties": {},
@@ -1503,6 +1516,20 @@ def _tool_save_config(arguments: dict[str, Any], config: ConfigManager) -> dict[
     try:
         config.save()
         return {"success": True, "message": "Configuration saved to YAML files"}
+    except ConflictError as exc:
+        # Nothing was written - the precondition (unused by this tool
+        # today, but shared by the underlying save()) was stale.
+        return {"success": False, "error": exc.message, "kind": exc.kind}
+    except HookError as exc:
+        # Both files were written; only the on_config_saved mirror push
+        # failed under hooks.strict (#229).
+        return {"success": False, "error": f"Save succeeded, mirror failed: {exc.message}", "kind": exc.kind}
+    except ReloadAfterSaveError as exc:
+        # Both files were written, but the runtime could not reload what
+        # was just saved - the file on disk is authoritative; a caller
+        # should not retry save() expecting a different outcome (#229
+        # review, blocking 3).
+        return {"success": False, "error": exc.message, "kind": exc.kind}
     except Exception as e:
         return {"success": False, "error": f"Failed to save config: {str(e)}"}
 

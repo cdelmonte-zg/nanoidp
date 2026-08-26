@@ -16,7 +16,9 @@ import json
 import pytest
 import yaml
 
-from nanoidp.config import ConfigManager
+from nanoidp.config import ConfigManager, ReloadAfterSaveError
+from nanoidp.config_writer import ConflictError
+from nanoidp.hooks import HookError
 
 
 @pytest.fixture
@@ -312,6 +314,62 @@ class TestConfigToolBranches:
         payload = _payload(result)
         assert payload["success"] is False
         assert "Failed to save config" in payload["error"]
+
+    @pytest.mark.asyncio
+    async def test_save_config_conflict_is_distinguishable(
+        self, mcp_config, mcp_call_tool, monkeypatch
+    ):
+        """#229 review, blocking 3: a caller must be able to tell "nothing
+        was written" (ConflictError) apart from the other two save()
+        failure modes by more than the free-text error message."""
+
+        def _failing_save():
+            raise ConflictError("settings.yaml changed since it was last read")
+
+        monkeypatch.setattr(mcp_config, "save", _failing_save)
+        result = await mcp_call_tool("save_config", {})
+        assert result.is_error is True
+        payload = _payload(result)
+        assert payload["success"] is False
+        assert payload["kind"] == "conflict"
+
+    @pytest.mark.asyncio
+    async def test_save_config_hook_failure_is_distinguishable(
+        self, mcp_config, mcp_call_tool, monkeypatch
+    ):
+        """#229 review, blocking 3: both files ARE written when only the
+        mirror hook fails - the error text says so, and 'kind' carries
+        the hook's own kind rather than a generic one."""
+
+        def _failing_save():
+            raise HookError("on_config_saved shell hook exited 1", kind="on_config_saved")
+
+        monkeypatch.setattr(mcp_config, "save", _failing_save)
+        result = await mcp_call_tool("save_config", {})
+        assert result.is_error is True
+        payload = _payload(result)
+        assert payload["success"] is False
+        assert payload["kind"] == "on_config_saved"
+        assert "mirror failed" in payload["error"]
+
+    @pytest.mark.asyncio
+    async def test_save_config_reload_after_save_is_distinguishable(
+        self, mcp_config, mcp_call_tool, monkeypatch
+    ):
+        """#229 review, blocking 3: the write succeeded but the runtime
+        could not adopt it - a distinct 'kind' so a caller does not
+        mistake this for "nothing was written" and retry expecting a
+        different outcome."""
+
+        def _failing_save():
+            raise ReloadAfterSaveError("runtime could not reload settings.yaml")
+
+        monkeypatch.setattr(mcp_config, "save", _failing_save)
+        result = await mcp_call_tool("save_config", {})
+        assert result.is_error is True
+        payload = _payload(result)
+        assert payload["success"] is False
+        assert payload["kind"] == "reload_after_save"
 
     @pytest.mark.asyncio
     async def test_get_jwks_serves_the_active_key(self, mcp_config, mcp_call_tool):

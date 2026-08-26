@@ -25,13 +25,23 @@ from nanoidp.serialization import load_yaml_document
 def _mp_worker(file_path_str, base_revision, barrier, value, result_queue):
     """Module-level so it can be used as a multiprocessing target regardless
     of start method. Sleeps inside mutate to widen the check-to-replace
-    window (#229 review round 2's probe)."""
+    window (#229 review round 2's probe).
+
+    barrier.wait() is bounded (#229 review, non-blocking - applied): a
+    plain wait() with no timeout means a sibling that dies (or never
+    gets scheduled) before reaching the barrier leaves this process
+    blocked forever. A timeout turns that into a clean, reported failure
+    instead of a hung test process."""
 
     def mutate(doc):
         time.sleep(0.05)
         doc.update({"counter": value})
 
-    barrier.wait()
+    try:
+        barrier.wait(timeout=10)
+    except Exception:
+        result_queue.put(("barrier_timeout", value))
+        return
     try:
         compare_and_replace(Path(file_path_str), base_revision, mutate)
         result_queue.put(("ok", value))
@@ -232,12 +242,26 @@ class TestCrossProcessConflictDetection:
             ctx.Process(target=_mp_worker, args=(str(f), base, barrier, value, result_queue))
             for value in (1, 2)
         ]
-        for p in procs:
-            p.start()
-        for p in procs:
-            p.join(timeout=10)
+        try:
+            for p in procs:
+                p.start()
+            for p in procs:
+                p.join(timeout=15)
+            # A worker that didn't finish in time is a test failure, not a
+            # leaked process (#229 review, non-blocking - applied): kill
+            # and reap anything still alive before asserting.
+            for p in procs:
+                if p.is_alive():
+                    p.kill()
+                    p.join()
 
-        results = [result_queue.get(timeout=5) for _ in procs]
+            results = [result_queue.get(timeout=5) for _ in procs]
+        finally:
+            for p in procs:
+                if p.is_alive():
+                    p.kill()
+                    p.join()
+
         outcomes = [outcome for outcome, _ in results]
         assert outcomes.count("ok") == 1
         assert outcomes.count("conflict") == 1

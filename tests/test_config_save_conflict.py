@@ -9,8 +9,9 @@ written - instead of silently overwriting one.
 import pytest
 import yaml
 
-from nanoidp.config import ConfigManager
+from nanoidp.config import ConfigManager, ReloadAfterSaveError
 from nanoidp.config_writer import ConflictError, current_revision
+from nanoidp.hooks import HookError
 
 
 def _seed(tmp_path):
@@ -119,6 +120,52 @@ class TestSaveIsTransactionalAcrossBothFiles:
         on_disk_settings = yaml.safe_load(settings_file.read_text())
         assert on_disk_users["users"]["admin"].get("email", "") != "changed@example.org"
         assert (on_disk_settings.get("oauth") or {}).get("audience") != "changed"
+
+
+class TestSaveReloadFailureAfterASuccessfulWrite:
+    """Regression pin for #229 review blocking 3: reload_local() runs
+    unconditionally at the end of save(), so it can raise on its own -
+    Settings has no validate_assignment, so an in-memory
+    token_expiry_minutes = -5 (Settings declares gt=0) reaches
+    settings.yaml just fine but fails to reload back in. Two distinct
+    bugs to pin: a durable write must never be reported as if nothing
+    happened, and a reload failure must never replace a pending
+    HookError - a caller needs to tell "the write itself failed" apart
+    from "written, but the runtime couldn't adopt it" apart from
+    "written, only the mirror push failed"."""
+
+    def test_reload_failure_is_not_reported_as_a_silent_success(self, tmp_path):
+        config_dir = _seed(tmp_path)
+        config = ConfigManager(str(config_dir))
+
+        config.settings.token_expiry_minutes = -5
+
+        with pytest.raises(ReloadAfterSaveError):
+            config.save()
+
+        # the write itself landed - a durable write is not a failure to
+        # hide, and the file is authoritative even though the runtime
+        # could not adopt it
+        on_disk = yaml.safe_load((config_dir / "settings.yaml").read_text())
+        assert on_disk["oauth"]["token_expiry_minutes"] == -5
+
+    def test_reload_failure_does_not_swallow_a_pending_hook_error(self, tmp_path):
+        config_dir = _seed(tmp_path)
+        settings_file = config_dir / "settings.yaml"
+        settings_file.write_text(
+            settings_file.read_text() + "\nhooks:\n  on_config_saved: 'false'\n  strict: true\n"
+        )
+        config = ConfigManager(str(config_dir))
+
+        config.settings.token_expiry_minutes = -5
+
+        with pytest.raises(HookError):
+            config.save()
+
+        # both failures are real, but HookError - "you'll be told the
+        # mirror push failed" - keeps priority over the reload failure
+        on_disk = yaml.safe_load(settings_file.read_text())
+        assert on_disk["oauth"]["token_expiry_minutes"] == -5
 
 
 class TestSaveRefreshesRuntimeOnceAfterBothFiles:

@@ -81,6 +81,16 @@ two directory locks in opposite order:
   A Windows deployment would need ``msvcrt.locking`` behind the same
   helper; not implemented, so this is a hard requirement, not a silent
   degradation, on a platform where ``fcntl`` cannot even be imported.
+  Acquisition is a bounded, polled ``LOCK_EX | LOCK_NB`` wait, not a
+  plain blocking ``LOCK_EX`` - it is taken while holding the process-wide
+  ``_write_lock``, so an indefinite wait on one stuck peer process would
+  otherwise block every writer thread in this process, including ones
+  targeting an unrelated directory, with nothing in the logs to explain
+  why. A wait past ``_LOCK_TIMEOUT_SECONDS``, or an ``OSError`` that
+  means the filesystem does not support advisory locks at all (NFS
+  without ``lockd``, some 9p/FUSE bind mounts), raises
+  ``LockUnavailableError`` instead of hanging forever or leaking a bare
+  ``OSError`` from deep inside a write helper.
 
 Readers do not take the file lock: the atomic replace (``os.replace``)
 already guarantees a reader sees a complete file, one revision or the
@@ -118,11 +128,13 @@ not distinguish "absent" from "present but empty".
 from __future__ import annotations
 
 import contextlib
+import errno
 import fcntl
 import hashlib
 import logging
 import os
 import threading
+import time
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, Tuple
 
@@ -134,7 +146,33 @@ Revision = str
 
 _LOCK_FILENAME = ".nanoidp-write.lock"
 
+# Bounded, visible wait instead of an indefinite LOCK_EX (#229 review,
+# non-blocking - applied): _cross_process_lock is taken while holding
+# the process-global _write_lock, so an indefinite wait on one stuck
+# peer process would block every writer thread in this process, even
+# ones targeting an unrelated directory, with no log line to explain why.
+_LOCK_TIMEOUT_SECONDS = 10.0
+_LOCK_POLL_INTERVAL_SECONDS = 0.05
+
 _write_lock = threading.Lock()
+
+
+class LockUnavailableError(RuntimeError):
+    """Raised by ``_cross_process_lock`` when the advisory cross-process
+    lock could not be acquired (#229 review, non-blocking - applied):
+    either the filesystem does not support advisory locks at all (NFS
+    without ``lockd``, some 9p/FUSE bind mounts - a bare ``OSError`` from
+    ``flock()`` used to surface directly here, on a path that worked
+    before ``compare_and_replace`` existed), or the lock stayed held
+    longer than ``_LOCK_TIMEOUT_SECONDS``, typically because a peer
+    process is stuck inside its own locked section. Same shape as
+    ``ConflictError``/``HookError`` (``message``, ``kind``).
+    """
+
+    def __init__(self, message: str, kind: str = "lock_unavailable") -> None:
+        super().__init__(message)
+        self.message = message
+        self.kind = kind
 
 
 @contextlib.contextmanager
@@ -146,11 +184,44 @@ def _cross_process_lock(directory: Path) -> Iterator[None]:
     the caller's section, released in ``finally`` even if the caller
     raises (a stale lock file left over from a partial write is harmless -
     it is never read for content, only locked).
+
+    Acquisition polls ``LOCK_EX | LOCK_NB`` rather than blocking on a
+    plain ``LOCK_EX``, so a stuck peer is a bounded, logged wait
+    (``LockUnavailableError`` after ``_LOCK_TIMEOUT_SECONDS``) instead of
+    an indefinite hang with no explanation. An ``OSError`` that is not
+    "someone else holds it" (``EACCES``/``EAGAIN``) means the filesystem
+    itself does not support advisory locks here, and is reported as
+    ``LockUnavailableError`` immediately rather than as a bare
+    ``OSError`` from deep inside a write helper.
     """
     lock_path = directory / _LOCK_FILENAME
     fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o644)
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        deadline = time.monotonic() + _LOCK_TIMEOUT_SECONDS
+        warned = False
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError as exc:
+                if exc.errno not in (errno.EACCES, errno.EAGAIN):
+                    raise LockUnavailableError(
+                        f"Advisory locking is not supported on {lock_path} "
+                        f"({exc}) - {directory} may be on a filesystem "
+                        "without advisory-lock support (e.g. NFS without lockd)",
+                        kind="lock_unsupported",
+                    ) from exc
+                if time.monotonic() >= deadline:
+                    raise LockUnavailableError(
+                        f"Timed out after {_LOCK_TIMEOUT_SECONDS}s waiting for "
+                        f"the write lock on {directory} - another process may "
+                        "be stuck holding it",
+                        kind="lock_timeout",
+                    ) from exc
+                if not warned:
+                    logger.warning(f"Waiting for the write lock on {directory}...")
+                    warned = True
+                time.sleep(_LOCK_POLL_INTERVAL_SECONDS)
         try:
             yield
         finally:

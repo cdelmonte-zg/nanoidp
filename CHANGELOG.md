@@ -68,6 +68,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   its pre-save view of anything the save's read-modify-write cycle picked
   up from disk: it now sees the refreshed state too. No caller passes a
   precondition revision yet; that lands with the surface that needs it.
+  The runtime refresh can itself fail (an in-memory value that bypassed
+  field validation, since `Settings` has no `validate_assignment`, can
+  reach the file and then fail to parse back in) - `save()` now tells
+  that apart from every other outcome: a new `ReloadAfterSaveError` means
+  both files ARE written but the runtime could not adopt them, and it
+  never replaces or hides a pending `hooks.strict` failure, which keeps
+  priority. `save_config`'s MCP response carries a `kind` for all three
+  failure shapes (`conflict`, the hook's own kind, or
+  `reload_after_save`) so a caller can tell them apart without parsing
+  the error text. The advisory cross-process lock now fails as a named
+  `LockUnavailableError` - instead of a bare `OSError` or an indefinite
+  hang - when the lock file's filesystem does not support advisory locks
+  or a peer process holds it for more than 10 seconds.
 
 ### Security
 - **Opt-in `management_secret` mutation gate** (#163): one shared secret that
