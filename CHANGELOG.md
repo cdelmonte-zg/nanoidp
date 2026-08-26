@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **`client_credentials` no longer returns a refresh token** (#239). RFC
+  6749 §4.4.3: "A refresh token SHOULD NOT be included" - the client
+  authenticates itself on every request, and the token handed out was a
+  second, 7-day credential bound to the default user (or the synthetic
+  service account) that the grant never authenticated, spendable at
+  `grant_type=refresh_token` for user-context tokens. The response now
+  has no `refresh_token` key at all; every other grant is unchanged. A
+  client that refreshed a client-credentials token must request a new
+  one with its credentials, which is what the RFC asks of it.
 - **/saml/sso rejects a request with nowhere to send the assertion** (#227):
   an AuthnRequest without `AssertionConsumerServiceURL` against a config
   whose `saml.default_acs_url` is blank now gets a 400 naming both missing

@@ -365,11 +365,20 @@ class NanoIDPTestAgent:
                 if jwt and token:
                     decoded = jwt.decode(token, options={"verify_signature": False})
                     sub = decoded.get("sub", "?")
+                # RFC 6749 §4.4.3: no refresh token for this grant (#239).
+                if "refresh_token" in data:
+                    return self._add_result(
+                        "Client Credentials",
+                        TestCategory.OAUTH,
+                        False,
+                        "Response carries a refresh_token (RFC 6749 §4.4.3: SHOULD NOT)",
+                        {"expires_in": expires, "subject": sub},
+                    )
                 return self._add_result(
                     "Client Credentials",
                     TestCategory.OAUTH,
                     True,
-                    f"Token OK, sub={sub}, expires={expires}s",
+                    f"Token OK, sub={sub}, expires={expires}s, no refresh_token",
                     {"expires_in": expires, "subject": sub}
                 )
             error = response.json().get("error", "unknown")

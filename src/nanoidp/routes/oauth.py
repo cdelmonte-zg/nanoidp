@@ -528,6 +528,9 @@ class _GrantOutcome:
     # Claim names requested via the OIDC `claims` parameter (§5.5, #104).
     id_token_claims: Optional[list] = None
     userinfo_claims: Optional[list] = None
+    # False for grants with no end user: client_credentials must not hand
+    # out a refresh token (RFC 6749 §4.4.3, #239).
+    issue_refresh_token: bool = True
 
 
 @dataclass
@@ -1025,7 +1028,17 @@ def _grant_client_credentials(ctx: _GrantContext) -> GrantResult:
             roles=["user"],
             tenant="default",
         )
-    return _GrantOutcome(user=user, username=user.username, scope=requested_scope)
+    # RFC 6749 §4.4.3: "A refresh token SHOULD NOT be included." The client
+    # authenticates itself on every request; a refresh token here would be a
+    # second, 7-day credential bound to the default user (or the synthetic
+    # service account) that the grant never authenticated, spendable at
+    # grant_type=refresh_token to obtain user-context tokens (#239).
+    return _GrantOutcome(
+        user=user,
+        username=user.username,
+        scope=requested_scope,
+        issue_refresh_token=False,
+    )
 
 
 def _grant_device_code(ctx: _GrantContext) -> GrantResult:
@@ -1270,6 +1283,7 @@ def token() -> ResponseReturnValue:
         id_token_claims=result.id_token_claims,
         userinfo_claims=result.userinfo_claims,
         issuer=effective_issuer(config.settings),
+        issue_refresh_token=result.issue_refresh_token,
     )
 
     # Audit log

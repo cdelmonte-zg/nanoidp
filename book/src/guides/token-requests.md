@@ -26,6 +26,11 @@ curl -X POST 'http://localhost:8000/token' \
   -d 'grant_type=client_credentials'
 ```
 
+The response carries no `refresh_token`: the client authenticates itself
+on every request, so there is nothing a refresh token could stand in for
+(RFC 6749 §4.4.3, "A refresh token SHOULD NOT be included"). Request a
+new access token the same way when the current one expires.
+
 ## Refresh token
 
 ```bash
