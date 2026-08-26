@@ -13,6 +13,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   whose `saml.default_acs_url` is blank now gets a 400 naming both missing
   sources (with a failed `saml_request` audit entry), instead of rendering
   an auto-submit form posting to `action=""` - the IdP's own page.
+- **`client_credentials` no longer 500s when `default_user` names a missing
+  user** (#241): the synthetic `service-account` fallback was built with an
+  empty password, which `User` rejects since #158 made `password` optional
+  with `min_length=1`. The fallback now carries no password, as it never
+  authenticates with one, and the grant answers with `sub=service-account`
+  again.
 - **The dashboard's Logout button logs the UI session out again** (#221).
   The UI logout route registered the same `/logout` rule as the OIDC
   end-session endpoint and always lost: clicking Logout landed on the
