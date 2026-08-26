@@ -1016,10 +1016,12 @@ def _grant_client_credentials(ctx: _GrantContext) -> GrantResult:
     default_username = ctx.config.default_user
     user = ctx.config.get_user(default_username)
     if not user:
-        # Create a minimal service account user
+        # Create a minimal service account user. No password: it never
+        # authenticates with one, and User.password rejects "" since #158
+        # (min_length=1) - the old empty string made this path a 500 (#241).
         user = User(
             username="service-account",
-            password="",
+            password=None,
             roles=["user"],
             tenant="default",
         )
