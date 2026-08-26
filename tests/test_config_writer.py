@@ -226,15 +226,23 @@ class TestCrossProcessConflictDetection:
     revision check before either has written - the reviewer's
     multiprocessing probe (Barrier + a sleep inside mutate to widen the
     check-to-replace window) lost an update 10/10 trials without a
-    cross-process lock. fcntl.flock on a lock file in the config directory
-    (_cross_process_lock) closes it."""
+    cross-process lock. The advisory lock on a file in the config
+    directory (_cross_process_lock) closes it.
+
+    "spawn", not "fork" (#229 review round 8): fork does not exist on
+    Windows at all, and CPython warns about it on 3.12+ when the parent
+    process is multi-threaded, which pytest often is. spawn re-imports
+    _mp_worker in the child by module + qualname rather than inheriting
+    the parent's memory, which is why that worker is a plain top-level
+    function taking only picklable arguments.
+    """
 
     def test_two_processes_racing_the_same_file_one_wins_one_conflicts(self, tmp_path):
         f = tmp_path / "settings.yaml"
         f.write_text("counter: 0\n")
         base = current_revision(f)
 
-        ctx = multiprocessing.get_context("fork")
+        ctx = multiprocessing.get_context("spawn")
         barrier = ctx.Barrier(2)
         result_queue = ctx.Queue()
 
@@ -271,6 +279,22 @@ class TestCrossProcessConflictDetection:
 
 
 class TestCompareAndReplaceMany:
+    def test_repeated_path_raises_value_error(self, tmp_path):
+        """#229 review round 8, non-blocking: two items on the same path
+        would each mutate their own independently loaded copy of that
+        document, and whichever writes second silently discards the
+        first's mutation - refuse the call outright instead."""
+        a = tmp_path / "a.yaml"
+        a.write_text("x: 1\n")
+
+        with pytest.raises(ValueError, match="repeated path"):
+            compare_and_replace_many(
+                [
+                    (a, None, lambda doc: doc.update({"x": 2})),
+                    (a, None, lambda doc: doc.update({"x": 3})),
+                ]
+            )
+
     def test_all_items_written_when_every_revision_matches(self, tmp_path):
         a = tmp_path / "a.yaml"
         b = tmp_path / "b.yaml"

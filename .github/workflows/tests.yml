@@ -50,6 +50,35 @@ jobs:
           # measured), 75 after #72 covered the wizard (78% measured).
           pytest tests/ --cov=nanoidp --cov-report=term-missing --cov-fail-under=75
 
+  windows-smoke:
+    # A top-level unconditional `import fcntl` in config_writer.py once
+    # broke `import nanoidp.config`/`nanoidp.app` outright on Windows
+    # (#229 review round 8) - every other job here runs on ubuntu-latest
+    # and never caught it, even though pyproject.toml declares
+    # `Operating System :: OS Independent`. This is the minimum guard:
+    # import the package, then run the lock backend's own test suite
+    # (it exercises the fcntl/msvcrt dispatch this regression was in).
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Import the package
+        run: python -c "import nanoidp.app"
+
+      - name: Run the config_writer test suite
+        run: pytest tests/test_config_writer.py -v --tb=short
+
   license-check:
     runs-on: ubuntu-latest
 

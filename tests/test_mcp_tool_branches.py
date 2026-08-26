@@ -17,7 +17,7 @@ import pytest
 import yaml
 
 from nanoidp.config import ConfigManager, ReloadAfterSaveError
-from nanoidp.config_writer import ConflictError
+from nanoidp.config_writer import ConflictError, LockUnavailableError
 from nanoidp.hooks import HookError
 
 
@@ -370,6 +370,29 @@ class TestConfigToolBranches:
         payload = _payload(result)
         assert payload["success"] is False
         assert payload["kind"] == "reload_after_save"
+
+    @pytest.mark.asyncio
+    async def test_save_config_lock_unavailable_is_distinguishable(
+        self, mcp_config, mcp_call_tool, monkeypatch
+    ):
+        """#229 review, blocking 4: LockUnavailableError is raised before
+        compare_and_replace_many touches any file - it belongs with
+        ConflictError as "nothing was written", not with
+        ReloadAfterSaveError's "already written" - and the handler must
+        actually catch it rather than falling through to the generic
+        branch, which would drop 'kind' entirely."""
+
+        def _failing_save():
+            raise LockUnavailableError(
+                "Timed out after 10.0s waiting for the write lock", kind="lock_timeout"
+            )
+
+        monkeypatch.setattr(mcp_config, "save", _failing_save)
+        result = await mcp_call_tool("save_config", {})
+        assert result.is_error is True
+        payload = _payload(result)
+        assert payload["success"] is False
+        assert payload["kind"] == "lock_timeout"
 
     @pytest.mark.asyncio
     async def test_get_jwks_serves_the_active_key(self, mcp_config, mcp_call_tool):

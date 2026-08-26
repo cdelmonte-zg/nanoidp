@@ -53,7 +53,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - **`ConfigManager.save()` writes `users.yaml` and `settings.yaml` as one
-  transaction** (#229): both files' preconditions (an optional
+  coordinated, conflict-checked save** (#229): both files' preconditions (an optional
   content-hash revision per file, for a future caller that supplies one)
   are checked before either file is written, both are then written, both
   fire their own `on_config_saved` hook, and the running configuration is

@@ -78,9 +78,10 @@ runs before any mutation. `on_config_saved` runs after the atomic write, so
 the local save is always committed; under `strict` the web UI, `/api` and
 MCP callers surface the failure so the operator learns the mirror did not
 happen. `ConfigManager.save()` writes `users.yaml` and `settings.yaml` as
-one transaction (#229): both files are written, both hooks then run, and
-the runtime is refreshed from disk once before a `strict` failure is
-raised - a failing hook on one file does not leave the other unwritten.
+one coordinated, conflict-checked save (#229): both files are written,
+both hooks then run, and the runtime is refreshed from disk once before a
+`strict` failure is raised - a failing hook on one file does not leave
+the other unwritten.
 The web UI's settings page is a different, older path (`YamlWriter`):
 it still writes its sections one atomic write at a time, so under
 `strict` a failing hook there leaves the steps after it unsaved (the

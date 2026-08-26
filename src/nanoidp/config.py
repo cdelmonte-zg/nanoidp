@@ -335,8 +335,8 @@ class ConfigManager:
         and not every caller does it the same way (#229 review: this
         needs to say which). save() notifies both of its files,
         collecting either failure, then refreshes the runtime once and
-        raises (both files are already written as one transaction by
-        the time either hook runs, and reloading after each file
+        raises (both files are already written as one coordinated save
+        by the time either hook runs, and reloading after each file
         individually would let the users.yaml reload discard the
         in-memory settings.yaml change save() just persisted) - this is
         save()'s write -> notify -> reload_local -> raise contract, and
@@ -495,7 +495,10 @@ class ConfigManager:
         expected_users_revision: Optional[str] = None,
         expected_settings_revision: Optional[str] = None,
     ) -> None:
-        """Save current configuration to YAML files, as one transaction (#229).
+        """Save current configuration to YAML files, as one coordinated,
+        conflict-checked save (#229) - not a filesystem transaction: see
+        compare_and_replace_many's docstring for exactly what is and
+        isn't atomic across the two files.
 
         Both files' expected_*_revision (when given) are checked against
         their on-disk revision before either file is written -
@@ -596,8 +599,8 @@ class ConfigManager:
         primitive (#229): still one shared builder, read-modify-write
         (#83), now also refusing a write against a stale
         expected_revision instead of silently overwriting it. save()
-        does not call this - it writes both files as one transaction via
-        compare_and_replace_many; this stays for a caller that
+        does not call this - it writes both files as one coordinated
+        save via compare_and_replace_many; this stays for a caller that
         legitimately wants only one file written and notified (existing
         direct-call tests in test_hooks.py)."""
         users_file = self.config_dir / "users.yaml"

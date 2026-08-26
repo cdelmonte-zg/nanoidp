@@ -36,12 +36,15 @@ atomically, exactly like the two write paths already do today.
 once: every ``expected_revision`` is checked before any file is written, so
 a conflict on the second file never leaves the first one already written.
 ``ConfigManager.save()`` needs this because it writes ``users.yaml`` and
-``settings.yaml`` as one logical save (#229 review on phase 2, reproduced:
-a stale ``settings.yaml`` revision left a fresh ``users.yaml`` on disk and
-the in-memory settings change silently unsaved) - the same directory-wide
-transactional boundary ``ConfigManager._load_config`` already gives reads
-(#204), now for this write. ``compare_and_replace`` is the ``len(items) ==
-1`` case of the same function.
+``settings.yaml`` as one coordinated save (#229 review on phase 2,
+reproduced: a stale ``settings.yaml`` revision left a fresh ``users.yaml``
+on disk and the in-memory settings change silently unsaved). This is a
+write-side guarantee only, not the same boundary ``ConfigManager._load_config``
+gives reads (#204): ``_stage_directory`` opens both files unlocked, so a
+concurrent save() in another process can still pair an old settings.yaml
+with a new users.yaml on the read side (#229 review round 4).
+``compare_and_replace`` is the ``len(items) == 1`` case of the same
+function.
 
 ``expected_revision=None`` means unconditional - today's last-write-wins -
 so a caller that hasn't been migrated to pass a revision yet keeps its
@@ -64,7 +67,7 @@ two directory locks in opposite order:
 
 - ``_write_lock``, a ``threading.Lock`` (same pattern as ``config.py``'s
   ``_config_lock``), serializing threads within this process.
-- an advisory ``fcntl.flock`` on a lock file in the config directory
+- an advisory lock on a lock file in the config directory
   (``.nanoidp-write.lock``), serializing separate OS processes - the
   actual case #229 was opened for (a UI worker and an MCP process, or
   two MCP processes, sharing one config directory). The thread lock
@@ -72,17 +75,18 @@ two directory locks in opposite order:
   ``_write_lock`` and race exactly as before without the file lock
   (#229 review round 2, reproduced with ``multiprocessing`` and a
   ``Barrier`` - both writers saw "ok", one update silently lost, 10/10
-  trials). Both locks are kept, not just the file lock, because
-  ``fcntl.flock`` is scoped to the open file description: a second
-  ``flock()`` from the same process is not guaranteed to exclude the
-  first the way it does across processes, so cross-thread safety within
-  one process still needs the plain thread lock. POSIX only
-  (``fcntl``) - the platforms this project runs on in CI (Linux/macOS).
-  A Windows deployment would need ``msvcrt.locking`` behind the same
-  helper; not implemented, so this is a hard requirement, not a silent
-  degradation, on a platform where ``fcntl`` cannot even be imported.
-  Acquisition is a bounded, polled ``LOCK_EX | LOCK_NB`` wait, not a
-  plain blocking ``LOCK_EX`` - it is taken while holding the process-wide
+  trials). Both locks are kept, not just the file lock, because a
+  second lock acquisition from the same process is not guaranteed to
+  exclude the first the way it does across processes (true of both
+  ``fcntl.flock``, scoped to the open file description, and
+  ``msvcrt.locking``), so cross-thread safety within one process still
+  needs the plain thread lock. The backend is ``fcntl.flock`` on POSIX
+  and ``msvcrt.locking`` on Windows (``_try_lock_exclusive``/``_unlock``
+  below dispatch by ``sys.platform``, #229 review round 8 - a top-level
+  unconditional ``import fcntl`` used to break ``import nanoidp.config``
+  outright on Windows, a platform ``pyproject.toml`` declares as
+  supported). Acquisition is a bounded, polled non-blocking wait, not a
+  plain blocking acquisition - it is taken while holding the process-wide
   ``_write_lock``, so an indefinite wait on one stuck peer process would
   otherwise block every writer thread in this process, including ones
   targeting an unrelated directory, with nothing in the logs to explain
@@ -129,16 +133,27 @@ from __future__ import annotations
 
 import contextlib
 import errno
-import fcntl
 import hashlib
 import logging
 import os
+import sys
 import threading
 import time
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, Tuple
 
 from .serialization import atomic_write_yaml, load_yaml_document
+
+# Platform-specific advisory-lock backend (#229 review round 8): fcntl
+# does not exist on Windows at all - importing it unconditionally made
+# `import nanoidp.config` fail outright on a platform pyproject.toml
+# declares as supported. msvcrt.locking is Windows' analogue, dispatched
+# by _try_lock_exclusive/_unlock below; both platforms share the same
+# bounded-poll retry loop in _cross_process_lock.
+if sys.platform == "win32":
+    import msvcrt
+else:
+    import fcntl
 
 logger = logging.getLogger(__name__)
 
@@ -175,24 +190,66 @@ class LockUnavailableError(RuntimeError):
         self.kind = kind
 
 
+def _try_lock_exclusive(fd: int) -> bool:
+    """Attempt to acquire the advisory lock on ``fd`` without blocking.
+
+    Dispatches by platform (#229 review round 8): ``fcntl.flock`` on
+    POSIX, ``msvcrt.locking`` on Windows - the latter locks a byte range
+    at the file's current position rather than the whole file, so every
+    caller here always operates from position 0 on a lock file that is
+    never otherwise written to, which is equivalent in practice. Returns
+    ``True`` if acquired, ``False`` if another holder has it right now
+    (POSIX: ``EACCES``/``EAGAIN``; Windows: ``EACCES`` is what
+    ``msvcrt.locking`` raises for "would block" too, plus ``EDEADLK`` for
+    the case ``msvcrt`` detects as a self-deadlock). Any other
+    ``OSError`` - the filesystem does not support advisory locks at all -
+    propagates to the caller, which turns it into
+    ``LockUnavailableError(kind="lock_unsupported")``.
+    """
+    if sys.platform == "win32":
+        try:
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+            return True
+        except OSError as exc:
+            if exc.errno in (errno.EACCES, errno.EDEADLK):
+                return False
+            raise
+    else:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except OSError as exc:
+            if exc.errno in (errno.EACCES, errno.EAGAIN):
+                return False
+            raise
+
+
+def _unlock(fd: int) -> None:
+    """Release the lock ``_try_lock_exclusive`` acquired on ``fd``."""
+    if sys.platform == "win32":
+        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+    else:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+
+
 @contextlib.contextmanager
 def _cross_process_lock(directory: Path) -> Iterator[None]:
     """Advisory, cross-process exclusive lock for one config directory.
 
     One lock file per directory (not per target file, same reasoning as
-    ``_write_lock``), opened fresh and ``flock``-ed for the duration of
-    the caller's section, released in ``finally`` even if the caller
-    raises (a stale lock file left over from a partial write is harmless -
-    it is never read for content, only locked).
+    ``_write_lock``), opened fresh and locked for the duration of the
+    caller's section, released in ``finally`` even if the caller raises
+    (a stale lock file left over from a partial write is harmless - it
+    is never read for content, only locked).
 
-    Acquisition polls ``LOCK_EX | LOCK_NB`` rather than blocking on a
-    plain ``LOCK_EX``, so a stuck peer is a bounded, logged wait
+    Acquisition polls ``_try_lock_exclusive`` rather than blocking
+    indefinitely, so a stuck peer is a bounded, logged wait
     (``LockUnavailableError`` after ``_LOCK_TIMEOUT_SECONDS``) instead of
-    an indefinite hang with no explanation. An ``OSError`` that is not
-    "someone else holds it" (``EACCES``/``EAGAIN``) means the filesystem
-    itself does not support advisory locks here, and is reported as
-    ``LockUnavailableError`` immediately rather than as a bare
-    ``OSError`` from deep inside a write helper.
+    an indefinite hang with no explanation. An ``OSError`` that isn't
+    "someone else holds it" means the filesystem itself does not support
+    advisory locks here, and is reported as ``LockUnavailableError``
+    immediately rather than as a bare ``OSError`` from deep inside a
+    write helper.
     """
     lock_path = directory / _LOCK_FILENAME
     fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o644)
@@ -201,31 +258,30 @@ def _cross_process_lock(directory: Path) -> Iterator[None]:
         warned = False
         while True:
             try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                break
+                if _try_lock_exclusive(fd):
+                    break
             except OSError as exc:
-                if exc.errno not in (errno.EACCES, errno.EAGAIN):
-                    raise LockUnavailableError(
-                        f"Advisory locking is not supported on {lock_path} "
-                        f"({exc}) - {directory} may be on a filesystem "
-                        "without advisory-lock support (e.g. NFS without lockd)",
-                        kind="lock_unsupported",
-                    ) from exc
-                if time.monotonic() >= deadline:
-                    raise LockUnavailableError(
-                        f"Timed out after {_LOCK_TIMEOUT_SECONDS}s waiting for "
-                        f"the write lock on {directory} - another process may "
-                        "be stuck holding it",
-                        kind="lock_timeout",
-                    ) from exc
-                if not warned:
-                    logger.warning(f"Waiting for the write lock on {directory}...")
-                    warned = True
-                time.sleep(_LOCK_POLL_INTERVAL_SECONDS)
+                raise LockUnavailableError(
+                    f"Advisory locking is not supported on {lock_path} "
+                    f"({exc}) - {directory} may be on a filesystem "
+                    "without advisory-lock support (e.g. NFS without lockd)",
+                    kind="lock_unsupported",
+                ) from exc
+            if time.monotonic() >= deadline:
+                raise LockUnavailableError(
+                    f"Timed out after {_LOCK_TIMEOUT_SECONDS}s waiting for "
+                    f"the write lock on {directory} - another process may "
+                    "be stuck holding it",
+                    kind="lock_timeout",
+                )
+            if not warned:
+                logger.warning(f"Waiting for the write lock on {directory}...")
+                warned = True
+            time.sleep(_LOCK_POLL_INTERVAL_SECONDS)
         try:
             yield
         finally:
-            fcntl.flock(fd, fcntl.LOCK_UN)
+            _unlock(fd)
     finally:
         os.close(fd)
 
@@ -281,7 +337,8 @@ def compare_and_replace(
 
 
 def compare_and_replace_many(items: Sequence[WriteItem]) -> List[Revision]:
-    """``compare_and_replace`` across several files as one transaction.
+    """``compare_and_replace`` across several files as one coordinated,
+    conflict-checked batch - not a filesystem transaction (see below).
 
     Every item's ``expected_revision`` is checked - against every file's
     on-disk revision - before any file is loaded, and every ``mutate``
@@ -291,12 +348,22 @@ def compare_and_replace_many(items: Sequence[WriteItem]) -> List[Revision]:
     call never leaves a partial write within one file. Only an I/O
     failure on an individual ``atomic_write_yaml`` call can still leave
     an earlier item in the batch written while a later one is not - there
-    is no single filesystem transaction spanning multiple files, just
+    is no single filesystem operation spanning multiple files, just
     three passes ordered to keep every failure mode except that one from
     reaching disk at all. Items are otherwise independent: different
     files, different ``mutate`` callables, processed in the order given.
     Returns each item's new revision, in that same order.
+
+    Raises ``ValueError`` if ``items`` repeats a path: two items on the
+    same file would each load and mutate their own independent copy of
+    that document, and whichever writes second would silently discard
+    the first's mutation - there is no caller of this today, but nothing
+    else here would catch the mistake.
     """
+    paths = [file_path for file_path, _, _ in items]
+    if len(paths) != len(set(paths)):
+        raise ValueError(f"compare_and_replace_many got a repeated path: {paths}")
+
     directories = sorted({file_path.parent for file_path, _, _ in items}, key=str)
     with _write_lock, contextlib.ExitStack() as stack:
         for directory in directories:
