@@ -114,6 +114,16 @@ pytest
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the development setup, the
 end-to-end test agent, code quality tooling, and the release process.
 
+## Adopters
+
+Organizations using NanoIDP in their development or testing workflows:
+
+- [World Direct](https://www.world-direct.at)
+
+Listing means NanoIDP is in use there. It does not imply sponsorship or
+endorsement. If you use it and would like to be listed, open an issue or a
+pull request against this section.
+
 ## License
 
 MIT License. See [LICENSE](LICENSE) for details.
