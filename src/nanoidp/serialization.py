@@ -31,6 +31,7 @@ import os
 import re
 import shutil
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Mapping, Optional
@@ -540,6 +541,35 @@ def apply_users_document(
     return document
 
 
+_REPLACE_RETRY_ATTEMPTS = 10
+_REPLACE_RETRY_DELAY_SECONDS = 0.01
+
+
+def _replace_with_retry(temp_path: str, file_path: Path) -> None:
+    """``os.replace()`` with a few bounded retries for a transient
+    ``PermissionError`` (#229 review: Windows CI caught this - unlike
+    POSIX ``rename(2)``, Windows can refuse to replace a file that
+    another handle currently has open even just for reading, since
+    Python's ``open()`` does not request ``FILE_SHARE_DELETE``; a
+    concurrent reader (``load_yaml_document``) can hold the target open
+    for the brief moment a write lands. The window is normally a
+    fraction of a millisecond - a reader opens, parses and closes - so a
+    handful of short retries clears it without meaningfully slowing
+    down the common case, and does nothing extra on POSIX beyond one
+    successful attempt. A ``PermissionError`` that never clears (a
+    genuine permissions problem, not a transient sharing violation)
+    still raises after the last attempt.
+    """
+    for attempt in range(_REPLACE_RETRY_ATTEMPTS):
+        try:
+            os.replace(temp_path, file_path)
+            return
+        except PermissionError:
+            if attempt == _REPLACE_RETRY_ATTEMPTS - 1:
+                raise
+            time.sleep(_REPLACE_RETRY_DELAY_SECONDS)
+
+
 def atomic_write_yaml(file_path: Path, data: Dict[str, Any]) -> None:
     """Atomically write a YAML document, with a .bak of the previous version.
 
@@ -558,7 +588,7 @@ def atomic_write_yaml(file_path: Path, data: Dict[str, Any]) -> None:
     try:
         with os.fdopen(fd, "w") as f:
             _new_yaml_rt().dump(data, f)
-        os.replace(temp_path, file_path)
+        _replace_with_retry(temp_path, file_path)
         logger.info(f"Successfully wrote {file_path}")
     except Exception as e:
         if os.path.exists(temp_path):
