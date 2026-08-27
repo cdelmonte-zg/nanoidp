@@ -512,7 +512,7 @@ def _sso_authenticate_inline(
         saml_request=saml_request_b64,
         relay_state=relay_state,
         original_verb=request.method,
-        users=list(config.users.keys()),
+        users=config.persona_picker_entries(),
         persona_mode=persona_mode,
     )
 

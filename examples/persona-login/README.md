@@ -17,7 +17,9 @@ python -m nanoidp --debug
 
 Instead of a username/password form, you'll see a list of the configured
 users (`admin`, `alice`, `bob`) - click one to sign in immediately, no
-password needed.
+password needed. `admin` and `alice` show a short description under their
+name (display-only, never a claim); `bob` has none, showing the picker
+handles a mix of described and undescribed users.
 
 ## What `login.mode: persona` changes
 
@@ -28,6 +30,9 @@ password needed.
 - A user that still has a password (`admin` here) remains selectable in the
   picker too - persona mode changes the login *UI*, not what an individual
   user is configured with.
+- An optional `description` per user renders as a small note next to their
+  name in the picker (max 200 chars, plain text, never exported as a claim,
+  SAML attribute, or authority).
 
 ## What's unaffected
 

@@ -8,7 +8,7 @@ import logging
 import os
 import threading
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
@@ -351,6 +351,12 @@ class ConfigManager:
     def get_user(self, username: str) -> Optional[User]:
         """Get a user by username."""
         return self.users.get(username)
+
+    def persona_picker_entries(self) -> List[Tuple[str, str]]:
+        """(username, description) pairs for the persona login picker,
+        shared by all four interactive surfaces (UI, OAuth, SAML, device) so
+        they can never drift on what's shown next to a user's name."""
+        return [(username, user.description) for username, user in self.users.items()]
 
     def authenticate(self, username: str, password: str) -> Optional[User]:
         """Authenticate a user. Supports bcrypt when password_hashing is enabled.

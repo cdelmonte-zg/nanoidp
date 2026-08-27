@@ -77,7 +77,7 @@ def login() -> ResponseReturnValue:
         return render_template(
             "login.html",
             error=error,
-            users=list(config.users.keys()),
+            users=config.persona_picker_entries(),
             persona_mode=persona_mode,
             management_secret_configured=bool(config.settings.management_secret),
         )

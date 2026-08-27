@@ -56,17 +56,17 @@ This is therefore a cross-surface schema + rendering change, not just a template
   - `tests/test_config.py`: verify the REST API exposes `description` on both `list_users`/`get_user` without leaking into `authorities` (`TestUserRestApiDescription`).
   - ~~`tests/test_persona_login.py`: verify a persona user with a description still authenticates normally and does not gain claim/export behavior.~~ Not needed here — auth semantics are untouched by this field and already covered by stage 1/2 persona tests; this stage only adds serialization surface.
 
-### 4. Persona picker rendering across all interactive surfaces
-- [ ] `src/nanoidp/templates/_macros.html`: centralize the persona picker body so it renders the username and text description in the `small text-muted` style.
-- [ ] `src/nanoidp/routes/ui.py`: pass user objects or `(username, description)` data into the picker for the nanoidp login form.
-- [ ] `src/nanoidp/routes/oauth.py`: apply the same picker rendering on the OIDC `/authorize` inline login path.
-- [ ] `src/nanoidp/routes/saml.py`: apply the same picker rendering on the SAML inline login path.
-- [ ] Device flow surface: render the same description-rich choice in the device authorization path.
-- [ ] Tests:
-  - `tests/test_persona_login.py`: verifies the description is visible in the nanoidp login page.
-  - `tests/test_persona_login_flows.py`: verifies the description appears in the OIDC authorize flow and device flow surfaces.
-  - `tests/test_saml.py` and/or `tests/test_saml_signed_authnrequests.py`: verifies SAML persona login still renders correctly with the display text and does not export the field.
-  - `tests/test_device_flow_complete.py` or equivalent device-flow tests: verifies the persona description is available in the device picker and does not change authorization semantics.
+### 4. Persona picker rendering across all interactive surfaces (completed)
+- [x] `src/nanoidp/config.py`: add `ConfigManager.persona_picker_entries()` returning `(username, description)` pairs, the single source all four surfaces read from.
+- [x] `src/nanoidp/templates/_macros.html`: centralize the persona picker body so it renders the username and text description in the `small text-muted` style.
+- [x] `src/nanoidp/templates/login.html`: fix the password-mode "quick fill username" block, which also consumed the old plain-username list shape.
+- [x] `src/nanoidp/routes/ui.py`: pass `(username, description)` data into the picker for the nanoidp login form.
+- [x] `src/nanoidp/routes/oauth.py`: apply the same picker rendering on the OIDC `/authorize` inline login path and the device flow's `/device` page.
+- [x] `src/nanoidp/routes/saml.py`: apply the same picker rendering on the SAML inline login path.
+- [x] Tests:
+  - `tests/test_persona_login.py`: description renders on `/login`, and is omitted cleanly when blank (`TestPersonaLoginPage`).
+  - `tests/test_persona_login_flows.py`: description renders on `/authorize`, SAML `/saml/sso`, and device `/device` pickers.
+  - ~~`tests/test_saml.py` / `tests/test_saml_signed_authnrequests.py` / `tests/test_device_flow_complete.py`: dedicated new tests.~~ Not needed — ran as regression only (all passing unchanged); the SAML assertion/device-code paths never touch `description`, so there's no new behavior there to test.
 
 ### 5. Server-side validation + no-export guarantee
 - [ ] Add a 200-character validation check in the server-side user creation/edit path so values over the limit are rejected.

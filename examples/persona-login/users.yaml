@@ -6,11 +6,16 @@
 # via password-mode login or the OAuth password grant. 'admin' still has a
 # password and remains selectable in the persona picker too - persona mode
 # changes the login UI, not what an individual user is configured with.
+#
+# 'description' is a display-only note shown next to the username in the
+# persona picker (never a claim/attribute/export). 'bob' has none, to show
+# the picker renders fine with a mix of described and undescribed users.
 
 users:
   admin:
     password: 'admin'
     email: admin@example.org
+    description: "Full administrator - all roles and entitlements"
     identity_class: INTERNAL
     entitlements:
     - ADMIN_ACCESS
@@ -19,6 +24,7 @@ users:
     - USER
   alice:
     email: alice@example.org
+    description: "Standard internal user, basic access only"
     identity_class: INTERNAL
     entitlements:
     - BASIC_ACCESS

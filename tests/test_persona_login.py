@@ -65,6 +65,32 @@ class TestPersonaLoginPage:
         assert b'name="password"' not in response.data
         assert b"admin" in response.data
 
+    def test_login_page_shows_user_description(self, app, client):
+        _enable_persona_mode(app)
+        with app.app_context():
+            config = get_config()
+            config.users["finance-fred"] = User(
+                username="finance-fred", description="Finance approver persona"
+            )
+
+        response = client.get("/login")
+
+        assert response.status_code == 200
+        assert b"Finance approver persona" in response.data
+
+    def test_login_page_omits_description_block_when_blank(self, app, client):
+        """A user with no description doesn't leave an empty <small> tag."""
+        _enable_persona_mode(app)
+
+        response = client.get("/login")
+
+        assert response.status_code == 200
+        # admin has no description in the test fixture; the button around it
+        # renders without a description <small> block.
+        match = re.search(rb'value="admin"[^>]*>.*?</button>', response.data, re.S)
+        assert match, "admin's picker button not found"
+        assert b"text-muted d-block" not in match.group(0)
+
 
 class TestPersonaLoginPost:
     """POST /login in persona mode: identity selection, no credential check."""
