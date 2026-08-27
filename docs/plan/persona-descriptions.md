@@ -36,6 +36,7 @@ This is therefore a cross-surface schema + rendering change, not just a template
   - `tests/test_config.py`: verifies the field exists and defaults to an empty string.
   - `tests/test_persistence_unification.py`: verifies YAML round-trip preserves the description.
   - `tests/test_persona_login.py`: ensures persona-mode user creation/edit flows accept empty descriptions without affecting auth semantics.
+- [x] Regenerate the committed `docs/schema/config.v1.json` artifact (`nanoidp config-schema --write`) — missed in the initial stage 1 pass, caught by `test_config_schema.py` and fixed during stage 3.
 
 ### 2. User create/edit forms and detail rendering (completed)
 - [x] `src/nanoidp/templates/users_form.html`: add a description input with `maxlength="200"` alongside the user identity fields.
@@ -47,13 +48,13 @@ This is therefore a cross-surface schema + rendering change, not just a template
   - ~~`tests/test_basic.py` or closest user-management route tests: validate form POST with description does not error.~~ Not the right file — user-management route coverage lives in `test_persona_login.py`, covered there instead.
   - ~~`tests/test_ui_oauth_settings.py` or similar UI-render tests if applicable: ensure form renders the new field without breaking the page.~~ Not applicable — that file covers OAuth settings, not user forms; rendering is covered in `test_persona_login.py`.
 
-### 3. API / MCP / serialization coverage
-- [ ] `src/nanoidp/routes/api.py`: add `description` to the `list_users`/`get_user` response dicts (both build their JSON by hand, not via `User.to_dict()`).
-- [ ] Update the relevant MCP input schemas and `_user_to_dict` output for `create_user`, `create_persona_user`, and `update_user`.
-- [ ] Tests:
-  - `tests/test_mcp.py`: verify the user description is accepted and serialized correctly in MCP user creation/update.
-  - `tests/test_persona_login.py`: verify a persona user with a description still authenticates normally and does not gain claim/export behavior.
-  - `tests/test_config.py`: ensure `description` remains non-claim metadata rather than an authority prefix or token attribute.
+### 3. API / MCP / serialization coverage (completed)
+- [x] `src/nanoidp/routes/api.py`: add `description` to the `list_users`/`get_user` response dicts (both build their JSON by hand, not via `User.to_dict()`).
+- [x] Update the relevant MCP input schemas and `_user_to_dict` output for `create_user`, `create_persona_user`, and `update_user`.
+- [x] Tests:
+  - `tests/test_mcp.py`: verify the user description is accepted and serialized correctly in MCP user creation/update (`TestMCPUserDescription`).
+  - `tests/test_config.py`: verify the REST API exposes `description` on both `list_users`/`get_user` without leaking into `authorities` (`TestUserRestApiDescription`).
+  - ~~`tests/test_persona_login.py`: verify a persona user with a description still authenticates normally and does not gain claim/export behavior.~~ Not needed here — auth semantics are untouched by this field and already covered by stage 1/2 persona tests; this stage only adds serialization surface.
 
 ### 4. Persona picker rendering across all interactive surfaces
 - [ ] `src/nanoidp/templates/_macros.html`: centralize the persona picker body so it renders the username and text description in the `small text-muted` style.

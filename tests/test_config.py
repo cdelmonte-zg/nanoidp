@@ -3,6 +3,8 @@ Unit tests for the Configuration Manager.
 Tests user management, client management, and authentication.
 """
 
+import json
+
 import pytest
 
 from nanoidp.config import (
@@ -66,6 +68,26 @@ class TestUserManagement:
 
         assert user.description == ""
         assert isinstance(user.description, str)
+
+
+class TestUserRestApiDescription:
+    """The description field is exposed over the REST API without leaking
+    into claims/authorities."""
+
+    def test_user_list_includes_description(self, client):
+        data = json.loads(client.get("/api/users").data)
+        assert all("description" in u for u in data["users"])
+
+    def test_user_detail_includes_description(self, client, app):
+        with app.app_context():
+            config = get_config()
+            config.users["descuser"] = User(
+                username="descuser", password="pw", description="Finance approver persona"
+            )
+
+        data = json.loads(client.get("/api/users/descuser").data)
+        assert data["description"] == "Finance approver persona"
+        assert "description" not in data["authorities"]
 
 
 class TestUserAuthentication:

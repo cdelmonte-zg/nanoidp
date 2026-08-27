@@ -195,6 +195,7 @@ def _user_to_dict(user: User) -> dict[str, Any]:
     """Convert User to dictionary."""
     return {
         "username": user.username,
+        "description": user.description,
         "email": user.email,
         "roles": user.roles,
         "groups": user.groups,
@@ -218,6 +219,7 @@ def _build_user_from_arguments(
     return User(
         username=username,
         password=password,
+        description=arguments.get("description", ""),
         email=arguments.get("email", ""),
         roles=arguments.get("roles", ["USER"]),
         groups=arguments.get("groups", []),
@@ -269,6 +271,11 @@ def _normalize_audiences(value: Any) -> list[str]:
 # _build_user_from_arguments() reads all of these from either one - a
 # property missing here would be silently ignored on that tool alone.
 _USER_COMMON_PROPERTIES: dict[str, Any] = {
+    "description": {
+        "type": "string",
+        "maxLength": 200,
+        "description": "Display-only note shown in the persona login picker (optional, max 200 chars)",
+    },
     "email": {
         "type": "string",
         "description": "Email address (optional)",
@@ -424,6 +431,11 @@ _TOOLS: list[Tool] = [
                 "password": {
                     "type": "string",
                     "description": "New password (optional)",
+                },
+                "description": {
+                    "type": "string",
+                    "maxLength": 200,
+                    "description": "New display-only persona picker note (optional, max 200 chars)",
                 },
                 "email": {
                     "type": "string",
@@ -1132,6 +1144,8 @@ def _tool_update_user(arguments: dict[str, Any], config: ConfigManager) -> dict[
     user = config.users[username]
     if "password" in arguments:
         user.password = arguments["password"]
+    if "description" in arguments:
+        user.description = arguments["description"]
     if "email" in arguments:
         user.email = arguments["email"]
     if "roles" in arguments:

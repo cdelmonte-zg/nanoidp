@@ -33,6 +33,7 @@ def list_users() -> ResponseReturnValue:
     for username, user in config.users.items():
         users.append({
             "username": username,
+            "description": user.description,
             "email": user.email,
             "identity_class": user.identity_class,
             "roles": user.roles,
@@ -57,6 +58,7 @@ def get_user(username: str) -> ResponseReturnValue:
 
     return jsonify({
         "username": user.username,
+        "description": user.description,
         "email": user.email,
         "identity_class": user.identity_class,
         "entitlements": user.entitlements,
