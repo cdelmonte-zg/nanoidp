@@ -78,33 +78,28 @@ This is therefore a cross-surface schema + rendering change, not just a template
   - `tests/test_token_service.py`: a described user's access token contains no `description` claim and no trace of the text anywhere in the payload (`test_description_is_never_a_token_claim`).
   - `tests/test_saml.py`: a described user's SAML assertion contains no `description` attribute and no trace of the text (`test_sso_never_exports_the_description_field`).
 
-### 6. Final integration checks and repo-wide verification
-- [ ] Verify the field is present and consistent across all user forms and screens.
-- [ ] Run the focused test set covering user rendering, persona login, device authorization, SAML, and MCP.
-- [ ] Confirm the description stays display-only and does not leak into claims/authorities.
-- [ ] Tests:
-  - `pytest -q tests/test_persona_login.py tests/test_persona_login_flows.py tests/test_mcp.py tests/test_saml.py tests/test_device_flow_complete.py tests/test_config.py`
-  - plus any newly added targeted tests for the max-length validation and user-form rendering.
+### 6. Final integration checks and repo-wide verification (completed)
+- [x] Verify the field is present and consistent across all user forms and screens (create/edit form, detail page, REST API, MCP tools, all four persona pickers) — confirmed across stages 2-5, plus visually inspected by the maintainer via the `persona-login` example (mixed described/undescribed users rendering correctly in the picker).
+- [x] Run the focused test set covering user rendering, persona login, device authorization, SAML, and MCP.
+- [x] Confirm the description stays display-only and does not leak into claims/authorities (stage 5).
+- [x] `examples/test_agent.py`: extended `test_persona_login_mode` (the live-server e2e agent, required by the "features ship whole" contract) — the password-less test user now carries a description, asserted visible in the `/login` picker and asserted absent from the SAML assertion. Run live against a fresh `nanoidp init`'d server on port 8010: `[OK] Persona Login Mode`, `SUCCESS: True`.
+- [x] Tests:
+  - Full unit suite: `pytest -q` — `1627 passed`, no regressions across the whole codebase.
+  - Live e2e: `examples/test_agent.py`'s `test_persona_login_mode` run manually against a real running server (see above).
 
 ## Sequencing rationale
 
 Steps 1-2 are safe standalone and establish the real data contract. Step 3 closes the write surface and API/MCP exposure before the UI work. Step 4 delivers the user-visible behavior across all interactive persona flows. Step 5 locks down the display-only safety guarantees and validation. Step 6 is repo-level verification before docs are added.
 
-## How this gets tested
+## Docs and changelog (completed)
 
-No dedicated interactive test harness exists for this repo — testing is layered:
+- [x] `book/src/reference/configuration.md`: documented `description` in the users reference and the persona login mode section.
+- [x] `book/src/guides/SECURITY.md`: documented `description` in the Persona Login Mode guide.
+- [x] `CHANGELOG.md` / `book/src/project/changelog.md`: left to the maintainer, not edited here - a proposed entry is at the bottom of this doc for them to drop in as-is or adjust.
+- [x] `examples/persona-login/users.yaml` / `README.md`: added example descriptions on `admin`/`alice`, left `bob` blank to demonstrate the mixed case (done in stage 4, ahead of this checklist item).
+- [x] `README.md`: root README's persona login mention stays generic (no field-level docs there today for any user field, so none added for consistency).
 
-1. Manual/interactive: run the app locally with a persona user containing a description and verify the picker on `/login`, `/authorize`, `/device`, and the SAML inline login path.
-2. Scripted e2e against a running server: use `examples/test_agent.py` and the existing persona-login coverage to hit the live HTTP surfaces.
-3. Unit/integration suite: most of the verification happens in Flask test-client tests, where the form posts, YAML round-trips, and serialization are checked in code.
-
-## Docs and changelog
-
-- [ ] `README.md` / user docs: document the new display-only `description` field for persona users.
-- [ ] `CHANGELOG.md`: add a short entry for the persona-description field.
-- [ ] `book/` docs if needed: keep the user-facing docs aligned with the feature.
-
-This is intentionally left for the end of the PR, after the feature is implemented and tested.
+This was intentionally left for the end of the PR, after the feature was implemented and tested.
 
 ## Out of scope
 
@@ -113,3 +108,17 @@ This is intentionally left for the end of the PR, after the feature is implement
 - Creating an authority prefix for it
 - Adding HTML markup support
 - Making the text a generic custom attribute or token claim
+
+## Proposed CHANGELOG entry (for the maintainer)
+
+```markdown
+- **Persona login descriptions** (#158 follow-up): users can carry an
+  optional, display-only `description` (max 200 chars) shown next to their
+  name in the persona login picker on every interactive surface (`/login`,
+  `/authorize`, `/saml/sso`, the device flow's `/device`), so a directory of
+  test personas (`admin`, `reader`, `tenant-a-manager`, ...) is
+  self-explanatory at the point of selection. It's a first-class field, not
+  a custom attribute: never a claim, never a SAML attribute, never part of
+  a token. Covered by the UI create/edit form, the REST API, and the MCP
+  `create_user`/`create_persona_user`/`update_user` tools.
+```

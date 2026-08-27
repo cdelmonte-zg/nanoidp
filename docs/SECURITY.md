@@ -302,7 +302,14 @@ users:
     password: "admin"          # still works with either login mode
   alice:
     email: "alice@example.org" # no password: persona-mode only
+    description: "Standard internal user" # optional, max 200 chars
 ```
+
+**Descriptions in the picker**: an optional `description` per user is shown
+next to their name in the picker on every surface above - e.g. "Finance
+approver persona", "Read-only auditor". It's a display-only note, capped at
+200 characters and plain text only: never a claim, never a SAML attribute,
+never part of a token, and never treated as a custom attribute.
 
 **SAML detail**: a persona login can't claim `AuthnContextClassRef: PasswordProtectedTransport`, since no password was used - NanoIDP emits `urn:oasis:names:tc:SAML:2.0:ac:classes:unspecified` instead for sessions authenticated this way.
 

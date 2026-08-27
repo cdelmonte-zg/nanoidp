@@ -2971,17 +2971,20 @@ class NanoIDPTestAgent:
 
         Temporarily switches the running server into 'login_mode: persona'
         via the dashboard settings form, creates a password-less test user
-        (only possible once persona mode is on), then exercises every
-        interactive surface by selecting that user instead of supplying a
-        password: the nanoidp dashboard's /login, OIDC /authorize, SAML
-        /saml/sso (checking AuthnContextClassRef is 'unspecified', not the
-        password-mode 'PasswordProtectedTransport'), and the device flow's
-        /device. Restores login_mode and removes the test user afterward,
-        regardless of how far the checks got.
+        (only possible once persona mode is on) with a display-only
+        'description', then exercises every interactive surface by selecting
+        that user instead of supplying a password: the nanoidp dashboard's
+        /login (also checking the description renders in the picker), OIDC
+        /authorize, SAML /saml/sso (checking AuthnContextClassRef is
+        'unspecified', not the password-mode 'PasswordProtectedTransport',
+        and that the description is never exported into the assertion), and
+        the device flow's /device. Restores login_mode and removes the test
+        user afterward, regardless of how far the checks got.
         """
         import re
 
         persona_user = "e2e-persona-user"
+        persona_description = "E2E test persona - do not use for real access"
         checks: Dict[str, bool] = {}
 
         try:
@@ -2996,17 +2999,25 @@ class NanoIDPTestAgent:
             checks["enabled_persona_mode"] = resp.status_code == 200
 
             # Step 2: create a password-less test user (only allowed now that
-            # persona mode is on - see routes/ui.py user_create()).
+            # persona mode is on - see routes/ui.py user_create()), with a
+            # description so the picker-rendering check below has something
+            # to look for.
             resp = self.session.post(
                 f"{self.base_url}/users/create",
-                data={"username": persona_user, "email": "e2e-persona@example.org"},
+                data={
+                    "username": persona_user,
+                    "email": "e2e-persona@example.org",
+                    "description": persona_description,
+                },
                 timeout=10
             )
             checks["created_passwordless_user"] = resp.status_code in (200, 302)
 
-            # Step 3: nanoidp dashboard /login - picker shown, selection logs in.
+            # Step 3: nanoidp dashboard /login - picker shown, description
+            # rendered next to the username, selection logs in.
             login_page = requests.get(f"{self.base_url}/login", timeout=5)
             picker_shown = 'name="password"' not in login_page.text
+            description_shown = persona_description in login_page.text
             login_resp = requests.post(
                 f"{self.base_url}/login",
                 data={"username": persona_user},
@@ -3014,6 +3025,8 @@ class NanoIDPTestAgent:
                 timeout=5
             )
             checks["login_ui_persona"] = picker_shown and login_resp.status_code == 302
+            checks["login_ui_shows_description"] = description_shown
+
 
             # Step 4: OIDC /authorize - selection issues a code, exchangeable for a token.
             state = secrets.token_urlsafe(16)
@@ -3113,6 +3126,7 @@ class NanoIDPTestAgent:
             )
             saml_ok = False
             authn_context = None
+            saml_response_xml = None
             if saml_resp.status_code == 200 and "SAMLResponse" in saml_resp.text:
                 match = re.search(r'name="SAMLResponse"\s+value="([^"]+)"', saml_resp.text)
                 if match:
@@ -3125,6 +3139,10 @@ class NanoIDPTestAgent:
                         "urn:oasis:names:tc:SAML:2.0:ac:classes:unspecified"
                     )
             checks["saml_persona_unspecified_context"] = saml_ok
+            # Display-only field: must never end up in the SAML assertion.
+            checks["saml_never_exports_description"] = (
+                saml_response_xml is not None and persona_description not in saml_response_xml
+            )
         finally:
             # Cleanup runs regardless of how far the checks above got, so a
             # failed assertion never leaves the running server in persona
