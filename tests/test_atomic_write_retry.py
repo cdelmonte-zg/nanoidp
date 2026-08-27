@@ -11,6 +11,9 @@ retry directly, without needing an actual concurrent reader to reproduce
 the race.
 """
 
+import os
+import threading
+
 import pytest
 
 from nanoidp.serialization import atomic_write_yaml, load_yaml_document
@@ -20,8 +23,6 @@ class TestAtomicWriteRetriesATransientPermissionError:
     def test_succeeds_after_a_few_transient_permission_errors(self, tmp_path, monkeypatch):
         f = tmp_path / "settings.yaml"
         f.write_text("a: 1\n")
-
-        import os
 
         real_replace = os.replace
         calls = {"count": 0}
@@ -43,8 +44,6 @@ class TestAtomicWriteRetriesATransientPermissionError:
         f = tmp_path / "settings.yaml"
         f.write_text("a: 1\n")
 
-        import os
-
         def always_denied(src, dst):
             raise PermissionError("[WinError 5] Access is denied")
 
@@ -55,3 +54,68 @@ class TestAtomicWriteRetriesATransientPermissionError:
 
         # the original file is untouched - the failed write never landed
         assert load_yaml_document(f)["a"] == 1
+
+
+class TestFailedReplaceDoesNotCorruptTheLiveFile:
+    """Regression pin for #229 review round 10: atomic_write_yaml used to
+    "restore" from the .bak backup via shutil.copy2 on ANY failure,
+    including a failed os.replace() that never touched the target at
+    all - there was nothing to restore. copy2() is not atomic, so that
+    unconditional restore performed a non-atomic in-place overwrite of a
+    live, still-correct file. A concurrent reader can observe that copy
+    mid-flight: reproduced by forcing os.replace() to fail on POSIX and
+    running four readers against a large settings.yaml - 43 of 983
+    reads came back with fewer clients than the file has, silently, no
+    exception raised at all. Fixed by restoring from backup only when
+    the target actually disappeared."""
+
+    def test_a_failed_replace_never_lets_a_reader_see_a_partial_document(
+        self, tmp_path, monkeypatch
+    ):
+        f = tmp_path / "settings.yaml"
+        num_clients = 400
+        clients = "\n".join(
+            f"  - client_id: 'client-{i}'\n"
+            f"    client_secret: 'secret-{i}'\n"
+            f"    description: 'Client number {i}'"
+            for i in range(num_clients)
+        )
+        original = f"oauth:\n  issuer: 'http://localhost:8000'\n  clients:\n{clients}\n"
+        f.write_text(original)
+        assert len(original) > 20_000  # comparable to the review's 21KB repro
+
+        def always_denied(src, dst):
+            raise PermissionError("denied")
+
+        monkeypatch.setattr(os, "replace", always_denied)
+
+        errors = []
+        truncated = []
+        stop = threading.Event()
+
+        def read_loop():
+            while not stop.is_set():
+                try:
+                    doc = load_yaml_document(f)
+                    if len(doc.get("oauth", {}).get("clients", [])) != num_clients:
+                        truncated.append(doc)
+                except Exception as exc:
+                    errors.append(exc)
+
+        readers = [threading.Thread(target=read_loop) for _ in range(4)]
+        for t in readers:
+            t.start()
+
+        try:
+            for _ in range(50):
+                with pytest.raises(RuntimeError):
+                    atomic_write_yaml(f, {"oauth": {"issuer": "changed"}})
+        finally:
+            stop.set()
+            for t in readers:
+                t.join()
+
+        assert errors == []
+        assert truncated == []
+        # never partially overwritten by the old unconditional restore
+        assert f.read_text() == original
