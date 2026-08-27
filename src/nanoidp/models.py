@@ -83,6 +83,11 @@ class User(BaseModel):
         "'login.mode: persona'); such a user cannot authenticate via "
         "password-mode login or the OAuth password grant.",
     )
+    description: str = Field(
+        default="",
+        max_length=200,
+        description="Optional display-only description shown in the persona login picker.",
+    )
     email: str = Field(default="", description="User email address")
     identity_class: Optional[str] = Field(default=None, description="Identity classification")
     entitlements: List[str] = Field(default_factory=list, description="User entitlements")
@@ -104,6 +109,7 @@ class User(BaseModel):
         """Convert to dictionary for JSON serialization."""
         return {
             "username": self.username,
+            "description": self.description,
             "email": self.email,
             "identity_class": self.identity_class,
             "entitlements": self.entitlements,

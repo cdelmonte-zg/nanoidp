@@ -244,6 +244,24 @@ class TestSingleUserEntry:
         manager.save()
         assert _read(users_file)["my_note"] == "keep me"
 
+    def test_user_description_round_trips(self, tmp_path):
+        config_dir = _seed(tmp_path, BASE_SETTINGS)
+        manager = ConfigManager(str(config_dir))
+        manager.users["alice"] = User(
+            username="alice",
+            password="pw",
+            email="alice@example.org",
+            description="Admin persona for finance approvals",
+            roles=["USER"],
+        )
+        manager.save()
+
+        entry = _read(config_dir / "users.yaml")["users"]["alice"]
+        assert entry["description"] == "Admin persona for finance approvals"
+
+        reloaded = ConfigManager(str(config_dir)).users["alice"]
+        assert reloaded.description == "Admin persona for finance approvals"
+
 
 class TestPasswordlessUserEntry:
     """A user without a password (persona-mode-only) serializes without a

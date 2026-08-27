@@ -28,11 +28,11 @@ This is therefore a cross-surface schema + rendering change, not just a template
 
 ## Breakdown into commits (single feature branch / PR)
 
-### 1. Data model + YAML persistence (no behavior change yet)
-- [ ] `src/nanoidp/models.py`: add `User.description` field, default empty string, and 200-char validation.
-- [ ] `src/nanoidp/config_documents.py`: include the field in the YAML-backed user entry so it round-trips through `users.yaml`.
-- [ ] `src/nanoidp/config.py` / relevant save/load path: ensure the persisted user object retains the field without affecting token or auth logic.
-- [ ] Tests:
+### 1. Data model + YAML persistence (completed)
+- [x] `src/nanoidp/models.py`: add `User.description` field, default empty string, and 200-char validation.
+- [x] `src/nanoidp/config_documents.py`: include the field in the YAML-backed user entry so it round-trips through `users.yaml`.
+- [x] `src/nanoidp/config.py` / relevant save/load path: ensure the persisted user object retains the field without affecting token or auth logic.
+- [x] Tests:
   - `tests/test_config.py`: verifies the field exists and defaults to an empty string.
   - `tests/test_persistence_unification.py`: verifies YAML round-trip preserves the description.
   - `tests/test_persona_login.py`: ensures persona-mode user creation/edit flows accept empty descriptions without affecting auth semantics.

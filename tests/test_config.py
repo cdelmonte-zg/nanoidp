@@ -58,6 +58,15 @@ class TestUserManagement:
         assert hasattr(user, "source_acl")
         assert hasattr(user, "attributes")
 
+    def test_user_description_defaults_to_empty_string(self, app):
+        """Description is a first-class, display-only field with a safe default."""
+        with app.app_context():
+            config = get_config()
+            user = config.get_user("admin")
+
+        assert user.description == ""
+        assert isinstance(user.description, str)
+
 
 class TestUserAuthentication:
     """Tests for user authentication."""

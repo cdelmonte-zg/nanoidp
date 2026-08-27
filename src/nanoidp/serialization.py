@@ -343,6 +343,8 @@ def user_to_yaml(user: User) -> Dict[str, Any]:
     entry: Dict[str, Any] = {}
     if user.password is not None:
         entry["password"] = _quoted(user.password)
+    if user.description:
+        entry["description"] = _quoted(user.description)
     entry["email"] = user.email
     if user.identity_class:
         entry["identity_class"] = user.identity_class
