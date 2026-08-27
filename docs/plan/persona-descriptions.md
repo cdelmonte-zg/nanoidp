@@ -68,14 +68,15 @@ This is therefore a cross-surface schema + rendering change, not just a template
   - `tests/test_persona_login_flows.py`: description renders on `/authorize`, SAML `/saml/sso`, and device `/device` pickers.
   - ~~`tests/test_saml.py` / `tests/test_saml_signed_authnrequests.py` / `tests/test_device_flow_complete.py`: dedicated new tests.~~ Not needed — ran as regression only (all passing unchanged); the SAML assertion/device-code paths never touch `description`, so there's no new behavior there to test.
 
-### 5. Server-side validation + no-export guarantee
-- [ ] Add a 200-character validation check in the server-side user creation/edit path so values over the limit are rejected.
-- [ ] Add a guard so the description is never copied into `user.attributes`, `token_claims`, SAML attributes, or configured authority prefixes.
-- [ ] Tests:
-  - `tests/test_config.py`: reject description lengths above 200.
-  - `tests/test_persona_login.py`: invalid descriptions fail cleanly on create/edit.
-  - `tests/test_saml.py`: ensure SAML output is unchanged and does not include the description field.
-  - `tests/test_id_token_audience.py` or any claim-related tests: confirm token payload remains unaffected.
+### 5. Server-side validation + no-export guarantee (completed)
+- [x] 200-character validation: already enforced by `User.description`'s Pydantic `max_length=200` (stage 1) — `ValidationError` is a `ValueError` subclass, so it's caught cleanly by the existing UI `except ValueError` handlers and rejected at the MCP protocol layer by the `maxLength: 200` schema property (stage 3). No new production code needed; confirmed with new tests instead.
+- [x] No-export guard: already true by construction — `description` is a dedicated `User` field, never folded into `attributes`, never read by `resolve_user_claim`, `build_authorities`, `create_token`'s `extra` dict, or `_sso_build_attributes` (stage 1's "not an attribute" decision). No new production code needed; confirmed with new tests instead.
+- [x] Tests:
+  - `tests/test_config.py`: `User(description="a"*201)` raises, `"a"*200` is accepted (`test_user_description_over_200_chars_rejected`, `test_user_description_exactly_200_chars_accepted`).
+  - `tests/test_persona_login.py`: overlong description rejected cleanly on create and edit, no partial write (`test_overlong_description_rejected_on_create`, `test_overlong_description_rejected_on_edit`).
+  - `tests/test_mcp.py`: `call_tool` rejects an overlong description with `MCP_INVALID_ARGUMENTS` before dispatch (`test_overlong_description_rejected_by_schema`).
+  - `tests/test_token_service.py`: a described user's access token contains no `description` claim and no trace of the text anywhere in the payload (`test_description_is_never_a_token_claim`).
+  - `tests/test_saml.py`: a described user's SAML assertion contains no `description` attribute and no trace of the text (`test_sso_never_exports_the_description_field`).
 
 ### 6. Final integration checks and repo-wide verification
 - [ ] Verify the field is present and consistent across all user forms and screens.

@@ -887,6 +887,26 @@ class TestMCPUserDescription:
         assert "description" in update_user.input_schema["properties"]
 
     @pytest.mark.asyncio
+    async def test_overlong_description_rejected_by_schema(self, monkeypatch, mcp_call_tool, tmp_path):
+        """The MCP protocol path (call_tool) validates maxLength before
+        dispatch - a client can't smuggle an overlong description past the
+        JSON schema even though the handler bypasses it in tests."""
+        import nanoidp.mcp_server as mcp
+
+        monkeypatch.setattr(mcp, "_config", self._config(tmp_path))
+        monkeypatch.setattr(mcp, "_readonly_mode", False)
+        monkeypatch.delenv("NANOIDP_MCP_ADMIN_SECRET", raising=False)
+
+        result = await mcp_call_tool(
+            "create_user",
+            {"username": "toolong", "password": "pw", "description": "a" * 201},
+        )
+
+        assert result.is_error is True
+        payload = json.loads(result.content[0].text)
+        assert payload["code"] == "MCP_INVALID_ARGUMENTS"
+
+    @pytest.mark.asyncio
     async def test_get_settings_includes_login_mode(self, tmp_path):
         from nanoidp.mcp_server import _execute_tool
         config = self._config(tmp_path)

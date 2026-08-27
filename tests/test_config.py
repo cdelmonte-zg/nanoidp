@@ -69,6 +69,15 @@ class TestUserManagement:
         assert user.description == ""
         assert isinstance(user.description, str)
 
+    def test_user_description_over_200_chars_rejected(self):
+        """Server-side cap (#158 follow-up): the model itself refuses an
+        overlong description, so every write surface inherits the limit."""
+        with pytest.raises(ValueError):
+            User(username="toolong", description="a" * 201)
+
+    def test_user_description_exactly_200_chars_accepted(self):
+        User(username="exact", description="a" * 200)
+
 
 class TestUserRestApiDescription:
     """The description field is exposed over the REST API without leaking

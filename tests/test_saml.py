@@ -189,6 +189,22 @@ class TestSAMLSSO:
         response_text = response.data.decode('utf-8')
         assert relay_state in response_text
 
+    def test_sso_never_exports_the_description_field(self, client, app):
+        """Display-only field (#158 follow-up): must never end up in the
+        SAML assertion, even though it's a real, persisted user field."""
+        with app.app_context():
+            from nanoidp.config import get_config
+            get_config().users['admin'].description = 'Finance approver persona'
+        with client.session_transaction() as sess:
+            sess['user'] = 'admin'
+
+        saml_request = self._create_saml_request(acs_url='http://sp.example.com/acs')
+        response = client.post('/saml/sso', data={'SAMLRequest': saml_request})
+
+        assert response.status_code == 200
+        assert b'Finance approver persona' not in response.data
+        assert b'description' not in response.data.lower()
+
     def test_sso_handles_http_post_binding_uncompressed(self, client):
         """Test that SSO correctly parses uncompressed SAMLRequest (HTTP-POST binding).
 

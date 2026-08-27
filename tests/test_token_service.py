@@ -396,8 +396,28 @@ class TestTokenInclusion:
         assert decoded["attributes"]["department"] == "Engineering"
         assert decoded["attributes"]["level"] == 5
 
+    def test_description_is_never_a_token_claim(self, token_service, app):
+        """Display-only field (#158 follow-up): must never reach the token,
+        not even folded into authorities or the attributes claim."""
+        user = User(
+            username="described",
+            password="pw",
+            roles=["USER"],
+            tenant="default",
+            description="Finance approver persona",
+        )
 
-class TestGlobalTokenService:
+        with app.app_context():
+            result = token_service.create_token(user)
+
+        decoded = pyjwt.decode(
+            result["access_token"],
+            options={"verify_signature": False}
+        )
+
+        assert "description" not in decoded
+        assert all("Finance approver persona" not in str(v) for v in decoded.values())
+
     """Tests for the global token service singleton."""
 
     def test_get_token_service_returns_instance(self, app):
