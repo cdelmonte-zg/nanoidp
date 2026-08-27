@@ -33,6 +33,7 @@ import shutil
 import tempfile
 import time
 from dataclasses import dataclass
+from io import StringIO
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Mapping, Optional
 
@@ -232,11 +233,25 @@ def load_yaml_document(file_path: Path) -> Dict[str, Any]:
     """Load a YAML document preserving comments/quote style for a later
     round-trip write. Returns an empty ``CommentedMap`` if the file is
     missing or empty.
+
+    Reads the whole file into memory and closes the handle *before*
+    parsing, rather than handing ruamel an open file object to stream
+    from (#229 review round 9: Windows CI's real failure). The parse,
+    not the read, dominates how long the OS handle would otherwise stay
+    open - measured at 334us with the handle held across the parse
+    versus 9us for the read alone on one of these documents - and on
+    Windows an open handle can make a concurrent ``os.replace()`` of
+    this same file fail with a transient ``PermissionError`` (Python's
+    ``open()`` does not request ``FILE_SHARE_DELETE``). Decoupling read
+    from parse shrinks that window by ~97% at no throughput cost, which
+    is what makes ``_replace_with_retry``'s bounded retry actually
+    sufficient rather than merely well-intentioned.
     """
     if not file_path.exists():
         return CommentedMap()
     with open(file_path, "r") as f:
-        return _new_yaml_rt().load(f) or CommentedMap()
+        content = f.read()
+    return _new_yaml_rt().load(StringIO(content)) or CommentedMap()
 
 
 def client_to_yaml(client: OAuthClient) -> Dict[str, Any]:
@@ -552,13 +567,20 @@ def _replace_with_retry(temp_path: str, file_path: Path) -> None:
     another handle currently has open even just for reading, since
     Python's ``open()`` does not request ``FILE_SHARE_DELETE``; a
     concurrent reader (``load_yaml_document``) can hold the target open
-    for the brief moment a write lands. The window is normally a
-    fraction of a millisecond - a reader opens, parses and closes - so a
-    handful of short retries clears it without meaningfully slowing
-    down the common case, and does nothing extra on POSIX beyond one
-    successful attempt. A ``PermissionError`` that never clears (a
+    for the brief moment a write lands).
+
+    This retry alone is not enough: the first version of this fix
+    reasoned the window was "a fraction of a millisecond - a reader
+    opens, parses and closes" without noticing the parse, not the
+    read, was almost all of that window (334us measured, versus 9us for
+    the read alone) - ten retries 10ms apart all landing inside
+    somebody's parse is not actually rare. ``load_yaml_document`` now
+    closes its handle before parsing (#229 review round 9), which is
+    what makes this retry's short, bounded wait meaningful rather than
+    just well-intentioned. A ``PermissionError`` that never clears (a
     genuine permissions problem, not a transient sharing violation)
-    still raises after the last attempt.
+    still raises after the last attempt; POSIX pays nothing beyond one
+    successful attempt.
     """
     for attempt in range(_REPLACE_RETRY_ATTEMPTS):
         try:

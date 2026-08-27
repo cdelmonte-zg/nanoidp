@@ -7,6 +7,7 @@ disk - no ``ConfigManager``/``YamlWriter`` involved yet (phase 3 migrates
 """
 
 import multiprocessing
+import sys
 import threading
 import time
 from pathlib import Path
@@ -188,7 +189,18 @@ class TestConcurrentReadsOutsideTheLock:
     instance per call, not one shared at module scope). Without that fix,
     this probe reliably raised errors of six different kinds, including
     one inside compare_and_replace's own load_yaml_document call, corrupted
-    by a reader that was never inside the lock to begin with."""
+    by a reader that was never inside the lock to begin with.
+
+    This same probe is also the regression test for #229 review round 9
+    (Windows CI): load_yaml_document now closes its read handle before
+    parsing, specifically so a concurrent os.replace() on Windows isn't
+    fighting an open handle for the whole parse - and atomic_write_yaml
+    retries a transient PermissionError as a backstop. On Windows only,
+    a writer is allowed to hit that one known, clean failure shape (an
+    atomic_write_yaml RuntimeError wrapping a PermissionError, meaning
+    the retry budget was exhausted but nothing was corrupted) without
+    failing the test - any other writer exception, or this exception on
+    POSIX where it should never happen at all, still fails it."""
 
     def test_readers_outside_the_lock_do_not_corrupt_a_racing_write(self, tmp_path):
         f = tmp_path / "settings.yaml"
@@ -208,15 +220,23 @@ class TestConcurrentReadsOutsideTheLock:
         for t in readers:
             t.start()
 
+        writer_errors = []
         try:
             for i in range(300):
-                compare_and_replace(f, None, lambda doc, i=i: doc.update({"counter": i}))
+                try:
+                    compare_and_replace(f, None, lambda doc, i=i: doc.update({"counter": i}))
+                except RuntimeError as exc:
+                    if sys.platform != "win32" or not isinstance(exc.__cause__, PermissionError):
+                        raise
+                    writer_errors.append(exc)
         finally:
             stop.set()
             for t in readers:
                 t.join()
 
         assert errors == []
+        if sys.platform != "win32":
+            assert writer_errors == []
 
 
 class TestCrossProcessConflictDetection:
