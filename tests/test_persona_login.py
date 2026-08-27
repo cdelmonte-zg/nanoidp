@@ -231,6 +231,33 @@ class TestUserCreatePasswordOptional:
 
         assert get_config().get_user("persona-dana").password is None
 
+    def test_persona_mode_create_user_with_description_succeeds(self, app, client, preserve_config_files):
+        _enable_persona_mode(app)
+        self._login_as_admin(client)
+
+        client.post(
+            "/users/create",
+            data={
+                "username": "persona-edith",
+                "email": "edith@example.org",
+                "description": "Finance approver persona",
+            },
+            follow_redirects=True,
+        )
+
+        user = get_config().get_user("persona-edith")
+        assert user is not None
+        assert user.description == "Finance approver persona"
+
+    def test_user_form_renders_description_field(self, client, preserve_config_files):
+        self._login_as_admin(client)
+
+        response = client.get("/users/create")
+
+        assert response.status_code == 200
+        assert b'name="description"' in response.data
+        assert b'maxlength="200"' in response.data
+
     def test_persona_mode_create_with_password_still_works(self, app, client, preserve_config_files):
         """Persona mode never forces a password to be blank either."""
         _enable_persona_mode(app)

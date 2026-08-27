@@ -37,18 +37,18 @@ This is therefore a cross-surface schema + rendering change, not just a template
   - `tests/test_persistence_unification.py`: verifies YAML round-trip preserves the description.
   - `tests/test_persona_login.py`: ensures persona-mode user creation/edit flows accept empty descriptions without affecting auth semantics.
 
-### 2. User create/edit forms and detail rendering
-- [ ] `src/nanoidp/templates/users_form.html`: add a description input with `maxlength="200"` alongside the user identity fields.
-- [ ] `src/nanoidp/routes/ui.py`: include the field in user create/edit handlers and validation.
-- [ ] `src/nanoidp/templates/user_detail.html`: show stored description in the user detail page.
-- [ ] Tests:
-  - `tests/test_persona_login.py`: create/edit flow accepts a valid description.
-  - `tests/test_config.py`: round-trip for new user field persists correctly after UI-driven save.
-  - `tests/test_basic.py` or closest user-management route tests: validate form POST with description does not error.
-  - `tests/test_ui_oauth_settings.py` or similar UI-render tests if applicable: ensure form renders the new field without breaking the page.
+### 2. User create/edit forms and detail rendering (completed)
+- [x] `src/nanoidp/templates/users_form.html`: add a description input with `maxlength="200"` alongside the user identity fields.
+- [x] `src/nanoidp/routes/ui.py`: include the field in user create/edit handlers and validation.
+- [x] `src/nanoidp/templates/user_detail.html`: show stored description in the user detail page.
+- [x] Tests:
+  - `tests/test_persona_login.py`: create/edit flow accepts a valid description; form renders the field.
+  - ~~`tests/test_config.py`: round-trip for new user field persists correctly after UI-driven save.~~ Not needed — the YAML round-trip already goes through the same `user_to_yaml`/`ConfigManager.save()` path proven in stage 1.
+  - ~~`tests/test_basic.py` or closest user-management route tests: validate form POST with description does not error.~~ Not the right file — user-management route coverage lives in `test_persona_login.py`, covered there instead.
+  - ~~`tests/test_ui_oauth_settings.py` or similar UI-render tests if applicable: ensure form renders the new field without breaking the page.~~ Not applicable — that file covers OAuth settings, not user forms; rendering is covered in `test_persona_login.py`.
 
 ### 3. API / MCP / serialization coverage
-- [ ] Ensure the description is part of the REST-serialized user object without leaking into claims or authorities.
+- [ ] `src/nanoidp/routes/api.py`: add `description` to the `list_users`/`get_user` response dicts (both build their JSON by hand, not via `User.to_dict()`).
 - [ ] Update the relevant MCP input schemas and `_user_to_dict` output for `create_user`, `create_persona_user`, and `update_user`.
 - [ ] Tests:
   - `tests/test_mcp.py`: verify the user description is accepted and serialized correctly in MCP user creation/update.
