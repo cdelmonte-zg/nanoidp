@@ -47,8 +47,11 @@ class TestOwnedSettingsDeriveFromTheModels:
 
 class TestYamlWriterMatchesTheTable:
     def _writer_params(self, method_name):
+        # expected_revision (#229 phase 3) is a stale-write precondition,
+        # not a settings field - excluded from the table comparison the
+        # same way self is.
         signature = inspect.signature(getattr(YamlWriter, method_name))
-        return set(signature.parameters) - {"self"}
+        return set(signature.parameters) - {"self", "expected_revision"}
 
     def test_update_oauth_settings_covers_exactly_the_oauth_rows(self):
         # `clients` is a merged list with its own save_client path, not a

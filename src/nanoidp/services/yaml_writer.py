@@ -5,14 +5,14 @@ Provides atomic write operations for YAML configuration files.
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from ..config import OAuthClient, Settings, User, get_config
 from ..config_documents import document_defaults
+from ..config_writer import compare_and_replace
 from ..hooks import HookError
 from ..serialization import (
     OWNED_SETTINGS,
-    atomic_write_yaml,
     client_id_matches,
     client_to_yaml,
     is_unchanged,
@@ -34,12 +34,30 @@ class YamlWriter:
         self.users_file = self.config_dir / "users.yaml"
         self.settings_file = self.config_dir / "settings.yaml"
 
-    def _atomic_write(self, file_path: Path, data: Dict[str, Any]) -> None:
-        """Atomically write a YAML document (shared implementation, #83), then
-        run the single post-write contract (#185):
+    def _atomic_write(
+        self,
+        file_path: Path,
+        mutate: Callable[[Dict[str, Any]], Any],
+        expected_revision: Optional[str] = None,
+    ) -> None:
+        """Write via the shared compare-and-replace primitive (#229 phase 3),
+        then run the single post-write contract (#185):
 
-            write local -> notify the mirror (on_config_saved) -> refresh the
-            runtime FROM LOCAL DISK -> propagate a mirror failure if strict.
+            check -> load -> mutate -> replace -> notify the mirror
+            (on_config_saved) -> refresh the runtime FROM LOCAL DISK ->
+            propagate a mirror failure if strict.
+
+        ``mutate`` receives the freshly loaded document and edits it in
+        place (``compare_and_replace``'s own contract) - every caller's
+        existence/not-found check now happens *inside* ``mutate`` rather
+        than on a document loaded beforehand, so it runs against the
+        same document that gets written, under the same lock, instead of
+        racing a concurrent writer between an earlier check and this
+        write (the #229 the whole primitive exists to close).
+        ``expected_revision`` (default ``None``, unconditional - today's
+        last-write-wins) is a stale-precondition check: a mismatch
+        raises ``ConflictError`` before the file is even loaded, let
+        alone mutated.
 
         The refresh is ConfigManager.reload_local(), never reload(): a
         reload() would run on_before_load and could pull a stale or
@@ -48,7 +66,7 @@ class YamlWriter:
         newest state after our own write; only an explicit reload consults
         the mirror.
         """
-        atomic_write_yaml(file_path, data)
+        compare_and_replace(file_path, expected_revision, mutate)
         kind = "users" if file_path.name == "users.yaml" else "settings"
         config = get_config()
         hook_error: Optional[HookError] = None
@@ -72,107 +90,124 @@ class YamlWriter:
 
     # ==================== User Operations ====================
 
-    def save_user(self, user: User, is_new: bool = False) -> None:
+    def save_user(
+        self, user: User, is_new: bool = False, expected_revision: Optional[str] = None
+    ) -> None:
         """
         Save or update a user in users.yaml.
 
         Args:
             user: The User object to save
             is_new: If True, will fail if user already exists
+            expected_revision: #229 phase 3 - optional stale-write guard,
+                unused by any caller yet
         """
-        data = self._load_users_yaml()
 
-        if is_new and user.username in data.get("users", {}):
-            raise ValueError(f"User '{user.username}' already exists")
+        def mutate(data: Dict[str, Any]) -> None:
+            data.setdefault("users", {})
+            data.setdefault("default_user", "admin")
+            if is_new and user.username in data["users"]:
+                raise ValueError(f"User '{user.username}' already exists")
+            data["users"][user.username] = user_to_yaml(user)
 
-        data.setdefault("users", {})[user.username] = user_to_yaml(user)
+        self._atomic_write(self.users_file, mutate, expected_revision)
 
-        self._atomic_write(self.users_file, data)
-
-    def delete_user(self, username: str) -> None:
+    def delete_user(self, username: str, expected_revision: Optional[str] = None) -> None:
         """
         Delete a user from users.yaml.
 
         Args:
             username: The username to delete
+            expected_revision: #229 phase 3 - optional stale-write guard,
+                unused by any caller yet
         """
-        data = self._load_users_yaml()
 
-        if username not in data.get("users", {}):
-            raise ValueError(f"User '{username}' not found")
+        def mutate(data: Dict[str, Any]) -> None:
+            data.setdefault("users", {})
+            data.setdefault("default_user", "admin")
+            if username not in data["users"]:
+                raise ValueError(f"User '{username}' not found")
+            del data["users"][username]
 
-        del data["users"][username]
+            # If deleted user was the default, update default_user
+            if data.get("default_user") == username:
+                remaining_users = list(data["users"].keys())
+                data["default_user"] = remaining_users[0] if remaining_users else ""
 
-        # If deleted user was the default, update default_user
-        if data.get("default_user") == username:
-            remaining_users = list(data.get("users", {}).keys())
-            data["default_user"] = remaining_users[0] if remaining_users else ""
+        self._atomic_write(self.users_file, mutate, expected_revision)
 
-        self._atomic_write(self.users_file, data)
-
-    def set_default_user(self, username: str) -> None:
+    def set_default_user(self, username: str, expected_revision: Optional[str] = None) -> None:
         """Set the default user for client_credentials grant."""
-        data = self._load_users_yaml()
 
-        if username not in data.get("users", {}):
-            raise ValueError(f"User '{username}' not found")
+        def mutate(data: Dict[str, Any]) -> None:
+            data.setdefault("users", {})
+            if username not in data["users"]:
+                raise ValueError(f"User '{username}' not found")
+            data["default_user"] = username
 
-        data["default_user"] = username
-
-        self._atomic_write(self.users_file, data)
+        self._atomic_write(self.users_file, mutate, expected_revision)
 
     # ==================== OAuth Client Operations ====================
 
-    def save_client(self, client: OAuthClient, is_new: bool = False) -> None:
+    def save_client(
+        self, client: OAuthClient, is_new: bool = False, expected_revision: Optional[str] = None
+    ) -> None:
         """
         Save or update an OAuth client in settings.yaml.
 
         Args:
             client: The OAuthClient object to save
             is_new: If True, will fail if client already exists
+            expected_revision: #229 phase 3 - optional stale-write guard,
+                unused by any caller yet
         """
-        data = self._load_settings_yaml()
 
-        clients = data.setdefault("oauth", {}).setdefault("clients", [])
+        def mutate(data: Dict[str, Any]) -> None:
+            clients = data.setdefault("oauth", {}).setdefault("clients", [])
 
-        # Check if client exists. Match through client_id_matches so a raw
-        # ${CLIENT_ID:...} placeholder entry is recognised as the same client
-        # instead of being appended as a duplicate (#127).
-        existing_idx = None
-        for idx, c in enumerate(clients):
-            if client_id_matches(c, client.client_id):
-                existing_idx = idx
-                break
+            # Check if client exists. Match through client_id_matches so a
+            # raw ${CLIENT_ID:...} placeholder entry is recognised as the
+            # same client instead of being appended as a duplicate (#127).
+            existing_idx = None
+            for idx, c in enumerate(clients):
+                if client_id_matches(c, client.client_id):
+                    existing_idx = idx
+                    break
 
-        if is_new and existing_idx is not None:
-            raise ValueError(f"Client '{client.client_id}' already exists")
+            if is_new and existing_idx is not None:
+                raise ValueError(f"Client '{client.client_id}' already exists")
 
-        if existing_idx is not None:
-            clients[existing_idx] = merge_client_entry(clients[existing_idx], client)
-        else:
-            clients.append(client_to_yaml(client))
+            if existing_idx is not None:
+                clients[existing_idx] = merge_client_entry(clients[existing_idx], client)
+            else:
+                clients.append(client_to_yaml(client))
 
-        self._atomic_write(self.settings_file, data)
+        self._atomic_write(self.settings_file, mutate, expected_revision)
 
-    def delete_client(self, client_id: str) -> None:
+    def delete_client(self, client_id: str, expected_revision: Optional[str] = None) -> None:
         """Delete an OAuth client from settings.yaml."""
-        data = self._load_settings_yaml()
 
-        clients = data.get("oauth", {}).get("clients", [])
-        # Match through client_id_matches so a client whose id is an env
-        # placeholder can still be deleted (#127).
-        new_clients = [c for c in clients if not client_id_matches(c, client_id)]
+        def mutate(data: Dict[str, Any]) -> None:
+            clients = data.get("oauth", {}).get("clients", [])
+            # Match through client_id_matches so a client whose id is an
+            # env placeholder can still be deleted (#127).
+            new_clients = [c for c in clients if not client_id_matches(c, client_id)]
 
-        if len(new_clients) == len(clients):
-            raise ValueError(f"Client '{client_id}' not found")
+            if len(new_clients) == len(clients):
+                raise ValueError(f"Client '{client_id}' not found")
 
-        data["oauth"]["clients"] = new_clients
+            data["oauth"]["clients"] = new_clients
 
-        self._atomic_write(self.settings_file, data)
+        self._atomic_write(self.settings_file, mutate, expected_revision)
 
     # ==================== Settings Operations ====================
 
-    def _apply_provided_settings(self, section_name: str, provided: "Dict[str, Any]") -> None:
+    def _apply_provided_settings(
+        self,
+        section_name: str,
+        provided: "Dict[str, Any]",
+        expected_revision: Optional[str] = None,
+    ) -> None:
         """Apply form-provided values for one settings.yaml section (#214).
 
         The per-field encoding comes from serialization.OWNED_SETTINGS, the
@@ -184,20 +219,22 @@ class YamlWriter:
         the expanded on-disk value actually differs (#127), so untouched
         ``${VAR}`` placeholders and comments survive.
         """
-        data = self._load_settings_yaml()
-        section = data.setdefault(section_name, {})
-        rows = {f.key: f for f in OWNED_SETTINGS if f.section == section_name}
-        for key, value in provided.items():
-            if value is None:
-                continue
-            field = rows[key]
-            compare = value if (field.doc_mode == "plain" or value) else field.empty
-            if not is_unchanged(section.get(key), compare):
-                if field.doc_mode != "plain" and not value:
-                    section.pop(key, None)
-                else:
-                    section[key] = value
-        self._atomic_write(self.settings_file, data)
+
+        def mutate(data: Dict[str, Any]) -> None:
+            section = data.setdefault(section_name, {})
+            rows = {f.key: f for f in OWNED_SETTINGS if f.section == section_name}
+            for key, value in provided.items():
+                if value is None:
+                    continue
+                field = rows[key]
+                compare = value if (field.doc_mode == "plain" or value) else field.empty
+                if not is_unchanged(section.get(key), compare):
+                    if field.doc_mode != "plain" and not value:
+                        section.pop(key, None)
+                    else:
+                        section[key] = value
+
+        self._atomic_write(self.settings_file, mutate, expected_revision)
 
     def update_oauth_settings(
         self,
@@ -211,6 +248,7 @@ class YamlWriter:
         require_pkce: Optional[bool] = None,
         refresh_token_rotation: Optional[bool] = None,
         logos_dir: Optional[str] = None,
+        expected_revision: Optional[str] = None,
     ) -> None:
         """Update OAuth settings (per-field encodings: OWNED_SETTINGS, #214).
 
@@ -232,6 +270,7 @@ class YamlWriter:
                 "refresh_token_rotation": refresh_token_rotation,
                 "logos_dir": logos_dir,
             },
+            expected_revision,
         )
 
     def update_saml_settings(
@@ -248,6 +287,7 @@ class YamlWriter:
         export_groups: Optional[bool] = None,
         roles_attr_name: Optional[str] = None,
         groups_attr_name: Optional[str] = None,
+        expected_revision: Optional[str] = None,
     ) -> None:
         """Update SAML settings (same #127 guard; encodings: OWNED_SETTINGS).
 
@@ -270,25 +310,34 @@ class YamlWriter:
                 "roles_attr_name": roles_attr_name,
                 "groups_attr_name": groups_attr_name,
             },
+            expected_revision,
         )
 
-    def update_authority_prefixes(self, prefixes: Dict[str, str]) -> None:
+    def update_authority_prefixes(
+        self, prefixes: Dict[str, str], expected_revision: Optional[str] = None
+    ) -> None:
         """Update authority prefix mappings."""
-        data = self._load_settings_yaml()
-        if not is_unchanged(data.get("authority_prefixes"), prefixes):
-            data["authority_prefixes"] = prefixes
 
-        self._atomic_write(self.settings_file, data)
+        def mutate(data: Dict[str, Any]) -> None:
+            if not is_unchanged(data.get("authority_prefixes"), prefixes):
+                data["authority_prefixes"] = prefixes
 
-    def update_allowed_identity_classes(self, classes: List[str]) -> None:
+        self._atomic_write(self.settings_file, mutate, expected_revision)
+
+    def update_allowed_identity_classes(
+        self, classes: List[str], expected_revision: Optional[str] = None
+    ) -> None:
         """Update allowed identity classes."""
-        data = self._load_settings_yaml()
-        if not is_unchanged(data.get("allowed_identity_classes"), classes):
-            data["allowed_identity_classes"] = classes
 
-        self._atomic_write(self.settings_file, data)
+        def mutate(data: Dict[str, Any]) -> None:
+            if not is_unchanged(data.get("allowed_identity_classes"), classes):
+                data["allowed_identity_classes"] = classes
 
-    def update_login_settings(self, mode: Optional[str] = None) -> None:
+        self._atomic_write(self.settings_file, mutate, expected_revision)
+
+    def update_login_settings(
+        self, mode: Optional[str] = None, expected_revision: Optional[str] = None
+    ) -> None:
         """Update the 'login' section (persona login mode, local dev
         convenience). 'password' is the default and is never persisted -
         the 'login' section is omitted entirely at the default, same as
@@ -299,17 +348,20 @@ class YamlWriter:
         blank value is treated the same as absent: left unchanged, not
         written to disk. A present, non-blank value is validated against
         the same `{"password", "persona"}` set as ``Settings.login_mode``
-        *before* anything is written, so an invalid value (e.g. a typo)
-        raises instead of persisting a mode the server can't start with.
+        *before* anything is written - including before the file is even
+        loaded - so an invalid value (e.g. a typo) raises instead of
+        persisting a mode the server can't start with.
         """
-        data = self._load_settings_yaml()
         login_mode_default = document_defaults()["login.mode"]
 
         if mode:
             Settings.validate_login_mode(mode)
-            merge_optional_nested_field(data, "login", "mode", mode, login_mode_default)
 
-        self._atomic_write(self.settings_file, data)
+        def mutate(data: Dict[str, Any]) -> None:
+            if mode:
+                merge_optional_nested_field(data, "login", "mode", mode, login_mode_default)
+
+        self._atomic_write(self.settings_file, mutate, expected_revision)
 
 
 # Global instance
