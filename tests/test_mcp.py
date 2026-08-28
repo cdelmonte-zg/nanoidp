@@ -930,6 +930,31 @@ class TestMCPUserDescription:
         assert config.get_user("eve").description == ""
 
     @pytest.mark.asyncio
+    async def test_update_user_rejects_atomically_across_multiple_fields(self, tmp_path):
+        """Round 2 (maintainer review on #244): validate_assignment=True
+        made field-by-field mutation of the *live* user observable - an
+        earlier field in the call could commit before a later field's
+        validation failure raised, leaving the user half-updated (and this
+        was reachable through the ordinary call_tool path too, since 'email'
+        has no schema-level format check, only the model validator). A valid
+        'password' followed by an invalid 'description' in the same call
+        must leave the password unchanged - _tool_update_user validates a
+        scratch copy and only swaps it in once every field has passed."""
+        from nanoidp.mcp_server import _execute_tool
+        config = self._config(tmp_path)
+        await _execute_tool("create_user", {"username": "eve", "password": "old"}, config)
+
+        with pytest.raises(ValueError):
+            await _execute_tool(
+                "update_user",
+                {"username": "eve", "password": "new-should-not-stick", "description": "a" * 300},
+                config,
+            )
+
+        assert config.get_user("eve").password == "old"
+        assert config.get_user("eve").description == ""
+
+    @pytest.mark.asyncio
     async def test_get_settings_includes_login_mode(self, tmp_path):
         from nanoidp.mcp_server import _execute_tool
         config = self._config(tmp_path)

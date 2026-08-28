@@ -1141,25 +1141,32 @@ def _tool_update_user(arguments: dict[str, Any], config: ConfigManager) -> dict[
     if username not in config.users:
         return {"success": False, "error": f"User '{username}' not found"}
 
-    user = config.users[username]
+    # Apply every assignment to a scratch copy first, so a later field's
+    # validation failure (User.model_config now has validate_assignment=True)
+    # can never leave earlier fields already committed on the live user - the
+    # same half-update hazard update_client's own comment documents. The live
+    # object is only replaced once every requested field has validated
+    # (deep copy, not model_copy(update=...), which skips validation entirely).
+    candidate = config.users[username].model_copy(deep=True)
     if "password" in arguments:
-        user.password = arguments["password"]
+        candidate.password = arguments["password"]
     if "description" in arguments:
-        user.description = arguments["description"]
+        candidate.description = arguments["description"]
     if "email" in arguments:
-        user.email = arguments["email"]
+        candidate.email = arguments["email"]
     if "roles" in arguments:
-        user.roles = arguments["roles"]
+        candidate.roles = arguments["roles"]
     if "groups" in arguments:
-        user.groups = arguments["groups"]
+        candidate.groups = arguments["groups"]
     if "tenant" in arguments:
-        user.tenant = arguments["tenant"]
+        candidate.tenant = arguments["tenant"]
     if "identity_class" in arguments:
-        user.identity_class = arguments["identity_class"]
+        candidate.identity_class = arguments["identity_class"]
     if "entitlements" in arguments:
-        user.entitlements = arguments["entitlements"]
+        candidate.entitlements = arguments["entitlements"]
     if "source_acl" in arguments:
-        user.source_acl = arguments["source_acl"]
+        candidate.source_acl = arguments["source_acl"]
+    user = config.users[username] = candidate
 
     return {"success": True, "user": _user_to_dict(user)}
 
