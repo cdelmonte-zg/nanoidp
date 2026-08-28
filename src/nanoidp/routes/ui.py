@@ -23,6 +23,7 @@ from flask.typing import ResponseReturnValue
 
 from ..branding import effective_logos_dir
 from ..config import OAuthClient, User, get_config
+from ..config_writer import ConflictError, current_revision
 from ..hooks import HookError
 from ..services import get_audit_log, get_token_service, get_yaml_writer
 from ._audit import audit_event
@@ -39,6 +40,23 @@ logger = logging.getLogger(__name__)
 ui_bp = Blueprint("ui", __name__)
 ui_bp.before_request(ui_login_required)
 ui_bp.before_request(management_secret_required_for_ui)
+
+
+def _expected_revision_from_form() -> str | None:
+    """The revision a form's hidden ``expected_revision`` field carried
+    from when it was rendered (#229 phase 4). Absent - an old cached
+    page, a script or e2e test posting directly without loading the
+    form first - means unconditional, today's last-write-wins, exactly
+    like every write path before this phase.
+    """
+    return request.form.get("expected_revision") or None
+
+
+def _conflict_message(exc: ConflictError) -> str:
+    """One phrasing for every 'someone else changed this' flash (#229
+    phase 4): the technical detail from ConflictError is useful (it
+    names the file), the prefix says what to do about it."""
+    return f"{exc} - please reload the page and try again"
 
 
 # ==================== Dashboard ====================
@@ -185,6 +203,8 @@ def user_create() -> ResponseReturnValue:
     """Create new user."""
     config = get_config()
 
+    yaml_writer = get_yaml_writer()
+
     if request.method == "GET":
         return render_template(
             "users_form.html",
@@ -192,6 +212,7 @@ def user_create() -> ResponseReturnValue:
             allowed_identity_classes=config.settings.allowed_identity_classes,
             persona_mode=config.settings.persona_mode_enabled,
             current_user=session.get("user"),
+            revision=current_revision(yaml_writer.users_file),
         )
 
     # POST: Create user
@@ -238,14 +259,18 @@ def user_create() -> ResponseReturnValue:
             attributes=attributes,
         )
 
-        yaml_writer = get_yaml_writer()
-        yaml_writer.save_user(user, is_new=True)
+        yaml_writer.save_user(
+            user, is_new=True, expected_revision=_expected_revision_from_form()
+        )
 
         flash(f"User '{username}' created successfully", "success")
         return redirect(url_for("ui.user_detail", username=username))
 
     except ValueError as e:
         flash(str(e), "error")
+        return redirect(url_for("ui.user_create"))
+    except ConflictError as e:
+        flash(_conflict_message(e), "error")
         return redirect(url_for("ui.user_create"))
     except Exception as e:
         logger.exception("Failed to create user")
@@ -284,6 +309,8 @@ def user_edit(username: str) -> ResponseReturnValue:
         flash(f"User '{username}' not found", "error")
         return redirect(url_for("ui.users"))
 
+    yaml_writer = get_yaml_writer()
+
     if request.method == "GET":
         return render_template(
             "users_form.html",
@@ -291,6 +318,7 @@ def user_edit(username: str) -> ResponseReturnValue:
             allowed_identity_classes=config.settings.allowed_identity_classes,
             persona_mode=config.settings.persona_mode_enabled,
             current_user=session.get("user"),
+            revision=current_revision(yaml_writer.users_file),
         )
 
     # POST: Update user
@@ -331,12 +359,16 @@ def user_edit(username: str) -> ResponseReturnValue:
             attributes=attributes,
         )
 
-        yaml_writer = get_yaml_writer()
-        yaml_writer.save_user(updated_user, is_new=False)
+        yaml_writer.save_user(
+            updated_user, is_new=False, expected_revision=_expected_revision_from_form()
+        )
 
         flash(f"User '{username}' updated successfully", "success")
         return redirect(url_for("ui.user_detail", username=username))
 
+    except ConflictError as e:
+        flash(_conflict_message(e), "error")
+        return redirect(url_for("ui.user_edit", username=username))
     except Exception as e:
         logger.exception("Failed to update user")
         flash(f"Failed to update user: {e}", "error")
@@ -348,13 +380,16 @@ def user_delete(username: str) -> ResponseReturnValue:
     """Delete user."""
     try:
         yaml_writer = get_yaml_writer()
-        yaml_writer.delete_user(username)
+        yaml_writer.delete_user(username, expected_revision=_expected_revision_from_form())
 
         flash(f"User '{username}' deleted successfully", "success")
         return redirect(url_for("ui.users"))
 
     except ValueError as e:
         flash(str(e), "error")
+        return redirect(url_for("ui.users"))
+    except ConflictError as e:
+        flash(_conflict_message(e), "error")
         return redirect(url_for("ui.users"))
     except Exception as e:
         logger.exception("Failed to delete user")
@@ -372,6 +407,7 @@ def clients() -> ResponseReturnValue:
         "clients.html",
         clients=config.settings.clients,
         current_user=session.get("user"),
+        revision=current_revision(get_yaml_writer().settings_file),
     )
 
 
@@ -383,6 +419,8 @@ def _parse_textarea_list(form_value: str) -> list[str]:
 @ui_bp.route("/clients/create", methods=["GET", "POST"])
 def client_create() -> ResponseReturnValue:
     """Create new OAuth client."""
+    yaml_writer = get_yaml_writer()
+
     if request.method == "GET":
         # Generate a random client secret
         generated_secret = secrets.token_urlsafe(32)
@@ -395,6 +433,7 @@ def client_create() -> ResponseReturnValue:
             generated_secret=generated_secret,
             logos_dir=logos_dir,
             current_user=session.get("user"),
+            revision=current_revision(yaml_writer.settings_file),
         )
 
     # POST: Create client
@@ -425,14 +464,18 @@ def client_create() -> ResponseReturnValue:
             allowed_scopes=_parse_textarea_list(request.form.get("allowed_scopes", "")),
         )
 
-        yaml_writer = get_yaml_writer()
-        yaml_writer.save_client(client, is_new=True)
+        yaml_writer.save_client(
+            client, is_new=True, expected_revision=_expected_revision_from_form()
+        )
 
         flash(f"OAuth client '{client_id}' created successfully", "success")
         return redirect(url_for("ui.clients"))
 
     except ValueError as e:
         flash(str(e), "error")
+        return redirect(url_for("ui.client_create"))
+    except ConflictError as e:
+        flash(_conflict_message(e), "error")
         return redirect(url_for("ui.client_create"))
     except Exception as e:
         logger.exception("Failed to create client")
@@ -456,6 +499,8 @@ def client_edit(client_id: str) -> ResponseReturnValue:
         flash(f"Client '{client_id}' not found", "error")
         return redirect(url_for("ui.clients"))
 
+    yaml_writer = get_yaml_writer()
+
     if request.method == "GET":
         logos_dir = effective_logos_dir(
             config.settings.logos_dir, current_app.static_folder
@@ -466,6 +511,7 @@ def client_edit(client_id: str) -> ResponseReturnValue:
             generated_secret=None,
             logos_dir=logos_dir,
             current_user=session.get("user"),
+            revision=current_revision(yaml_writer.settings_file),
         )
 
     # POST: Update client
@@ -491,12 +537,16 @@ def client_edit(client_id: str) -> ResponseReturnValue:
             allowed_scopes=_parse_textarea_list(request.form.get("allowed_scopes", "")),
         )
 
-        yaml_writer = get_yaml_writer()
-        yaml_writer.save_client(updated_client, is_new=False)
+        yaml_writer.save_client(
+            updated_client, is_new=False, expected_revision=_expected_revision_from_form()
+        )
 
         flash(f"OAuth client '{client_id}' updated successfully", "success")
         return redirect(url_for("ui.clients"))
 
+    except ConflictError as e:
+        flash(_conflict_message(e), "error")
+        return redirect(url_for("ui.client_edit", client_id=client_id))
     except Exception as e:
         logger.exception("Failed to update client")
         flash(f"Failed to update client: {e}", "error")
@@ -508,13 +558,16 @@ def client_delete(client_id: str) -> ResponseReturnValue:
     """Delete OAuth client."""
     try:
         yaml_writer = get_yaml_writer()
-        yaml_writer.delete_client(client_id)
+        yaml_writer.delete_client(client_id, expected_revision=_expected_revision_from_form())
 
         flash(f"OAuth client '{client_id}' deleted successfully", "success")
         return redirect(url_for("ui.clients"))
 
     except ValueError as e:
         flash(str(e), "error")
+        return redirect(url_for("ui.clients"))
+    except ConflictError as e:
+        flash(_conflict_message(e), "error")
         return redirect(url_for("ui.clients"))
     except Exception as e:
         logger.exception("Failed to delete client")
@@ -550,11 +603,16 @@ def client_regenerate_secret(client_id: str) -> ResponseReturnValue:
         updated_client = client.model_copy(update={"client_secret": new_secret})
 
         yaml_writer = get_yaml_writer()
-        yaml_writer.save_client(updated_client, is_new=False)
+        yaml_writer.save_client(
+            updated_client, is_new=False, expected_revision=_expected_revision_from_form()
+        )
 
         flash(f"New secret for '{client_id}': {new_secret}", "success")
         return redirect(url_for("ui.clients"))
 
+    except ConflictError as e:
+        flash(_conflict_message(e), "error")
+        return redirect(url_for("ui.clients"))
     except Exception as e:
         logger.exception("Failed to regenerate client secret")
         flash(f"Failed to regenerate secret: {e}", "error")
@@ -597,6 +655,8 @@ def settings() -> ResponseReturnValue:
     """IdP settings configuration page."""
     config = get_config()
 
+    yaml_writer = get_yaml_writer()
+
     if request.method == "GET":
         return render_template(
             "settings.html",
@@ -605,12 +665,11 @@ def settings() -> ResponseReturnValue:
             effective_saml_entity_id=effective_saml_entity_id(config.settings),
             effective_saml_sso_url=effective_saml_sso_url(config.settings),
             current_user=session.get("user"),
+            revision=current_revision(yaml_writer.settings_file),
         )
 
     # POST: Update settings
     try:
-        yaml_writer = get_yaml_writer()
-
         # Every value follows the "absent = unchanged" contract (#131): a field
         # missing from the submitted form is passed as None and the YAML writer
         # leaves it alone, so a partial form (a stale tab, a script, the e2e
@@ -618,8 +677,19 @@ def settings() -> ResponseReturnValue:
         # never carried. Present-but-blank still means "clear".
         expiry_raw = request.form.get("token_expiry_minutes")
 
+        # This page writes settings.yaml four times in one request (#229
+        # phase 4). The form's own revision only guards the first write;
+        # each write after that checks against the revision the PREVIOUS
+        # write in this same request just produced, not the (now stale)
+        # one the page was rendered with - otherwise every write after
+        # the first would always look conflicted against its own
+        # predecessor. A concurrent writer interleaving between any of
+        # the four is still caught, since each check is against the file
+        # as it actually stands at that moment.
+        revision = _expected_revision_from_form()
+
         # OAuth settings
-        yaml_writer.update_oauth_settings(
+        revision = yaml_writer.update_oauth_settings(
             issuer=_form_text("issuer"),
             issuer_from_request=_form_bool("issuer_from_request"),
             issuer_allowlist=_form_textarea_list("issuer_allowlist"),
@@ -630,10 +700,11 @@ def settings() -> ResponseReturnValue:
             require_pkce=_form_bool("require_pkce"),
             refresh_token_rotation=_form_bool("refresh_token_rotation"),
             logos_dir=_form_text("logos_dir"),
+            expected_revision=revision,
         )
 
         # SAML settings
-        yaml_writer.update_saml_settings(
+        revision = yaml_writer.update_saml_settings(
             entity_id=_form_text("saml_entity_id"),
             sso_url=_form_text("saml_sso_url"),
             default_acs_url=_form_text("default_acs_url"),
@@ -646,19 +717,25 @@ def settings() -> ResponseReturnValue:
             export_groups=_form_bool("saml_export_groups"),
             roles_attr_name=_form_text("saml_roles_attr_name"),
             groups_attr_name=_form_text("saml_groups_attr_name"),
+            expected_revision=revision,
         )
 
         # Identity classes
         identity_classes = [ic.strip() for ic in request.form.get("allowed_identity_classes", "").split("\n") if ic.strip()]
         if identity_classes:
-            yaml_writer.update_allowed_identity_classes(identity_classes)
+            revision = yaml_writer.update_allowed_identity_classes(
+                identity_classes, expected_revision=revision
+            )
 
         # Login mode (persona login, local dev convenience)
-        yaml_writer.update_login_settings(mode=_form_text("login_mode"))
+        yaml_writer.update_login_settings(mode=_form_text("login_mode"), expected_revision=revision)
 
         flash("Settings updated successfully", "success")
         return redirect(url_for("ui.settings"))
 
+    except ConflictError as e:
+        flash(_conflict_message(e), "error")
+        return redirect(url_for("ui.settings"))
     except HookError as e:
         # The local write and the reload already happened (#185): the form's
         # values are in effect, only the mirror hook failed. The message
@@ -764,18 +841,18 @@ def keys_download(key_type: str) -> ResponseReturnValue:
 def claims() -> ResponseReturnValue:
     """Claims and authority prefixes configuration."""
     config = get_config()
+    yaml_writer = get_yaml_writer()
 
     if request.method == "GET":
         return render_template(
             "claims.html",
             settings=config.settings,
             current_user=session.get("user"),
+            revision=current_revision(yaml_writer.settings_file),
         )
 
     # POST: Update authority prefixes
     try:
-        yaml_writer = get_yaml_writer()
-
         prefixes = {}
 
         # Core prefixes
@@ -793,11 +870,16 @@ def claims() -> ResponseReturnValue:
             if key and value:
                 prefixes[key] = value
 
-        yaml_writer.update_authority_prefixes(prefixes)
+        yaml_writer.update_authority_prefixes(
+            prefixes, expected_revision=_expected_revision_from_form()
+        )
 
         flash("Authority prefixes updated successfully", "success")
         return redirect(url_for("ui.claims"))
 
+    except ConflictError as e:
+        flash(_conflict_message(e), "error")
+        return redirect(url_for("ui.claims"))
     except Exception as e:
         logger.exception("Failed to update authority prefixes")
         flash(f"Failed to update prefixes: {e}", "error")

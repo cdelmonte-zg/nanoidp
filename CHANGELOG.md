@@ -100,16 +100,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as `ConfigManager.save()`** (#229): `save_user`, `delete_user`,
   `save_client`, `delete_client` and the rest of its write methods route
   through `compare_and_replace`, and each gained an optional
-  `expected_revision` precondition (unused by any caller yet). The
-  practical effect today: creating or deleting a user/client now checks
-  "does this already exist / does this exist at all" against the same
-  document it writes, under the same lock, instead of against a copy
-  loaded before the write started. Previously, two near-simultaneous
-  submissions creating the same new user or client could both pass
-  their "already exists" check and the second would silently overwrite
-  the first, with no error to either request; that lost update is now
-  impossible - the second request correctly gets an "already exists"
-  error instead.
+  `expected_revision` precondition. The practical effect: creating or
+  deleting a user/client now checks "does this already exist / does
+  this exist at all" against the same document it writes, under the
+  same lock, instead of against a copy loaded before the write started.
+  Previously, two near-simultaneous submissions creating the same new
+  user or client could both pass their "already exists" check and the
+  second would silently overwrite the first, with no error to either
+  request; that lost update is now impossible - the second request
+  correctly gets an "already exists" error instead.
+- **Every web UI form that writes `users.yaml`/`settings.yaml` now
+  carries the revision it was rendered with, and refuses a stale
+  submission** (#229 phase 4): create/edit/delete user, create/edit
+  client, regenerate client secret, settings, and authority prefixes
+  all send a hidden `expected_revision` field and get a clear
+  "changed since it was last read - please reload and try again" flash
+  instead of silently overwriting someone else's concurrent change (an
+  edit based on a page loaded before another admin deleted or changed
+  the same user/client, for instance). The settings page writes
+  `settings.yaml` four times per submission (OAuth, SAML, identity
+  classes, login mode); each write after the first checks against the
+  revision the *previous write in that same request* produced, so a
+  concurrent writer interleaving between any of the four is still
+  caught, not just one before the first. A submission with no
+  `expected_revision` at all (an old cached page, a script, the e2e
+  test agent) keeps today's unconditional last-write-wins - nothing
+  about this requires an existing caller to opt in.
 
 ### Security
 - **Opt-in `management_secret` mutation gate** (#163): one shared secret that

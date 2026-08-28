@@ -8,6 +8,7 @@
 </div>
 
 <form method="post">
+    <input type="hidden" name="expected_revision" value="{{ revision }}">
     {# An unchecked checkbox never submits, so on its own it looks identical to
        a checkbox that was never on the form. These markers let the server
        apply "absent = unchanged" (#131): a checkbox is only interpreted when

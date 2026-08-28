@@ -18,6 +18,7 @@
 </div>
 
 <form method="post" class="needs-validation" novalidate>
+    <input type="hidden" name="expected_revision" value="{{ revision }}">
     <div class="row g-4">
         <!-- Basic Information -->
         <div class="col-md-6">
@@ -204,6 +205,7 @@
             <div class="modal-footer">
                 <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
                 <form action="{{ url_for('ui.user_delete', username=user.username) }}" method="post" class="d-inline">
+                    <input type="hidden" name="expected_revision" value="{{ revision }}">
                     <button type="submit" class="btn btn-danger">
                         <i class="bi bi-trash me-2"></i>Delete
                     </button>

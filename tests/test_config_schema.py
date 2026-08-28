@@ -115,10 +115,16 @@ def template_field_names() -> set:
 
     ``<name>__on_form`` markers are the checkbox contract (#131), not knobs,
     and the per-checkbox hidden marker is derived from the real field.
+    ``expected_revision`` is the stale-write precondition (#229 phase 4),
+    not a settings.yaml key either - same exclusion reasoning.
     """
     html = SETTINGS_TEMPLATE.read_text()
     names = set(re.findall(r'name="([^"]+)"', html))
-    return {name for name in names if not name.endswith("__on_form")}
+    return {
+        name
+        for name in names
+        if not name.endswith("__on_form") and name != "expected_revision"
+    }
 
 
 class TestGeneratedSchema:

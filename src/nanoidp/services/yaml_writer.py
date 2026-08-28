@@ -39,7 +39,7 @@ class YamlWriter:
         file_path: Path,
         mutate: Callable[[Dict[str, Any]], Any],
         expected_revision: Optional[str] = None,
-    ) -> None:
+    ) -> str:
         """Write via the shared compare-and-replace primitive (#229 phase 3),
         then run the single post-write contract (#185):
 
@@ -65,8 +65,15 @@ class YamlWriter:
         mirror hiccup into a silent rollback (#185 review). The disk is the
         newest state after our own write; only an explicit reload consults
         the mirror.
+
+        Returns the file's new revision (#229 phase 4): the settings
+        page writes settings.yaml several times in one request, and each
+        write after the first must check against the revision the
+        *previous write in this same request* just produced, not the
+        stale one the page was rendered with - otherwise every write
+        after the first would always look conflicted.
         """
-        compare_and_replace(file_path, expected_revision, mutate)
+        new_revision = compare_and_replace(file_path, expected_revision, mutate)
         kind = "users" if file_path.name == "users.yaml" else "settings"
         config = get_config()
         hook_error: Optional[HookError] = None
@@ -77,6 +84,7 @@ class YamlWriter:
         config.reload_local()
         if hook_error is not None:
             raise hook_error
+        return new_revision
 
     def _load_settings_yaml(self) -> Dict[str, Any]:
         """Load the current settings.yaml content."""
@@ -86,7 +94,7 @@ class YamlWriter:
 
     def save_user(
         self, user: User, is_new: bool = False, expected_revision: Optional[str] = None
-    ) -> None:
+    ) -> str:
         """
         Save or update a user in users.yaml.
 
@@ -114,9 +122,9 @@ class YamlWriter:
                 raise ValueError(f"User '{user.username}' already exists")
             data["users"][user.username] = user_to_yaml(user)
 
-        self._atomic_write(self.users_file, mutate, expected_revision)
+        return self._atomic_write(self.users_file, mutate, expected_revision)
 
-    def delete_user(self, username: str, expected_revision: Optional[str] = None) -> None:
+    def delete_user(self, username: str, expected_revision: Optional[str] = None) -> str:
         """
         Delete a user from users.yaml.
 
@@ -142,9 +150,9 @@ class YamlWriter:
                 remaining_users = list(data["users"].keys())
                 data["default_user"] = remaining_users[0] if remaining_users else ""
 
-        self._atomic_write(self.users_file, mutate, expected_revision)
+        return self._atomic_write(self.users_file, mutate, expected_revision)
 
-    def set_default_user(self, username: str, expected_revision: Optional[str] = None) -> None:
+    def set_default_user(self, username: str, expected_revision: Optional[str] = None) -> str:
         """Set the default user for client_credentials grant."""
 
         def mutate(data: Dict[str, Any]) -> None:
@@ -153,13 +161,13 @@ class YamlWriter:
                 raise ValueError(f"User '{username}' not found")
             data["default_user"] = username
 
-        self._atomic_write(self.users_file, mutate, expected_revision)
+        return self._atomic_write(self.users_file, mutate, expected_revision)
 
     # ==================== OAuth Client Operations ====================
 
     def save_client(
         self, client: OAuthClient, is_new: bool = False, expected_revision: Optional[str] = None
-    ) -> None:
+    ) -> str:
         """
         Save or update an OAuth client in settings.yaml.
 
@@ -190,9 +198,9 @@ class YamlWriter:
             else:
                 clients.append(client_to_yaml(client))
 
-        self._atomic_write(self.settings_file, mutate, expected_revision)
+        return self._atomic_write(self.settings_file, mutate, expected_revision)
 
-    def delete_client(self, client_id: str, expected_revision: Optional[str] = None) -> None:
+    def delete_client(self, client_id: str, expected_revision: Optional[str] = None) -> str:
         """Delete an OAuth client from settings.yaml."""
 
         def mutate(data: Dict[str, Any]) -> None:
@@ -206,7 +214,7 @@ class YamlWriter:
 
             data["oauth"]["clients"] = new_clients
 
-        self._atomic_write(self.settings_file, mutate, expected_revision)
+        return self._atomic_write(self.settings_file, mutate, expected_revision)
 
     # ==================== Settings Operations ====================
 
@@ -215,7 +223,7 @@ class YamlWriter:
         section_name: str,
         provided: "Dict[str, Any]",
         expected_revision: Optional[str] = None,
-    ) -> None:
+    ) -> str:
         """Apply form-provided values for one settings.yaml section (#214).
 
         The per-field encoding comes from serialization.OWNED_SETTINGS, the
@@ -242,7 +250,7 @@ class YamlWriter:
                     else:
                         section[key] = value
 
-        self._atomic_write(self.settings_file, mutate, expected_revision)
+        return self._atomic_write(self.settings_file, mutate, expected_revision)
 
     def update_oauth_settings(
         self,
@@ -257,14 +265,14 @@ class YamlWriter:
         refresh_token_rotation: Optional[bool] = None,
         logos_dir: Optional[str] = None,
         expected_revision: Optional[str] = None,
-    ) -> None:
+    ) -> str:
         """Update OAuth settings (per-field encodings: OWNED_SETTINGS, #214).
 
         Skips writing a field whose expanded on-disk value already matches
         what's being submitted, so unchanged ``${VAR}`` placeholders and
         comments survive a form save that only changed other fields (#127).
         """
-        self._apply_provided_settings(
+        return self._apply_provided_settings(
             "oauth",
             {
                 "issuer": issuer,
@@ -296,13 +304,13 @@ class YamlWriter:
         roles_attr_name: Optional[str] = None,
         groups_attr_name: Optional[str] = None,
         expected_revision: Optional[str] = None,
-    ) -> None:
+    ) -> str:
         """Update SAML settings (same #127 guard; encodings: OWNED_SETTINGS).
 
         Blank clears entity_id/sso_url: absent = derived from the effective
         issuer (#181), the same "present-but-blank = clear" contract as #131.
         """
-        self._apply_provided_settings(
+        return self._apply_provided_settings(
             "saml",
             {
                 "entity_id": entity_id,
@@ -323,29 +331,29 @@ class YamlWriter:
 
     def update_authority_prefixes(
         self, prefixes: Dict[str, str], expected_revision: Optional[str] = None
-    ) -> None:
+    ) -> str:
         """Update authority prefix mappings."""
 
         def mutate(data: Dict[str, Any]) -> None:
             if not is_unchanged(data.get("authority_prefixes"), prefixes):
                 data["authority_prefixes"] = prefixes
 
-        self._atomic_write(self.settings_file, mutate, expected_revision)
+        return self._atomic_write(self.settings_file, mutate, expected_revision)
 
     def update_allowed_identity_classes(
         self, classes: List[str], expected_revision: Optional[str] = None
-    ) -> None:
+    ) -> str:
         """Update allowed identity classes."""
 
         def mutate(data: Dict[str, Any]) -> None:
             if not is_unchanged(data.get("allowed_identity_classes"), classes):
                 data["allowed_identity_classes"] = classes
 
-        self._atomic_write(self.settings_file, mutate, expected_revision)
+        return self._atomic_write(self.settings_file, mutate, expected_revision)
 
     def update_login_settings(
         self, mode: Optional[str] = None, expected_revision: Optional[str] = None
-    ) -> None:
+    ) -> str:
         """Update the 'login' section (persona login mode, local dev
         convenience). 'password' is the default and is never persisted -
         the 'login' section is omitted entirely at the default, same as
@@ -369,7 +377,7 @@ class YamlWriter:
             if mode:
                 merge_optional_nested_field(data, "login", "mode", mode, login_mode_default)
 
-        self._atomic_write(self.settings_file, mutate, expected_revision)
+        return self._atomic_write(self.settings_file, mutate, expected_revision)
 
 
 # Global instance
