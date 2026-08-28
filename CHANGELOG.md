@@ -96,6 +96,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `LockUnavailableError` - instead of a bare `OSError` or an indefinite
   hang - when the lock file's filesystem does not support advisory locks
   or a peer process holds it for more than 10 seconds.
+- **The web UI's writer (`YamlWriter`) now uses the same write primitive
+  as `ConfigManager.save()`** (#229): `save_user`, `delete_user`,
+  `save_client`, `delete_client` and the rest of its write methods route
+  through `compare_and_replace`, and each gained an optional
+  `expected_revision` precondition (unused by any caller yet). The
+  practical effect today: creating or deleting a user/client now checks
+  "does this already exist / does this exist at all" against the same
+  document it writes, under the same lock, instead of against a copy
+  loaded before the write started. Previously, two near-simultaneous
+  submissions creating the same new user or client could both pass
+  their "already exists" check and the second would silently overwrite
+  the first, with no error to either request; that lost update is now
+  impossible - the second request correctly gets an "already exists"
+  error instead.
 
 ### Security
 - **Opt-in `management_secret` mutation gate** (#163): one shared secret that
