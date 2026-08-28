@@ -31,7 +31,9 @@ import os
 import re
 import shutil
 import tempfile
+import time
 from dataclasses import dataclass
+from io import StringIO
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Mapping, Optional
 
@@ -44,12 +46,29 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Round-trip YAML instance: preserves comments and quote style, and matches
-# the project's existing dash-at-parent-indent list style (#127).
-_yaml_rt = YAML(typ="rt")
-_yaml_rt.indent(mapping=2, sequence=2, offset=0)
-_yaml_rt.preserve_quotes = True
-_yaml_rt.width = 4096  # avoid re-wrapping long values (URLs, descriptions)
+def _new_yaml_rt() -> YAML:
+    """A fresh round-trip YAML instance: preserves comments and quote
+    style, and matches the project's existing dash-at-parent-indent list
+    style (#127).
+
+    Built per call, not once at module scope, because ``ruamel.yaml``'s
+    ``YAML`` instance carries mutable parser/composer/emitter state and is
+    not safe for concurrent use - a single shared instance let a
+    concurrent ``load_yaml_document`` (any read path: ``reload_local()``,
+    ``YamlWriter``'s loaders, every read API) corrupt an unrelated
+    ``load_yaml_document``/``atomic_write_yaml`` call running under
+    ``config_writer``'s write lock, since that lock only serializes
+    writers against each other - it was never taken by reads (#229
+    review: reproduced with 35 errors across six exception types when
+    readers ran concurrently with writes; zero with a fresh instance per
+    call). The cost of constructing one is irrelevant at this write/read
+    rate.
+    """
+    yaml_rt = YAML(typ="rt")
+    yaml_rt.indent(mapping=2, sequence=2, offset=0)
+    yaml_rt.preserve_quotes = True
+    yaml_rt.width = 4096  # avoid re-wrapping long values (URLs, descriptions)
+    return yaml_rt
 
 _ENV_VAR_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::([^}]*))?\}")
 
@@ -214,11 +233,31 @@ def load_yaml_document(file_path: Path) -> Dict[str, Any]:
     """Load a YAML document preserving comments/quote style for a later
     round-trip write. Returns an empty ``CommentedMap`` if the file is
     missing or empty.
+
+    Reads the whole file into memory and closes the handle *before*
+    parsing, rather than handing ruamel an open file object to stream
+    from (#229 review round 9: Windows CI's real failure). The parse,
+    not the read, dominates how long the OS handle would otherwise stay
+    open - measured at 334us with the handle held across the parse
+    versus 9us for the read alone on one of these documents - and on
+    Windows an open handle can make a concurrent ``os.replace()`` of
+    this same file fail with a transient ``PermissionError`` (Python's
+    ``open()`` does not request ``FILE_SHARE_DELETE``). Decoupling read
+    from parse shrinks that window by ~97% at no throughput cost, which
+    materially reduces the sharing window and makes
+    ``_replace_with_retry``'s bounded retry effective in the common
+    case - sustained readers can still exhaust it on Windows (#229
+    review round 10: reproduced under the same four-reader probe this
+    fix was verified against), which is why the regression test
+    (``TestConcurrentReadsOutsideTheLock``) tolerates that one specific,
+    clean failure shape on Windows rather than asserting it can never
+    happen.
     """
     if not file_path.exists():
         return CommentedMap()
     with open(file_path, "r") as f:
-        return _yaml_rt.load(f) or CommentedMap()
+        content = f.read()
+    return _new_yaml_rt().load(StringIO(content)) or CommentedMap()
 
 
 def client_to_yaml(client: OAuthClient) -> Dict[str, Any]:
@@ -523,13 +562,54 @@ def apply_users_document(
     return document
 
 
+_REPLACE_RETRY_ATTEMPTS = 10
+_REPLACE_RETRY_DELAY_SECONDS = 0.01
+
+
+def _replace_with_retry(temp_path: str, file_path: Path) -> None:
+    """``os.replace()`` with a few bounded retries for a transient
+    ``PermissionError`` (#229 review: Windows CI caught this - unlike
+    POSIX ``rename(2)``, Windows can refuse to replace a file that
+    another handle currently has open even just for reading, since
+    Python's ``open()`` does not request ``FILE_SHARE_DELETE``; a
+    concurrent reader (``load_yaml_document``) can hold the target open
+    for the brief moment a write lands).
+
+    This retry alone was not enough: the first version of this fix
+    reasoned the window was "a fraction of a millisecond - a reader
+    opens, parses and closes" without noticing the parse, not the
+    read, was almost all of that window (334us measured, versus 9us for
+    the read alone) - ten retries 10ms apart all landing inside
+    somebody's parse is not actually rare. ``load_yaml_document`` now
+    closes its handle before parsing (#229 review round 9), which
+    materially reduces the window and makes this retry effective in the
+    common case - sustained readers can still exhaust it on Windows
+    (#229 review round 10, reproduced under the same probe), which is
+    why callers of ``atomic_write_yaml`` must not treat a failed replace
+    as having touched the target (see its own docstring) and why the
+    regression test tolerates that one specific failure shape on
+    Windows rather than asserting it away. A ``PermissionError`` that
+    never clears (a genuine permissions problem, not a transient
+    sharing violation) still raises after the last attempt; POSIX pays
+    nothing beyond one successful attempt.
+    """
+    for attempt in range(_REPLACE_RETRY_ATTEMPTS):
+        try:
+            os.replace(temp_path, file_path)
+            return
+        except PermissionError:
+            if attempt == _REPLACE_RETRY_ATTEMPTS - 1:
+                raise
+            time.sleep(_REPLACE_RETRY_DELAY_SECONDS)
+
+
 def atomic_write_yaml(file_path: Path, data: Dict[str, Any]) -> None:
     """Atomically write a YAML document, with a .bak of the previous version.
 
     Writes to a temp file in the same directory and renames over the target;
-    on failure the previous content is restored from the backup. Dumps with
-    ``ruamel.yaml`` in round-trip mode so comments and quote style captured by
-    ``load_yaml_document`` survive (#127).
+    on failure the target is left exactly as it was, with the temp file
+    cleaned up. Dumps with ``ruamel.yaml`` in round-trip mode so comments
+    and quote style captured by ``load_yaml_document`` survive (#127).
     """
     backup_path = file_path.with_suffix(".yaml.bak")
     if file_path.exists():
@@ -540,13 +620,26 @@ def atomic_write_yaml(file_path: Path, data: Dict[str, Any]) -> None:
     )
     try:
         with os.fdopen(fd, "w") as f:
-            _yaml_rt.dump(data, f)
-        os.replace(temp_path, file_path)
+            _new_yaml_rt().dump(data, f)
+        _replace_with_retry(temp_path, file_path)
         logger.info(f"Successfully wrote {file_path}")
     except Exception as e:
         if os.path.exists(temp_path):
             os.unlink(temp_path)
-        if backup_path.exists():
+        # Restore from backup only if the target actually disappeared
+        # (#229 review round 10: a failed dump or an exhausted replace
+        # retry never touches the target at all - os.replace() is
+        # atomic, it either lands or it doesn't - so restoring here
+        # unconditionally turned a clean no-op failure into a
+        # shutil.copy2() in-place overwrite of the still-intact live
+        # file. copy2() is not atomic; a concurrent reader could observe
+        # a partial document mid-copy - reproduced on POSIX by forcing
+        # os.replace() to fail: 43 of 983 reads under the same
+        # four-reader probe came back truncated, silently, with no
+        # exception at all, exactly the partial-read this module exists
+        # to prevent. Only a target that is actually gone needs
+        # restoring; a target that never changed does not.
+        if not file_path.exists() and backup_path.exists():
             shutil.copy2(backup_path, file_path)
             logger.warning(f"Restored {file_path} from backup after write failure")
         raise RuntimeError(f"Failed to write {file_path}: {e}") from e

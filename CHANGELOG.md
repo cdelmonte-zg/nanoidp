@@ -66,6 +66,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and the MCP `create_client`/`update_client` tools, same as
   `additional_audiences`/`redirect_uris`.
 
+### Changed
+- **`ConfigManager.save()` writes `users.yaml` and `settings.yaml` as one
+  coordinated, conflict-checked save** (#229): both files' preconditions (an optional
+  content-hash revision per file, for a future caller that supplies one)
+  are checked before either file is written, both are then written, both
+  fire their own `on_config_saved` hook, and the running configuration is
+  refreshed from disk exactly once before any `hooks.strict` failure is
+  raised - matching the `write -> notify -> reload_local -> raise`
+  contract the web UI's writer already had. Previously a hook failure on
+  `users.yaml` under `hooks.strict` left `settings.yaml` unwritten even
+  when nothing was actually wrong with it; now a hook failure on either
+  file still raises, but by then both files are already saved and the
+  runtime already reflects them - only the mirror push failed. This also
+  closes a gap where MCP's `save_config` tool left the process holding
+  its pre-save view of anything the save's read-modify-write cycle picked
+  up from disk: it now sees the refreshed state too. No caller passes a
+  precondition revision yet; that lands with the surface that needs it.
+  The runtime refresh can itself fail (an in-memory value that bypassed
+  field validation, since `Settings` has no `validate_assignment`, can
+  reach the file and then fail to parse back in) - `save()` now tells
+  that apart from every other outcome: a new `ReloadAfterSaveError` means
+  both files ARE written but the runtime could not adopt them, and it
+  never replaces or hides a pending `hooks.strict` failure, which keeps
+  priority. `save_config`'s MCP response carries a `kind` for all three
+  failure shapes (`conflict`, the hook's own kind, or
+  `reload_after_save`) so a caller can tell them apart without parsing
+  the error text. The advisory cross-process lock now fails as a named
+  `LockUnavailableError` - instead of a bare `OSError` or an indefinite
+  hang - when the lock file's filesystem does not support advisory locks
+  or a peer process holds it for more than 10 seconds.
+
 ### Security
 - **Opt-in `management_secret` mutation gate** (#163): one shared secret that
   gates state-changing calls across all three management surfaces - the MCP

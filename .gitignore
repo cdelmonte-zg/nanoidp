@@ -46,3 +46,6 @@ book/book/
 
 # Transient backups from atomic YAML writes
 config/*.yaml.bak
+
+# Advisory cross-process lock file for compare_and_replace (#229)
+.nanoidp-write.lock

@@ -223,17 +223,19 @@ class TestErrorPolicy:
         on_disk = yaml.safe_load((tmp_path / "settings.yaml").read_text())
         assert on_disk["oauth"]["audience"] == "changed"
 
-    def test_strict_save_stops_at_the_first_failed_write(self, tmp_path):
-        """ConfigManager.save() writes users.yaml then settings.yaml; under
-        strict the users hook failure propagates before settings.yaml is
-        touched. Documented behaviour: each write is committed before its
-        hook runs, and a propagated failure ends the sequence."""
+    def test_strict_save_writes_both_files_before_any_hook_runs(self, tmp_path):
+        """ConfigManager.save() writes users.yaml and settings.yaml as one
+        transaction (#229): both are committed to disk before either
+        file's on_config_saved hook runs. Under strict, a hook failure
+        still raises HookError - but by then both files are already
+        written, unlike the pre-#229 behaviour where a first-file hook
+        failure meant the second file was never even attempted."""
         config = ConfigManager(_write(tmp_path, {"hooks": {"on_config_saved": "false", "strict": True}}))
         config.settings.audience = "changed"
         with pytest.raises(HookError):
             config.save()
         on_disk = yaml.safe_load((tmp_path / "settings.yaml").read_text())
-        assert (on_disk.get("oauth") or {}).get("audience") != "changed"
+        assert on_disk["oauth"]["audience"] == "changed"
 
     def test_config_saved_strict_reaches_yaml_writer_callers(self, tmp_path):
         from nanoidp.services.yaml_writer import YamlWriter

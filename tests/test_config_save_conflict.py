@@ -1,0 +1,191 @@
+"""
+Tests for issue #229 phase 2: ConfigManager.save() now writes users.yaml
+and settings.yaml as one transaction through compare_and_replace_many
+(config_writer.py), and accepts an optional expected_*_revision per file,
+refusing the whole save with ConflictError - before either file is
+written - instead of silently overwriting one.
+"""
+
+import pytest
+import yaml
+
+from nanoidp.config import ConfigManager, ReloadAfterSaveError
+from nanoidp.config_writer import ConflictError, current_revision
+from nanoidp.hooks import HookError
+
+
+def _seed(tmp_path):
+    config_dir = tmp_path / "config"
+    config_dir.mkdir(parents=True)
+    (config_dir / "settings.yaml").write_text(
+        "oauth:\n  issuer: 'http://localhost:8000'\n  audience: 'default'\n"
+    )
+    (config_dir / "users.yaml").write_text(
+        'users:\n  admin:\n    password: "admin"\ndefault_user: admin\n'
+    )
+    return config_dir
+
+
+class TestSaveSettingsConflictDetection:
+    def test_matching_revision_succeeds(self, tmp_path):
+        config_dir = _seed(tmp_path)
+        config = ConfigManager(str(config_dir))
+        base = current_revision(config_dir / "settings.yaml")
+
+        config.settings.audience = "changed"
+        config.save(expected_settings_revision=base)
+
+        on_disk = yaml.safe_load((config_dir / "settings.yaml").read_text())
+        assert on_disk["oauth"]["audience"] == "changed"
+
+    def test_stale_revision_raises_conflict_and_leaves_file_untouched(self, tmp_path):
+        config_dir = _seed(tmp_path)
+        config = ConfigManager(str(config_dir))
+        base = current_revision(config_dir / "settings.yaml")
+
+        # someone else writes settings.yaml first
+        settings_file = config_dir / "settings.yaml"
+        settings_file.write_text(settings_file.read_text() + "\nlogging:\n  verbose_logging: false\n")
+
+        config.settings.audience = "changed"
+        with pytest.raises(ConflictError):
+            config.save(expected_settings_revision=base)
+
+        on_disk = yaml.safe_load(settings_file.read_text())
+        assert (on_disk.get("oauth") or {}).get("audience") != "changed"
+
+    def test_unconditional_save_is_unaffected_by_a_stale_precondition_never_supplied(self, tmp_path):
+        """expected_settings_revision=None (the default) is today's
+        last-write-wins - it keeps working for every caller not yet
+        migrated to pass a revision."""
+        config_dir = _seed(tmp_path)
+        config = ConfigManager(str(config_dir))
+        settings_file = config_dir / "settings.yaml"
+        settings_file.write_text(settings_file.read_text() + "\nlogging:\n  verbose_logging: false\n")
+
+        config.settings.audience = "changed"
+        config.save()
+
+        on_disk = yaml.safe_load(settings_file.read_text())
+        assert on_disk["oauth"]["audience"] == "changed"
+
+
+class TestSaveUsersConflictDetection:
+    def test_matching_revision_succeeds(self, tmp_path):
+        config_dir = _seed(tmp_path)
+        config = ConfigManager(str(config_dir))
+        base = current_revision(config_dir / "users.yaml")
+
+        config.users["admin"].email = "changed@example.org"
+        config.save(expected_users_revision=base)
+
+        on_disk = yaml.safe_load((config_dir / "users.yaml").read_text())
+        assert on_disk["users"]["admin"]["email"] == "changed@example.org"
+
+    def test_stale_revision_raises_conflict(self, tmp_path):
+        config_dir = _seed(tmp_path)
+        config = ConfigManager(str(config_dir))
+        base = current_revision(config_dir / "users.yaml")
+
+        users_file = config_dir / "users.yaml"
+        users_file.write_text(users_file.read_text() + "\n# a comment someone else added\n")
+
+        config.users["admin"].email = "changed@example.org"
+        with pytest.raises(ConflictError):
+            config.save(expected_users_revision=base)
+
+
+class TestSaveIsTransactionalAcrossBothFiles:
+    """Regression pin for the #229 review finding on phase 2: save() used
+    to write users.yaml, then check settings.yaml's revision - a stale
+    settings revision left a fresh users.yaml on disk with the in-memory
+    settings change silently dropped. Both revisions must be checked
+    before either file is written."""
+
+    def test_stale_settings_revision_leaves_users_untouched_too(self, tmp_path):
+        config_dir = _seed(tmp_path)
+        config = ConfigManager(str(config_dir))
+        stale_settings_revision = current_revision(config_dir / "settings.yaml")
+
+        # someone else writes settings.yaml first
+        settings_file = config_dir / "settings.yaml"
+        settings_file.write_text(settings_file.read_text() + "\nlogging:\n  verbose_logging: false\n")
+
+        config.users["admin"].email = "changed@example.org"
+        config.settings.audience = "changed"
+        with pytest.raises(ConflictError):
+            config.save(expected_settings_revision=stale_settings_revision)
+
+        on_disk_users = yaml.safe_load((config_dir / "users.yaml").read_text())
+        on_disk_settings = yaml.safe_load(settings_file.read_text())
+        assert on_disk_users["users"]["admin"].get("email", "") != "changed@example.org"
+        assert (on_disk_settings.get("oauth") or {}).get("audience") != "changed"
+
+
+class TestSaveReloadFailureAfterASuccessfulWrite:
+    """Regression pin for #229 review blocking 3: reload_local() runs
+    unconditionally at the end of save(), so it can raise on its own -
+    Settings has no validate_assignment, so an in-memory
+    token_expiry_minutes = -5 (Settings declares gt=0) reaches
+    settings.yaml just fine but fails to reload back in. Two distinct
+    bugs to pin: a durable write must never be reported as if nothing
+    happened, and a reload failure must never replace a pending
+    HookError - a caller needs to tell "the write itself failed" apart
+    from "written, but the runtime couldn't adopt it" apart from
+    "written, only the mirror push failed"."""
+
+    def test_reload_failure_is_not_reported_as_a_silent_success(self, tmp_path):
+        config_dir = _seed(tmp_path)
+        config = ConfigManager(str(config_dir))
+
+        config.settings.token_expiry_minutes = -5
+
+        with pytest.raises(ReloadAfterSaveError):
+            config.save()
+
+        # the write itself landed - a durable write is not a failure to
+        # hide, and the file is authoritative even though the runtime
+        # could not adopt it
+        on_disk = yaml.safe_load((config_dir / "settings.yaml").read_text())
+        assert on_disk["oauth"]["token_expiry_minutes"] == -5
+
+    def test_reload_failure_does_not_swallow_a_pending_hook_error(self, tmp_path):
+        config_dir = _seed(tmp_path)
+        settings_file = config_dir / "settings.yaml"
+        settings_file.write_text(
+            settings_file.read_text() + "\nhooks:\n  on_config_saved: 'false'\n  strict: true\n"
+        )
+        config = ConfigManager(str(config_dir))
+
+        config.settings.token_expiry_minutes = -5
+
+        with pytest.raises(HookError):
+            config.save()
+
+        # both failures are real, but HookError - "you'll be told the
+        # mirror push failed" - keeps priority over the reload failure
+        on_disk = yaml.safe_load(settings_file.read_text())
+        assert on_disk["oauth"]["token_expiry_minutes"] == -5
+
+
+class TestSaveRefreshesRuntimeOnceAfterBothFiles:
+    """Regression pin: save() used to call reload_local() after each
+    individual file (_save_users then _save_settings), so the users.yaml
+    reload's freshly-loaded Settings discarded the in-memory
+    settings.yaml change before it was ever written. save() must refresh
+    exactly once, after both files are written."""
+
+    def test_settings_change_survives_a_save_that_also_touches_users(self, tmp_path):
+        config_dir = _seed(tmp_path)
+        config = ConfigManager(str(config_dir))
+
+        config.settings.security_profile = "oauth21"
+        config.users["admin"].email = "changed@example.org"
+        config.save()
+
+        on_disk_settings = yaml.safe_load((config_dir / "settings.yaml").read_text())
+        on_disk_users = yaml.safe_load((config_dir / "users.yaml").read_text())
+        assert on_disk_settings["security_profile"] == "oauth21"
+        assert on_disk_users["users"]["admin"]["email"] == "changed@example.org"
+        # the runtime reflects what was just written, not the pre-save state
+        assert config.settings.security_profile == "oauth21"
