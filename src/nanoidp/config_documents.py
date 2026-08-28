@@ -423,7 +423,7 @@ class BootstrapDocument(BaseModel):
 # with pre-``attributes:`` files), so a user entry is the one place that must
 # NOT forbid extras.
 _USER_KNOWN_FIELDS = frozenset(
-    {"password", "email", "identity_class", "entitlements", "roles", "groups",
+    {"password", "description", "email", "identity_class", "entitlements", "roles", "groups",
      "tenant", "source_acl", "attributes"}
 )
 
@@ -441,6 +441,7 @@ class UserEntry(BaseModel):
     # validators (#197 review). ``password`` and ``identity_class`` are the
     # two fields whose domain type is Optional, so null is valid there.
     password: Optional[str] = None
+    description: str = ""
     email: Optional[str] = None
     identity_class: Optional[str] = None
     entitlements: List[str] = Field(default_factory=list)
@@ -459,6 +460,7 @@ class UserEntry(BaseModel):
         return User(
             username=username,
             password=self.password,
+            description=self.description,
             # Default depends on the key, so "absent" is detected through
             # model_fields_set; an explicit `email: null` reaches User.email
             # (a str) and fails there, as it did before.

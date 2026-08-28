@@ -72,7 +72,10 @@ DEFAULT_SCOPES_SUPPORTED: tuple[str, ...] = ("openid", "profile", "email", "offl
 
 class User(BaseModel):
     """Represents a user in the system."""
-    model_config = ConfigDict(extra="allow")
+    # Validate on direct attribute assignment too (e.g. MCP update_user), so
+    # field constraints like description's max_length are enforced beyond
+    # construction time - the same rule OAuthClient follows (#37).
+    model_config = ConfigDict(extra="allow", validate_assignment=True)
 
     username: str = Field(..., min_length=1, description="Unique username")
     password: Optional[str] = Field(
@@ -82,6 +85,11 @@ class User(BaseModel):
         "authenticates via persona-mode interactive login (settings "
         "'login.mode: persona'); such a user cannot authenticate via "
         "password-mode login or the OAuth password grant.",
+    )
+    description: str = Field(
+        default="",
+        max_length=200,
+        description="Optional display-only description shown in the persona login picker.",
     )
     email: str = Field(default="", description="User email address")
     identity_class: Optional[str] = Field(default=None, description="Identity classification")
@@ -104,6 +112,7 @@ class User(BaseModel):
         """Convert to dictionary for JSON serialization."""
         return {
             "username": self.username,
+            "description": self.description,
             "email": self.email,
             "identity_class": self.identity_class,
             "entitlements": self.entitlements,

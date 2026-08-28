@@ -95,6 +95,18 @@ class TestAuthorizePersonaMode:
         assert response.status_code == 200
         assert b"Invalid username or password" in response.data
 
+    def test_persona_mode_shows_user_description(self, app, client):
+        _enable_persona_mode(app)
+        with app.app_context():
+            get_config().users["finance-fred"] = get_config().users["admin"].model_copy(
+                update={"username": "finance-fred", "description": "Finance approver persona"}
+            )
+
+        response = client.get(f"/authorize?{AUTHORIZE_QS}")
+
+        assert response.status_code == 200
+        assert b"Finance approver persona" in response.data
+
 
 class TestPersonaModeOrthogonalToOauth21:
     """#12: 'oauth21' governs protocol strictness (PKCE, registered redirect
@@ -219,6 +231,19 @@ class TestSamlSsoPersonaMode:
         assert response.status_code == 200
         assert b"Invalid credentials" in response.data
 
+    def test_persona_mode_shows_user_description(self, app, client):
+        _enable_persona_mode(app)
+        with app.app_context():
+            get_config().users["finance-fred"] = get_config().users["admin"].model_copy(
+                update={"username": "finance-fred", "description": "Finance approver persona"}
+            )
+        saml_request = self._authn_request()
+
+        response = client.post("/saml/sso", data={"SAMLRequest": saml_request})
+
+        assert response.status_code == 200
+        assert b"Finance approver persona" in response.data
+
     def test_prior_persona_dashboard_login_reused_gets_unspecified_context(self, app, client):
         """A session already authenticated via the dashboard's persona /login
         (not SAML's own inline login) must still get 'unspecified', since
@@ -308,6 +333,19 @@ class TestDevicePersonaMode:
 
         assert response.status_code == 200
         assert b"Select a user" in response.data
+
+    def test_persona_mode_shows_user_description(self, app, client, auth_header):
+        _enable_persona_mode(app)
+        with app.app_context():
+            get_config().users["finance-fred"] = get_config().users["admin"].model_copy(
+                update={"username": "finance-fred", "description": "Finance approver persona"}
+            )
+        _, user_code = self._get_device_code(client, auth_header)
+
+        response = client.get(f"/device?user_code={user_code}")
+
+        assert response.status_code == 200
+        assert b"Finance approver persona" in response.data
 
     def test_persona_mode_deny_still_works(self, app, client, auth_header):
         _enable_persona_mode(app)

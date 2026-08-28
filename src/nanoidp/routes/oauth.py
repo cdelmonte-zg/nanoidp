@@ -436,7 +436,7 @@ def _render_authorize_login(
         scope=p.scope,
         error=error_msg,
         persona_mode=config.settings.persona_mode_enabled,
-        users=list(config.users.keys()),
+        users=config.persona_picker_entries(),
     )
 
 
@@ -1851,5 +1851,5 @@ def device_verify() -> ResponseReturnValue:
         error=error_msg,
         success=success_msg,
         persona_mode=persona_mode,
-        users=list(config.users.keys()),
+        users=config.persona_picker_entries(),
     )

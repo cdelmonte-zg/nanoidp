@@ -799,6 +799,161 @@ class TestMCPPersonaLogin:
         from nanoidp.mcp_server import MUTATING_TOOLS
         assert "create_persona_user" in MUTATING_TOOLS
 
+
+class TestMCPUserDescription:
+    """The display-only `description` field is a first-class property on
+    every user-shaped MCP tool, not a custom attribute."""
+
+    def _config(self, tmp_path):
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        (config_dir / "settings.yaml").write_text(
+            'oauth:\n'
+            '  issuer: "http://localhost:8000"\n'
+            '  clients:\n'
+            '    - client_id: "test"\n'
+            '      client_secret: "test"\n'
+        )
+        (config_dir / "users.yaml").write_text(
+            'users:\n  admin:\n    password: "admin"\ndefault_user: admin\n'
+        )
+        from nanoidp.config import ConfigManager
+        return ConfigManager(str(config_dir))
+
+    @pytest.mark.asyncio
+    async def test_create_user_accepts_and_returns_description(self, tmp_path):
+        from nanoidp.mcp_server import _execute_tool
+        config = self._config(tmp_path)
+
+        result = await _execute_tool(
+            "create_user",
+            {"username": "bob", "password": "pw", "description": "Finance approver persona"},
+            config,
+        )
+
+        assert result["success"] is True
+        assert result["user"]["description"] == "Finance approver persona"
+        assert config.get_user("bob").description == "Finance approver persona"
+
+    @pytest.mark.asyncio
+    async def test_create_persona_user_accepts_and_returns_description(self, tmp_path):
+        from nanoidp.mcp_server import _execute_tool
+        config = self._config(tmp_path)
+
+        result = await _execute_tool(
+            "create_persona_user",
+            {"username": "alice", "description": "Admin persona for testing"},
+            config,
+        )
+
+        assert result["success"] is True
+        assert result["user"]["description"] == "Admin persona for testing"
+
+    @pytest.mark.asyncio
+    async def test_update_user_changes_description(self, tmp_path):
+        from nanoidp.mcp_server import _execute_tool
+        config = self._config(tmp_path)
+        await _execute_tool("create_user", {"username": "carol", "password": "pw"}, config)
+
+        result = await _execute_tool(
+            "update_user", {"username": "carol", "description": "Updated note"}, config
+        )
+
+        assert result["success"] is True
+        assert result["user"]["description"] == "Updated note"
+        assert config.get_user("carol").description == "Updated note"
+
+    @pytest.mark.asyncio
+    async def test_get_user_returns_description(self, tmp_path):
+        from nanoidp.mcp_server import _execute_tool
+        config = self._config(tmp_path)
+        await _execute_tool(
+            "create_user", {"username": "dave", "password": "pw", "description": "d"}, config
+        )
+
+        result = await _execute_tool("get_user", {"username": "dave"}, config)
+
+        assert result["user"]["description"] == "d"
+
+    @pytest.mark.asyncio
+    async def test_create_user_and_create_persona_user_schemas_include_description(self, mcp_list_tools):
+        tools = await mcp_list_tools()
+        create_user = next(t for t in tools if t.name == "create_user")
+        create_persona_user = next(t for t in tools if t.name == "create_persona_user")
+        update_user = next(t for t in tools if t.name == "update_user")
+
+        assert "description" in create_user.input_schema["properties"]
+        assert "description" in create_persona_user.input_schema["properties"]
+        assert "description" in update_user.input_schema["properties"]
+
+    @pytest.mark.asyncio
+    async def test_overlong_description_rejected_by_schema(self, monkeypatch, mcp_call_tool, tmp_path):
+        """The MCP protocol path (call_tool) validates maxLength before
+        dispatch - a client can't smuggle an overlong description past the
+        JSON schema even though the handler bypasses it in tests."""
+        import nanoidp.mcp_server as mcp
+
+        monkeypatch.setattr(mcp, "_config", self._config(tmp_path))
+        monkeypatch.setattr(mcp, "_readonly_mode", False)
+        monkeypatch.delenv("NANOIDP_MCP_ADMIN_SECRET", raising=False)
+
+        result = await mcp_call_tool(
+            "create_user",
+            {"username": "toolong", "password": "pw", "description": "a" * 201},
+        )
+
+        assert result.is_error is True
+        payload = json.loads(result.content[0].text)
+        assert payload["code"] == "MCP_INVALID_ARGUMENTS"
+
+    @pytest.mark.asyncio
+    async def test_update_user_direct_mutation_rejects_overlong_description(self, tmp_path):
+        """Defense in depth (maintainer review on #244): _execute_tool is
+        reachable directly, bypassing call_tool's JSON schema check, so
+        _tool_update_user's direct 'user.description = ...' assignment must
+        itself refuse a value the loader would later reject - otherwise a
+        bypassed call can write a users.yaml the server can no longer start
+        from. User.model_config now carries validate_assignment=True (the
+        same fix #37 applied to OAuthClient), so this raises before any
+        write happens."""
+        from nanoidp.mcp_server import _execute_tool
+        config = self._config(tmp_path)
+        await _execute_tool("create_user", {"username": "eve", "password": "pw"}, config)
+
+        with pytest.raises(ValueError):
+            await _execute_tool(
+                "update_user", {"username": "eve", "description": "a" * 300}, config
+            )
+
+        # The in-memory user must be left untouched - the assignment raised
+        # before the model's __setattr__ committed the new value.
+        assert config.get_user("eve").description == ""
+
+    @pytest.mark.asyncio
+    async def test_update_user_rejects_atomically_across_multiple_fields(self, tmp_path):
+        """Round 2 (maintainer review on #244): validate_assignment=True
+        made field-by-field mutation of the *live* user observable - an
+        earlier field in the call could commit before a later field's
+        validation failure raised, leaving the user half-updated (and this
+        was reachable through the ordinary call_tool path too, since 'email'
+        has no schema-level format check, only the model validator). A valid
+        'password' followed by an invalid 'description' in the same call
+        must leave the password unchanged - _tool_update_user validates a
+        scratch copy and only swaps it in once every field has passed."""
+        from nanoidp.mcp_server import _execute_tool
+        config = self._config(tmp_path)
+        await _execute_tool("create_user", {"username": "eve", "password": "old"}, config)
+
+        with pytest.raises(ValueError):
+            await _execute_tool(
+                "update_user",
+                {"username": "eve", "password": "new-should-not-stick", "description": "a" * 300},
+                config,
+            )
+
+        assert config.get_user("eve").password == "old"
+        assert config.get_user("eve").description == ""
+
     @pytest.mark.asyncio
     async def test_get_settings_includes_login_mode(self, tmp_path):
         from nanoidp.mcp_server import _execute_tool

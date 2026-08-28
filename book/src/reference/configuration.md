@@ -160,6 +160,7 @@ which returns `{valid, findings}` for the running config directory.
 users:
   admin:
     password: "admin"
+    description: "Full administrator"   # optional, max 200 chars, display-only
     email: "admin@example.org"
     identity_class: "INTERNAL"
     entitlements:
@@ -178,6 +179,14 @@ users:
 
 default_user: "admin"
 ```
+
+`description` is optional and display-only: it's shown next to the username
+in the [persona login](#login-mode-persona-login) picker so you can tell
+configured users apart at a glance (e.g. "Finance approver", "Read-only
+auditor"). It is never a claim, never exported over SAML, and never part of
+a token - just a note for the person picking a user, capped at 200
+characters.
+
 
 How these attributes end up in tokens, including the `authority_prefixes`
 mapping below, is described in [Tokens and claims](tokens.md).
@@ -203,6 +212,7 @@ users:
     password: "admin"          # still works with either login mode
   alice:
     email: "alice@example.org" # no password: persona-mode only
+    description: "Standard internal user" # optional, shown in the picker
 ```
 
 See the [Security guide](../guides/SECURITY.md#persona-login-mode) for the

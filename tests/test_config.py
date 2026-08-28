@@ -3,6 +3,8 @@ Unit tests for the Configuration Manager.
 Tests user management, client management, and authentication.
 """
 
+import json
+
 import pytest
 
 from nanoidp.config import (
@@ -57,6 +59,44 @@ class TestUserManagement:
         assert hasattr(user, "entitlements")
         assert hasattr(user, "source_acl")
         assert hasattr(user, "attributes")
+
+    def test_user_description_defaults_to_empty_string(self, app):
+        """Description is a first-class, display-only field with a safe default."""
+        with app.app_context():
+            config = get_config()
+            user = config.get_user("admin")
+
+        assert user.description == ""
+        assert isinstance(user.description, str)
+
+    def test_user_description_over_200_chars_rejected(self):
+        """Server-side cap (#158 follow-up): the model itself refuses an
+        overlong description, so every write surface inherits the limit."""
+        with pytest.raises(ValueError):
+            User(username="toolong", description="a" * 201)
+
+    def test_user_description_exactly_200_chars_accepted(self):
+        User(username="exact", description="a" * 200)
+
+
+class TestUserRestApiDescription:
+    """The description field is exposed over the REST API without leaking
+    into claims/authorities."""
+
+    def test_user_list_includes_description(self, client):
+        data = json.loads(client.get("/api/users").data)
+        assert all("description" in u for u in data["users"])
+
+    def test_user_detail_includes_description(self, client, app):
+        with app.app_context():
+            config = get_config()
+            config.users["descuser"] = User(
+                username="descuser", password="pw", description="Finance approver persona"
+            )
+
+        data = json.loads(client.get("/api/users/descuser").data)
+        assert data["description"] == "Finance approver persona"
+        assert "description" not in data["authorities"]
 
 
 class TestUserAuthentication:

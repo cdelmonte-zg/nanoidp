@@ -2,6 +2,12 @@
    device.html so the markup (and any future fix to it, e.g. the device
    flow's implicit-submission fix) exists in one place instead of three.
 
+   ``users`` is a list of ``(username, description)`` pairs (see
+   ``ConfigManager.persona_picker_entries()``), so every surface shows the
+   same display-only context next to the name. ``description`` is plain
+   text only - it goes through Jinja's autoescaping like any other value,
+   never raw HTML.
+
    js_submit=True renders non-submit buttons with a `persona-user-btn` class
    instead, for surfaces (device.html) where a text input shares the form
    and implicit Enter-submission must not silently pick a user; the caller
@@ -13,14 +19,22 @@
 </p>
 {% if users %}
 <div class="list-group mb-3">
-    {% for user in users %}
+    {% for username, description in users %}
     {% if js_submit %}
-    <button type="button" value="{{ user }}" class="list-group-item list-group-item-action d-flex align-items-center persona-user-btn">
-        <i class="bi bi-person-circle me-2"></i>{{ user }}
+    <button type="button" value="{{ username }}" class="list-group-item list-group-item-action d-flex align-items-center persona-user-btn">
+        <i class="bi bi-person-circle me-2"></i>
+        <span>
+            {{ username }}
+            {% if description %}<small class="text-muted d-block">{{ description }}</small>{% endif %}
+        </span>
     </button>
     {% else %}
-    <button type="submit" name="username" value="{{ user }}" class="list-group-item list-group-item-action d-flex align-items-center">
-        <i class="bi bi-person-circle me-2"></i>{{ user }}
+    <button type="submit" name="username" value="{{ username }}" class="list-group-item list-group-item-action d-flex align-items-center">
+        <i class="bi bi-person-circle me-2"></i>
+        <span>
+            {{ username }}
+            {% if description %}<small class="text-muted d-block">{{ description }}</small>{% endif %}
+        </span>
     </button>
     {% endif %}
     {% endfor %}

@@ -17,6 +17,9 @@
         </div>
         <div>
             <h2 class="mb-0">{{ user.username }}</h2>
+            {% if user.description %}
+            <small class="text-muted d-block mt-1">{{ user.description }}</small>
+            {% endif %}
             <small class="text-muted">{{ user.email }}</small>
         </div>
     </div>

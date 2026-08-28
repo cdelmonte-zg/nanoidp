@@ -53,6 +53,13 @@
                     </div>
 
                     <div class="mb-3">
+                        <label for="description" class="form-label">Description</label>
+                        <textarea class="form-control" id="description" name="description" rows="3" maxlength="200"
+                                  placeholder="Finance approver persona, tenant assignment, notes">{{ user.description if user else '' }}</textarea>
+                        <div class="form-text">Display-only note shown in the persona picker (max 200 chars)</div>
+                    </div>
+
+                    <div class="mb-3">
                         <label for="tenant" class="form-label">Tenant</label>
                         <input type="text" class="form-control" id="tenant" name="tenant"
                                value="{{ user.tenant if user else 'default' }}">

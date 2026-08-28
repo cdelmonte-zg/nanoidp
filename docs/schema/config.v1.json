@@ -652,6 +652,11 @@
             "title": "Attributes",
             "type": "object"
           },
+          "description": {
+            "default": "",
+            "title": "Description",
+            "type": "string"
+          },
           "email": {
             "anyOf": [
               {

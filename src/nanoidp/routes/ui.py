@@ -77,7 +77,7 @@ def login() -> ResponseReturnValue:
         return render_template(
             "login.html",
             error=error,
-            users=list(config.users.keys()),
+            users=config.persona_picker_entries(),
             persona_mode=persona_mode,
             management_secret_configured=bool(config.settings.management_secret),
         )
@@ -228,6 +228,7 @@ def user_create() -> ResponseReturnValue:
         user = User(
             username=username,
             password=password,
+            description=request.form.get("description", "").strip(),
             email=request.form.get("email", ""),
             identity_class=request.form.get("identity_class") or None,
             entitlements=entitlements,
@@ -321,6 +322,7 @@ def user_edit(username: str) -> ResponseReturnValue:
         updated_user = User(
             username=username,
             password=password,
+            description=request.form.get("description", "").strip(),
             email=request.form.get("email", ""),
             identity_class=request.form.get("identity_class") or None,
             entitlements=entitlements,
