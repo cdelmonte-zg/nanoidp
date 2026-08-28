@@ -78,12 +78,6 @@ class YamlWriter:
         if hook_error is not None:
             raise hook_error
 
-    def _load_users_yaml(self) -> Dict[str, Any]:
-        """Load the current users.yaml content."""
-        if not self.users_file.exists():
-            return {"users": {}, "default_user": "admin"}
-        return load_yaml_document(self.users_file)
-
     def _load_settings_yaml(self) -> Dict[str, Any]:
         """Load the current settings.yaml content."""
         return load_yaml_document(self.settings_file)
@@ -104,8 +98,18 @@ class YamlWriter:
         """
 
         def mutate(data: Dict[str, Any]) -> None:
+            # Match _load_users_yaml's old skeleton exactly (#229 phase 3
+            # review, blocking 1): only a users.yaml that does not exist
+            # at all gets {"users": {}, "default_user": "admin"} - an
+            # existing file (even an empty one, or one simply missing the
+            # key) must not gain a default_user it never had. Checked
+            # here, inside mutate, because the lock is already held by
+            # the time compare_and_replace calls this, so "does the file
+            # exist" is accurate for the same load this mutation applies to.
+            if not self.users_file.exists():
+                data["users"] = {}
+                data["default_user"] = "admin"
             data.setdefault("users", {})
-            data.setdefault("default_user", "admin")
             if is_new and user.username in data["users"]:
                 raise ValueError(f"User '{user.username}' already exists")
             data["users"][user.username] = user_to_yaml(user)
@@ -123,8 +127,12 @@ class YamlWriter:
         """
 
         def mutate(data: Dict[str, Any]) -> None:
+            # Same missing-vs-existing distinction as save_user's mutate
+            # above (#229 phase 3 review, blocking 1).
+            if not self.users_file.exists():
+                data["users"] = {}
+                data["default_user"] = "admin"
             data.setdefault("users", {})
-            data.setdefault("default_user", "admin")
             if username not in data["users"]:
                 raise ValueError(f"User '{username}' not found")
             del data["users"][username]

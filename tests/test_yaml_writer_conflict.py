@@ -11,6 +11,8 @@ document that gets written, under the same lock) didn't change any of
 those checks' outward behavior.
 """
 
+import threading
+
 import pytest
 import yaml
 
@@ -35,6 +37,67 @@ def _seed(tmp_path):
 def _writer(config_dir):
     ConfigManager(str(config_dir))  # installs the active config singleton
     return YamlWriter(str(config_dir))
+
+
+class TestUsersYamlSkeletonFidelity:
+    """Regression pin for #229 phase 3 review, blocking 1: the old
+    _load_users_yaml() injected {"users": {}, "default_user": "admin"}
+    only when users.yaml did not exist at all - not whenever the
+    default_user key happened to be absent. save_user/delete_user's
+    mutate closures must reproduce exactly that condition, or an
+    existing file that simply never declared default_user (or an
+    existing-but-empty file) silently gains a key the operator never
+    wrote, naming a user ("admin") that may not even exist in the file -
+    the opposite of the #127 line of work, where an untouched file
+    survives a save unchanged."""
+
+    def test_save_user_does_not_inject_default_user_into_an_existing_file_missing_it(
+        self, tmp_path
+    ):
+        config_dir = tmp_path / "config"
+        config_dir.mkdir(parents=True)
+        (config_dir / "settings.yaml").write_text("oauth:\n  issuer: 'http://localhost:8000'\n")
+        (config_dir / "users.yaml").write_text('users:\n  alice:\n    password: "x"\n')
+        writer = _writer(config_dir)
+
+        writer.save_user(User(username="bob", password="y"))
+
+        on_disk = yaml.safe_load((config_dir / "users.yaml").read_text())
+        assert "default_user" not in on_disk
+        assert set(on_disk["users"]) == {"alice", "bob"}
+
+    def test_delete_user_does_not_inject_default_user_into_an_existing_file_missing_it(
+        self, tmp_path
+    ):
+        config_dir = tmp_path / "config"
+        config_dir.mkdir(parents=True)
+        (config_dir / "settings.yaml").write_text("oauth:\n  issuer: 'http://localhost:8000'\n")
+        (config_dir / "users.yaml").write_text(
+            'users:\n  alice:\n    password: "x"\n  bob:\n    password: "y"\n'
+        )
+        writer = _writer(config_dir)
+
+        writer.delete_user("bob")
+
+        on_disk = yaml.safe_load((config_dir / "users.yaml").read_text())
+        assert "default_user" not in on_disk
+        assert set(on_disk["users"]) == {"alice"}
+
+    def test_save_user_still_applies_the_old_skeleton_for_a_genuinely_missing_file(
+        self, tmp_path
+    ):
+        config_dir = tmp_path / "config"
+        config_dir.mkdir(parents=True)
+        (config_dir / "settings.yaml").write_text("oauth:\n  issuer: 'http://localhost:8000'\n")
+        # no users.yaml at all
+        ConfigManager(str(config_dir))
+        writer = YamlWriter(str(config_dir))
+
+        writer.save_user(User(username="bob", password="y"))
+
+        on_disk = yaml.safe_load((config_dir / "users.yaml").read_text())
+        assert on_disk["default_user"] == "admin"
+        assert set(on_disk["users"]) == {"bob"}
 
 
 class TestSaveUserConflictDetection:
@@ -78,6 +141,58 @@ class TestSaveUserConflictDetection:
 
         with pytest.raises(ValueError, match="already exists"):
             writer.save_user(User(username="admin", password="x"), is_new=True)
+
+
+class TestSaveUserConcurrentCreateDoesNotLoseAnUpdate:
+    """Regression pin for the actual race #229 phase 3 closes: before this
+    migration, save_user's already-exists check ran on a document loaded
+    before _atomic_write was even called, so two near-simultaneous
+    is_new=True creates of the same username could both pass the check
+    (each loaded independently before either wrote) and the second
+    silently overwrote the first - reproduced by the reviewer 20/20 on
+    the pre-migration code with this exact shape.
+
+    A single Barrier(2)-synchronized trial is not, on its own, a
+    provably deterministic pin - it makes the race very likely, not
+    certain, since it does not force both threads' load to complete
+    before either write. Repeating it many times, and asserting the
+    invariant on every trial, is the robust version: on a
+    lock-protected write path, it must hold every single time; on a
+    regression that reintroduces the old load-before-the-write-call
+    pattern, 20 trials reproduces the loss with overwhelming
+    probability (matching the reviewer's own 20/20 empirical check),
+    rather than depending on exactly where a monkeypatched
+    synchronization point sits in the current call graph."""
+
+    @staticmethod
+    def _race_one_trial(writer, barrier, results, password):
+        barrier.wait()
+        try:
+            writer.save_user(User(username="bob", password=password), is_new=True)
+            results.append("ok")
+        except ValueError:
+            results.append("value_error")
+
+    def test_two_concurrent_creates_of_the_same_user_never_both_succeed(self, tmp_path):
+        for trial in range(20):
+            config_dir = _seed(tmp_path / f"trial-{trial}")
+            writer = _writer(config_dir)
+
+            barrier = threading.Barrier(2)
+            results = []
+
+            threads = [
+                threading.Thread(
+                    target=self._race_one_trial, args=(writer, barrier, results, password)
+                )
+                for password in ("first", "second")
+            ]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+
+            assert sorted(results) == ["ok", "value_error"], f"trial {trial}: {results}"
 
 
 class TestDeleteUserConflictDetection:
