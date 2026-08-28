@@ -72,7 +72,10 @@ DEFAULT_SCOPES_SUPPORTED: tuple[str, ...] = ("openid", "profile", "email", "offl
 
 class User(BaseModel):
     """Represents a user in the system."""
-    model_config = ConfigDict(extra="allow")
+    # Validate on direct attribute assignment too (e.g. MCP update_user), so
+    # field constraints like description's max_length are enforced beyond
+    # construction time - the same rule OAuthClient follows (#37).
+    model_config = ConfigDict(extra="allow", validate_assignment=True)
 
     username: str = Field(..., min_length=1, description="Unique username")
     password: Optional[str] = Field(

@@ -418,6 +418,8 @@ class TestTokenInclusion:
         assert "description" not in decoded
         assert all("Finance approver persona" not in str(v) for v in decoded.values())
 
+
+class TestGlobalTokenService:
     """Tests for the global token service singleton."""
 
     def test_get_token_service_returns_instance(self, app):

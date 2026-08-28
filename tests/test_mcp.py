@@ -907,6 +907,29 @@ class TestMCPUserDescription:
         assert payload["code"] == "MCP_INVALID_ARGUMENTS"
 
     @pytest.mark.asyncio
+    async def test_update_user_direct_mutation_rejects_overlong_description(self, tmp_path):
+        """Defense in depth (maintainer review on #244): _execute_tool is
+        reachable directly, bypassing call_tool's JSON schema check, so
+        _tool_update_user's direct 'user.description = ...' assignment must
+        itself refuse a value the loader would later reject - otherwise a
+        bypassed call can write a users.yaml the server can no longer start
+        from. User.model_config now carries validate_assignment=True (the
+        same fix #37 applied to OAuthClient), so this raises before any
+        write happens."""
+        from nanoidp.mcp_server import _execute_tool
+        config = self._config(tmp_path)
+        await _execute_tool("create_user", {"username": "eve", "password": "pw"}, config)
+
+        with pytest.raises(ValueError):
+            await _execute_tool(
+                "update_user", {"username": "eve", "description": "a" * 300}, config
+            )
+
+        # The in-memory user must be left untouched - the assignment raised
+        # before the model's __setattr__ committed the new value.
+        assert config.get_user("eve").description == ""
+
+    @pytest.mark.asyncio
     async def test_get_settings_includes_login_mode(self, tmp_path):
         from nanoidp.mcp_server import _execute_tool
         config = self._config(tmp_path)
