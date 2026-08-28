@@ -45,6 +45,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   changes only the secret, so every field (present and future) is carried.
 
 ### Added
+- **Display-only `description` on users, shown in the persona login
+  picker** (#244): a user in `users.yaml` can carry an optional
+  `description` (max 200 characters, plain text) rendered next to the
+  username on every interactive persona picker (`/login`, `/authorize`,
+  `/saml/sso`, the device flow's `/device`), so a directory of test
+  personas (`admin`, `reader`, `tenant-a-manager`, ...) is
+  self-explanatory at the point of selection. It is a first-class field,
+  not a custom attribute: never a claim, never a SAML attribute, never
+  part of a token. Settable from the UI create/edit form and the MCP
+  `create_user`/`create_persona_user`/`update_user` tools, and exposed
+  by the read-only `/api/users` responses.
+  `User` now validates on assignment as well (`validate_assignment=True`,
+  the rule `OAuthClient` has followed since #37), and the MCP
+  `update_user` tool applies every requested field to a scratch copy
+  before replacing the live user, so one invalid field can no longer
+  leave the user half-updated. Behaviour change for an existing file: a
+  `description:` key already present under a user used to fold into that
+  user's `attributes` and therefore shipped inside the token's
+  `attributes` claim; it is now the display-only field and no longer
+  appears in any token.
 - **Per-client allowed scopes and `invalid_scope`** (#186). `oauth.scopes_supported`
   is the global scope vocabulary (default `openid`, `profile`, `email`,
   `offline_access`, also what discovery's `scopes_supported` now advertises
