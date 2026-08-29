@@ -677,58 +677,46 @@ def settings() -> ResponseReturnValue:
         # never carried. Present-but-blank still means "clear".
         expiry_raw = request.form.get("token_expiry_minutes")
 
-        # This page writes settings.yaml four times in one request (#229
-        # phase 4). The form's own revision only guards the first write;
-        # each write after that checks against the revision the PREVIOUS
-        # write in this same request just produced, not the (now stale)
-        # one the page was rendered with - otherwise every write after
-        # the first would always look conflicted against its own
-        # predecessor. A concurrent writer interleaving between any of
-        # the four is still caught, since each check is against the file
-        # as it actually stands at that moment.
-        revision = _expected_revision_from_form()
-
-        # OAuth settings
-        revision = yaml_writer.update_oauth_settings(
-            issuer=_form_text("issuer"),
-            issuer_from_request=_form_bool("issuer_from_request"),
-            issuer_allowlist=_form_textarea_list("issuer_allowlist"),
-            device_verification_base_url=_form_text("device_verification_base_url"),
-            issuer_from_proxy_headers=_form_bool("issuer_from_proxy_headers"),
-            audience=_form_text("audience"),
-            token_expiry_minutes=int(expiry_raw) if expiry_raw else None,
-            require_pkce=_form_bool("require_pkce"),
-            refresh_token_rotation=_form_bool("refresh_token_rotation"),
-            logos_dir=_form_text("logos_dir"),
-            expected_revision=revision,
-        )
-
-        # SAML settings
-        revision = yaml_writer.update_saml_settings(
-            entity_id=_form_text("saml_entity_id"),
-            sso_url=_form_text("saml_sso_url"),
-            default_acs_url=_form_text("default_acs_url"),
-            sign_responses=_form_bool("saml_sign_responses"),
-            strict_binding=_form_bool("strict_saml_binding"),
-            want_authn_requests_signed=_form_bool("saml_want_authn_requests_signed"),
-            sp_certificates=_form_textarea_list("saml_sp_certificates"),
-            c14n_algorithm=_form_text("saml_c14n_algorithm"),
-            export_roles=_form_bool("saml_export_roles"),
-            export_groups=_form_bool("saml_export_groups"),
-            roles_attr_name=_form_text("saml_roles_attr_name"),
-            groups_attr_name=_form_text("saml_groups_attr_name"),
-            expected_revision=revision,
-        )
-
-        # Identity classes
+        # One write for the whole submission (#229 phase 4 review,
+        # blocking 1): oauth, saml, identity classes and login mode used
+        # to be four separate compare_and_replace calls chained by
+        # revision, but a conflict on write N still left writes 1..N-1
+        # already committed - update_settings_form composes all four
+        # under one write, so expected_revision covers the entire
+        # submission and a conflict is all-or-nothing.
         identity_classes = [ic.strip() for ic in request.form.get("allowed_identity_classes", "").split("\n") if ic.strip()]
-        if identity_classes:
-            revision = yaml_writer.update_allowed_identity_classes(
-                identity_classes, expected_revision=revision
-            )
 
-        # Login mode (persona login, local dev convenience)
-        yaml_writer.update_login_settings(mode=_form_text("login_mode"), expected_revision=revision)
+        yaml_writer.update_settings_form(
+            oauth_fields={
+                "issuer": _form_text("issuer"),
+                "issuer_from_request": _form_bool("issuer_from_request"),
+                "issuer_allowlist": _form_textarea_list("issuer_allowlist"),
+                "device_verification_base_url": _form_text("device_verification_base_url"),
+                "issuer_from_proxy_headers": _form_bool("issuer_from_proxy_headers"),
+                "audience": _form_text("audience"),
+                "token_expiry_minutes": int(expiry_raw) if expiry_raw else None,
+                "require_pkce": _form_bool("require_pkce"),
+                "refresh_token_rotation": _form_bool("refresh_token_rotation"),
+                "logos_dir": _form_text("logos_dir"),
+            },
+            saml_fields={
+                "entity_id": _form_text("saml_entity_id"),
+                "sso_url": _form_text("saml_sso_url"),
+                "default_acs_url": _form_text("default_acs_url"),
+                "sign_responses": _form_bool("saml_sign_responses"),
+                "strict_binding": _form_bool("strict_saml_binding"),
+                "want_authn_requests_signed": _form_bool("saml_want_authn_requests_signed"),
+                "sp_certificates": _form_textarea_list("saml_sp_certificates"),
+                "c14n_algorithm": _form_text("saml_c14n_algorithm"),
+                "export_roles": _form_bool("saml_export_roles"),
+                "export_groups": _form_bool("saml_export_groups"),
+                "roles_attr_name": _form_text("saml_roles_attr_name"),
+                "groups_attr_name": _form_text("saml_groups_attr_name"),
+            },
+            allowed_identity_classes=identity_classes or None,
+            login_mode=_form_text("login_mode"),
+            expected_revision=_expected_revision_from_form(),
+        )
 
         flash("Settings updated successfully", "success")
         return redirect(url_for("ui.settings"))

@@ -117,12 +117,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   "changed since it was last read - please reload and try again" flash
   instead of silently overwriting someone else's concurrent change (an
   edit based on a page loaded before another admin deleted or changed
-  the same user/client, for instance). The settings page writes
-  `settings.yaml` four times per submission (OAuth, SAML, identity
-  classes, login mode); each write after the first checks against the
-  revision the *previous write in that same request* produced, so a
-  concurrent writer interleaving between any of the four is still
-  caught, not just one before the first. A submission with no
+  the same user/client, for instance). The settings page's OAuth, SAML,
+  identity-classes and login-mode fields are now applied as one write
+  instead of four separate ones, so a conflict there is all-or-nothing,
+  the same guarantee every other form already had - an earlier version
+  of this ran four writes chained by revision, which meant a conflict
+  partway through could leave the earlier sections already saved while
+  the page reported that nothing had changed. A submission with no
   `expected_revision` at all (an old cached page, a script, the e2e
   test agent) keeps today's unconditional last-write-wins - nothing
   about this requires an existing caller to opt in.

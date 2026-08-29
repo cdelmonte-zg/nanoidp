@@ -25,6 +25,54 @@ from ..serialization import (
 logger = logging.getLogger(__name__)
 
 
+def _mutate_settings_section(
+    document: Dict[str, Any], section_name: str, provided: Dict[str, Any]
+) -> None:
+    """Apply form-provided values for one settings.yaml section to an
+    already-loaded document (#214; extracted from
+    ``YamlWriter._apply_provided_settings`` in #229 phase 4 review,
+    blocking 1, so several sections can be composed under one
+    ``compare_and_replace`` call instead of each running its own).
+
+    The per-field encoding comes from ``serialization.OWNED_SETTINGS``, the
+    same table ``apply_settings_document`` drives from - one row per owned
+    key instead of one hand-written if-block per field. Semantics per
+    value: ``None`` was not on the form and leaves the file alone (#131);
+    for a non-"plain" row a provided-but-falsy value clears the key
+    (absent = default/derived); everything else is written only when
+    the expanded on-disk value actually differs (#127), so untouched
+    ``${VAR}`` placeholders and comments survive.
+    """
+    section = document.setdefault(section_name, {})
+    rows = {f.key: f for f in OWNED_SETTINGS if f.section == section_name}
+    for key, value in provided.items():
+        if value is None:
+            continue
+        field = rows[key]
+        compare = value if (field.doc_mode == "plain" or value) else field.empty
+        if not is_unchanged(section.get(key), compare):
+            if field.doc_mode != "plain" and not value:
+                section.pop(key, None)
+            else:
+                section[key] = value
+
+
+def _mutate_allowed_identity_classes(document: Dict[str, Any], classes: List[str]) -> None:
+    """Extracted from ``YamlWriter.update_allowed_identity_classes`` (#229
+    phase 4 review, blocking 1) for the same composition reason as
+    ``_mutate_settings_section`` above."""
+    if not is_unchanged(document.get("allowed_identity_classes"), classes):
+        document["allowed_identity_classes"] = classes
+
+
+def _mutate_login_mode(document: Dict[str, Any], mode: str, login_mode_default: str) -> None:
+    """Extracted from ``YamlWriter.update_login_settings`` (#229 phase 4
+    review, blocking 1); ``mode`` here is already known truthy and
+    already validated by the caller - see that method's docstring for
+    why validation happens before any write is even attempted."""
+    merge_optional_nested_field(document, "login", "mode", mode, login_mode_default)
+
+
 class YamlWriter:
     """Service for safely writing YAML configuration files."""
 
@@ -224,33 +272,16 @@ class YamlWriter:
         provided: "Dict[str, Any]",
         expected_revision: Optional[str] = None,
     ) -> str:
-        """Apply form-provided values for one settings.yaml section (#214).
-
-        The per-field encoding comes from serialization.OWNED_SETTINGS, the
-        same table apply_settings_document drives from - one row per owned
-        key instead of one hand-written if-block per field. Semantics per
-        value: None was not on the form and leaves the file alone (#131);
-        for a non-"plain" row a provided-but-falsy value clears the key
-        (absent = default/derived); everything else is written only when
-        the expanded on-disk value actually differs (#127), so untouched
-        ``${VAR}`` placeholders and comments survive.
+        """Apply form-provided values for one settings.yaml section (#214)
+        as a standalone write. See ``_mutate_settings_section`` for the
+        actual per-field logic; ``update_settings_form`` below is the
+        composed, single-write version several sections need together.
         """
-
-        def mutate(data: Dict[str, Any]) -> None:
-            section = data.setdefault(section_name, {})
-            rows = {f.key: f for f in OWNED_SETTINGS if f.section == section_name}
-            for key, value in provided.items():
-                if value is None:
-                    continue
-                field = rows[key]
-                compare = value if (field.doc_mode == "plain" or value) else field.empty
-                if not is_unchanged(section.get(key), compare):
-                    if field.doc_mode != "plain" and not value:
-                        section.pop(key, None)
-                    else:
-                        section[key] = value
-
-        return self._atomic_write(self.settings_file, mutate, expected_revision)
+        return self._atomic_write(
+            self.settings_file,
+            lambda data: _mutate_settings_section(data, section_name, provided),
+            expected_revision,
+        )
 
     def update_oauth_settings(
         self,
@@ -344,12 +375,11 @@ class YamlWriter:
         self, classes: List[str], expected_revision: Optional[str] = None
     ) -> str:
         """Update allowed identity classes."""
-
-        def mutate(data: Dict[str, Any]) -> None:
-            if not is_unchanged(data.get("allowed_identity_classes"), classes):
-                data["allowed_identity_classes"] = classes
-
-        return self._atomic_write(self.settings_file, mutate, expected_revision)
+        return self._atomic_write(
+            self.settings_file,
+            lambda data: _mutate_allowed_identity_classes(data, classes),
+            expected_revision,
+        )
 
     def update_login_settings(
         self, mode: Optional[str] = None, expected_revision: Optional[str] = None
@@ -368,14 +398,65 @@ class YamlWriter:
         loaded - so an invalid value (e.g. a typo) raises instead of
         persisting a mode the server can't start with.
         """
-        login_mode_default = document_defaults()["login.mode"]
-
         if mode:
             Settings.validate_login_mode(mode)
+            login_mode_default = document_defaults()["login.mode"]
+            return self._atomic_write(
+                self.settings_file,
+                lambda data: _mutate_login_mode(data, mode, login_mode_default),
+                expected_revision,
+            )
+        return self._atomic_write(self.settings_file, lambda data: None, expected_revision)
+
+    def update_settings_form(
+        self,
+        oauth_fields: Dict[str, Any],
+        saml_fields: Dict[str, Any],
+        allowed_identity_classes: Optional[List[str]] = None,
+        login_mode: Optional[str] = None,
+        expected_revision: Optional[str] = None,
+    ) -> str:
+        """Apply the settings page's whole submission as ONE write (#229
+        phase 4 review, blocking 1).
+
+        The page originally called update_oauth_settings/
+        update_saml_settings/update_allowed_identity_classes/
+        update_login_settings in sequence - four separate
+        compare_and_replace calls on the same file. Chaining each
+        write's resulting revision into the next one's precondition
+        made every individual write conflict-safe, but a conflict on
+        write N still left writes 1..N-1 already committed, their
+        on_config_saved hooks already fired and the runtime already
+        reloaded - reproduced live (#248 review) with a hook that
+        rewrites settings.yaml after every save: one submission with
+        four changed fields landed only the first, the flash said
+        "please reload and try again" for a page that had, in fact,
+        already partly landed. That is the "save() can fail after
+        committing" shape phase 2 closed for ConfigManager.save() by
+        checking every precondition before writing anything - this is
+        the same fix, one file instead of two.
+
+        Composing every section's mutation under one compare_and_replace
+        call means expected_revision covers the entire submission: a
+        conflict here is all-or-nothing, exactly like a single-section
+        write already was, and on_config_saved/reload_local each run
+        once per settings save instead of up to four times.
+
+        login_mode is validated before this call ever touches the file,
+        same as update_login_settings above and for the same reason: an
+        invalid value must never reach the file at all.
+        """
+        if login_mode:
+            Settings.validate_login_mode(login_mode)
+        login_mode_default = document_defaults()["login.mode"]
 
         def mutate(data: Dict[str, Any]) -> None:
-            if mode:
-                merge_optional_nested_field(data, "login", "mode", mode, login_mode_default)
+            _mutate_settings_section(data, "oauth", oauth_fields)
+            _mutate_settings_section(data, "saml", saml_fields)
+            if allowed_identity_classes:
+                _mutate_allowed_identity_classes(data, allowed_identity_classes)
+            if login_mode:
+                _mutate_login_mode(data, login_mode, login_mode_default)
 
         return self._atomic_write(self.settings_file, mutate, expected_revision)
 
