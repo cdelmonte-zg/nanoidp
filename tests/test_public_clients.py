@@ -556,14 +556,17 @@ class TestDiscovery:
 
 
 class TestNonTokenEndpointAuthEnforcement:
-    """#262: /introspect, /revoke and /device_authorization authenticate a
-    confidential client the same way /token does - the registered
-    token_endpoint_auth_method is enforced and two auth methods in one request
-    are rejected (RFC 7009 §2.1, RFC 7662 §2.1, RFC 6749 §2.3). Behaviour
-    change: a body secret from a client_secret_basic client, Basic from a
-    client_secret_post client, or Basic+body together used to be accepted and
-    now is not. The public-client policy is unchanged: introspect and device
-    refuse public clients, revoke keeps its ownership relaxation."""
+    """#262: nanoidp applies the registered token_endpoint_auth_method
+    consistently to /introspect, /revoke and /device_authorization - the
+    method is enforced and two auth methods in one request are rejected
+    (RFC 6749 §2.3). RFC 7009 and RFC 8628 tie /revoke and
+    /device_authorization to token-endpoint authentication; RFC 7662 permits
+    authentication at introspection but leaves the method open, so reusing it
+    there is nanoidp's consistency policy. Behaviour change: a body secret
+    from a client_secret_basic client, Basic from a client_secret_post client,
+    or Basic+body together used to be accepted and now is not. The
+    public-client policy is unchanged: introspect and device refuse public
+    clients, revoke keeps its ownership relaxation."""
 
     def _token(self, client):
         return json.loads(
