@@ -282,6 +282,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `expected_revision` at all (an old cached page, a script, the e2e
   test agent) keeps today's unconditional last-write-wins - nothing
   about this requires an existing caller to opt in.
+- **The end-to-end test harness moved from `examples/` to a dedicated `e2e/`
+  directory.** `test_agent.py`, `mock_mcp_server.py`, `mcp_smoke_test.py` and
+  `gen_sp_keypair.py` now live under `e2e/`; `examples/` keeps only the real
+  usage examples (client integrations, plugins). The harness was never a
+  usage example - it is the CI end-to-end suite - and mixing the two made the
+  repository harder to read. Invocations change from `python examples/...` to
+  `python e2e/...` (CI, CONTRIBUTING and the docs are updated); no behaviour
+  and no packaged code changed.
 
 ### Security
 - **Opt-in `management_secret` mutation gate** (#163): one shared secret that
@@ -308,16 +316,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the dashboard's own buttons (generate token, clear audit log) keep working
   after one unlock; and the MCP check now always reads the `ConfigManager`
   actually serving the request.
-
-### Changed
-- **The end-to-end test harness moved from `examples/` to a dedicated `e2e/`
-  directory.** `test_agent.py`, `mock_mcp_server.py`, `mcp_smoke_test.py` and
-  `gen_sp_keypair.py` now live under `e2e/`; `examples/` keeps only the real
-  usage examples (client integrations, plugins). The harness was never a
-  usage example - it is the CI end-to-end suite - and mixing the two made the
-  repository harder to read. Invocations change from `python examples/...` to
-  `python e2e/...` (CI, CONTRIBUTING and the docs are updated); no behaviour
-  and no packaged code changed.
 
 ## [2.7.0] - 2026-08-25
 
