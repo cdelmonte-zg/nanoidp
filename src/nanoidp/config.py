@@ -22,7 +22,7 @@ from .config_documents import (
     load_settings_document,
     load_users_document,
 )
-from .config_writer import compare_and_replace, compare_and_replace_many
+from .config_writer import compare_and_replace, compare_and_replace_many, revision_of_bytes
 from .hooks import SOURCE_SETTINGS, HookError, HookRegistry, bootstrap_registry
 from .models import (  # noqa: F401
     SECURITY_PROFILES,
@@ -238,9 +238,20 @@ class ConfigManager:
             staged["settings"] = self._default_settings()
             staged["hooks_section"] = None
             staged["plugins"] = {}
+            # Same revision current_revision() gives a missing file: the
+            # hash of empty bytes (#229 phase 5).
+            staged["settings_revision"] = revision_of_bytes(b"")
         else:
-            with open(settings_file, "r") as f:
-                data = yaml.safe_load(f) or {}
+            # Read the bytes once and hash exactly what gets parsed (#229
+            # phase 5): the revision must describe the state this runtime
+            # was loaded from, so a save precondition built on it catches
+            # every on-disk change since - hashing a second read could
+            # describe newer content than the parse saw. The read itself
+            # is still unlocked (#246).
+            with open(settings_file, "rb") as f:
+                raw = f.read()
+            staged["settings_revision"] = revision_of_bytes(raw)
+            data = yaml.safe_load(raw) or {}
             # Candidate strictness: an edited config_validation takes effect
             # on the load that reads it, an explicit --strict-config keeps
             # winning, and a load that FAILS never changes the running mode
@@ -264,9 +275,12 @@ class ConfigManager:
         if not users_file.exists():
             logger.warning(f"Users file not found: {users_file}, using defaults")
             staged["users"], staged["default_user"] = self._default_users(), "admin"
+            staged["users_revision"] = revision_of_bytes(b"")
         else:
-            with open(users_file, "r") as f:
-                udata = yaml.safe_load(f) or {}
+            with open(users_file, "rb") as f:
+                uraw = f.read()
+            staged["users_revision"] = revision_of_bytes(uraw)
+            udata = yaml.safe_load(uraw) or {}
             # config_version is checked BEFORE placeholder expansion: it must
             # be a literal integer, never ${VAR} (#175 review).
             users_version = check_config_version(udata, users_file)
@@ -303,6 +317,16 @@ class ConfigManager:
         self.config_version = staged["version"]
         self.users = staged["users"]
         self.default_user = staged["default_user"]
+        # The revisions of the bytes this runtime was loaded from (#229
+        # phase 5) - what a caller passes back to save() as
+        # expected_*_revision to mean "refuse my save if the file moved
+        # since the state I based my change on". Deliberately NOT the
+        # file's revision at ask time: on a runtime that is stale against
+        # the directory (another process wrote), a fresh disk hash would
+        # satisfy the precondition exactly when the lost update is real.
+        # Every successful write path refreshes these via reload_local().
+        self.users_revision = staged["users_revision"]
+        self.settings_revision = staged["settings_revision"]
 
     def _configure_hooks_from(self, hooks: HooksSection, plugins: Dict[str, Dict[str, Any]]) -> None:
         """Replace the settings.yaml-sourced hooks/plugins with the file's

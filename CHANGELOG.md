@@ -45,6 +45,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   changes only the secret, so every field (present and future) is carried.
 
 ### Added
+- **MCP callers can make `save_config` conflict-checked** (#229 phase 5,
+  the MCP leg of the same loop the web UI's forms got in phase 4): the
+  read tools return the revision of the file the runtime was loaded
+  from (`list_users`/`get_user` carry `users_revision`;
+  `list_clients`/`get_client`/`get_settings` carry `settings_revision`),
+  and `save_config` accepts them back as `expected_users_revision` /
+  `expected_settings_revision`, refusing the save with
+  `{"success": false, "kind": "conflict"}` - nothing written - when
+  another writer (the web UI, another agent, a second nanoidp process
+  on the same directory) moved a file since. `reload_config` and a
+  successful `save_config` return fresh revisions, so the retry loop is
+  reload, reapply, save. The revision is deliberately the one the
+  runtime was LOADED from, not the file's hash at ask time: on a
+  runtime that is stale against the directory, a fresh disk hash would
+  pass the precondition exactly when the lost update is real. Because
+  `save_config` always writes both files, there are exactly two modes:
+  omitting both revisions keeps the save unconditional (last write
+  wins, same as before), and supplying either makes the whole save
+  conflict-checked, with the omitted revision defaulting to the one
+  this runtime was loaded from - a save guarded on one file can never
+  silently overwrite the other from a stale snapshot.
 - **Display-only `description` on users, shown in the persona login
   picker** (#244): a user in `users.yaml` can carry an optional
   `description` (max 200 characters, plain text) rendered next to the
@@ -101,8 +122,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   runtime already reflects them - only the mirror push failed. This also
   closes a gap where MCP's `save_config` tool left the process holding
   its pre-save view of anything the save's read-modify-write cycle picked
-  up from disk: it now sees the refreshed state too. No caller passes a
-  precondition revision yet; that lands with the surface that needs it.
+  up from disk: it now sees the refreshed state too. The precondition
+  revisions were unused when this entry was first written; MCP's
+  `save_config` now supplies them (see Added).
   The runtime refresh can itself fail (an in-memory value that bypassed
   field validation, since `Settings` has no `validate_assignment`, can
   reach the file and then fail to parse back in) - `save()` now tells

@@ -109,9 +109,13 @@ There are exactly two kinds of state, and they never share a store:
   The UI's per-field saves go through `services/yaml_writer.py`; the
   MCP `save_config` tool and reloads persist whole documents through
   `ConfigManager.save()`. Both delegate their entry-building to
-  `serialization.py`, so the two paths cannot drift on content - but
-  they are two separate read-modify-write owners, with no cross-request
-  conflict detection (last write wins).
+  `serialization.py`, so the two paths cannot drift on content, and both
+  write through the same `config_writer.compare_and_replace` pipeline
+  (#229): each write can carry the revision the caller's state was read
+  at, and a stale one is refused instead of overwriting a concurrent
+  change - the UI's forms submit it as a hidden field, MCP callers pass
+  it to `save_config`. Without a revision a write stays unconditional
+  (last write wins), stated as such.
 - **Runtime state** lives in memory inside `services/`: authorization
   codes, device codes, revocation and rotation families, the audit
   log, and Flask sessions. It is lost on restart by design; an
