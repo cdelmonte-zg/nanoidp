@@ -391,11 +391,14 @@ class TestDeviceCodeStoreCapacity:
         with pytest.raises(dc.DeviceCodeStoreFull):
             store.create("demo-client", "openid")
 
-    def test_endpoint_returns_slow_down_at_capacity(self, client, auth_header, monkeypatch):
+    def test_endpoint_returns_503_server_error_at_capacity(self, client, auth_header, monkeypatch):
+        # server_error (RFC 6749 §5.2), NOT slow_down: slow_down is the token
+        # endpoint's polling response (RFC 8628 §3.5), not a device-authorization
+        # capacity error.
         from nanoidp.services import device_code as dc
 
         monkeypatch.setattr(dc, "MAX_PENDING_DEVICE_CODES", 1)
         assert client.post("/device_authorization", headers=auth_header).status_code == 200
         resp = client.post("/device_authorization", headers=auth_header)
         assert resp.status_code == 503
-        assert json.loads(resp.data)["error"] == "slow_down"
+        assert json.loads(resp.data)["error"] == "server_error"

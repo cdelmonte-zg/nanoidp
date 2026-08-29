@@ -1466,8 +1466,11 @@ def device_authorization() -> ResponseReturnValue:
     # A hard cap bounds the in-memory store, which matters now that a public
     # client can create entries with its client_id alone (#255): at capacity,
     # refuse new authorizations rather than grow without bound or evict a live
-    # one. RFC 8628 has no dedicated error here, so use slow_down (§3.5) - the
-    # honest signal to a caller flooding the endpoint.
+    # one. This is a temporary server-side condition (the store drains as codes
+    # expire), reported as server_error with 503 - NOT slow_down, which RFC 8628
+    # §3.5 defines specifically for the token endpoint's POLLING response
+    # (increase the interval), a semantics that has no place on the device
+    # authorization response (whose errors follow RFC 6749 §5.2).
     try:
         device_code, user_code = get_device_code_store().create(
             client_id, scope, resource=validated_resources
@@ -1483,7 +1486,7 @@ def device_authorization() -> ResponseReturnValue:
         return (
             jsonify(
                 {
-                    "error": "slow_down",
+                    "error": "server_error",
                     "error_description": "Too many pending device authorizations; retry later",
                 }
             ),

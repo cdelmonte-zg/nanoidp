@@ -74,8 +74,8 @@ previous leniency allowed - needs a one-time adjustment.
   authorization_code + PKCE, and this completes the pair for CLI/TV/IoT-style
   clients. Because an unauthenticated device authorization request is cheaper to
   spam, the in-memory device-code store is now capacity-bounded: at the cap it
-  returns `503` `slow_down` rather than growing without bound or evicting a live
-  authorization.
+  returns `503` `server_error` rather than growing without bound or evicting a
+  live authorization.
 - **Mock protected MCP server as an e2e fixture** (#191). `e2e/mock_mcp_server.py`
   is a minimal MCP Streamable HTTP resource server (the `mcp` SDK's
   resource-server mode) with three scope-gated tools (`read_document` /
