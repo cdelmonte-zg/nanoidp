@@ -4732,15 +4732,17 @@ class NanoIDPTestAgent:
                 },
                 timeout=5,
             )
-            # Either the request is rejected (invalid_scope), or the token is
-            # issued but NOT widened - documents:write must never appear.
-            granted = resp.json().get("scope", "") if resp.status_code == 200 else ""
-            success = resp.status_code == 400 or "documents:write" not in granted.split()
+            # nanoidp's precise contract (RFC 6749 §6): a refresh must not add a
+            # scope the original grant lacked -> 400 invalid_scope. Asserting the
+            # exact status AND error means a 500/401/etc. can no longer pass
+            # vacuously the way an "any non-200" check would.
+            body = resp.json()
+            success = resp.status_code == 400 and body.get("error") == "invalid_scope"
             self._add_result(
                 "MCP Refresh Scope Escalation Rejected", TestCategory.MCP, success,
                 "a refresh token for documents:read cannot be widened to "
-                "documents:write on refresh (RFC 6749 §6)",
-                {"status": resp.status_code, "granted_scope": granted},
+                "documents:write on refresh -> 400 invalid_scope (RFC 6749 §6)",
+                {"status": resp.status_code, "error": body.get("error")},
             )
         except Exception as e:
             self._add_result(
