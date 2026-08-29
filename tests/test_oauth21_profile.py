@@ -20,6 +20,7 @@ from pydantic import ValidationError
 
 from nanoidp.config import Settings, get_config
 from nanoidp.services.discovery import build_discovery_document
+from tests.conftest import authorize_error
 
 
 def _s256_challenge() -> str:
@@ -148,8 +149,8 @@ class TestAuthorizeEndpoint:
 
     def test_missing_pkce_rejected(self, client, oauth21):
         response = self._authorize(client, "registered-client")
-        assert response.status_code == 400
-        data = json.loads(response.data)
+        assert response.status_code == 302
+        data = authorize_error(response)
         assert data["error"] == "invalid_request"
         assert "code_challenge" in data["error_description"]
 
@@ -160,7 +161,7 @@ class TestAuthorizeEndpoint:
             code_challenge="plain-verifier-value",
             code_challenge_method="plain",
         )
-        assert response.status_code == 400
+        assert response.status_code == 302
 
     def test_client_without_registered_uris_rejected(self, client, oauth21):
         response = self._authorize(

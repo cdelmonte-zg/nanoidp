@@ -305,7 +305,7 @@ class TestFreshFormSubmissionStillSucceeds:
         self, app, client, isolated_repo_config
     ):
         """A POST with no expected_revision at all (an old cached page, a
-        script, examples/test_agent.py) keeps today's last-write-wins -
+        script, e2e/test_agent.py) keeps today's last-write-wins -
         nothing about this phase should require every caller to opt in."""
         resp = client.post("/users/admin/edit", data={"email": "noopt@example.org"})
 

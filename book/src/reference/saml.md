@@ -128,9 +128,9 @@ The metadata advertises `WantAuthnRequestsSigned="true"` if and only if
 enforcement is on. A request verifies if any registered certificate
 validates it.
 
-Need a test SP keypair? `python examples/gen_sp_keypair.py --out .`
+Need a test SP keypair? `python e2e/gen_sp_keypair.py --out .`
 generates `sp-key.pem`/`sp-cert.pem`, and
-`examples/test_agent.py --saml-signed` exercises the whole behavior
+`e2e/test_agent.py --saml-signed` exercises the whole behavior
 against a running server.
 
 ## XML canonicalization algorithm

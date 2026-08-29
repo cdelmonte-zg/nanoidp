@@ -49,6 +49,52 @@ With `oauth.refresh_token_rotation: true`, each refresh invalidates the
 consumed refresh token; reuse revokes the whole rotation family
 (RFC 9700 §4.14.2).
 
+## Public clients (no secret)
+
+A client registered with `token_endpoint_auth_method: none` (a CLI,
+desktop or native app, SPA, or MCP client - see the public-clients note
+in the [configuration reference](../reference/configuration.md)) has no
+secret, so it sends no `-u`: it is identified by `client_id` in the body,
+and the PKCE `code_verifier` is what proves it started the flow. The
+`code` comes from the browser step (`GET /authorize` with a
+`code_challenge`, then login), which cannot be scripted with curl; only
+the exchange is shown here.
+
+```bash
+curl -X POST 'http://localhost:8000/token' \
+  -d 'grant_type=authorization_code' \
+  -d 'code=CODE_FROM_THE_AUTHORIZE_REDIRECT' \
+  -d 'client_id=cli-client' \
+  -d 'redirect_uri=http://127.0.0.1:8765/callback' \
+  -d 'code_verifier=YOUR_PKCE_CODE_VERIFIER'
+```
+
+A public client MUST use PKCE with `S256` (the request is rejected
+without it), cannot use the `client_credentials` grant, and always gets a
+rotating refresh token. A `client_secret` sent by a public client is
+ignored.
+
+## Resource indicators (RFC 8707)
+
+To bind the access token to a specific resource server - so a token for
+MCP server A is rejected by server B - send a `resource` parameter (an
+absolute URI without a fragment). An MCP client sends it on both
+`/authorize` and `/token`; the access token's `aud` becomes that
+resource. `resource` is repeatable for more than one target, and a
+`/token` request may narrow the resources an authorization code bound but
+never widen them. A resource outside the client's `allowed_resources` (or
+not a valid URI) is rejected with `invalid_target`.
+
+```bash
+curl -X POST 'http://localhost:8000/token' \
+  -u 'demo-client:demo-secret' \
+  -d 'grant_type=client_credentials' \
+  -d 'resource=https://mcp.example/server'
+# the returned access token's aud is https://mcp.example/server
+```
+
+Sending no `resource` leaves the audience at `oauth.audience`, unchanged.
+
 ## Device authorization flow
 
 ```bash

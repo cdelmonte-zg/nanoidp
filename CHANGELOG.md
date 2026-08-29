@@ -7,6 +7,177 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-08-29
+
+### Breaking Changes
+
+This release tightens and unifies nanoidp's OAuth **client-authentication
+contract**. A confidential client that already presents its registered method
+over the matching channel, and any public client, are unaffected; a client that
+authenticated over a different channel at one of these endpoints - which the
+previous leniency allowed - needs a one-time adjustment.
+
+- **The registered `token_endpoint_auth_method` is now enforced at every
+  client-authenticated endpoint** (#188, #262): `/token`, `/introspect`,
+  `/revoke` and `/device_authorization`.
+  - A **confidential client must authenticate on `authorization_code`** too -
+    the code exchange no longer has a client-authentication exemption (RFC 6749
+    §3.2.1). *Migration:* present the client secret on the code exchange, or
+    re-register the client as `token_endpoint_auth_method: "none"` if it cannot
+    keep a secret (and use PKCE).
+  - The registered method decides the **channel**: a `client_secret_basic`
+    client must use HTTP Basic and a `client_secret_post` client must use the
+    request body - the wrong channel is rejected with `invalid_client`.
+    Previously a body secret was accepted (or silently ignored) regardless of
+    the registered method. Applying the one registered method across all four
+    endpoints is nanoidp's **consistency policy**: RFC 7009 and RFC 8628 tie
+    `/revoke` and `/device_authorization` to the token-endpoint method, while
+    RFC 7662 permits client authentication at `/introspect` but does not mandate
+    reusing that method - so a client that legitimately used a different channel
+    for introspection stops working here by nanoidp's choice, not because it was
+    non-compliant. *Migration:* send credentials over the channel the client is
+    registered for; set `token_endpoint_auth_method` to match how your client
+    actually authenticates.
+  - **Two authentication methods in one request are rejected** (HTTP Basic and a
+    body `client_secret` together, RFC 6749 §2.3) - Basic no longer silently
+    wins. *Migration:* send credentials one way only.
+  - Public-client policy is unchanged: `/introspect` and `/device_authorization`
+    still refuse public clients; `/revoke` keeps its RFC 7009 §2.1 ownership
+    relaxation.
+- **`/authorize` reports errors after `redirect_uri` validation by redirecting
+  to the client** (#189, RFC 6749 §4.1.2.1 / RFC 9207): `unsupported_response_type`,
+  `invalid_scope`, PKCE errors and `invalid_target` are now `302` redirects
+  carrying `error`, `error_description`, `state` and `iss`, not a local JSON
+  `400`. Errors before `redirect_uri` is validated (unknown client,
+  missing/malformed/unregistered `redirect_uri`) still return JSON locally.
+  *Migration:* a client that parsed the `400` body should read the error from
+  the redirect query instead - which is what a spec-compliant client already does.
+
+### Added
+- **Mock protected MCP server as an e2e fixture** (#191). `e2e/mock_mcp_server.py`
+  is a minimal MCP Streamable HTTP resource server (the `mcp` SDK's
+  resource-server mode) with three scope-gated tools (`read_document` /
+  `documents:read`, `delete_document` / `documents:write`, `admin_operation`
+  / `admin`). It validates bearer tokens JWKS-only against nanoidp (signature,
+  `iss`, `aud` == its own resource URL, `exp`, scopes), serves the RFC 9728
+  `/.well-known/oauth-protected-resource` document naming nanoidp as its
+  authorization server, and answers an unauthenticated call with `401` +
+  `WWW-Authenticate` pointing at that metadata. It demonstrates two
+  authorization layers, kept distinct: a resource-level scope floor
+  (`documents:read`), enforced by the SDK's bearer middleware, which returns
+  the conformant MCP/RFC 9728 `403` `WWW-Authenticate: Bearer
+  error="insufficient_scope"` + `resource_metadata` challenge before any tool
+  runs; and an application-level per-tool check inside each tool for the finer
+  `documents:write` / `admin` operations, which surfaces as an in-band MCP
+  tool error. `e2e/test_agent.py` gains an `--mcp` suite that drives the
+  whole loop deterministically as the MCP client (401 -> RFC 9728 discovery ->
+  `/authorize` with PKCE and `resource=` -> `/token` -> `tools/call`):
+  delegated login as a PUBLIC client (PKCE, no secret) yielding a
+  resource-bound token accepted for a scoped tool; a wrong-audience token
+  rejected with `401` at the transport (asserted at the HTTP layer); the
+  conformant `403` insufficient-scope challenge; the application-level
+  per-tool refusal; a refresh token that cannot be widened in scope on refresh
+  (RFC 6749 §6); a client_credentials workload; a token revoked at nanoidp
+  still accepted by the JWKS-only server until `exp` (the documented
+  consequence of self-contained tokens); and a pre-rotation token still
+  verifying after a key rotation, with the test asserting nanoidp retains the
+  previous key's `kid` in its published JWKS. Adds the `mcp-public-client`
+  (`token_endpoint_auth_method: none`) to the example config. New guide
+  "Testing an MCP client against nanoidp". This is the deliverable that ties
+  #186 (scopes), #187 (resource indicators) and #188 (public clients)
+  together into a demonstrable OAuth/MCP round trip.
+- **RFC 9207: `iss` on the authorization response** (#189). `/authorize`
+  returns `iss=<effective issuer>` on every response delivered through a
+  validated `redirect_uri` - success and error alike - so a client can
+  detect an authorization-server mix-up (MCP 2026-07-28 recommends this).
+  The value is the per-request effective issuer, so it stays correct under
+  `issuer_from_request` (#126). `iss` is delivered exactly when discovery
+  advertises `authorization_response_iss_parameter_supported`: one
+  condition drives both, so metadata and behaviour never disagree. RFC
+  9207 requires an `https` issuer with a host and no query or fragment, so
+  the default `http://localhost:8000` sends no `iss` and advertises
+  `false`; point the issuer at `https` (directly or reflected via
+  `issuer_from_request` behind a TLS proxy) to turn RFC 9207 on. **Related
+  behaviour change**: authorization errors that occur after the
+  `redirect_uri` is validated (invalid_scope, PKCE errors, invalid_target)
+  are now OAuth error redirects to the client (`error`,
+  `error_description`, `state`, `iss`) instead of a local JSON 400, per
+  RFC 6749 §4.1.2.1 - completing the RFC 9207 "error responses too"
+  requirement. `unsupported_response_type` (a non-`code` `response_type`)
+  is validated after the `redirect_uri` too, so it redirects as well.
+  Errors before the `redirect_uri` is trusted (unknown client, malformed
+  or unregistered `redirect_uri`) stay local JSON. A `redirect_uri` that
+  carries its own query keeps it: the response parameters are appended,
+  never fold into an existing value. The device flow is unaffected.
+- **RFC 8707 Resource Indicators: `resource` binds the access token
+  audience** (#187). A client may send one or more `resource` parameters
+  on `/authorize`, `/token` (every grant) and `/device_authorization`;
+  the access token's `aud` is then those resources (a plain string for
+  one, an array for several) instead of the global `oauth.audience`, so a
+  token minted for one MCP server is rejected by another and a
+  wrong-audience test can finally be written. A `resource` must be an
+  absolute URI without a fragment or the request is `invalid_target`
+  (RFC 8707 §2). New per-client `allowed_resources` gates which resources
+  a client may target (empty = any valid resource, the dev default, same
+  "empty = unrestricted" convention as `allowed_scopes`). The
+  authorization code and refresh token remember the bound resources; a
+  `/token` request may narrow them to a subset but never widen them.
+  Narrowing the access token does not narrow the refresh token, which keeps
+  the full original grant so a later refresh can still request any resource
+  the authorization covered (RFC 8707 §2.2).
+  Sending no `resource` leaves `aud` at `oauth.audience` - **no change
+  for existing clients**. `/introspect` reports the token's `aud`, and
+  now verifies a token's signature without pinning its audience (so a
+  resource-bound token can be introspected and revoked); `/userinfo`
+  still requires the OP audience. No `resource_indicators_supported`
+  discovery metadata (RFC 8707 defines none). Full support across
+  settings.yaml (`allowed_resources`), the UI client form and the MCP
+  `create_client`/`update_client` tools.
+- **Public clients: `token_endpoint_auth_method: "none"` with mandatory
+  PKCE S256** (#188). A client that cannot keep a secret (CLI, desktop
+  app, SPA, MCP client) can now be declared with
+  `token_endpoint_auth_method: "none"`: `client_secret` becomes optional
+  (ignored - and never a credential - if present), and `/token`
+  identifies the client by `client_id` alone. The protections that stand
+  in for client authentication are enforced regardless of profile:
+  `/authorize` requires PKCE with `S256` (OAuth 2.1 §7.5.1),
+  `client_credentials` is refused with `unauthorized_client`, and
+  refresh tokens always rotate with reuse detection (OAuth 2.1
+  §4.3.1/§6.1) whatever `refresh_token_rotation` says. `/revoke` accepts
+  a public client's `client_id` with an ownership check (the token's
+  `client_id` claim must match; otherwise still `200`, nothing revoked -
+  RFC 7009 §2.1 and its privacy guidance). `/introspect` deliberately
+  stays authenticated (RFC 7662) and its discovery list does not gain
+  `none`; the token and revocation lists do. Full support across
+  settings.yaml, the UI client form, and the MCP
+  `create_client`/`update_client` tools (`client_secret` no longer
+  required when the method is `none`). At `/token` the registered method
+  is **enforced**, not just recorded (RFC 7591): a `client_secret_basic`
+  client must present its secret over HTTP Basic and a
+  `client_secret_post` client in the request body - the wrong channel is
+  rejected with `invalid_client`. `client_secret_post` is now validated
+  at `/token`, `/introspect`, `/revoke` and `/device_authorization`;
+  discovery had advertised it forever while the body secret was silently
+  ignored. (The three non-token endpoints accept a confidential secret
+  over either channel; only `/token` enforces the registered method.)
+  Confidential clients now authenticate on **every** grant, including
+  `authorization_code` (RFC 6749 §3.2.1): the code exchange no longer had
+  a client-authentication exemption - a confidential client doing
+  `authorization_code` + PKCE must now present its secret or be
+  re-registered as `token_endpoint_auth_method: none`. And **access
+  tokens carry a `client_id` claim** (RFC 9068 §2.2) binding them to the
+  client they were issued to, as refresh tokens have since 2.2.0.
+
+### Changed
+- **The end-to-end test harness moved from `examples/` to a dedicated `e2e/`
+  directory.** `test_agent.py`, `mock_mcp_server.py`, `mcp_smoke_test.py` and
+  `gen_sp_keypair.py` now live under `e2e/`; `examples/` keeps only the real
+  usage examples (client integrations, plugins). The harness was never a
+  usage example - it is the CI end-to-end suite - and mixing the two made the
+  repository harder to read. Invocations change from `python examples/...` to
+  `python e2e/...` (CI, CONTRIBUTING and the docs are updated); no behaviour
+  and no packaged code changed.
+
 ## [2.8.0] - 2026-08-29
 
 ### Fixed
@@ -1117,6 +1288,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Key rotation with JWKS support for multiple keys
 - External key import support
 
+[3.0.0]: https://github.com/cdelmonte-zg/nanoidp/compare/v2.8.0...v3.0.0
 [2.8.0]: https://github.com/cdelmonte-zg/nanoidp/compare/v2.7.0...v2.8.0
 [2.7.0]: https://github.com/cdelmonte-zg/nanoidp/compare/v2.6.0...v2.7.0
 [2.6.0]: https://github.com/cdelmonte-zg/nanoidp/compare/v2.5.0...v2.6.0

@@ -8,7 +8,7 @@ import logging
 import threading
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from ..config import User, get_config
 from .crypto import get_crypto_service
@@ -218,6 +218,8 @@ class TokenService:
         userinfo_claims: Optional[List[str]] = None,
         issuer: Optional[str] = None,
         issue_refresh_token: bool = True,
+        resource: Optional[List[str]] = None,
+        refresh_resource: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """Create a JWT token for a user.
 
@@ -307,16 +309,32 @@ class TokenService:
         if userinfo_claims:
             extra["req_userinfo_claims"] = userinfo_claims
 
+        # Bind the access token to the client it was issued to (#188): what
+        # RFC 9068 §2.2 requires of a JWT access token's 'client_id' claim,
+        # and what /revoke's ownership check for public clients reads.
+        # Refresh tokens have carried the same claim since #56.
+        if client_id:
+            extra["client_id"] = client_id
+
         # Mark the token type so access-token endpoints can reject ID/refresh
         # tokens presented as access tokens (issue #34). Set last so it cannot be
         # overridden by caller-supplied extra_claims.
         extra["token_use"] = "access"
 
+        # Access token audience (#187, RFC 8707): when the request bound one
+        # or more resource indicators, the aud IS those resources (a plain
+        # string for one, an array for several), so a token minted for
+        # resource A is rejected by resource server B. With no resource, the
+        # aud stays oauth.audience - no change for existing clients.
+        access_audience: Union[str, List[str]] = settings.audience
+        if resource:
+            access_audience = resource[0] if len(resource) == 1 else list(resource)
+
         # Create access token JWT
         token = self.crypto.create_jwt(
             sub=user.username,
             issuer=effective_issuer,
-            audience=settings.audience,
+            audience=access_audience,
             roles=user.roles,
             tenant=user.tenant,
             extra=extra,
@@ -396,6 +414,16 @@ class TokenService:
                 refresh_extra["req_id_token_claims"] = id_token_claims
             if userinfo_claims:
                 refresh_extra["req_userinfo_claims"] = userinfo_claims
+            # Remember the FULL original grant's resources (#187, RFC 8707
+            # §2.2), NOT the narrowed subset this access token used: a later
+            # refresh may request any resource the original authorization
+            # covered. Falls back to the access-token resources for grants
+            # with no prior step (the request is the original grant). The
+            # refresh token's own aud stays oauth.audience: it is spent at
+            # nanoidp's /token, not at a resource server.
+            rt_resources = refresh_resource if refresh_resource is not None else resource
+            if rt_resources:
+                refresh_extra["resource"] = list(rt_resources)
             refresh_extra["rt_family"] = refresh_family or str(uuid.uuid4())
             response["refresh_token"] = self.crypto.create_jwt(
                 sub=user.username,

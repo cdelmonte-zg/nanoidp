@@ -40,6 +40,7 @@ CLIENT_ID = "contract-client"
 FULL_A = OAuthClient(
     client_id=CLIENT_ID,
     client_secret="secret-a",
+    token_endpoint_auth_method="client_secret_post",
     description="every field set, variant a",
     background_color="#112233",
     header_color="#445566",
@@ -49,11 +50,16 @@ FULL_A = OAuthClient(
     additional_audiences=["aud-a1", "aud-a2"],
     redirect_uris=["https://a.example/cb", "http://127.0.0.1:7001/cb"],
     allowed_scopes=["openid", "profile"],
+    allowed_resources=["https://a.example/mcp", "https://a.example/api"],
 )
 
+# A public client (#188): no secret at all. client_secret and
+# token_endpoint_auth_method are coupled - a public client has no secret,
+# a confidential one requires one - so this fixture exercises the 'none'
+# method and, necessarily, a None secret (see the non-default test below).
 FULL_B = OAuthClient(
     client_id=CLIENT_ID,
-    client_secret="secret-b",
+    token_endpoint_auth_method="none",
     description="every field set, variant b",
     background_color="#aabbcc",
     header_color="#ddeeff",
@@ -63,6 +69,7 @@ FULL_B = OAuthClient(
     additional_audiences=["aud-b1"],
     redirect_uris=["https://b.example/cb"],
     allowed_scopes=["openid", "email", "groups"],
+    allowed_resources=["https://b.example/mcp"],
 )
 
 # Every field at its default except the two required ones.
@@ -114,6 +121,14 @@ class TestFixturesCoverTheModel:
 
     @pytest.mark.parametrize("name", sorted(OAuthClient.model_fields))
     def test_full_a_and_full_b_are_non_default(self, name):
+        if name == "client_secret":
+            # Coupled to token_endpoint_auth_method (#188): a public client
+            # ('none', FULL_B) has no secret, so client_secret cannot be
+            # non-default on both fixtures at once. FULL_A carries a real
+            # secret; the 'none' round-trip (no secret key) is what FULL_B
+            # exercises. The two still differ (asserted below).
+            assert FULL_A.client_secret is not None
+            return
         field = OAuthClient.model_fields[name]
         if field.default is PydanticUndefined and field.default_factory is None:
             return  # required field: any value is a non-default

@@ -487,6 +487,11 @@ class ConfigManager:
         if client_id is None or client_secret is None:
             return False
         for client in self.settings.clients:
+            # A public client (token_endpoint_auth_method 'none', #188) can
+            # never authenticate: a stored-but-ignored secret must not
+            # become a credential, and client.client_secret may be None.
+            if client.is_public or client.client_secret is None:
+                continue
             if client.client_id == client_id and client.client_secret == client_secret:
                 return True
         return False

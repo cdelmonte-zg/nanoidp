@@ -27,6 +27,9 @@ class AuthorizationCode:
     code_challenge_method: Optional[str] = None
     nonce: Optional[str] = None
     state: Optional[str] = None
+    # RFC 8707 resource indicators requested at /authorize (#187), carried to
+    # the token exchange so the access token aud can be bound to them.
+    resource: Optional[list] = None
     # Claim names requested via the OIDC `claims` parameter (§5.5, #104),
     # normalized to {"id_token": [...], "userinfo": [...]}. Carried from
     # /authorize to the token exchange so the ID Token / UserInfo can honour it.
@@ -61,6 +64,7 @@ class AuthCodeStore:
         nonce: Optional[str] = None,
         state: Optional[str] = None,
         claims: Optional[Dict[str, Any]] = None,
+        resource: Optional[list] = None,
     ) -> str:
         """
         Create a new authorization code.
@@ -93,6 +97,7 @@ class AuthCodeStore:
             nonce=nonce,
             state=state,
             claims=claims,
+            resource=resource,
         )
 
         with self._lock:

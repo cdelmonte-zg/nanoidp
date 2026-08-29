@@ -56,7 +56,7 @@ jobs:
           NANOIDP_E2E_HOOK_LOG: ${{ github.workspace }}/hooks.log
           NANOIDP_E2E_PLUGIN: echo
           NANOIDP_E2E_PLUGIN_RECORD: ${{ github.workspace }}/echo-record.jsonl
-        run: python examples/test_agent.py
+        run: python e2e/test_agent.py
 
       - name: Start oauth21 server
         run: |
@@ -70,11 +70,11 @@ jobs:
           exit 1
 
       - name: Run oauth21 profile suite
-        run: python examples/test_agent.py --oauth21 --url http://localhost:8001
+        run: python e2e/test_agent.py --oauth21 --url http://localhost:8001
 
       - name: Prepare signed-SAML config
         run: |
-          python examples/gen_sp_keypair.py --out e2e-saml
+          python e2e/gen_sp_keypair.py --out e2e-saml
           cp -r config e2e-saml/config
           python - <<'EOF'
           import yaml
@@ -100,8 +100,43 @@ jobs:
 
       - name: Run signed-AuthnRequests suite
         run: |
-          python examples/test_agent.py --saml-signed --url http://localhost:8002 \
+          python e2e/test_agent.py --saml-signed --url http://localhost:8002 \
             --sp-key e2e-saml/sp-key.pem --sp-cert e2e-saml/sp-cert.pem
+
+      - name: Prepare MCP-interop config
+        # nanoidp needs the three tool scopes in its vocabulary, and its
+        # issuer must equal the URL it actually runs at, because the mock MCP
+        # server derives the JWKS URL from the issuer (#191).
+        run: |
+          cp -r config e2e-mcp-config
+          python - <<'EOF'
+          import yaml
+          path = "e2e-mcp-config/settings.yaml"
+          doc = yaml.safe_load(open(path))
+          oauth = doc.setdefault("oauth", {})
+          oauth["issuer"] = "http://localhost:8003"
+          oauth["scopes_supported"] = [
+              "openid", "profile", "email", "offline_access",
+              "documents:read", "documents:write", "admin",
+          ]
+          yaml.safe_dump(doc, open(path, "w"), sort_keys=False)
+          EOF
+
+      - name: Start MCP-interop nanoidp and mock MCP server
+        run: |
+          PORT=8003 NANOIDP_CONFIG_DIR=e2e-mcp-config python -m nanoidp > server-mcp.log 2>&1 &
+          python e2e/mock_mcp_server.py             --issuer http://localhost:8003             --resource http://localhost:9100/mcp             --port 9100 > mock-mcp.log 2>&1 &
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:8003/api/health               && curl -sf http://localhost:9100/.well-known/oauth-protected-resource/mcp               && exit 0
+            sleep 1
+          done
+          echo "MCP-interop servers did not become healthy" >&2
+          cat server-mcp.log mock-mcp.log >&2
+          exit 1
+
+      - name: Run OAuth/MCP interoperability suite
+        run: |
+          python e2e/test_agent.py --url http://localhost:8003             --mcp http://localhost:9100/mcp
 
       - name: Server log on failure
         if: failure()
@@ -111,6 +146,10 @@ jobs:
           cat server-oauth21.log 2>/dev/null || true
           echo "===== signed-SAML server ====="
           cat server-saml.log 2>/dev/null || true
+          echo "===== MCP-interop nanoidp ====="
+          cat server-mcp.log 2>/dev/null || true
+          echo "===== mock MCP server ====="
+          cat mock-mcp.log 2>/dev/null || true
 
   mcp-e2e:
     runs-on: ubuntu-latest
@@ -135,4 +174,4 @@ jobs:
           NANOIDP_BOOTSTRAP_PLUGIN: echo
           NANOIDP_PLUGIN_ECHO_RECORD: ${{ github.workspace }}/echo-record-mcp.jsonl
           NANOIDP_E2E_PLUGIN: echo
-        run: python examples/mcp_smoke_test.py --config ./config
+        run: python e2e/mcp_smoke_test.py --config ./config

@@ -445,14 +445,24 @@ def client_create() -> ResponseReturnValue:
             flash("Client ID is required", "error")
             return redirect(url_for("ui.client_create"))
 
-        client_secret = request.form.get("client_secret", "").strip()
-        if not client_secret:
-            flash("Client Secret is required", "error")
+        auth_method = request.form.get("token_endpoint_auth_method", "client_secret_basic")
+        client_secret: str | None = request.form.get("client_secret", "").strip()
+        if auth_method == "none":
+            # A public client (#188) has no secret. Normalize server-side, not
+            # just in the form JS: the create form pre-generates a secret, and
+            # the JS only lifts the 'required' constraint when 'none' is
+            # picked - it does not clear that generated value, so a real
+            # browser would otherwise persist a dead, ignored secret (#254
+            # review), the same reason edit-to-none drops it.
+            client_secret = None
+        elif not client_secret:
+            flash("Client Secret is required unless the auth method is 'none'", "error")
             return redirect(url_for("ui.client_create"))
 
         client = OAuthClient(
             client_id=client_id,
             client_secret=client_secret,
+            token_endpoint_auth_method=auth_method,  # type: ignore[arg-type]
             description=request.form.get("description", ""),
             background_color=request.form.get("background_color") or None,
             header_color=request.form.get("header_color") or None,
@@ -464,6 +474,7 @@ def client_create() -> ResponseReturnValue:
             ),
             redirect_uris=_parse_textarea_list(request.form.get("redirect_uris", "")),
             allowed_scopes=_parse_textarea_list(request.form.get("allowed_scopes", "")),
+            allowed_resources=_parse_textarea_list(request.form.get("allowed_resources", "")),
         )
 
         yaml_writer.save_client(
@@ -518,14 +529,23 @@ def client_edit(client_id: str) -> ResponseReturnValue:
 
     # POST: Update client
     try:
-        client_secret = request.form.get("client_secret", "").strip()
+        auth_method = request.form.get(
+            "token_endpoint_auth_method", client.token_endpoint_auth_method
+        )
+        client_secret: str | None = request.form.get("client_secret", "").strip()
         if not client_secret:
-            # Keep existing secret
-            client_secret = client.client_secret
+            if auth_method == "none":
+                # Switching to public (#188): drop any old secret rather than
+                # carrying a dead, ignored value into the persisted client.
+                client_secret = None
+            else:
+                # Keep the existing secret (blank field = unchanged).
+                client_secret = client.client_secret
 
         updated_client = OAuthClient(
             client_id=client_id,
             client_secret=client_secret,
+            token_endpoint_auth_method=auth_method,  # type: ignore[arg-type]
             description=request.form.get("description", ""),
             background_color=request.form.get("background_color") or None,
             header_color=request.form.get("header_color") or None,
@@ -537,6 +557,7 @@ def client_edit(client_id: str) -> ResponseReturnValue:
             ),
             redirect_uris=_parse_textarea_list(request.form.get("redirect_uris", "")),
             allowed_scopes=_parse_textarea_list(request.form.get("allowed_scopes", "")),
+            allowed_resources=_parse_textarea_list(request.form.get("allowed_resources", "")),
         )
 
         yaml_writer.save_client(
@@ -591,6 +612,14 @@ def client_regenerate_secret(client_id: str) -> ResponseReturnValue:
 
     if not client:
         flash(f"Client '{client_id}' not found", "error")
+        return redirect(url_for("ui.clients"))
+
+    # A public client (token_endpoint_auth_method 'none', #188) has no
+    # secret to regenerate; the button is hidden for it, but guard the
+    # route too so a direct POST cannot stamp a (dead, ignored) secret
+    # onto it - model_copy below bypasses the model validator.
+    if client.is_public:
+        flash(f"Client '{client_id}' is public (token_endpoint_auth_method 'none') and has no secret", "error")
         return redirect(url_for("ui.clients"))
 
     try:

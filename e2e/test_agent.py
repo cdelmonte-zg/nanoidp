@@ -82,6 +82,7 @@ class TestCategory(Enum):
     KEYS = "Key Management"
     API = "REST API"
     MANAGEMENT = "Management Secret"
+    MCP = "MCP"
 
 
 @dataclass
@@ -599,9 +600,212 @@ class NanoIDPTestAgent:
                 "Device Verification Base URL", TestCategory.OAUTH, False, str(e)
             )
 
+    def test_resource_indicators(self) -> TestResult:
+        """RFC 8707 resource indicators (issue #187): a resource on /token
+        binds the access token aud, a wrong-URI resource is invalid_target,
+        and no resource leaves the aud at oauth.audience."""
+        try:
+            mcp_resource = "https://mcp.example/server"
+            bound = self.session.post(
+                f"{self.base_url}/token",
+                data={"grant_type": "client_credentials", "resource": mcp_resource},
+                timeout=5,
+            )
+            bound_ok = False
+            introspect_ok = False
+            if bound.status_code == 200:
+                access_token = bound.json().get("access_token", "")
+                # Decode the aud without verification (base64url payload).
+                parts = access_token.split(".")
+                aud = None
+                if len(parts) == 3:
+                    pad = parts[1] + "=" * (-len(parts[1]) % 4)
+                    aud = json.loads(base64.urlsafe_b64decode(pad)).get("aud")
+                bound_ok = aud == mcp_resource
+                # /introspect must report the resource aud.
+                intro = self.session.post(
+                    f"{self.base_url}/introspect",
+                    data={"token": access_token},
+                    timeout=5,
+                )
+                introspect_ok = (
+                    intro.status_code == 200
+                    and intro.json().get("active") is True
+                    and intro.json().get("aud") == mcp_resource
+                )
+
+            bad = self.session.post(
+                f"{self.base_url}/token",
+                data={"grant_type": "client_credentials", "resource": "https://x/#frag"},
+                timeout=5,
+            )
+            invalid_target = (
+                bad.status_code == 400 and bad.json().get("error") == "invalid_target"
+            )
+
+            success = bound_ok and introspect_ok and invalid_target
+            return self._add_result(
+                "Resource Indicators",
+                TestCategory.OAUTH,
+                success,
+                "issue #187: resource binds the access token aud, reported by "
+                "/introspect; an invalid resource is invalid_target",
+                {
+                    "aud_bound_to_resource": bound_ok,
+                    "introspect_reports_aud": introspect_ok,
+                    "invalid_target": invalid_target,
+                },
+            )
+        except Exception as e:
+            return self._add_result(
+                "Resource Indicators", TestCategory.OAUTH, False, f"Error: {e}"
+            )
+
+    def test_public_client_flow(self) -> TestResult:
+        """Public client end-to-end (issue #188): a client with
+        token_endpoint_auth_method 'none' and no secret completes the PKCE
+        code flow identified by client_id alone, is refused /authorize
+        without PKCE, and is refused the client_credentials grant."""
+        public_id = f"pub-e2e-{secrets.token_hex(4)}"
+        redirect_uri = "http://localhost:3000/callback"
+        try:
+            create = self.session.post(
+                f"{self.base_url}/clients/create",
+                data={
+                    "client_id": public_id,
+                    "token_endpoint_auth_method": "none",
+                    "description": "Public client e2e (#188)",
+                },
+                allow_redirects=False,
+                timeout=5,
+            )
+            if create.status_code not in (302, 303):
+                return self._add_result(
+                    "Public Client Flow", TestCategory.OAUTH, False,
+                    f"Public client creation failed: status={create.status_code}",
+                )
+
+            # Leg 1: /authorize without PKCE must be refused, even though
+            # require_pkce is off in the default profile.
+            no_pkce = requests.get(
+                f"{self.base_url}/authorize",
+                params={
+                    "response_type": "code",
+                    "client_id": public_id,
+                    "redirect_uri": redirect_uri,
+                    "scope": "openid",
+                },
+                allow_redirects=False,
+                timeout=5,
+            )
+            # #189: a post-redirect-validation error (here PKCE) is now an
+            # OAuth error redirect, not a local 400.
+            no_pkce_loc = no_pkce.headers.get("Location", "")
+            refused_without_pkce = (
+                no_pkce.status_code in (302, 303)
+                and "error=invalid_request" in no_pkce_loc
+                and "S256" in no_pkce_loc
+            )
+
+            # Leg 2: full PKCE S256 flow with client_id alone at /token.
+            verifier = secrets.token_urlsafe(32)
+            challenge = base64.urlsafe_b64encode(
+                hashlib.sha256(verifier.encode()).digest()
+            ).decode().rstrip("=")
+            auth_params = {
+                "response_type": "code",
+                "client_id": public_id,
+                "redirect_uri": redirect_uri,
+                "scope": "openid",
+                "state": secrets.token_urlsafe(16),
+                "code_challenge": challenge,
+                "code_challenge_method": "S256",
+            }
+            flow = requests.Session()
+            page = flow.get(
+                f"{self.base_url}/authorize", params=auth_params,
+                allow_redirects=False, timeout=5,
+            )
+            code = None
+            if page.status_code == 200:
+                login = flow.post(
+                    f"{self.base_url}/authorize",
+                    data={**auth_params, "username": self.username, "password": self.password},
+                    allow_redirects=False,
+                    timeout=5,
+                )
+                if login.status_code == 302:
+                    params = parse_qs(urlparse(login.headers.get("Location", "")).query)
+                    code = params.get("code", [None])[0]
+            token_ok = False
+            if code:
+                token_resp = requests.post(
+                    f"{self.base_url}/token",
+                    data={
+                        "grant_type": "authorization_code",
+                        "code": code,
+                        "redirect_uri": redirect_uri,
+                        "client_id": public_id,
+                        "code_verifier": verifier,
+                    },
+                    timeout=5,
+                )
+                token_ok = (
+                    token_resp.status_code == 200
+                    and "access_token" in token_resp.json()
+                )
+
+            # Leg 3: client_credentials must come back unauthorized_client.
+            cc = requests.post(
+                f"{self.base_url}/token",
+                data={"grant_type": "client_credentials", "client_id": public_id},
+                timeout=5,
+            )
+            cc_refused = (
+                cc.status_code == 400
+                and cc.json().get("error") == "unauthorized_client"
+            )
+
+            success = refused_without_pkce and token_ok and cc_refused
+            return self._add_result(
+                "Public Client Flow",
+                TestCategory.OAUTH,
+                success,
+                "issue #188: PKCE S256 flow with client_id alone; refused "
+                "without PKCE; refused client_credentials",
+                {
+                    "refused_without_pkce": refused_without_pkce,
+                    "code_flow_token": token_ok,
+                    "client_credentials_refused": cc_refused,
+                },
+            )
+        except Exception as e:
+            return self._add_result(
+                "Public Client Flow", TestCategory.OAUTH, False, f"Error: {e}"
+            )
+        finally:
+            self.session.post(
+                f"{self.base_url}/clients/{public_id}/delete", timeout=5
+            )
+
     def test_authorization_code_pkce(self) -> TestResult:
         """Authorization Code Flow with PKCE (simulated)."""
         try:
+            # RFC 9207 (#189): capture the issuer to compare iss against
+            # BEFORE starting the request - the anti-mix-up property is that
+            # the client checks iss against an issuer it established earlier,
+            # not one it fetched from the same response. None when discovery
+            # says iss is unsupported (an http dev issuer), so we then assert
+            # iss is absent.
+            _disco = requests.get(
+                f"{self.base_url}/.well-known/openid-configuration", timeout=5
+            ).json()
+            self._iss_expected_issuer = (
+                _disco.get("issuer")
+                if _disco.get("authorization_response_iss_parameter_supported")
+                else None
+            )
+
             # Step 1: Generate PKCE challenge
             self._pkce_verifier = secrets.token_urlsafe(32)
             challenge = base64.urlsafe_b64encode(
@@ -663,6 +867,26 @@ class NanoIDPTestAgent:
                                 TestCategory.OAUTH,
                                 False,
                                 "State mismatch"
+                            )
+
+                        # RFC 9207 (#189): iss is delivered exactly when
+                        # discovery advertises support, and then must equal the
+                        # discovery issuer (captured up-front, the value the
+                        # client trusts and compares against - the anti-mix-up
+                        # property). With an http dev issuer neither is present.
+                        returned_iss = params.get("iss", [None])[0]
+                        iss_supported = self._iss_expected_issuer is not None
+                        if iss_supported and returned_iss != self._iss_expected_issuer:
+                            return self._add_result(
+                                "Auth Code + PKCE", TestCategory.OAUTH, False,
+                                f"iss mismatch: response {returned_iss!r} != "
+                                f"discovery {self._iss_expected_issuer!r} (RFC 9207)",
+                            )
+                        if not iss_supported and returned_iss is not None:
+                            return self._add_result(
+                                "Auth Code + PKCE", TestCategory.OAUTH, False,
+                                "iss sent while discovery advertises it "
+                                "unsupported (RFC 9207 metadata/behaviour must agree)",
                             )
 
                         # Step 3: Exchange code for token
@@ -1025,12 +1249,11 @@ class NanoIDPTestAgent:
                 )
 
             def is_invalid_scope(resp: requests.Response) -> bool:
-                if resp.status_code != 400:
+                # #189: an /authorize scope error is delivered as an OAuth
+                # error redirect (error=invalid_scope) to the redirect_uri.
+                if resp.status_code not in (302, 303):
                     return False
-                try:
-                    return resp.json().get("error") == "invalid_scope"
-                except ValueError:
-                    return False
+                return "error=invalid_scope" in resp.headers.get("Location", "")
 
             authorize_disallowed = authorize("email")
             authorize_allowed = authorize("openid")
@@ -4056,12 +4279,16 @@ class NanoIDPTestAgent:
             self._add_result(
                 "oauth21 Authorize Strictness",
                 TestCategory.OAUTH,
-                no_pkce.status_code == 400
-                and plain.status_code == 400
+                # PKCE errors on a registered client redirect_uri are OAuth
+                # error redirects now (#189); the unregistered-client error
+                # happens before redirect_uri is trusted, so it stays local.
+                no_pkce.status_code in (302, 303)
+                and "error=invalid_request" in no_pkce.headers.get("Location", "")
+                and plain.status_code in (302, 303)
                 and s256.status_code == 200
                 and unregistered.status_code == 400,
-                "no-PKCE 400, plain 400, S256+registered 200, "
-                "unregistered client 400",
+                "no-PKCE redirect(error), plain redirect(error), "
+                "S256+registered 200, unregistered client local 400",
                 {
                     "no_pkce": no_pkce.status_code,
                     "plain": plain.status_code,
@@ -4223,6 +4450,393 @@ class NanoIDPTestAgent:
         )
         return ok_all
 
+    # ==================== MCP resource-server suite (issue #191) ====================
+
+    # A real MCP client is a PUBLIC OAuth client: it authenticates the user
+    # through PKCE and holds no client secret (issue #191, finding on #260).
+    # The e2e config registers mcp-public-client with
+    # token_endpoint_auth_method 'none'.
+    MCP_PUBLIC_CLIENT = "mcp-public-client"
+
+    def _mcp_pkce_token_response(self, resource: str, scope: str) -> Optional[dict]:
+        """Delegated user login through the full PKCE + resource flow as a
+        PUBLIC client (no client secret, client_id in the token body). Mirrors
+        what an MCP client does after reading the RFC 9728 metadata. Returns
+        the raw /token JSON (access_token, and refresh_token when offline_access
+        was requested), or None if any step fails."""
+        verifier = secrets.token_urlsafe(32)
+        challenge = base64.urlsafe_b64encode(
+            hashlib.sha256(verifier.encode()).digest()
+        ).decode().rstrip("=")
+        redirect_uri = "http://localhost:3000/callback"
+        params = {
+            "response_type": "code",
+            "client_id": self.MCP_PUBLIC_CLIENT,
+            "redirect_uri": redirect_uri,
+            "scope": scope,
+            "state": secrets.token_urlsafe(16),
+            "code_challenge": challenge,
+            "code_challenge_method": "S256",
+            "resource": resource,
+        }
+        sess = requests.Session()
+        sess.get(f"{self.base_url}/authorize", params=params, allow_redirects=False, timeout=5)
+        resp = sess.post(
+            f"{self.base_url}/authorize",
+            data={**params, "username": self.username, "password": self.password},
+            allow_redirects=False, timeout=5,
+        )
+        if resp.status_code != 302:
+            return None
+        code = parse_qs(urlparse(resp.headers.get("Location", "")).query).get("code", [None])[0]
+        if not code:
+            return None
+        # Public client: no HTTP Basic, client_id travels in the body.
+        token_resp = sess.post(
+            f"{self.base_url}/token",
+            data={
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": redirect_uri,
+                "code_verifier": verifier,
+                "resource": resource,
+                "client_id": self.MCP_PUBLIC_CLIENT,
+            },
+            timeout=5,
+        )
+        if token_resp.status_code != 200:
+            return None
+        return token_resp.json()
+
+    def _mcp_pkce_resource_token(self, resource: str, scope: str) -> Optional[str]:
+        """The access token from a delegated public-client PKCE flow (aud =
+        `resource`, RFC 8707)."""
+        body = self._mcp_pkce_token_response(resource, scope)
+        return body.get("access_token") if body else None
+
+    def _mcp_cc_resource_token(self, resource: str, scope: str) -> Optional[str]:
+        """A client_credentials workload token bound to `resource`."""
+        resp = self.session.post(
+            f"{self.base_url}/token",
+            data={"grant_type": "client_credentials", "resource": resource, "scope": scope},
+            timeout=5,
+        )
+        if resp.status_code != 200:
+            return None
+        return resp.json().get("access_token")
+
+    def _mcp_call_tool(self, mcp_url, token, tool, args):
+        """Drive one tools/call over Streamable HTTP as an MCP client.
+
+        Returns (outcome, detail): outcome is "ok" (tool ran),
+        "tool_error" (tool ran but returned isError, e.g. insufficient_scope),
+        or "unauthorized" (the transport rejected the token, e.g. wrong
+        audience -> 401). detail is the text / exception type."""
+        import asyncio
+
+        from mcp import ClientSession
+        from mcp.client.streamable_http import create_mcp_http_client, streamable_http_client
+
+        async def run():
+            headers = {"Authorization": f"Bearer {token}"} if token else {}
+            hc = create_mcp_http_client(headers=headers)
+            async with hc:
+                async with streamable_http_client(url=mcp_url, http_client=hc) as (read, write, *_):
+                    async with ClientSession(read, write) as session:
+                        await session.initialize()
+                        result = await session.call_tool(tool, args)
+                        text = result.content[0].text if result.content else ""
+                        return ("tool_error" if result.is_error else "ok"), text
+
+        # A transport error (a 401 on a bad token, or a transient connect/read
+        # under CI load with several servers on one runner) raises out of the
+        # async client. Retry once for the transient case; keep the exception
+        # text as the detail so a genuine failure is diagnosable in the log
+        # rather than an opaque "unauthorized".
+        last_exc = ""
+        for _attempt in range(2):
+            try:
+                return asyncio.run(run())
+            except Exception as e:
+                last_exc = f"{type(e).__name__}: {e}"
+        return "unauthorized", last_exc
+
+    def _mcp_test_rfc9728_discovery(self, mcp_url: str) -> None:
+        """Unauthenticated tools/call -> 401 with WWW-Authenticate naming the
+        RFC 9728 metadata, whose authorization_servers points at nanoidp."""
+        try:
+            resp = requests.post(
+                mcp_url,
+                headers={"Content-Type": "application/json",
+                         "Accept": "application/json, text/event-stream"},
+                json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+                timeout=5,
+            )
+            www = resp.headers.get("WWW-Authenticate", "")
+            match = re.search(r'resource_metadata="([^"]+)"', www)
+            metadata = requests.get(match.group(1), timeout=5).json() if match else {}
+            auth_servers = metadata.get("authorization_servers", [])
+            success = (
+                resp.status_code == 401
+                and "Bearer" in www
+                and self.base_url in [s.rstrip("/") for s in auth_servers]
+            )
+            self._add_result(
+                "MCP RFC 9728 Discovery", TestCategory.MCP, success,
+                "unauthenticated tools/call -> 401 + protected-resource metadata "
+                "naming nanoidp as the authorization server",
+                {"status": resp.status_code, "authorization_servers": auth_servers},
+            )
+        except Exception as e:
+            self._add_result("MCP RFC 9728 Discovery", TestCategory.MCP, False, f"Error: {e}")
+
+    def _mcp_test_delegated_pkce(self, mcp_url: str) -> None:
+        try:
+            token = self._mcp_pkce_resource_token(mcp_url, "openid documents:read")
+            outcome, detail = (
+                self._mcp_call_tool(mcp_url, token, "read_document", {"document_id": "d1"})
+                if token else ("no_token", "PKCE flow returned no token")
+            )
+            success = outcome == "ok" and "d1" in detail
+            self._add_result(
+                "MCP Delegated PKCE Flow", TestCategory.MCP, success,
+                "delegated user login (PKCE, resource=) -> resource-bound token "
+                "accepted by the MCP server for a scoped tool",
+                {"outcome": outcome},
+            )
+        except Exception as e:
+            self._add_result("MCP Delegated PKCE Flow", TestCategory.MCP, False, f"Error: {e}")
+
+    def _mcp_test_client_credentials(self, mcp_url: str) -> None:
+        try:
+            token = self._mcp_cc_resource_token(mcp_url, "documents:read")
+            outcome, detail = (
+                self._mcp_call_tool(mcp_url, token, "read_document", {"document_id": "d2"})
+                if token else ("no_token", "no cc token")
+            )
+            success = outcome == "ok"
+            self._add_result(
+                "MCP Client Credentials Workload", TestCategory.MCP, success,
+                "a client_credentials workload token bound to the resource is "
+                "accepted by the MCP server", {"outcome": outcome},
+            )
+        except Exception as e:
+            self._add_result("MCP Client Credentials Workload", TestCategory.MCP, False, f"Error: {e}")
+
+    def _mcp_test_wrong_audience(self, mcp_url: str) -> None:
+        """A token minted for a DIFFERENT resource is rejected at the transport
+        with a 401 (aud mismatch, RFC 8707). Asserted at the HTTP layer so a
+        vacuous pass (no token, or a swallowed exception read as
+        "unauthorized") cannot hide a real regression."""
+        try:
+            other = "http://localhost:9999/other-mcp"
+            token = self._mcp_cc_resource_token(other, "documents:read")
+            # The token MUST have been issued for the wrong-audience check to
+            # mean anything; a None token would 401 for the wrong reason.
+            assert token is not None, "could not mint a token for the other resource"
+            resp = requests.post(
+                mcp_url,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
+                    "Accept": "application/json, text/event-stream",
+                },
+                json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+                timeout=5,
+            )
+            www = resp.headers.get("WWW-Authenticate", "")
+            success = resp.status_code == 401 and "Bearer" in www
+            self._add_result(
+                "MCP Wrong Audience Rejected", TestCategory.MCP, success,
+                "a token whose aud is another resource is rejected with 401 + "
+                "WWW-Authenticate: Bearer (RFC 8707 audience binding)",
+                {"status": resp.status_code, "www_authenticate": www},
+            )
+        except Exception as e:
+            self._add_result("MCP Wrong Audience Rejected", TestCategory.MCP, False, f"Error: {e}")
+
+    def _mcp_test_insufficient_scope_challenge(self, mcp_url: str) -> None:
+        """A token lacking the resource scope floor gets the CONFORMANT MCP
+        insufficient_scope challenge: HTTP 403 with WWW-Authenticate: Bearer
+        error="insufficient_scope" and the RFC 9728 resource_metadata pointer
+        (MCP 2026-07-28). Asserted at the HTTP layer - this is the transport
+        response an MCP client keys off, not an in-band tool error."""
+        try:
+            # aud = this resource (passes the audience check) but scope lacks
+            # documents:read (the resource floor) -> the SDK 403s before a tool.
+            token = self._mcp_cc_resource_token(mcp_url, "documents:write")
+            assert token is not None, "could not mint a documents:write-only token"
+            resp = requests.post(
+                mcp_url,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
+                    "Accept": "application/json, text/event-stream",
+                },
+                json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+                timeout=5,
+            )
+            www = resp.headers.get("WWW-Authenticate", "")
+            success = (
+                resp.status_code == 403
+                and 'error="insufficient_scope"' in www
+                and "resource_metadata=" in www
+            )
+            self._add_result(
+                "MCP Insufficient Scope Challenge (403)", TestCategory.MCP, success,
+                "a token lacking the resource scope floor gets a conformant 403 "
+                'WWW-Authenticate: Bearer error="insufficient_scope" + '
+                "resource_metadata (RFC 9728 / MCP 2026-07-28)",
+                {"status": resp.status_code, "www_authenticate": www},
+            )
+        except Exception as e:
+            self._add_result(
+                "MCP Insufficient Scope Challenge (403)", TestCategory.MCP, False, f"Error: {e}"
+            )
+
+    def _mcp_test_per_tool_scope(self, mcp_url: str) -> None:
+        """The APPLICATION-level layer: a caller past the resource floor
+        (documents:read) but lacking a tool's elevated scope (delete_document
+        needs documents:write) is refused in-band with an MCP tool error. This
+        is a second, application-defined authorization decision, distinct from
+        the transport-level 403 challenge above."""
+        try:
+            token = self._mcp_cc_resource_token(mcp_url, "documents:read")
+            outcome, detail = self._mcp_call_tool(mcp_url, token, "delete_document", {"document_id": "d1"})
+            success = outcome == "tool_error" and "insufficient_scope" in detail
+            self._add_result(
+                "MCP Per-Tool Scope (application-level)", TestCategory.MCP, success,
+                "delete_document (documents:write) refused to a documents:read "
+                "token with an in-band tool error", {"outcome": outcome, "detail": detail},
+            )
+        except Exception as e:
+            self._add_result("MCP Per-Tool Scope (application-level)", TestCategory.MCP, False, f"Error: {e}")
+
+    def _mcp_test_refresh_scope_escalation(self, mcp_url: str) -> None:
+        """A public MCP client cannot widen scope on refresh: a refresh token
+        issued for documents:read, replayed asking for documents:write, is
+        refused (RFC 6749 §6 - refresh must not grant additional scope)."""
+        try:
+            body = self._mcp_pkce_token_response(mcp_url, "offline_access documents:read")
+            assert body is not None, "delegated PKCE flow returned no token"
+            refresh_token = body.get("refresh_token")
+            assert refresh_token, "no refresh_token issued (offline_access)"
+            resp = requests.post(
+                f"{self.base_url}/token",
+                data={
+                    "grant_type": "refresh_token",
+                    "refresh_token": refresh_token,
+                    "scope": "documents:read documents:write",
+                    "resource": mcp_url,
+                    "client_id": self.MCP_PUBLIC_CLIENT,
+                },
+                timeout=5,
+            )
+            # nanoidp's precise contract (RFC 6749 §6): a refresh must not add a
+            # scope the original grant lacked -> 400 invalid_scope. Asserting the
+            # exact status AND error means a 500/401/etc. can no longer pass
+            # vacuously the way an "any non-200" check would.
+            body = resp.json()
+            success = resp.status_code == 400 and body.get("error") == "invalid_scope"
+            self._add_result(
+                "MCP Refresh Scope Escalation Rejected", TestCategory.MCP, success,
+                "a refresh token for documents:read cannot be widened to "
+                "documents:write on refresh -> 400 invalid_scope (RFC 6749 §6)",
+                {"status": resp.status_code, "error": body.get("error")},
+            )
+        except Exception as e:
+            self._add_result(
+                "MCP Refresh Scope Escalation Rejected", TestCategory.MCP, False, f"Error: {e}"
+            )
+
+    def _mcp_test_revoked_still_valid_until_exp(self, mcp_url: str) -> None:
+        """A token revoked at nanoidp is reported inactive by /introspect but
+        STILL accepted by the JWKS-validating MCP server until exp - the
+        documented consequence of self-contained tokens (#191)."""
+        try:
+            token = self._mcp_cc_resource_token(mcp_url, "documents:read")
+            self.session.post(f"{self.base_url}/revoke", data={"token": token}, timeout=5)
+            introspect = self.session.post(
+                f"{self.base_url}/introspect", data={"token": token}, timeout=5
+            ).json()
+            outcome, _ = self._mcp_call_tool(mcp_url, token, "read_document", {"document_id": "d1"})
+            success = introspect.get("active") is False and outcome == "ok"
+            self._add_result(
+                "MCP Revoked Token Still Valid At Resource", TestCategory.MCP, success,
+                "revoked at nanoidp -> /introspect inactive, but the "
+                "JWKS-only MCP server still accepts it until exp (documented)",
+                {"introspect_active": introspect.get("active"), "mcp_outcome": outcome},
+            )
+        except Exception as e:
+            self._add_result(
+                "MCP Revoked Token Still Valid At Resource", TestCategory.MCP, False, f"Error: {e}"
+            )
+
+    @staticmethod
+    def _jwt_kid(token: str) -> Optional[str]:
+        """The `kid` from a JWT header, without verifying the token."""
+        try:
+            header_b64 = token.split(".")[0]
+            header_b64 += "=" * (-len(header_b64) % 4)
+            return json.loads(base64.urlsafe_b64decode(header_b64)).get("kid")
+        except Exception:
+            return None
+
+    def _mcp_test_key_rotation(self, mcp_url: str) -> None:
+        """A token minted before a key rotation stays valid because nanoidp
+        RETAINS the previous key in its published JWKS. Asserted at the source:
+        the pre-rotation token's kid must still appear in nanoidp's
+        /.well-known/jwks.json after the rotation (not merely be served from the
+        MCP server's PyJWKClient cache), AND the token must still verify."""
+        try:
+            token = self._mcp_cc_resource_token(mcp_url, "documents:read")
+            assert token is not None, "could not mint a pre-rotation token"
+            old_kid = self._jwt_kid(token)
+            assert old_kid, "pre-rotation token carries no kid"
+            rotate = self.session.post(f"{self.base_url}/api/keys/rotate", timeout=5)
+            jwks = requests.get(f"{self.base_url}/.well-known/jwks.json", timeout=5).json()
+            published_kids = {k.get("kid") for k in jwks.get("keys", [])}
+            old_kid_retained = old_kid in published_kids
+            outcome, _ = self._mcp_call_tool(mcp_url, token, "read_document", {"document_id": "d1"})
+            success = rotate.status_code == 200 and old_kid_retained and outcome == "ok"
+            self._add_result(
+                "MCP Token Survives Key Rotation", TestCategory.MCP, success,
+                "after rotation the pre-rotation kid is still in nanoidp's "
+                "published JWKS and the token still verifies at the MCP server",
+                {
+                    "rotate_status": rotate.status_code,
+                    "old_kid_retained": old_kid_retained,
+                    "mcp_outcome": outcome,
+                },
+            )
+        except Exception as e:
+            self._add_result("MCP Token Survives Key Rotation", TestCategory.MCP, False, f"Error: {e}")
+
+    def run_mcp_tests(self, mcp_url: str) -> bool:
+        """Dedicated suite for the OAuth/MCP interoperability loop (#191).
+
+        Requires a running nanoidp (whose oauth.scopes_supported includes
+        documents:read, documents:write, admin) AND the mock MCP server
+        (e2e/mock_mcp_server.py) reachable at `mcp_url`."""
+        print("\n" + "=" * 70)
+        print("  NanoIDP OAuth/MCP Interoperability Suite (#191)")
+        print("=" * 70)
+        print(f"\n  nanoidp:    {self.base_url}")
+        print(f"  MCP server: {mcp_url}")
+        self._mcp_test_rfc9728_discovery(mcp_url)
+        self._mcp_test_delegated_pkce(mcp_url)
+        self._mcp_test_client_credentials(mcp_url)
+        self._mcp_test_wrong_audience(mcp_url)
+        self._mcp_test_insufficient_scope_challenge(mcp_url)
+        self._mcp_test_per_tool_scope(mcp_url)
+        self._mcp_test_refresh_scope_escalation(mcp_url)
+        self._mcp_test_revoked_still_valid_until_exp(mcp_url)
+        self._mcp_test_key_rotation(mcp_url)
+        print("\n" + "-" * 70)
+        ok = self.suite.failed == 0
+        print(f"  MCP suite: {self.suite.passed}/{self.suite.total} passed" + ("" if ok else "  [FAILED]"))
+        return ok
+
     def run_all_tests(self) -> bool:
         """Esegue tutti i test organizzati per categoria."""
         print("\n" + "=" * 70)
@@ -4251,6 +4865,8 @@ class NanoIDPTestAgent:
                 self.test_issuer_from_request,
                 self.test_issuer_from_proxy_headers,
                 self.test_authorization_code_pkce,
+                self.test_public_client_flow,
+                self.test_resource_indicators,
                 self.test_redirect_uri_exact_matching,
                 self.test_native_app_redirect_uris,
                 self.test_scope_enforcement,
@@ -4435,6 +5051,13 @@ Examples:
         default="sp-cert.pem",
         help="SP certificate PEM for --saml-signed (default: sp-cert.pem)"
     )
+    parser.add_argument(
+        "--mcp",
+        metavar="MCP_URL",
+        help="Run only the OAuth/MCP interoperability suite (#191) against the "
+        "mock MCP server at MCP_URL, e.g. http://localhost:9100/mcp. nanoidp "
+        "must be configured with the documents:read/documents:write/admin scopes."
+    )
 
     args = parser.parse_args()
 
@@ -4452,6 +5075,8 @@ Examples:
         success = agent.run_oauth21_tests()
     elif args.saml_signed:
         success = agent.run_saml_signed_tests(args.sp_key, args.sp_cert)
+    elif args.mcp:
+        success = agent.run_mcp_tests(args.mcp)
     else:
         success = agent.run_all_tests()
 
