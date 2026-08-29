@@ -62,9 +62,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   are now OAuth error redirects to the client (`error`,
   `error_description`, `state`, `iss`) instead of a local JSON 400, per
   RFC 6749 §4.1.2.1 - completing the RFC 9207 "error responses too"
-  requirement. Errors before the `redirect_uri` is trusted (unknown
-  client, malformed or unregistered `redirect_uri`) stay local JSON. The
-  device flow is unaffected.
+  requirement. `unsupported_response_type` (a non-`code` `response_type`)
+  is validated after the `redirect_uri` too, so it redirects as well.
+  Errors before the `redirect_uri` is trusted (unknown client, malformed
+  or unregistered `redirect_uri`) stay local JSON. A `redirect_uri` that
+  carries its own query keeps it: the response parameters are appended,
+  never fold into an existing value. The device flow is unaffected.
 - **RFC 8707 Resource Indicators: `resource` binds the access token
   audience** (#187). A client may send one or more `resource` parameters
   on `/authorize`, `/token` (every grant) and `/device_authorization`;

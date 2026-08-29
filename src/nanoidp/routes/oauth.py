@@ -7,7 +7,6 @@ import logging
 import os
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
-from urllib.parse import urlencode
 
 import jwt as pyjwt
 from flask import (
@@ -38,7 +37,11 @@ from ..services import (
 )
 from ..services.device_code import DEVICE_CODE_EXPIRES_IN, DEVICE_POLL_INTERVAL
 from ..services.discovery import issuer_qualifies_for_iss_parameter
-from ..services.redirect_uri import redirect_uri_is_registered, redirect_uri_rejection_reason
+from ..services.redirect_uri import (
+    append_authorization_params,
+    redirect_uri_is_registered,
+    redirect_uri_rejection_reason,
+)
 from ..services.resource import resolve_resources
 from ..services.scope import resolve_scope
 from ..services.token import resolve_user_claim, sanitize_claim_names
@@ -206,24 +209,17 @@ def _authorize_error_redirect(
     issuer = effective_issuer(config.settings)
     if issuer_qualifies_for_iss_parameter(issuer):
         params["iss"] = issuer
-    return redirect(f"{p.redirect_uri}?{urlencode(params)}")
+    return redirect(append_authorization_params(p.redirect_uri, params))
 
 
 def _validate_authorize_client(
     config: ConfigManager, p: _AuthorizeParams
 ) -> Tuple[Optional[OAuthClient], Optional[ResponseReturnValue]]:
-    """Required-parameter checks and client lookup: (client, None) or (None, error)."""
-    if p.response_type != "code":
-        return None, (
-            jsonify(
-                {
-                    "error": "unsupported_response_type",
-                    "error_description": "Only 'code' response_type is supported",
-                }
-            ),
-            400,
-        )
+    """Required-parameter checks and client lookup: (client, None) or (None, error).
 
+    response_type is NOT checked here: it is validated after the redirect_uri
+    is trusted (#258 review), so an unsupported_response_type on a valid
+    redirect_uri is delivered as an error redirect, not a local JSON."""
     if not p.client_id:
         return None, (
             jsonify({"error": "invalid_request", "error_description": "client_id is required"}),
@@ -242,6 +238,24 @@ def _validate_authorize_client(
             p.client_id, "Unknown client", "invalid_client", "Unknown client_id"
         )
     return client, None
+
+
+def _validate_authorize_response_type(
+    config: ConfigManager, p: _AuthorizeParams
+) -> Optional[ResponseReturnValue]:
+    """Only the authorization code flow is supported (#41). Checked after the
+    redirect_uri is validated so an unsupported_response_type is delivered as
+    an error redirect carrying iss (RFC 6749 §4.1.2.1, RFC 9207, #258
+    review), not a local JSON - the implicit flow is intentionally absent."""
+    if p.response_type != "code":
+        return _authorize_error_redirect(
+            config,
+            p,
+            "unsupported_response_type",
+            "Only 'code' response_type is supported",
+            f"unsupported response_type {p.response_type!r}",
+        )
+    return None
 
 
 def _validate_authorize_scope(
@@ -477,7 +491,7 @@ def _handle_authorize_login(
         if issuer_qualifies_for_iss_parameter(issuer):
             redirect_params["iss"] = issuer
 
-        callback_url = f"{p.redirect_uri}?{urlencode(redirect_params)}"
+        callback_url = append_authorization_params(p.redirect_uri, redirect_params)
 
         audit_event(
             "authorization_request",
@@ -577,6 +591,9 @@ def authorize() -> ResponseReturnValue:
     # it), but once it is trusted, every later error is delivered to the
     # client as an OAuth error redirect carrying iss (#258 review).
     error = _validate_authorize_redirect_uri(config, p, client)
+    if error is not None:
+        return error
+    error = _validate_authorize_response_type(config, p)
     if error is not None:
         return error
     error = _validate_authorize_scope(config, p, client)

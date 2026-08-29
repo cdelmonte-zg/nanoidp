@@ -28,8 +28,24 @@ remapped by the resolver, so a registered ``http://localhost:3000/cb`` keeps
 exact matching, port included.
 """
 
-from typing import Iterable
-from urllib.parse import urlparse
+from typing import Dict, Iterable
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+
+
+def append_authorization_params(uri: str, params: Dict[str, str]) -> str:
+    """Append authorization-response parameters to a redirect URI, preserving
+    any query the URI already carries.
+
+    The single place that builds an authorization response URI (success or
+    error). RFC 6749 §3.1.2 lets a ``redirect_uri`` carry a query, and that
+    query MUST be retained when the authorization server adds response
+    parameters - so ``https://c/cb?tenant=foo`` + ``{"code": "x"}`` becomes
+    ``https://c/cb?tenant=foo&code=x``, never a second ``?`` that folds
+    ``code`` into the ``tenant`` value.
+    """
+    parts = urlparse(uri)
+    merged = parse_qsl(parts.query, keep_blank_values=True) + list(params.items())
+    return urlunparse(parts._replace(query=urlencode(merged)))
 
 # RFC 8252 §7.3: loopback interface redirection is defined for the IPv4 and
 # IPv6 loopback literals only. urlparse().hostname strips the brackets from

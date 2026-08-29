@@ -120,6 +120,101 @@ class TestErrorResponse:
         assert params["iss"] == [HTTPS_ISSUER]
         assert "code" not in params
 
+    def test_unsupported_response_type_redirects_after_valid_redirect_uri(self, client, app):
+        """#258 review: unsupported_response_type is checked AFTER redirect_uri
+        is trusted, so a valid client + redirect_uri gets an error redirect
+        carrying iss, not a local JSON 400."""
+        with app.app_context():
+            get_config().settings.issuer = HTTPS_ISSUER
+        resp = client.get(
+            "/authorize",
+            query_string={
+                "response_type": "token",
+                "client_id": "demo-client",
+                "redirect_uri": REDIRECT,
+                "state": "abc",
+            },
+        )
+        assert resp.status_code == 302
+        params = _loc_params(resp)
+        assert params["error"] == ["unsupported_response_type"]
+        assert params["state"] == ["abc"]
+        assert params["iss"] == [HTTPS_ISSUER]
+
+    def test_unsupported_response_type_stays_local_with_invalid_redirect_uri(self, client):
+        """When the redirect_uri is not usable, the same error stays local -
+        never a redirect to an untrusted URI."""
+        resp = client.get(
+            "/authorize",
+            query_string={
+                "response_type": "token",
+                "client_id": "demo-client",
+                "redirect_uri": "not-a-valid-uri",
+            },
+        )
+        assert resp.status_code == 400
+        assert resp.headers.get("Location") is None
+
+    def test_error_redirect_preserves_an_existing_query(self, client, app):
+        """#258 review: a redirect_uri may carry its own query (RFC 6749
+        §3.1.2), which MUST be retained - the error params are appended with
+        '&', not a second '?' that folds them into the last value."""
+        from nanoidp.models import OAuthClient
+
+        with app.app_context():
+            settings = get_config().settings
+            settings.issuer = HTTPS_ISSUER
+            settings.scope_enforcement = True
+            settings.clients.append(
+                OAuthClient(
+                    client_id="q-client",
+                    client_secret="s",
+                    redirect_uris=["https://client.example/cb?tenant=foo"],
+                )
+            )
+        resp = client.get(
+            "/authorize",
+            query_string={
+                "response_type": "code",
+                "client_id": "q-client",
+                "redirect_uri": "https://client.example/cb?tenant=foo",
+                "scope": "not-a-real-scope",
+            },
+        )
+        assert resp.status_code == 302
+        params = _loc_params(resp)
+        assert params["tenant"] == ["foo"]  # the original query survives, standalone
+        assert params["error"] == ["invalid_scope"]
+
+    def test_success_redirect_preserves_an_existing_query(self, client, app):
+        from nanoidp.models import OAuthClient
+
+        with app.app_context():
+            get_config().settings.clients.append(
+                OAuthClient(
+                    client_id="q-ok",
+                    client_secret="s",
+                    redirect_uris=["https://client.example/cb?tenant=foo"],
+                )
+            )
+        params = {
+            "response_type": "code",
+            "client_id": "q-ok",
+            "redirect_uri": "https://client.example/cb?tenant=foo",
+            "scope": "openid",
+            "code_challenge": CHALLENGE,
+            "code_challenge_method": "S256",
+        }
+        client.get("/authorize", query_string=params)
+        resp = client.post(
+            "/authorize", data={**params, "username": "admin", "password": "admin"},
+            follow_redirects=False,
+        )
+        assert resp.status_code == 302
+        got = _loc_params(resp)
+        assert got["tenant"] == ["foo"]
+        assert got["code"]
+
     def test_error_stays_local_when_redirect_uri_is_unvalidated(self, client, app):
         """A client with pinned redirect_uris and a mismatched redirect_uri
         gets a local JSON error, never a redirect to the unvalidated URI."""

@@ -109,10 +109,11 @@ def build_discovery_document(
         "code_challenge_methods_supported": (
             ["plain", "S256"] if settings.pkce_plain_allowed else ["S256"]
         ),
-        # RFC 9207 (#189): /authorize returns iss in the response. Advertised
-        # only when the effective issuer is a query/fragment-free https URL,
-        # as the RFC requires; with an http dev issuer the parameter is still
-        # sent but not advertised (see issuer_qualifies_for_iss_parameter).
+        # RFC 9207 (#189): /authorize returns iss in the response, advertised
+        # here, exactly when the effective issuer qualifies (a
+        # query/fragment-free https URL with a host). The same predicate
+        # gates the emission (#258 review), so with an http dev issuer iss is
+        # neither advertised NOR sent - see issuer_qualifies_for_iss_parameter.
         "authorization_response_iss_parameter_supported": (
             issuer_qualifies_for_iss_parameter(issuer)
         ),

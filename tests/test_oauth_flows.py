@@ -6,6 +6,8 @@ Tests complete authorization code flow, password grant, client credentials, and 
 import base64
 import json
 
+from tests.conftest import authorize_error
+
 
 class TestAuthorizationCodeFlow:
     """Tests for OAuth2 Authorization Code Flow."""
@@ -28,9 +30,8 @@ class TestAuthorizationCodeFlow:
             '&redirect_uri=http://localhost:3000/callback'
         )
 
-        assert response.status_code == 400
-        data = json.loads(response.data)
-        assert data["error"] == "unsupported_response_type"
+        assert response.status_code == 302
+        assert authorize_error(response)["error"] == "unsupported_response_type"
 
     def test_authorize_requires_client_id(self, client):
         """Test that client_id is required."""
