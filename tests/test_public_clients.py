@@ -157,6 +157,34 @@ class TestModel:
         client = config.get_client("pub")
         assert client is not None and client.is_public and client.client_secret is None
 
+    def test_yaml_invalid_auth_method_is_rejected_at_load(self, tmp_path):
+        """token_endpoint_auth_method is a closed enum on the document model
+        (#254 review), so an invalid value fails at load with a field path,
+        not only later in to_client()."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        (config_dir / "settings.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "oauth": {
+                        "issuer": "http://localhost:8000",
+                        "clients": [
+                            {
+                                "client_id": "x",
+                                "client_secret": "s",
+                                "token_endpoint_auth_method": "client_secret_jwt",
+                            }
+                        ],
+                    }
+                }
+            )
+        )
+        (config_dir / "users.yaml").write_text(
+            'users:\n  admin:\n    password: "admin"\ndefault_user: admin\n'
+        )
+        with pytest.raises(ValueError, match="token_endpoint_auth_method"):
+            ConfigManager(str(config_dir))
+
 
 class TestAuthorizePkceMandatory:
     """S256 PKCE is forced for public clients regardless of require_pkce."""

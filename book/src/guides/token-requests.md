@@ -49,6 +49,31 @@ With `oauth.refresh_token_rotation: true`, each refresh invalidates the
 consumed refresh token; reuse revokes the whole rotation family
 (RFC 9700 §4.14.2).
 
+## Public clients (no secret)
+
+A client registered with `token_endpoint_auth_method: none` (a CLI,
+desktop or native app, SPA, or MCP client - see the public-clients note
+in the [configuration reference](../reference/configuration.md)) has no
+secret, so it sends no `-u`: it is identified by `client_id` in the body,
+and the PKCE `code_verifier` is what proves it started the flow. The
+`code` comes from the browser step (`GET /authorize` with a
+`code_challenge`, then login), which cannot be scripted with curl; only
+the exchange is shown here.
+
+```bash
+curl -X POST 'http://localhost:8000/token' \
+  -d 'grant_type=authorization_code' \
+  -d 'code=CODE_FROM_THE_AUTHORIZE_REDIRECT' \
+  -d 'client_id=cli-client' \
+  -d 'redirect_uri=http://127.0.0.1:8765/callback' \
+  -d 'code_verifier=YOUR_PKCE_CODE_VERIFIER'
+```
+
+A public client MUST use PKCE with `S256` (the request is rejected
+without it), cannot use the `client_credentials` grant, and always gets a
+rotating refresh token. A `client_secret` sent by a public client is
+ignored.
+
 ## Device authorization flow
 
 ```bash

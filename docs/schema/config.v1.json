@@ -160,6 +160,11 @@
           },
           "token_endpoint_auth_method": {
             "default": "client_secret_basic",
+            "enum": [
+              "client_secret_basic",
+              "client_secret_post",
+              "none"
+            ],
             "title": "Token Endpoint Auth Method",
             "type": "string"
           }
