@@ -1481,6 +1481,34 @@ def _enforce_token_endpoint_auth(
     return None
 
 
+def _authenticate_confidential_client(
+    config: ConfigManager,
+) -> tuple[bool, Optional[str]]:
+    """Confidential client authentication for the RFC 7009/7662/8628 endpoints.
+
+    The shared "credentials via HTTP Basic or client_secret_post body" check
+    that /introspect, /revoke and /device_authorization each carried inline.
+    Returns ``(authenticated, resolved_client_id)``; the caller applies its own
+    policy around it (introspect never relaxes for public clients; revoke calls
+    this only when the client is not public; device requires it outright).
+
+    This is deliberately SEPARATE from ``_enforce_token_endpoint_auth`` (the
+    /token boundary, #188), which additionally enforces the client's registered
+    token_endpoint_auth_method and rejects presenting two auth methods at once.
+    Aligning these endpoints with that stricter boundary (RFC 7009 §2.1 /
+    RFC 7662 §2.1 say they authenticate "as at the token endpoint") is a
+    behaviour change tracked separately in #262, not part of this extraction.
+    """
+    auth = request.authorization
+    body_client_id = request.form.get("client_id")
+    body_client_secret = request.form.get("client_secret") or None
+    if auth:
+        return config.check_client(auth.username, auth.password), auth.username
+    if body_client_id and body_client_secret:
+        return config.check_client(body_client_id, body_client_secret), body_client_id
+    return False, body_client_id
+
+
 @oauth_bp.route("/token", methods=["POST"])
 def token() -> ResponseReturnValue:
     """OAuth2 token endpoint: shared validation, then per-grant dispatch."""
@@ -1797,18 +1825,7 @@ def introspect() -> ResponseReturnValue:
     # endpoint to be protected against token scanning, and a public
     # client_id is identification, not authentication - so 'none' is not in
     # introspection_endpoint_auth_methods_supported either.
-    auth = request.authorization
-    body_client_id = request.form.get("client_id")
-    body_client_secret = request.form.get("client_secret") or None
-    if auth:
-        authenticated = config.check_client(auth.username, auth.password)
-        client_id = auth.username
-    elif body_client_id and body_client_secret:
-        authenticated = config.check_client(body_client_id, body_client_secret)
-        client_id = body_client_id
-    else:
-        authenticated = False
-        client_id = body_client_id
+    authenticated, client_id = _authenticate_confidential_client(config)
     if not authenticated:
         audit_event(
             "introspection_request",
@@ -1915,13 +1932,7 @@ def revoke() -> ResponseReturnValue:
     is_public = revoking_client is not None and revoking_client.is_public
 
     if not is_public:
-        body_client_secret = request.form.get("client_secret") or None
-        if auth:
-            authenticated = config.check_client(auth.username, auth.password)
-        elif body_client_id and body_client_secret:
-            authenticated = config.check_client(body_client_id, body_client_secret)
-        else:
-            authenticated = False
+        authenticated, _ = _authenticate_confidential_client(config)
         if not authenticated:
             audit_event(
                 "revocation_request",
@@ -2084,18 +2095,7 @@ def device_authorization() -> ResponseReturnValue:
     # clients are NOT special-cased here (#188 keeps device-flow support
     # for token_endpoint_auth_method 'none' as an explicit follow-up
     # decision; today a public client uses authorization_code + PKCE).
-    auth = request.authorization
-    body_client_id = request.form.get("client_id")
-    body_client_secret = request.form.get("client_secret") or None
-    if auth:
-        authenticated = config.check_client(auth.username, auth.password)
-        resolved_client_id = auth.username
-    elif body_client_id and body_client_secret:
-        authenticated = config.check_client(body_client_id, body_client_secret)
-        resolved_client_id = body_client_id
-    else:
-        authenticated = False
-        resolved_client_id = body_client_id
+    authenticated, resolved_client_id = _authenticate_confidential_client(config)
     if not authenticated:
         audit_event(
             "device_authorization_request",
