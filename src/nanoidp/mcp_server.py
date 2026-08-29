@@ -1361,7 +1361,12 @@ def _tool_create_client(arguments: dict[str, Any], config: ConfigManager) -> dic
         arguments.get("token_endpoint_auth_method", "client_secret_basic")
     )
     client_secret = arguments.get("client_secret")
-    if not client_secret and auth_method != "none":
+    if auth_method == "none":
+        # A public client has no secret; drop a supplied one rather than
+        # persisting a dead, ignored value (#188, parity with the UI create
+        # form's server-side normalization).
+        client_secret = None
+    elif not client_secret:
         return {
             "success": False,
             "error": "client_secret is required unless token_endpoint_auth_method is 'none'",
@@ -1369,7 +1374,7 @@ def _tool_create_client(arguments: dict[str, Any], config: ConfigManager) -> dic
 
     new_client = OAuthClient(
         client_id=client_id,
-        client_secret=client_secret or None,
+        client_secret=client_secret,
         token_endpoint_auth_method=auth_method,  # type: ignore[arg-type]
         description=arguments.get("description", ""),
         background_color=_normalize_hex_color(
@@ -1447,16 +1452,22 @@ def _tool_update_client(arguments: dict[str, Any], config: ConfigManager) -> dic
             "error": "client_secret is required unless token_endpoint_auth_method is 'none'",
         }
 
-    # Assignment order matters under validate_assignment (#188): switching TO
-    # 'none' must set the method before a secret could be cleared; switching
-    # AWAY from 'none' must set the new secret before the method, or the
-    # model's confidential-clients-need-a-secret check rejects mid-update.
-    if new_auth_method == "none":
-        client.token_endpoint_auth_method = new_auth_method  # type: ignore[assignment]
-    if "client_secret" in arguments:
-        client.client_secret = arguments["client_secret"] or None
-    if new_auth_method is not None and new_auth_method != "none":
-        client.token_endpoint_auth_method = new_auth_method  # type: ignore[assignment]
+    # Assignment order matters under validate_assignment (#188). A public
+    # target (whether being switched to 'none' or already 'none') keeps NO
+    # secret: set the method first so clearing the secret is valid, then
+    # clear it - dropping any supplied or existing dead value, parity with
+    # the UI's server-side normalization (#254 review). A confidential
+    # target sets the new secret BEFORE flipping the method, or the model's
+    # confidential-clients-need-a-secret check would reject mid-update.
+    if effective_method == "none":
+        if new_auth_method is not None:
+            client.token_endpoint_auth_method = new_auth_method  # type: ignore[assignment]
+        client.client_secret = None
+    else:
+        if "client_secret" in arguments:
+            client.client_secret = arguments["client_secret"] or None
+        if new_auth_method is not None:
+            client.token_endpoint_auth_method = new_auth_method  # type: ignore[assignment]
     if "description" in arguments:
         client.description = arguments["description"]
     if "background_color" in arguments:

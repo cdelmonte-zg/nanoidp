@@ -52,9 +52,12 @@ FULL_A = OAuthClient(
     allowed_scopes=["openid", "profile"],
 )
 
+# A public client (#188): no secret at all. client_secret and
+# token_endpoint_auth_method are coupled - a public client has no secret,
+# a confidential one requires one - so this fixture exercises the 'none'
+# method and, necessarily, a None secret (see the non-default test below).
 FULL_B = OAuthClient(
     client_id=CLIENT_ID,
-    client_secret="secret-b",
     token_endpoint_auth_method="none",
     description="every field set, variant b",
     background_color="#aabbcc",
@@ -116,6 +119,14 @@ class TestFixturesCoverTheModel:
 
     @pytest.mark.parametrize("name", sorted(OAuthClient.model_fields))
     def test_full_a_and_full_b_are_non_default(self, name):
+        if name == "client_secret":
+            # Coupled to token_endpoint_auth_method (#188): a public client
+            # ('none', FULL_B) has no secret, so client_secret cannot be
+            # non-default on both fixtures at once. FULL_A carries a real
+            # secret; the 'none' round-trip (no secret key) is what FULL_B
+            # exercises. The two still differ (asserted below).
+            assert FULL_A.client_secret is not None
+            return
         field = OAuthClient.model_fields[name]
         if field.default is PydanticUndefined and field.default_factory is None:
             return  # required field: any value is a non-default

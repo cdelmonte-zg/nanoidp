@@ -627,6 +627,54 @@ class TestPublicClientTools:
         assert client.description != "must-not-land"
 
     @pytest.mark.asyncio
+    async def test_create_none_with_a_secret_stores_no_secret(
+        self, mcp_config, mcp_call_tool
+    ):
+        """#254 review: a public client keeps no secret, so a supplied one on
+        create is dropped (parity with the UI create form)."""
+        _payload(
+            await mcp_call_tool(
+                "create_client",
+                {
+                    "client_id": "pub-drop",
+                    "token_endpoint_auth_method": "none",
+                    "client_secret": "should-be-dropped",
+                },
+            )
+        )
+        assert mcp_config.get_client("pub-drop").client_secret is None
+
+    @pytest.mark.asyncio
+    async def test_update_to_none_drops_the_existing_secret(
+        self, mcp_config, mcp_call_tool
+    ):
+        _payload(
+            await mcp_call_tool(
+                "update_client",
+                {"client_id": "branch-client", "token_endpoint_auth_method": "none"},
+            )
+        )
+        assert mcp_config.get_client("branch-client").client_secret is None
+
+    @pytest.mark.asyncio
+    async def test_update_already_public_with_a_secret_stays_secretless(
+        self, mcp_config, mcp_call_tool
+    ):
+        """A secret supplied to an already-public client must not be stored."""
+        _payload(
+            await mcp_call_tool(
+                "create_client",
+                {"client_id": "pub-stay", "token_endpoint_auth_method": "none"},
+            )
+        )
+        _payload(
+            await mcp_call_tool(
+                "update_client", {"client_id": "pub-stay", "client_secret": "sneaky"}
+            )
+        )
+        assert mcp_config.get_client("pub-stay").client_secret is None
+
+    @pytest.mark.asyncio
     async def test_switch_to_none_then_back_requires_a_secret(
         self, mcp_config, mcp_call_tool
     ):
