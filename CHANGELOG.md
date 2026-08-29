@@ -9,25 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking Changes
 
-This release tightens the OAuth **client-authentication contract** to match the
-RFCs. Well-behaved confidential and public clients are unaffected; clients that
-relied on nanoidp's previous leniency need a one-time adjustment.
+This release tightens and unifies nanoidp's OAuth **client-authentication
+contract**. A confidential client that already presents its registered method
+over the matching channel, and any public client, are unaffected; a client that
+authenticated over a different channel at one of these endpoints - which the
+previous leniency allowed - needs a one-time adjustment.
 
-- **Client authentication is now enforced at every client-authenticated
-  endpoint** (#188, #262): `/token`, `/introspect`, `/revoke` and
-  `/device_authorization`.
+- **The registered `token_endpoint_auth_method` is now enforced at every
+  client-authenticated endpoint** (#188, #262): `/token`, `/introspect`,
+  `/revoke` and `/device_authorization`.
   - A **confidential client must authenticate on `authorization_code`** too -
     the code exchange no longer has a client-authentication exemption (RFC 6749
     §3.2.1). *Migration:* present the client secret on the code exchange, or
     re-register the client as `token_endpoint_auth_method: "none"` if it cannot
     keep a secret (and use PKCE).
-  - The registered **`token_endpoint_auth_method` is enforced**: a
-    `client_secret_basic` client must use HTTP Basic and a `client_secret_post`
-    client must use the request body - the wrong channel is rejected with
-    `invalid_client`. Previously a body secret was accepted (or silently
-    ignored) regardless of the registered method. *Migration:* send credentials
-    over the channel the client is registered for; set
-    `token_endpoint_auth_method` to match how your client actually authenticates.
+  - The registered method decides the **channel**: a `client_secret_basic`
+    client must use HTTP Basic and a `client_secret_post` client must use the
+    request body - the wrong channel is rejected with `invalid_client`.
+    Previously a body secret was accepted (or silently ignored) regardless of
+    the registered method. Applying the one registered method across all four
+    endpoints is nanoidp's **consistency policy**: RFC 7009 and RFC 8628 tie
+    `/revoke` and `/device_authorization` to the token-endpoint method, while
+    RFC 7662 permits client authentication at `/introspect` but does not mandate
+    reusing that method - so a client that legitimately used a different channel
+    for introspection stops working here by nanoidp's choice, not because it was
+    non-compliant. *Migration:* send credentials over the channel the client is
+    registered for; set `token_endpoint_auth_method` to match how your client
+    actually authenticates.
   - **Two authentication methods in one request are rejected** (HTTP Basic and a
     body `client_secret` together, RFC 6749 §2.3) - Basic no longer silently
     wins. *Migration:* send credentials one way only.

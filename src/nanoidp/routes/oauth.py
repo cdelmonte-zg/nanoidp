@@ -712,13 +712,17 @@ def _enforce_registered_client_auth(
     when the request may proceed, or a human-readable failure reason.
 
     The single home for the confidential client-auth rule, shared by /token,
-    /introspect, /revoke and /device_authorization (#262): RFC 7009 §2.1 and
-    RFC 7662 §2.1 say those endpoints authenticate "as at the token endpoint",
-    and RFC 6749 §2.3 forbids more than one auth method per request. Callers
-    handle any public-client policy FIRST, so this only ever sees confidential
-    clients and unknown client_ids (both treated as client_secret_basic, the
-    default) - a body secret is never accepted alongside Basic, and the wrong
-    channel for the registered method is rejected instead of silently accepted.
+    /introspect, /revoke and /device_authorization (#262). RFC 6749 §2.3 forbids
+    more than one auth method per request, so a body secret is never accepted
+    alongside Basic. Enforcing the client's REGISTERED method at all four
+    endpoints is nanoidp's consistency policy: RFC 7009 §2.1 and RFC 8628 tie
+    /revoke and /device_authorization to the token-endpoint method, while
+    RFC 7662 requires some client authentication at /introspect but does not
+    mandate reusing that method - nanoidp reuses it there too rather than add a
+    second field. Callers handle any public-client policy FIRST, so this only
+    ever sees confidential clients and unknown client_ids (both treated as
+    client_secret_basic, the default); the wrong channel for the registered
+    method is rejected instead of silently accepted.
     """
     client = config.get_client(client_id) if client_id else None
     method = client.token_endpoint_auth_method if client is not None else "client_secret_basic"
@@ -1064,12 +1068,14 @@ def introspect() -> ResponseReturnValue:
     """
     config = get_config()
 
-    # Client authentication, enforced as at the token endpoint (#262): the
-    # registered token_endpoint_auth_method decides the channel and two auth
-    # methods in one request are rejected. Deliberately NOT relaxed for public
-    # clients (RFC 7662 §2.1: this endpoint must resist token scanning, a
-    # public client_id is identification not authentication, and 'none' is not
-    # in introspection_endpoint_auth_methods_supported).
+    # Client authentication using the registered token_endpoint_auth_method
+    # (#262): the method decides the channel and two auth methods in one
+    # request are rejected. RFC 7662 requires client authentication here but
+    # leaves the method open; reusing the registered method is nanoidp's
+    # consistency policy, not an RFC 7662 mandate. Deliberately NOT relaxed for
+    # public clients (RFC 7662 §2.1: this endpoint must resist token scanning,
+    # a public client_id is identification not authentication, and 'none' is
+    # not in introspection_endpoint_auth_methods_supported).
     auth = request.authorization
     body_client_id = request.form.get("client_id")
     body_client_secret = request.form.get("client_secret") or None

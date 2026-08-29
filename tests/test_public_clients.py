@@ -670,3 +670,48 @@ class TestNonTokenEndpointAuthEnforcement:
     def test_device_public_client_rejected(self, client, public_client):
         resp = client.post("/device_authorization", data={"client_id": PUBLIC_ID})
         assert resp.status_code == 401
+
+    # positive: a client_secret_post client authenticates over the BODY (the
+    # channel its registered method names) at each endpoint.
+    def _post_token(self, client):
+        return json.loads(
+            client.post(
+                "/token",
+                data={
+                    "grant_type": "client_credentials",
+                    "client_id": "post-cli",
+                    "client_secret": "post-secret",
+                },
+            ).data
+        )["access_token"]
+
+    def test_introspect_post_client_via_body_works(self, client, post_client):
+        resp = client.post(
+            "/introspect",
+            data={
+                "token": self._post_token(client),
+                "client_id": "post-cli",
+                "client_secret": "post-secret",
+            },
+        )
+        assert resp.status_code == 200
+        assert json.loads(resp.data)["active"] is True
+
+    def test_revoke_post_client_via_body_works(self, client, post_client):
+        resp = client.post(
+            "/revoke",
+            data={
+                "token": self._post_token(client),
+                "client_id": "post-cli",
+                "client_secret": "post-secret",
+            },
+        )
+        assert resp.status_code == 200
+
+    def test_device_post_client_via_body_works(self, client, post_client):
+        resp = client.post(
+            "/device_authorization",
+            data={"client_id": "post-cli", "client_secret": "post-secret"},
+        )
+        assert resp.status_code == 200
+        assert "device_code" in json.loads(resp.data)

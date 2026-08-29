@@ -393,14 +393,22 @@ must match, otherwise the response is still `200` and nothing is revoked
 authenticated (RFC 7662): a public `client_id` is not authentication.
 A confidential client authenticates on every grant, `authorization_code`
 included (RFC 6749 §3.2.1); a missing or wrong secret is `invalid_client`.
-At **`/token`** the registered `token_endpoint_auth_method` is enforced
-(RFC 7591, the field names the token endpoint): the default
+The registered `token_endpoint_auth_method` is enforced (RFC 7591) at
+**every** client-authenticated endpoint - `/token`, `/introspect`,
+`/revoke` and `/device_authorization` (issue #262): the default
 `client_secret_basic` requires HTTP Basic and rejects a body secret,
 while `client_secret_post` requires `client_id` + `client_secret` as POST
-body parameters and rejects Basic. The other credentialed endpoints -
-`/introspect`, `/revoke`, `/device_authorization` - are not the token
-endpoint and stay lenient: they accept a confidential client's secret
-over either HTTP Basic or the request body.
+body parameters and rejects Basic; presenting both HTTP Basic and a body
+secret in one request is rejected (RFC 6749 §2.3). Applying the one
+registered method across all of these endpoints is nanoidp's consistency
+policy, not an obligation of every RFC: RFC 7009 and RFC 8628 do tie
+`/revoke` and `/device_authorization` to the token-endpoint method, while
+RFC 7662 requires *some* client authentication at `/introspect` but leaves
+the method open - nanoidp reuses the registered method there too rather
+than introduce a second field. A client that authenticated to these
+endpoints over the other channel before must now use the channel its
+`token_endpoint_auth_method` names (or be re-registered for the method it
+actually uses).
 
 **Authorization response `iss`** (issue #189, RFC 9207): `/authorize`
 returns `iss=<effective issuer>` on every response delivered through a

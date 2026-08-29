@@ -646,10 +646,15 @@ _TOOLS: list[Tool] = [
                     "type": "string",
                     "enum": ["client_secret_basic", "client_secret_post", "none"],
                     "description": (
-                        "How the client authenticates at /token (optional, "
-                        "default client_secret_basic). 'none' = public client "
-                        "(#188): no secret, PKCE S256 mandatory on /authorize, "
-                        "client_credentials refused, refresh rotation forced"
+                        "How the client authenticates as a confidential client "
+                        "(optional, default client_secret_basic). The method is "
+                        "enforced at every client-authenticated endpoint - "
+                        "/token, /introspect, /revoke, /device_authorization "
+                        "(#188/#262): basic uses HTTP Basic, post uses the "
+                        "request body, and the wrong channel is rejected. "
+                        "'none' = public client (#188): no secret, PKCE S256 "
+                        "mandatory on /authorize, client_credentials refused, "
+                        "refresh rotation forced"
                     ),
                 },
                 "description": {
