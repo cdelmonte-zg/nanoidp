@@ -388,6 +388,11 @@ def _validate_authorize_resources(
             p.client_id, result.error_description or "invalid_target",
             "invalid_target", result.error_description or "invalid resource",
         )
+    # Persist the de-duplicated granted list, not the raw request (#254
+    # review, finding 3): the authorization code must not carry a repeated
+    # resource that would become a duplicate entry in the token aud, the
+    # same normalization the device flow already does.
+    p.resources = result.granted or []
     return None
 
 
@@ -585,9 +590,17 @@ class _GrantOutcome:
     # False for grants with no end user: client_credentials must not hand
     # out a refresh token (RFC 6749 §4.4.3, #239).
     issue_refresh_token: bool = True
-    # RFC 8707 resource indicators bound to this token (#187): the access
-    # token aud, and (when a refresh token is issued) remembered on it.
+    # RFC 8707 resource indicators (#187). ``resource`` is the ACCESS token
+    # aud - the (possibly narrowed) subset the /token request asked for.
+    # ``refresh_resource`` is what the refresh token remembers: the FULL
+    # original grant, so a later refresh can still request any resource the
+    # original authorization covered, not only the narrowed subset the last
+    # access token used (RFC 8707 §2.2, #254 review). None on either means
+    # "no resource"; when refresh_resource is None it falls back to resource
+    # (grants with no prior authorization step, where the request IS the
+    # original grant).
     resource: Optional[List[str]] = None
+    refresh_resource: Optional[List[str]] = None
 
 
 @dataclass
@@ -874,6 +887,9 @@ def _grant_refresh_token(ctx: _GrantContext) -> GrantResult:
         id_token_claims=id_token_claims,
         userinfo_claims=userinfo_claims,
         resource=resource,
+        # The rotated refresh token keeps the FULL original grant, not the
+        # subset this access token narrowed to (RFC 8707 §2.2, #254 review).
+        refresh_resource=payload.get("resource") or None,
     )
 
 
@@ -1096,6 +1112,11 @@ def _grant_authorization_code(ctx: _GrantContext) -> GrantResult:
         id_token_claims=requested_claims.get("id_token"),
         userinfo_claims=requested_claims.get("userinfo"),
         resource=resource,
+        # The refresh token keeps the code's FULL original resource set, so a
+        # later refresh can still request any resource the authorization
+        # covered - not only the subset this access token narrowed to
+        # (RFC 8707 §2.2, #254 review).
+        refresh_resource=auth_code.resource or None,
     )
 
 
@@ -1258,6 +1279,8 @@ def _grant_device_code(ctx: _GrantContext) -> GrantResult:
             scope=grant.scope,
             auth_time=grant.auth_time,
             resource=resource,
+            # Full original grant on the refresh token (RFC 8707 §2.2).
+            refresh_resource=grant.resource or None,
         )
     return (
         jsonify({"error": "server_error", "error_description": "Unknown device code status"}),
@@ -1510,6 +1533,7 @@ def token() -> ResponseReturnValue:
         issuer=effective_issuer(config.settings),
         issue_refresh_token=result.issue_refresh_token,
         resource=result.resource,
+        refresh_resource=result.refresh_resource,
     )
 
     # Audit log

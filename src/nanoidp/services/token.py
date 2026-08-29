@@ -219,6 +219,7 @@ class TokenService:
         issuer: Optional[str] = None,
         issue_refresh_token: bool = True,
         resource: Optional[List[str]] = None,
+        refresh_resource: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """Create a JWT token for a user.
 
@@ -413,13 +414,16 @@ class TokenService:
                 refresh_extra["req_id_token_claims"] = id_token_claims
             if userinfo_claims:
                 refresh_extra["req_userinfo_claims"] = userinfo_claims
-            # Remember the bound resources (#187), so a refresh re-issues an
-            # access token with the same aud - or a narrowed subset the
-            # refresh grant validates. The refresh token's own aud stays
-            # oauth.audience: it is spent at nanoidp's /token, not at a
-            # resource server.
-            if resource:
-                refresh_extra["resource"] = list(resource)
+            # Remember the FULL original grant's resources (#187, RFC 8707
+            # §2.2), NOT the narrowed subset this access token used: a later
+            # refresh may request any resource the original authorization
+            # covered. Falls back to the access-token resources for grants
+            # with no prior step (the request is the original grant). The
+            # refresh token's own aud stays oauth.audience: it is spent at
+            # nanoidp's /token, not at a resource server.
+            rt_resources = refresh_resource if refresh_resource is not None else resource
+            if rt_resources:
+                refresh_extra["resource"] = list(rt_resources)
             refresh_extra["rt_family"] = refresh_family or str(uuid.uuid4())
             response["refresh_token"] = self.crypto.create_jwt(
                 sub=user.username,

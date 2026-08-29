@@ -58,6 +58,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   "empty = unrestricted" convention as `allowed_scopes`). The
   authorization code and refresh token remember the bound resources; a
   `/token` request may narrow them to a subset but never widen them.
+  Narrowing the access token does not narrow the refresh token, which keeps
+  the full original grant so a later refresh can still request any resource
+  the authorization covered (RFC 8707 §2.2).
   Sending no `resource` leaves `aud` at `oauth.audience` - **no change
   for existing clients**. `/introspect` reports the token's `aud`, and
   now verifies a token's signature without pinning its audience (so a

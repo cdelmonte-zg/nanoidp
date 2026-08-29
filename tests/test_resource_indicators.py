@@ -48,6 +48,9 @@ class TestResourceValidation:
             ("https://mcp.example/server?v=1", True),
             ("urn:example:resource", True),
             ("https://mcp.example/server#frag", False),  # fragment
+            ("https://example.com/#", False),  # empty fragment component (#254 review)
+            ("https://[bad", False),  # urlparse ValueError, not a crash (#254 review)
+            ("https://exa mple/resource", False),  # raw space, not RFC 3986 (#254 review)
             ("/relative/path", False),  # no scheme
             ("", False),
         ],
@@ -164,6 +167,33 @@ class TestAuthorizationCodeFlow:
         resp = self._exchange(client, code, [RES_B])
         assert resp.status_code == 400
         assert json.loads(resp.data)["error"] == "invalid_target"
+
+    def test_duplicate_resource_at_authorize_is_deduplicated(self, client):
+        """#254 review, finding 3: a repeated resource at /authorize must not
+        become a duplicate entry in the token aud - the authorization code
+        stores the de-duplicated list, like the device flow already did."""
+        code = self._code(client, [RES_A, RES_A])
+        resp = self._exchange(client, code, [])
+        assert resp.status_code == 200
+        assert _aud(json.loads(resp.data)["access_token"]) == RES_A
+
+    def test_refresh_keeps_the_full_grant_not_the_narrowed_subset(self, client):
+        """#254 review, finding 1 (RFC 8707 §2.2): narrowing the access token
+        to a subset must NOT narrow the refresh token - a later refresh can
+        still request any resource the original authorization covered."""
+        code = self._code(client, [RES_A, RES_B])
+        # scope offline_access so a refresh token is issued for the code flow.
+        first = json.loads(self._exchange(client, code, [RES_A]).data)
+        assert _aud(first["access_token"]) == RES_A
+        assert "refresh_token" in first
+        refreshed = client.post(
+            "/token",
+            data={"grant_type": "refresh_token", "refresh_token": first["refresh_token"],
+                  "resource": RES_B},
+            headers=_basic(),
+        )
+        assert refreshed.status_code == 200
+        assert _aud(json.loads(refreshed.data)["access_token"]) == RES_B
 
     def test_token_cannot_introduce_a_resource_the_code_never_bound(self, client):
         """#254 review, finding 1: a code that bound no resource cannot have

@@ -20,11 +20,19 @@ clients are unaffected - RFC 8707 makes the parameter optional, and the MCP
 requirement to send it is an obligation on the client, not the AS.
 """
 
+import re
 from dataclasses import dataclass
 from typing import List, Optional
 from urllib.parse import urlparse
 
 from ..models import OAuthClient
+
+# The characters RFC 3986 permits in a URI: unreserved, gen-delims,
+# sub-delims and the percent sign for percent-encoding. urlparse is a
+# permissive parser, not an RFC 3986 validator - it happily accepts a raw
+# space in the authority - so a resource indicator is charset-checked
+# against this set first (#254 review).
+_RFC3986_CHARS = re.compile(r"^[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=%]*$")
 
 
 @dataclass
@@ -46,15 +54,32 @@ class ResourceResult:
 
 
 def is_valid_resource_indicator(value: str) -> bool:
-    """RFC 8707 section 2: a resource is an absolute URI without a fragment.
+    """RFC 8707 section 2: a resource is an absolute URI without a fragment
+    (RFC 3986 section 4.3, "absolute-URI = scheme ':' hier-part [ '?' query ]").
 
-    A query component is allowed; a fragment is not. An empty or relative
-    value (no scheme, or no authority for a hierarchical scheme) is rejected.
+    A query component is allowed; a fragment component is NOT - and that
+    means no ``#`` at all, since an absolute-URI has no ``fragment``
+    production, so even an empty fragment (``https://x/#``) is rejected. A
+    value ``urlparse`` cannot parse (e.g. ``https://[bad`` raises
+    ``ValueError: Invalid IPv6 URL``) is a rejected indicator, never a 500.
+    An empty or relative value (no scheme, or no authority/path) is rejected.
     """
     if not value:
         return False
-    parsed = urlparse(value)
-    if parsed.fragment:
+    # Reject anything outside the RFC 3986 character set (a raw space, a
+    # control character, a non-ASCII byte) before parsing (#254 review).
+    if not _RFC3986_CHARS.match(value):
+        return False
+    # A fragment component is forbidden outright: reject any '#', not just a
+    # non-empty fragment (#254 review) - urlparse treats a trailing '#' as an
+    # empty fragment, which is still a fragment component RFC 8707 disallows.
+    if "#" in value:
+        return False
+    try:
+        parsed = urlparse(value)
+    except ValueError:
+        # urlparse raises on a malformed authority (bad IPv6 literal); that is
+        # an invalid indicator, handled as invalid_target, not a crash.
         return False
     if not parsed.scheme:
         return False
