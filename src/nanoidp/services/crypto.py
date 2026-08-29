@@ -333,12 +333,21 @@ class CryptoService:
         token = jwt.encode(payload, self.priv_pem, algorithm="RS256", headers=headers)
         return token
 
-    def verify_jwt(self, token: str, audience: Union[str, List[str]]) -> Dict[str, Any]:
+    def verify_jwt(
+        self, token: str, audience: Optional[Union[str, List[str]]]
+    ) -> Dict[str, Any]:
         """Verify and decode a JWT token.
 
         ``audience`` accepts a list as well as a string (PyJWT semantics:
         the token is valid if its ``aud`` matches any of the values), so ID
         Tokens carrying an array ``aud`` can be verified too.
+
+        ``audience=None`` verifies signature and expiry but NOT the audience
+        (#187): nanoidp's own token-facing endpoints (/introspect, /userinfo,
+        /revoke) must accept an access token whose ``aud`` is an RFC 8707
+        resource, not ``oauth.audience`` - the issuer can serve a token it
+        signed regardless of who it was audienced to, and the id/refresh type
+        guard is ``token_use``, not the audience (RFC 7662, issue #34).
         """
         try:
             # Use public key for verification
@@ -347,7 +356,7 @@ class CryptoService:
                 self.pub_pem,
                 algorithms=["RS256"],
                 audience=audience,
-                options={"verify_signature": True},
+                options={"verify_signature": True, "verify_aud": audience is not None},
             )
             return payload
         except jwt.ExpiredSignatureError as e:

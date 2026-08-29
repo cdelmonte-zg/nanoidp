@@ -209,6 +209,20 @@ class OAuthClient(BaseModel):
             "invalid_scope, for every client, regardless of this field."
         ),
     )
+    allowed_resources: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Per-client RFC 8707 resource allow-list (issue #187). When "
+            "non-empty, a 'resource' indicator requested on /authorize or "
+            "/token must be one of these, otherwise the request is "
+            "invalid_target. Empty = this client may target any "
+            "syntactically valid resource (an absolute URI without a "
+            "fragment), the dev default - same 'empty = unrestricted' "
+            "convention as allowed_scopes and redirect_uris. Sending no "
+            "resource at all is always allowed and leaves the access token "
+            "aud at oauth.audience."
+        ),
+    )
 
     @model_validator(mode="after")
     def _confidential_clients_need_a_secret(self) -> "OAuthClient":

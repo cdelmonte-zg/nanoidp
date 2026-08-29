@@ -474,6 +474,7 @@ def client_create() -> ResponseReturnValue:
             ),
             redirect_uris=_parse_textarea_list(request.form.get("redirect_uris", "")),
             allowed_scopes=_parse_textarea_list(request.form.get("allowed_scopes", "")),
+            allowed_resources=_parse_textarea_list(request.form.get("allowed_resources", "")),
         )
 
         yaml_writer.save_client(
@@ -556,6 +557,7 @@ def client_edit(client_id: str) -> ResponseReturnValue:
             ),
             redirect_uris=_parse_textarea_list(request.form.get("redirect_uris", "")),
             allowed_scopes=_parse_textarea_list(request.form.get("allowed_scopes", "")),
+            allowed_resources=_parse_textarea_list(request.form.get("allowed_resources", "")),
         )
 
         yaml_writer.save_client(

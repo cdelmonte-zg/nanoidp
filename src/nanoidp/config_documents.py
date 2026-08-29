@@ -90,6 +90,7 @@ class ClientEntry(BaseModel):
     additional_audiences: Any = None
     redirect_uris: Any = None
     allowed_scopes: Any = None
+    allowed_resources: Any = None
 
     def to_client(self) -> OAuthClient:
         return OAuthClient(
@@ -112,6 +113,9 @@ class ClientEntry(BaseModel):
             ),
             allowed_scopes=_coerce_client_str_list(
                 self.allowed_scopes, self.client_id, "allowed_scopes"
+            ),
+            allowed_resources=_coerce_client_str_list(
+                self.allowed_resources, self.client_id, "allowed_resources"
             ),
         )
 

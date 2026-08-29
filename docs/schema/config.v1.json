@@ -89,6 +89,10 @@
             "default": null,
             "title": "Additional Audiences"
           },
+          "allowed_resources": {
+            "default": null,
+            "title": "Allowed Resources"
+          },
           "allowed_scopes": {
             "default": null,
             "title": "Allowed Scopes"

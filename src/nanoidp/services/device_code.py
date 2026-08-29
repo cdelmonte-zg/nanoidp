@@ -47,6 +47,8 @@ class DeviceCodeGrant:
     status: str = "pending"  # pending, authorized, denied, expired
     username: Optional[str] = None
     auth_time: Optional[int] = None
+    # RFC 8707 resource indicators requested at /device_authorization (#187).
+    resource: Optional[list] = None
 
 
 class DevicePollOutcome(Enum):
@@ -89,6 +91,7 @@ class DeviceCodeStore:
         scope: str,
         expires_in: int = DEVICE_CODE_EXPIRES_IN,
         interval: int = DEVICE_POLL_INTERVAL,
+        resource: Optional[list] = None,
     ) -> Tuple[str, str]:
         """Create a device authorization; returns (device_code, user_code).
 
@@ -106,6 +109,7 @@ class DeviceCodeStore:
                 scope=scope,
                 expires_at=time.time() + expires_in,
                 interval=interval,
+                resource=resource,
             )
             self._by_user_code[user_code] = device_code
         return device_code, user_code

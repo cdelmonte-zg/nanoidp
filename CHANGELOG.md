@@ -45,6 +45,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   changes only the secret, so every field (present and future) is carried.
 
 ### Added
+- **RFC 8707 Resource Indicators: `resource` binds the access token
+  audience** (#187). A client may send one or more `resource` parameters
+  on `/authorize`, `/token` (every grant) and `/device_authorization`;
+  the access token's `aud` is then those resources (a plain string for
+  one, an array for several) instead of the global `oauth.audience`, so a
+  token minted for one MCP server is rejected by another and a
+  wrong-audience test can finally be written. A `resource` must be an
+  absolute URI without a fragment or the request is `invalid_target`
+  (RFC 8707 §2). New per-client `allowed_resources` gates which resources
+  a client may target (empty = any valid resource, the dev default, same
+  "empty = unrestricted" convention as `allowed_scopes`). The
+  authorization code and refresh token remember the bound resources; a
+  `/token` request may narrow them to a subset but never widen them.
+  Sending no `resource` leaves `aud` at `oauth.audience` - **no change
+  for existing clients**. `/introspect` reports the token's `aud`, and
+  now verifies a token's signature without pinning its audience (so a
+  resource-bound token can be introspected and revoked); `/userinfo`
+  still requires the OP audience. No `resource_indicators_supported`
+  discovery metadata (RFC 8707 defines none). Full support across
+  settings.yaml (`allowed_resources`), the UI client form and the MCP
+  `create_client`/`update_client` tools.
 - **Public clients: `token_endpoint_auth_method: "none"` with mandatory
   PKCE S256** (#188). A client that cannot keep a secret (CLI, desktop
   app, SPA, MCP client) can now be declared with

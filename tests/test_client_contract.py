@@ -50,6 +50,7 @@ FULL_A = OAuthClient(
     additional_audiences=["aud-a1", "aud-a2"],
     redirect_uris=["https://a.example/cb", "http://127.0.0.1:7001/cb"],
     allowed_scopes=["openid", "profile"],
+    allowed_resources=["https://a.example/mcp", "https://a.example/api"],
 )
 
 # A public client (#188): no secret at all. client_secret and
@@ -68,6 +69,7 @@ FULL_B = OAuthClient(
     additional_audiences=["aud-b1"],
     redirect_uris=["https://b.example/cb"],
     allowed_scopes=["openid", "email", "groups"],
+    allowed_resources=["https://b.example/mcp"],
 )
 
 # Every field at its default except the two required ones.

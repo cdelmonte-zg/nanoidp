@@ -106,6 +106,19 @@
                         </div>
                     </div>
 
+                    <div class="mb-3">
+                        <label for="allowed_resources" class="form-label">Allowed Resources</label>
+                        <textarea class="form-control" id="allowed_resources" name="allowed_resources"
+                                  rows="3" placeholder="One resource URI per line, e.g.&#10;https://mcp.example/server">{{ client.allowed_resources | join('\n') if client else '' }}</textarea>
+                        <div class="form-text">
+                            RFC 8707 (#187). When set, a <code>resource</code> requested at
+                            <code>/authorize</code> or <code>/token</code> outside this list is
+                            <code>invalid_target</code>. Leave empty to allow any valid resource
+                            (an absolute URI without a fragment). The access token
+                            <code>aud</code> is bound to the requested resource.
+                        </div>
+                    </div>
+
                     <hr class="my-4">
                     <h6 class="mb-3">
                         <i class="bi bi-palette me-2"></i>Login Page Branding (Optional)

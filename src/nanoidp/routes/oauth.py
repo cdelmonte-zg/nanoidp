@@ -6,7 +6,7 @@ import json
 import logging
 import os
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 from urllib.parse import urlencode
 
 import jwt as pyjwt
@@ -38,6 +38,7 @@ from ..services import (
 )
 from ..services.device_code import DEVICE_CODE_EXPIRES_IN, DEVICE_POLL_INTERVAL
 from ..services.redirect_uri import redirect_uri_is_registered, redirect_uri_rejection_reason
+from ..services.resource import resolve_resources
 from ..services.scope import resolve_scope
 from ..services.token import resolve_user_claim, sanitize_claim_names
 from ._audit import audit_event
@@ -119,6 +120,7 @@ class _AuthorizeParams:
     code_challenge_method: str
     nonce: str
     claims_param: str
+    resources: List[str]
 
 
 def _read_authorize_params() -> _AuthorizeParams:
@@ -142,6 +144,8 @@ def _read_authorize_params() -> _AuthorizeParams:
         ),
         nonce=params.get("nonce", session.get("oauth_nonce", "")),
         claims_param=params.get("claims", session.get("oauth_claims", "")),
+        # RFC 8707 resource is repeatable (#187): read every value, not one.
+        resources=params.getlist("resource") or session.get("oauth_resources", []),
     )
 
     if request.method == "GET":
@@ -154,6 +158,7 @@ def _read_authorize_params() -> _AuthorizeParams:
         session["oauth_code_challenge_method"] = p.code_challenge_method
         session["oauth_nonce"] = p.nonce
         session["oauth_claims"] = p.claims_param
+        session["oauth_resources"] = p.resources
 
     return p
 
@@ -365,6 +370,27 @@ def _validate_authorize_pkce(
     return None
 
 
+def _validate_authorize_resources(
+    config: ConfigManager, p: _AuthorizeParams, client: OAuthClient
+) -> Optional[ResponseReturnValue]:
+    """Validate the RFC 8707 ``resource`` indicators on /authorize (#187).
+
+    Each must be a syntactically valid indicator and, when the client
+    declares a non-empty ``allowed_resources``, one of that set; otherwise
+    the request is rejected with ``invalid_target`` (RFC 8707 section 2). The
+    validated resources travel with the authorization code, so /token binds
+    the access token aud to them."""
+    if not p.resources:
+        return None
+    result = resolve_resources(p.resources, client)
+    if not result.ok:
+        return _authorize_reject(
+            p.client_id, result.error_description or "invalid_target",
+            "invalid_target", result.error_description or "invalid resource",
+        )
+    return None
+
+
 def _handle_authorize_login(
     config: ConfigManager, p: _AuthorizeParams
 ) -> Tuple[Optional[str], Optional[ResponseReturnValue]]:
@@ -389,6 +415,7 @@ def _handle_authorize_login(
             nonce=p.nonce if p.nonce else None,
             state=p.state if p.state else None,
             claims=_parse_claims_parameter(p.claims_param),
+            resource=list(p.resources) if p.resources else None,
         )
 
         # Clear OAuth session data
@@ -505,6 +532,9 @@ def authorize() -> ResponseReturnValue:
     error = _validate_authorize_pkce(config, p, client)
     if error is not None:
         return error
+    error = _validate_authorize_resources(config, p, client)
+    if error is not None:
+        return error
 
     error_msg = None
     if request.method == "POST":
@@ -555,6 +585,9 @@ class _GrantOutcome:
     # False for grants with no end user: client_credentials must not hand
     # out a refresh token (RFC 6749 §4.4.3, #239).
     issue_refresh_token: bool = True
+    # RFC 8707 resource indicators bound to this token (#187): the access
+    # token aud, and (when a refresh token is issued) remembered on it.
+    resource: Optional[List[str]] = None
 
 
 @dataclass
@@ -570,6 +603,43 @@ class _GrantContext:
 
 # A handler returns either issuance parameters or a finished error response.
 GrantResult = Union[_GrantOutcome, ResponseReturnValue]
+
+
+def _resolve_token_resource(
+    ctx: _GrantContext, client: Optional[OAuthClient], original: Optional[List[str]]
+) -> Tuple[Optional[List[str]], Optional[ResponseReturnValue]]:
+    """Resolve RFC 8707 resource indicators for a /token grant (#187).
+
+    ``original`` is what an earlier step already bound (an authorization
+    code, a refresh token, a device code) or None. A request that sends no
+    ``resource`` inherits ``original`` unchanged; a request that sends some
+    must keep them within ``original`` (narrowing, never widening - RFC 8707
+    section 2) and within the client's ``allowed_resources``. Returns
+    ``(resource_list_or_None, error_response_or_None)``; an ``invalid_target``
+    is an RFC 6749 §5.2-shaped JSON error.
+    """
+    requested = request.form.getlist("resource")
+    if not requested:
+        return (list(original) if original else None), None
+    if client is None:
+        return None, (
+            jsonify({"error": "invalid_target", "error_description": "Unknown client"}),
+            400,
+        )
+    result = resolve_resources(requested, client, allowed_subset=original)
+    if not result.ok:
+        audit_event(
+            "token_request",
+            "failed",
+            endpoint="/token",
+            client_id=ctx.client_id,
+            details={"reason": result.error_description, "grant_type": ctx.grant_type},
+        )
+        return None, (
+            jsonify({"error": "invalid_target", "error_description": result.error_description}),
+            400,
+        )
+    return (result.granted or None), None
 
 
 def _grant_refresh_token(ctx: _GrantContext) -> GrantResult:
@@ -782,6 +852,14 @@ def _grant_refresh_token(ctx: _GrantContext) -> GrantResult:
         )
         return abort(401, description="Refresh token has been revoked")
 
+    # Resource indicators (#187): the refresh may narrow the bound resources
+    # to a subset of what the refresh token remembers, never widen them.
+    resource, resource_error = _resolve_token_resource(
+        ctx, client, payload.get("resource")
+    )
+    if resource_error is not None:
+        return resource_error
+
     return _GrantOutcome(
         user=user,
         username=username,
@@ -790,6 +868,7 @@ def _grant_refresh_token(ctx: _GrantContext) -> GrantResult:
         refresh_family=refresh_family,
         id_token_claims=id_token_claims,
         userinfo_claims=userinfo_claims,
+        resource=resource,
     )
 
 
@@ -877,11 +956,15 @@ def _grant_password(ctx: _GrantContext) -> GrantResult:
     # emit an ID Token (issue #36). nonce is non-standard for this grant but
     # accepted as a dev convenience; normalize an empty field to None so we
     # don't emit an empty nonce claim (matches the authorization_code path).
+    resource, resource_error = _resolve_token_resource(ctx, client, None)
+    if resource_error is not None:
+        return resource_error
     return _GrantOutcome(
         user=user,
         username=username,
         nonce=request.form.get("nonce") or None,
         scope=requested_scope,
+        resource=resource,
     )
 
 
@@ -986,6 +1069,12 @@ def _grant_authorization_code(ctx: _GrantContext) -> GrantResult:
             )
         code_scope = scope_result.granted
 
+    # Resource indicators (#187): the token request may narrow to a subset of
+    # what /authorize bound into the code, never widen (RFC 8707 section 2).
+    resource, resource_error = _resolve_token_resource(ctx, client, auth_code.resource)
+    if resource_error is not None:
+        return resource_error
+
     requested_claims = auth_code.claims or {}
     return _GrantOutcome(
         user=user,
@@ -998,6 +1087,7 @@ def _grant_authorization_code(ctx: _GrantContext) -> GrantResult:
         # Claims the client asked for through the OIDC `claims` parameter (#104).
         id_token_claims=requested_claims.get("id_token"),
         userinfo_claims=requested_claims.get("userinfo"),
+        resource=resource,
     )
 
 
@@ -1064,11 +1154,15 @@ def _grant_client_credentials(ctx: _GrantContext) -> GrantResult:
     # second, 7-day credential bound to the default user (or the synthetic
     # service account) that the grant never authenticated, spendable at
     # grant_type=refresh_token to obtain user-context tokens (#239).
+    resource, resource_error = _resolve_token_resource(ctx, client, None)
+    if resource_error is not None:
+        return resource_error
     return _GrantOutcome(
         user=user,
         username=user.username,
         scope=requested_scope,
         issue_refresh_token=False,
+        resource=resource,
     )
 
 
@@ -1145,11 +1239,17 @@ def _grant_device_code(ctx: _GrantContext) -> GrantResult:
         # The device flow authenticates an end-user, so honour the requested
         # scope and emit an ID Token when 'openid' was asked for (issue #36).
         # The user authenticated at /device, not at this poll (#42).
+        resource, resource_error = _resolve_token_resource(
+            ctx, ctx.config.get_client(ctx.client_id), grant.resource
+        )
+        if resource_error is not None:
+            return resource_error
         return _GrantOutcome(
             user=user,
             username=user.username,
             scope=grant.scope,
             auth_time=grant.auth_time,
+            resource=resource,
         )
     return (
         jsonify({"error": "server_error", "error_description": "Unknown device code status"}),
@@ -1401,6 +1501,7 @@ def token() -> ResponseReturnValue:
         userinfo_claims=result.userinfo_claims,
         issuer=effective_issuer(config.settings),
         issue_refresh_token=result.issue_refresh_token,
+        resource=result.resource,
     )
 
     # Audit log
@@ -1447,6 +1548,12 @@ def userinfo() -> ResponseReturnValue:
     # Verify token
     crypto = get_crypto_service(config.settings.keys_dir)
     try:
+        # /userinfo is the OP's own protected resource, so a token must be
+        # audienced to oauth.audience here (OIDC Core §5.3). A resource-bound
+        # access token (#187) carries an RFC 8707 resource as aud and belongs
+        # at its resource server, not here - it is used against /introspect
+        # by that server instead. A client that needs UserInfo requests a
+        # token without a resource.
         payload = crypto.verify_jwt(token, config.settings.audience)
     except ValueError as e:
         audit_event(
@@ -1599,7 +1706,9 @@ def introspect() -> ResponseReturnValue:
     # single signing key there is nothing to disambiguate, per RFC 7662 §2.1)
     crypto = get_crypto_service(config.settings.keys_dir)
     try:
-        payload = crypto.verify_jwt(token, config.settings.audience)
+        # Resource-bound access tokens (#187) carry an RFC 8707 resource as
+        # aud, not oauth.audience; verify signature+expiry, not audience.
+        payload = crypto.verify_jwt(token, None)
     except ValueError:
         # Token is invalid or expired
         audit_event(
@@ -1708,13 +1817,15 @@ def revoke() -> ResponseReturnValue:
     # blocking 1). The revocation store is keyed by jti, and the public
     # client's ownership check reads client_id: both must come from a
     # payload nanoidp actually signed, never from an attacker-supplied
-    # unsigned JWT. A token that fails verification (bad signature, wrong
-    # audience, expired) revokes nothing and still returns 200 - RFC 7009
-    # requires 200 regardless of outcome, and its privacy guidance forbids
-    # turning the endpoint into an oracle for a token's validity or owner.
+    # unsigned JWT. A token that fails verification (bad signature or expired)
+    # revokes nothing and still returns 200 - RFC 7009 requires 200 regardless
+    # of outcome, and its privacy guidance forbids turning the endpoint into
+    # an oracle for a token's validity or owner. Audience is NOT verified: a
+    # resource-bound access token (#187) carries an RFC 8707 resource as aud,
+    # and the client is still entitled to revoke it.
     crypto = get_crypto_service(config.settings.keys_dir)
     try:
-        payload = crypto.verify_jwt(token, config.settings.audience)
+        payload = crypto.verify_jwt(token, None)
     except ValueError:
         return "", 200
 
@@ -1901,9 +2012,34 @@ def device_authorization() -> ResponseReturnValue:
         requested_scope = scope_result.granted or ""
     scope = requested_scope
 
+    # Resource indicators (#187): validate and remember them on the device
+    # grant, so the polled token binds its aud to them.
+    device_resources = request.form.getlist("resource")
+    if device_resources and client is not None:
+        resource_result = resolve_resources(device_resources, client)
+        if not resource_result.ok:
+            audit_event(
+                "device_authorization_request",
+                "failed",
+                endpoint="/device_authorization",
+                client_id=client_id,
+                details={"reason": resource_result.error_description},
+            )
+            return (
+                jsonify(
+                    {
+                        "error": "invalid_target",
+                        "error_description": resource_result.error_description,
+                    }
+                ),
+                400,
+            )
+
     # Create the device authorization; the store prunes stale entries and
     # keeps the user-code index internally (#84, previously module globals).
-    device_code, user_code = get_device_code_store().create(client_id, scope)
+    device_code, user_code = get_device_code_store().create(
+        client_id, scope, resource=device_resources or None
+    )
 
     audit_event(
         "device_authorization_request",

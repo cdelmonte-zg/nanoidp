@@ -261,6 +261,7 @@ def _client_to_dict(client: OAuthClient) -> dict[str, Any]:
         "additional_audiences": client.additional_audiences,
         "redirect_uris": client.redirect_uris,
         "allowed_scopes": client.allowed_scopes,
+        "allowed_resources": client.allowed_resources,
     }
 
 
@@ -663,6 +664,11 @@ _TOOLS: list[Tool] = [
                     "items": {"type": "string"},
                     "description": "Per-client scope allow-list (#186); when non-empty, /authorize and /token reject a requested scope outside this set with invalid_scope (RFC 6749 4.1.2.1/5.2). Empty = any scope in the global oauth.scopes_supported vocabulary is allowed (optional)",
                 },
+                "allowed_resources": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Per-client RFC 8707 resource allow-list (#187); when non-empty, a resource requested on /authorize or /token must be one of these or the request is invalid_target. Empty = any valid resource (an absolute URI without a fragment) is allowed (optional)",
+                },
             },
             # client_secret is validated in the handler: required for every
             # auth method except 'none' (#188).
@@ -730,6 +736,11 @@ _TOOLS: list[Tool] = [
                     "type": "array",
                     "items": {"type": "string"},
                     "description": "Replace the client's scope allow-list (#186); empty list removes the restriction (optional)",
+                },
+                "allowed_resources": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Replace the client's RFC 8707 resource allow-list (#187); empty list removes the restriction (optional)",
                 },
             },
             "required": ["client_id"],
@@ -1387,6 +1398,7 @@ def _tool_create_client(arguments: dict[str, Any], config: ConfigManager) -> dic
         additional_audiences=_normalize_audiences(arguments.get("additional_audiences")),
         redirect_uris=_normalize_str_list(arguments.get("redirect_uris"), "redirect_uris"),
         allowed_scopes=_normalize_str_list(arguments.get("allowed_scopes"), "allowed_scopes"),
+        allowed_resources=_normalize_str_list(arguments.get("allowed_resources"), "allowed_resources"),
     )
     config.settings.clients.append(new_client)
     return {"success": True, "client": _client_to_dict(new_client)}
@@ -1414,6 +1426,11 @@ def _tool_update_client(arguments: dict[str, Any], config: ConfigManager) -> dic
     new_allowed_scopes = (
         _normalize_str_list(arguments["allowed_scopes"], "allowed_scopes")
         if "allowed_scopes" in arguments
+        else None
+    )
+    new_allowed_resources = (
+        _normalize_str_list(arguments["allowed_resources"], "allowed_resources")
+        if "allowed_resources" in arguments
         else None
     )
     new_background_color = (
@@ -1486,6 +1503,8 @@ def _tool_update_client(arguments: dict[str, Any], config: ConfigManager) -> dic
         client.redirect_uris = new_redirect_uris
     if new_allowed_scopes is not None:
         client.allowed_scopes = new_allowed_scopes
+    if new_allowed_resources is not None:
+        client.allowed_resources = new_allowed_resources
 
     return {"success": True, "client": _client_to_dict(client)}
 

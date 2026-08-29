@@ -599,6 +599,67 @@ class NanoIDPTestAgent:
                 "Device Verification Base URL", TestCategory.OAUTH, False, str(e)
             )
 
+    def test_resource_indicators(self) -> TestResult:
+        """RFC 8707 resource indicators (issue #187): a resource on /token
+        binds the access token aud, a wrong-URI resource is invalid_target,
+        and no resource leaves the aud at oauth.audience."""
+        try:
+            mcp_resource = "https://mcp.example/server"
+            bound = self.session.post(
+                f"{self.base_url}/token",
+                data={"grant_type": "client_credentials", "resource": mcp_resource},
+                timeout=5,
+            )
+            bound_ok = False
+            introspect_ok = False
+            if bound.status_code == 200:
+                access_token = bound.json().get("access_token", "")
+                # Decode the aud without verification (base64url payload).
+                parts = access_token.split(".")
+                aud = None
+                if len(parts) == 3:
+                    pad = parts[1] + "=" * (-len(parts[1]) % 4)
+                    aud = json.loads(base64.urlsafe_b64decode(pad)).get("aud")
+                bound_ok = aud == mcp_resource
+                # /introspect must report the resource aud.
+                intro = self.session.post(
+                    f"{self.base_url}/introspect",
+                    data={"token": access_token},
+                    timeout=5,
+                )
+                introspect_ok = (
+                    intro.status_code == 200
+                    and intro.json().get("active") is True
+                    and intro.json().get("aud") == mcp_resource
+                )
+
+            bad = self.session.post(
+                f"{self.base_url}/token",
+                data={"grant_type": "client_credentials", "resource": "https://x/#frag"},
+                timeout=5,
+            )
+            invalid_target = (
+                bad.status_code == 400 and bad.json().get("error") == "invalid_target"
+            )
+
+            success = bound_ok and introspect_ok and invalid_target
+            return self._add_result(
+                "Resource Indicators",
+                TestCategory.OAUTH,
+                success,
+                "issue #187: resource binds the access token aud, reported by "
+                "/introspect; an invalid resource is invalid_target",
+                {
+                    "aud_bound_to_resource": bound_ok,
+                    "introspect_reports_aud": introspect_ok,
+                    "invalid_target": invalid_target,
+                },
+            )
+        except Exception as e:
+            return self._add_result(
+                "Resource Indicators", TestCategory.OAUTH, False, f"Error: {e}"
+            )
+
     def test_public_client_flow(self) -> TestResult:
         """Public client end-to-end (issue #188): a client with
         token_endpoint_auth_method 'none' and no secret completes the PKCE
@@ -4374,6 +4435,7 @@ class NanoIDPTestAgent:
                 self.test_issuer_from_proxy_headers,
                 self.test_authorization_code_pkce,
                 self.test_public_client_flow,
+                self.test_resource_indicators,
                 self.test_redirect_uri_exact_matching,
                 self.test_native_app_redirect_uris,
                 self.test_scope_enforcement,

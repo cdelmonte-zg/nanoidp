@@ -74,6 +74,27 @@ without it), cannot use the `client_credentials` grant, and always gets a
 rotating refresh token. A `client_secret` sent by a public client is
 ignored.
 
+## Resource indicators (RFC 8707)
+
+To bind the access token to a specific resource server - so a token for
+MCP server A is rejected by server B - send a `resource` parameter (an
+absolute URI without a fragment). An MCP client sends it on both
+`/authorize` and `/token`; the access token's `aud` becomes that
+resource. `resource` is repeatable for more than one target, and a
+`/token` request may narrow the resources an authorization code bound but
+never widen them. A resource outside the client's `allowed_resources` (or
+not a valid URI) is rejected with `invalid_target`.
+
+```bash
+curl -X POST 'http://localhost:8000/token' \
+  -u 'demo-client:demo-secret' \
+  -d 'grant_type=client_credentials' \
+  -d 'resource=https://mcp.example/server'
+# the returned access token's aud is https://mcp.example/server
+```
+
+Sending no `resource` leaves the audience at `oauth.audience`, unchanged.
+
 ## Device authorization flow
 
 ```bash

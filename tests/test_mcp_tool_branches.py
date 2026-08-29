@@ -214,6 +214,7 @@ class TestClientToolBranches:
                     "additional_audiences": ["aud-x"],
                     "redirect_uris": ["https://other.example/cb"],
                     "allowed_scopes": ["openid"],
+                    "allowed_resources": ["https://mcp.example/server"],
                     "background_color": "#112233",
                     "header_color": "#445566",
                     "footer_color": "#778899",
@@ -229,6 +230,7 @@ class TestClientToolBranches:
         assert client.additional_audiences == ["aud-x"]
         assert client.redirect_uris == ["https://other.example/cb"]
         assert client.allowed_scopes == ["openid"]
+        assert client.allowed_resources == ["https://mcp.example/server"]
         assert client.background_color == "#112233"
         assert client.header_color == "#445566"
         assert client.footer_color == "#778899"

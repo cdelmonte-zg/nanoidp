@@ -290,6 +290,11 @@ oauth:
     - client_id: "cli-client"
       token_endpoint_auth_method: "none"  # public client (#188): no secret
       description: "CLI / SPA / MCP client that cannot keep a secret"
+    - client_id: "mcp-client"
+      client_secret: "secret"
+      description: "Client bound to specific MCP servers (RFC 8707, #187)"
+      allowed_resources:        # optional; see "Resource indicators" below
+        - "https://mcp.example/server"
   # logos_dir: "./static/logos"    # optional; defaults to src/nanoidp/static/logos
   # scopes_supported:               # optional; the global scope vocabulary
   #   - openid                      # (default: openid, profile, email, offline_access)
@@ -396,6 +401,22 @@ body parameters and rejects Basic. The other credentialed endpoints -
 `/introspect`, `/revoke`, `/device_authorization` - are not the token
 endpoint and stay lenient: they accept a confidential client's secret
 over either HTTP Basic or the request body.
+
+**Resource indicators** (issue #187, RFC 8707): a client may send one or
+more `resource` parameters on `/authorize`, `/token` and
+`/device_authorization`, and the access token's `aud` is bound to those
+resources - a token minted for one MCP server is then rejected by
+another. A `resource` must be an absolute URI without a fragment,
+otherwise the request is `invalid_target`. Per-client `allowed_resources`
+gates which resources a client may target (empty = any valid resource,
+the dev default, same "empty = unrestricted" convention as
+`allowed_scopes`). A `/token` request may narrow the resources a prior
+step bound (an authorization code, a refresh token) but never widen them.
+Sending no `resource` leaves `aud` at `oauth.audience`, unchanged for
+existing clients. `/introspect` reports the token's `aud`; there is no
+`resource_indicators_supported` discovery metadata (RFC 8707 defines
+none). An MCP client sends `resource` on both `/authorize` and `/token`
+(MCP Authorization).
 
 **Native apps (RFC 8252)**: two things a native client needs are built
 in. A private-use scheme URI such as `com.example.app:/oauth2redirect`
