@@ -4533,10 +4533,18 @@ class NanoIDPTestAgent:
                         text = result.content[0].text if result.content else ""
                         return ("tool_error" if result.is_error else "ok"), text
 
-        try:
-            return asyncio.run(run())
-        except Exception as e:  # transport-level rejection (401 wrong aud/token)
-            return "unauthorized", type(e).__name__
+        # A transport error (a 401 on a bad token, or a transient connect/read
+        # under CI load with several servers on one runner) raises out of the
+        # async client. Retry once for the transient case; keep the exception
+        # text as the detail so a genuine failure is diagnosable in the log
+        # rather than an opaque "unauthorized".
+        last_exc = ""
+        for _attempt in range(2):
+            try:
+                return asyncio.run(run())
+            except Exception as e:
+                last_exc = f"{type(e).__name__}: {e}"
+        return "unauthorized", last_exc
 
     def _mcp_test_rfc9728_discovery(self, mcp_url: str) -> None:
         """Unauthenticated tools/call -> 401 with WWW-Authenticate naming the
@@ -4624,7 +4632,7 @@ class NanoIDPTestAgent:
             self._add_result(
                 "MCP Insufficient Scope Rejected", TestCategory.MCP, success,
                 "delete_document (documents:write) refused to a documents:read "
-                "token with insufficient_scope", {"outcome": outcome},
+                "token with insufficient_scope", {"outcome": outcome, "detail": detail},
             )
         except Exception as e:
             self._add_result("MCP Insufficient Scope Rejected", TestCategory.MCP, False, f"Error: {e}")

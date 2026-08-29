@@ -40,6 +40,7 @@ from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.auth.provider import AccessToken, TokenVerifier
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 
 # One scope per tool (issue #191).
 TOOL_SCOPES = {
@@ -49,10 +50,12 @@ TOOL_SCOPES = {
 }
 
 
-class InsufficientScope(Exception):
-    """Raised by a tool when the bearer token lacks the tool's scope. The MCP
-    client sees it as a tool error naming the missing scope - the resource
-    server equivalent of a 403 insufficient_scope (RFC 6750 §3.1 / MCP)."""
+class InsufficientScope(ToolError):
+    """Raised by a tool when the bearer token lacks the tool's scope. Subclasses
+    the SDK's ToolError so it surfaces as a clean tool error (is_error result
+    the client reliably sees) instead of an UnexpectedToolError with a server
+    traceback - the resource server equivalent of a 403 insufficient_scope
+    (RFC 6750 §3.1 / MCP)."""
 
 
 class MockTokenVerifier(TokenVerifier):
