@@ -45,6 +45,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   changes only the secret, so every field (present and future) is carried.
 
 ### Added
+- **Mock protected MCP server as an e2e fixture** (#191). `examples/mock_mcp_server.py`
+  is a minimal MCP Streamable HTTP resource server (the `mcp` SDK's
+  resource-server mode) with three scope-gated tools (`read_document` /
+  `documents:read`, `delete_document` / `documents:write`, `admin_operation`
+  / `admin`). It validates bearer tokens JWKS-only against nanoidp (signature,
+  `iss`, `aud` == its own resource URL, `exp`, scopes), serves the RFC 9728
+  `/.well-known/oauth-protected-resource` document naming nanoidp as its
+  authorization server, and answers an unauthenticated call with `401` +
+  `WWW-Authenticate` pointing at that metadata. `examples/test_agent.py`
+  gains an `--mcp` suite that drives the whole loop deterministically as the
+  MCP client (401 -> RFC 9728 discovery -> `/authorize` with PKCE and
+  `resource=` -> `/token` -> `tools/call`): resource-bound token accepted,
+  wrong-audience token rejected, insufficient-scope tool call refused,
+  client_credentials workload, a token revoked at nanoidp still accepted by
+  the JWKS-only server until `exp` (asserted as the documented consequence of
+  self-contained tokens), and a token surviving a key rotation. New guide
+  "Testing an MCP client against nanoidp". This is the deliverable that ties
+  #186 (scopes), #187 (resource indicators) and #188 (public clients)
+  together into a demonstrable OAuth/MCP round trip.
 - **RFC 9207: `iss` on the authorization response** (#189). `/authorize`
   returns `iss=<effective issuer>` on every response delivered through a
   validated `redirect_uri` - success and error alike - so a client can
