@@ -551,7 +551,11 @@ _TOOLS: list[Tool] = [
                         "array for several) instead of oauth.audience, so a "
                         "token minted for one MCP server is rejected by "
                         "another. Each must be an absolute URI without a "
-                        "fragment (optional)"
+                        "fragment. This tool mints for a user directly, with no "
+                        "client in the request, so the per-client "
+                        "allowed_resources ceiling that /token enforces does "
+                        "not apply here - the aud is whatever you pass "
+                        "(optional)"
                     ),
                 },
             },
@@ -1327,8 +1331,16 @@ def _tool_generate_token(arguments: dict[str, Any], config: ConfigManager) -> di
         or None,
         userinfo_claims=_normalize_str_list(arguments.get("userinfo_claims"), "userinfo_claims")
         or None,
-        # RFC 8707 resource indicators (#187): bind the access token aud to
-        # the given resource(s), the same as sending resource on /token.
+        # RFC 8707 resource indicators (#187): set the access token aud to the
+        # given resource(s). BOUNDARY: unlike /token, /authorize and
+        # /device_authorization - which run every requested resource through
+        # resolve_resources and reject one outside the client's
+        # allowed_resources with invalid_target - this tool has no client in
+        # the request. It mints a token directly for a user (a testing /
+        # simulation affordance, not an OAuth grant), so there is no per-client
+        # allowed_resources ceiling to apply and the aud is whatever is passed.
+        # That is deliberate; a reader expecting parity with /token should know
+        # the ceiling lives on the grant endpoints, not on this admin tool.
         resource=_normalize_str_list(arguments.get("resource"), "resource") or None,
     )
     result = {
