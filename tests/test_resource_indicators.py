@@ -51,6 +51,11 @@ class TestResourceValidation:
             ("https://example.com/#", False),  # empty fragment component (#254 review)
             ("https://[bad", False),  # urlparse ValueError, not a crash (#254 review)
             ("https://exa mple/resource", False),  # raw space, not RFC 3986 (#254 review)
+            ("https://example.com/%ZZ", False),  # bad percent-encoding (#254 review)
+            ("https://example.com/%", False),  # trailing percent (#254 review)
+            ("https://example.com:abc/resource", False),  # non-numeric port (#254 review)
+            ("https://example.com/%2Fpath", True),  # valid percent-encoding
+            ("https://example.com:8443/resource", True),  # numeric port
             ("/relative/path", False),  # no scheme
             ("", False),
         ],

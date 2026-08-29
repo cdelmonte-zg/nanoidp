@@ -75,11 +75,21 @@ def is_valid_resource_indicator(value: str) -> bool:
     # empty fragment, which is still a fragment component RFC 8707 disallows.
     if "#" in value:
         return False
+    # Every '%' must introduce a valid percent-encoded octet (RFC 3986 §2.1,
+    # "pct-encoded = '%' HEXDIG HEXDIG"): the charset check above admits a
+    # bare '%', so '%ZZ' and a trailing '%' still need rejecting (#254 review).
+    if re.search(r"%(?![0-9A-Fa-f]{2})", value):
+        return False
     try:
         parsed = urlparse(value)
+        # Accessing .port validates it: RFC 3986 defines port as *DIGIT, and
+        # urlparse raises ValueError on a non-numeric one (e.g. ':abc') only
+        # when the attribute is read (#254 review).
+        _ = parsed.port
     except ValueError:
-        # urlparse raises on a malformed authority (bad IPv6 literal); that is
-        # an invalid indicator, handled as invalid_target, not a crash.
+        # urlparse raises on a malformed authority (bad IPv6 literal, a
+        # non-numeric port); that is an invalid indicator, handled as
+        # invalid_target, not a crash.
         return False
     if not parsed.scheme:
         return False
