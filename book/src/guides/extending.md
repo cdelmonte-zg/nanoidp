@@ -82,11 +82,17 @@ one coordinated, conflict-checked save (#229): both files are written,
 both hooks then run, and the runtime is refreshed from disk once before a
 `strict` failure is raised - a failing hook on one file does not leave
 the other unwritten.
-The web UI's settings page (`YamlWriter`) uses the same primitive now
-(#229 phase 3), but still writes its sections one call at a time
-rather than as a batch, so under `strict` a failing hook there leaves
-the later sections in that page's save unsaved (the flash message says
-which write failed). Make the hook idempotent: the
+The web UI's settings page (`YamlWriter`) uses the same primitive now:
+its one POST composes oauth, saml, identity classes and login mode
+into a single write (#229 phase 4 - an earlier version ran four
+separate writes chained by revision, which meant a conflict partway
+through could leave the earlier sections already saved while the page
+reported nothing had changed; composing them into one write closed
+that), so a failing hook under `strict` there is the same shape as
+`ConfigManager.save()`'s: the one write already landed, only the
+mirror push failed. `YamlWriter`'s other methods (`save_user`,
+`save_client`, ...) each still make their own single write per call,
+same as always. Make the hook idempotent: the
 next save re-mirrors. `on_audit_event` never fails the request that
 produced the event: a token already issued must not turn into a 500 because
 an audit sink is down. Failures are counted per hook and shown by

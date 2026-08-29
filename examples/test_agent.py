@@ -50,6 +50,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import secrets
 import sys
 import time
@@ -1101,6 +1102,91 @@ class NanoIDPTestAgent:
         finally:
             self.session.post(
                 f"{self.base_url}/clients/{test_client_id}/delete", timeout=5
+            )
+
+    def test_config_write_conflict_detection(self) -> TestResult:
+        """A stale expected_revision on a UI form is refused, not silently
+        overwritten (issue #229 phase 4).
+
+        Fetches the clients page's rendered revision, advances
+        settings.yaml with an unrelated client creation, then resubmits
+        the create form for a *different* client using the now-stale
+        revision - it must not be created, and the response must carry
+        the conflict flash rather than a silent success.
+        """
+        advancer_client_id = f"conflict-advancer-{secrets.token_hex(4)}"
+        stale_client_id = f"conflict-stale-{secrets.token_hex(4)}"
+        try:
+            clients_page = self.session.get(f"{self.base_url}/clients", timeout=5)
+            match = re.search(
+                r'name="expected_revision" value="([^"]*)"', clients_page.text
+            )
+            if not match:
+                return self._add_result(
+                    "Config Write Conflict Detection", TestCategory.API, False,
+                    "No expected_revision hidden field found on /clients",
+                )
+            stale_revision = match.group(1)
+
+            # Advance settings.yaml with an unrelated write, moving it
+            # past the revision the page above was rendered with.
+            advance = self.session.post(
+                f"{self.base_url}/clients/create",
+                data={
+                    "client_id": advancer_client_id,
+                    "client_secret": "advancer-secret",
+                    "description": "Conflict detection e2e advancer client",
+                },
+                allow_redirects=False,
+                timeout=5,
+            )
+            if advance.status_code not in (302, 303):
+                return self._add_result(
+                    "Config Write Conflict Detection", TestCategory.API, False,
+                    f"Advancer client creation failed: status={advance.status_code}",
+                )
+
+            # Resubmit the create form for a different client using the
+            # now-stale revision from before the advancer write.
+            stale_create = self.session.post(
+                f"{self.base_url}/clients/create",
+                data={
+                    "client_id": stale_client_id,
+                    "client_secret": "stale-secret",
+                    "description": "Should not be created",
+                    "expected_revision": stale_revision,
+                },
+                allow_redirects=True,
+                timeout=5,
+            )
+
+            conflict_flashed = "changed since it was last read" in stale_create.text
+            clients_after = self.session.get(f"{self.base_url}/clients", timeout=5).text
+            not_created = stale_client_id not in clients_after
+
+            success = conflict_flashed and not_created
+            return self._add_result(
+                "Config Write Conflict Detection",
+                TestCategory.API,
+                success,
+                "issue #229: a stale expected_revision on the clients create "
+                "form is refused with a conflict flash, not a silent overwrite",
+                {
+                    "conflict_flashed": conflict_flashed,
+                    "not_created": not_created,
+                    "final_status": stale_create.status_code,
+                },
+            )
+        except Exception as e:
+            return self._add_result(
+                "Config Write Conflict Detection", TestCategory.API, False, f"Error: {e}"
+            )
+        finally:
+            self.session.post(
+                f"{self.base_url}/clients/{advancer_client_id}/delete", timeout=5
+            )
+            self.session.post(
+                f"{self.base_url}/clients/{stale_client_id}/delete", timeout=5
             )
 
     def test_client_branding(self) -> TestResult:
@@ -4220,6 +4306,7 @@ class NanoIDPTestAgent:
                 self.test_api_hooks_block,
                 self.test_api_audit_log,
                 self.test_api_audit_stats,
+                self.test_config_write_conflict_detection,
             ]),
             (TestCategory.MANAGEMENT, "Management Secret", [
                 self.test_management_secret_required_for_api_mutation,

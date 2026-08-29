@@ -36,11 +36,13 @@
                                     <i class="bi bi-pencil"></i>
                                 </a>
                                 <form action="{{ url_for('ui.client_regenerate_secret', client_id=client.client_id) }}" method="post" class="d-inline">
+                                    <input type="hidden" name="expected_revision" value="{{ revision }}">
                                     <button type="submit" class="btn btn-outline-warning" title="Regenerate Secret" onclick="return confirm('Regenerate secret for {{ client.client_id }}? The old secret will stop working.')">
                                         <i class="bi bi-arrow-clockwise"></i>
                                     </button>
                                 </form>
                                 <form action="{{ url_for('ui.client_delete', client_id=client.client_id) }}" method="post" class="d-inline">
+                                    <input type="hidden" name="expected_revision" value="{{ revision }}">
                                     <button type="submit" class="btn btn-outline-danger" onclick="return confirm('Delete client {{ client.client_id }}?')">
                                         <i class="bi bi-trash"></i>
                                     </button>
