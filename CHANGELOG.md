@@ -181,8 +181,10 @@ previous leniency allowed - needs a one-time adjustment.
   ABNF: `[`/`]` are accepted only inside an IP-literal host (so
   `https://host/a[b]` is rejected where it used to pass), a port is `*DIGIT`
   (no numeric-range limit, matching RFC 3986 §3.2.3), and IPv6 host literals
-  are validated. Tightening only, on malformed input to an opt-in feature; no
-  audience bypass, escalation or change for a well-formed resource.
+  are validated (a scoped `[fe80::1%eth0]` is rejected: RFC 3986 IPv6address
+  has no ZoneID, per RFC 9844). Mostly a tightening on malformed input to an
+  opt-in feature; it also stops rejecting a valid path-empty absolute URI
+  (RFC 3986 §3, e.g. `about:`). No audience bypass or escalation.
 
 ## [2.8.0] - 2026-08-29
 

@@ -67,6 +67,12 @@ def _is_valid_host(host: str) -> bool:
         inner = host[1:-1]
         if inner[:1] in ("v", "V"):
             return bool(_IPVFUTURE_RE.match(inner))
+        # RFC 3986 IP-literal is IPv6address / IPvFuture, and IPv6address carries
+        # NO ZoneID: ipaddress.IPv6Address would accept a scoped "fe80::1%eth0"
+        # (the RFC 6874 zone-id syntax, obsoleted for URIs by RFC 9844), which
+        # is wider than the ABNF this validator implements - reject '%' first.
+        if "%" in inner:
+            return False
         try:
             ipaddress.IPv6Address(inner)
             return True
@@ -163,9 +169,12 @@ def is_valid_resource_indicator(value: str) -> bool:
             return False
     if parts.path and not _PATH_RE.match(parts.path):
         return False
-    # absolute-URI needs a hier-part: an authority (https://host/...) or, for a
-    # non-hierarchical scheme, an opaque path (urn:example:resource).
-    return bool(parts.netloc or parts.path)
+    # absolute-URI = scheme ":" hier-part [ "?" query ], and hier-part may be
+    # path-empty (RFC 3986 §3 / §4.3, e.g. "about:"): a valid scheme with valid
+    # components is a valid absolute URI, so do not artificially require an
+    # authority or a path (#270 review). The scheme presence is already enforced
+    # by _SCHEME_RE above, so a relative reference with no scheme is rejected.
+    return True
 
 
 def resolve_resources(

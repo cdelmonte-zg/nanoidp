@@ -70,6 +70,12 @@ class TestResourceValidation:
             ("https://exa[mple.com/mcp", False),  # '[' in reg-name host
             ("https://example.com:99999/mcp", True),  # port = *DIGIT, no range limit
             ("https://example.com/seg;p=1", True),  # sub-delims/':' are valid pchar
+            # #270 review: absolute-URI hier-part may be path-empty (RFC 3986 §3)
+            ("about:", True),  # valid absolute URI, empty hier-part
+            ("foo:?q=1", True),  # scheme + query, empty path
+            # #270 review: RFC 3986 IPv6address has no ZoneID (RFC 9844 obsoleted
+            # RFC 6874's zone syntax for URIs); ipaddress.IPv6Address would admit it
+            ("https://[fe80::1%eth0]/", False),  # scoped IPv6 is outside the ABNF
         ],
     )
     def test_indicator_syntax(self, value, valid):
