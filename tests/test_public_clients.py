@@ -48,6 +48,29 @@ def public_client(app):
         ]
 
 
+def _basic(client_id, secret):
+    return {"Authorization": "Basic " + base64.b64encode(f"{client_id}:{secret}".encode()).decode()}
+
+
+@pytest.fixture
+def post_client(app):
+    """A confidential client registered with client_secret_post."""
+    with app.app_context():
+        get_config().settings.clients.append(
+            OAuthClient(
+                client_id="post-cli",
+                client_secret="post-secret",
+                token_endpoint_auth_method="client_secret_post",
+            )
+        )
+    yield
+    with app.app_context():
+        config = get_config()
+        config.settings.clients = [
+            c for c in config.settings.clients if c.client_id != "post-cli"
+        ]
+
+
 def _authorize(client, **extra):
     params = {
         "response_type": "code",
@@ -276,59 +299,114 @@ class TestTokenEndpoint:
         assert replayed.status_code != 200
 
 
-class TestClientSecretPost:
-    """Discovery has advertised client_secret_post forever; #188 makes it
-    real instead of silently ignored."""
+class TestMethodEnforcement:
+    """token_endpoint_auth_method is ENFORCED, not descriptive (#254 review,
+    blocking 2). A basic client must use Basic and a post client must use
+    the body; the wrong channel is rejected, and a confidential client
+    cannot skip authentication on any grant."""
 
-    def test_client_credentials_with_body_secret_succeeds(self, client):
+    def test_basic_client_authenticates_via_basic(self, client):
+        resp = client.post(
+            "/token", data={"grant_type": "client_credentials"},
+            headers=_basic("demo-client", "demo-secret"),
+        )
+        assert resp.status_code == 200
+        assert json.loads(resp.data)["access_token"]
+
+    def test_basic_client_rejects_a_body_secret(self, client):
+        """demo-client is client_secret_basic: a body secret is the wrong
+        channel and must not authenticate it (previously it silently did)."""
         resp = client.post(
             "/token",
             data={
                 "grant_type": "client_credentials",
                 "client_id": "demo-client",
                 "client_secret": "demo-secret",
+            },
+        )
+        assert resp.status_code == 401
+
+    def test_post_client_authenticates_via_body(self, client, post_client):
+        resp = client.post(
+            "/token",
+            data={
+                "grant_type": "client_credentials",
+                "client_id": "post-cli",
+                "client_secret": "post-secret",
             },
         )
         assert resp.status_code == 200
         assert json.loads(resp.data)["access_token"]
 
-    def test_client_credentials_with_wrong_body_secret_is_401(self, client):
+    def test_post_client_rejects_basic(self, client, post_client):
+        resp = client.post(
+            "/token", data={"grant_type": "client_credentials"},
+            headers=_basic("post-cli", "post-secret"),
+        )
+        assert resp.status_code == 401
+
+    def test_post_client_with_wrong_body_secret_is_401(self, client, post_client):
         resp = client.post(
             "/token",
             data={
                 "grant_type": "client_credentials",
-                "client_id": "demo-client",
+                "client_id": "post-cli",
                 "client_secret": "wrong",
             },
         )
         assert resp.status_code == 401
 
-    def test_introspect_with_body_secret_works(self, client):
+    def test_confidential_authorization_code_requires_client_auth(self, client):
+        """A confidential client cannot redeem a code with client_id alone
+        (RFC 6749 §3.2.1; #188 contract). This was the authorization_code
+        exemption bug (#254 review)."""
+        params = {
+            "response_type": "code",
+            "client_id": "demo-client",
+            "redirect_uri": REDIRECT,
+            "scope": "openid",
+        }
+        client.get("/authorize", query_string=params)
+        loc = client.post(
+            "/authorize", data={**params, "username": "admin", "password": "admin"},
+            follow_redirects=False,
+        ).headers["Location"]
+        code = loc.split("code=")[1].split("&")[0]
+        resp = client.post(
+            "/token",
+            data={
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": REDIRECT,
+                "client_id": "demo-client",
+            },
+        )
+        assert resp.status_code == 401
+
+    def test_introspect_with_post_client_body_secret_works(self, client, post_client):
         token = json.loads(
             client.post(
                 "/token",
                 data={
                     "grant_type": "client_credentials",
-                    "client_id": "demo-client",
-                    "client_secret": "demo-secret",
+                    "client_id": "post-cli",
+                    "client_secret": "post-secret",
                 },
             ).data
         )["access_token"]
         resp = client.post(
             "/introspect",
-            data={
-                "token": token,
-                "client_id": "demo-client",
-                "client_secret": "demo-secret",
-            },
+            data={"token": token, "client_id": "post-cli", "client_secret": "post-secret"},
         )
         assert resp.status_code == 200
         assert json.loads(resp.data)["active"] is True
 
-    def test_device_authorization_with_body_secret_works(self, client):
+    def test_device_authorization_with_post_client_body_secret_works(
+        self, client, post_client
+    ):
         resp = client.post(
             "/device_authorization",
-            data={"client_id": "demo-client", "client_secret": "demo-secret"},
+            data={"client_id": "post-cli", "client_secret": "post-secret"},
         )
         assert resp.status_code == 200
         assert "device_code" in json.loads(resp.data)
@@ -350,14 +428,18 @@ class TestRevocation:
             ).data
         )["access_token"]
 
+    def _confidential_token(self, client):
+        return json.loads(
+            client.post(
+                "/token", data={"grant_type": "client_credentials"},
+                headers=_basic("demo-client", "demo-secret"),
+            ).data
+        )["access_token"]
+
     def _active(self, client, token):
         resp = client.post(
-            "/introspect",
-            data={
-                "token": token,
-                "client_id": "demo-client",
-                "client_secret": "demo-secret",
-            },
+            "/introspect", data={"token": token},
+            headers=_basic("demo-client", "demo-secret"),
         )
         return json.loads(resp.data)["active"]
 
@@ -373,39 +455,37 @@ class TestRevocation:
     def test_public_client_cannot_revoke_another_clients_token(
         self, client, public_client
     ):
-        foreign = json.loads(
-            client.post(
-                "/token",
-                data={
-                    "grant_type": "client_credentials",
-                    "client_id": "demo-client",
-                    "client_secret": "demo-secret",
-                },
-            ).data
-        )["access_token"]
+        foreign = self._confidential_token(client)
         resp = client.post("/revoke", data={"token": foreign, "client_id": PUBLIC_ID})
         # RFC 7009 privacy guidance: same 200 either way, but nothing revoked.
         assert resp.status_code == 200
         assert self._active(client, foreign) is True
 
-    def test_confidential_client_revocation_via_post_secret_still_works(self, client):
-        token = json.loads(
-            client.post(
-                "/token",
-                data={
-                    "grant_type": "client_credentials",
-                    "client_id": "demo-client",
-                    "client_secret": "demo-secret",
-                },
-            ).data
-        )["access_token"]
+    def test_forged_ownership_claim_cannot_revoke_a_foreign_token(
+        self, client, public_client
+    ):
+        """#254 review, blocking 1: the ownership check must not trust an
+        unsigned token. A public client submits a bogus JWT signed with its
+        own key, carrying its own client_id but a FOREIGN jti; the real
+        token with that jti must stay active."""
+        import jwt as pyjwt
+
+        foreign = self._confidential_token(client)
+        foreign_jti = pyjwt.decode(foreign, options={"verify_signature": False})["jti"]
+        forged = pyjwt.encode(
+            {"jti": foreign_jti, "client_id": PUBLIC_ID, "sub": "attacker"},
+            "an-attacker-controlled-key-32-bytes-long!!",
+            algorithm="HS256",
+        )
+
+        resp = client.post("/revoke", data={"token": forged, "client_id": PUBLIC_ID})
+        assert resp.status_code == 200  # RFC 7009: 200 regardless
+        assert self._active(client, foreign) is True  # but nothing revoked
+
+    def test_confidential_client_revocation_still_works(self, client):
+        token = self._confidential_token(client)
         resp = client.post(
-            "/revoke",
-            data={
-                "token": token,
-                "client_id": "demo-client",
-                "client_secret": "demo-secret",
-            },
+            "/revoke", data={"token": token}, headers=_basic("demo-client", "demo-secret")
         )
         assert resp.status_code == 200
         assert self._active(client, token) is False

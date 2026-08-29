@@ -386,9 +386,13 @@ reuse detection (OAuth 2.1 §4.3.1/§6.1), whatever
 must match, otherwise the response is still `200` and nothing is revoked
 (RFC 7009 §2.1 and its privacy guidance). `/introspect` stays
 authenticated (RFC 7662): a public `client_id` is not authentication.
-The default `token_endpoint_auth_method` is `client_secret_basic`;
-`client_secret_post` (secret in the request body) is accepted at
-`/token`, `/introspect`, `/revoke` and `/device_authorization` alike.
+A confidential client authenticates on every grant, `authorization_code`
+included (RFC 6749 §3.2.1); a missing or wrong secret is `invalid_client`.
+The registered `token_endpoint_auth_method` is enforced (RFC 7591): the
+default `client_secret_basic` requires HTTP Basic and rejects a body
+secret, while `client_secret_post` requires `client_id` + `client_secret`
+as POST body parameters and rejects Basic - at `/token`, `/introspect`,
+`/revoke` and `/device_authorization` alike.
 
 **Native apps (RFC 8252)**: two things a native client needs are built
 in. A private-use scheme URI such as `com.example.app:/oauth2redirect`

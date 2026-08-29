@@ -6,7 +6,7 @@ import json
 import logging
 import os
 from dataclasses import dataclass
-from typing import Callable, Dict, Optional, Tuple, Union
+from typing import Any, Callable, Dict, Optional, Tuple, Union
 from urllib.parse import urlencode
 
 import jwt as pyjwt
@@ -1166,6 +1166,96 @@ _GRANT_HANDLERS: Dict[str, Callable[[_GrantContext], GrantResult]] = {
 }
 
 
+def _token_auth_failed(client_id: Optional[str], reason: str) -> ResponseReturnValue:
+    audit_event(
+        "token_request",
+        "failed",
+        endpoint="/token",
+        client_id=client_id,
+        details={"reason": reason},
+    )
+    return jsonify({"error": "invalid_client", "error_description": reason}), 401
+
+
+def _enforce_token_endpoint_auth(
+    config: ConfigManager,
+    grant_type: str,
+    auth: Optional[Any],
+    client_id: str,
+    body_client_secret: Optional[str],
+) -> Optional[ResponseReturnValue]:
+    """The single client-authentication boundary for /token (#188).
+
+    Enforces the client's registered token_endpoint_auth_method for every
+    grant, before dispatch. Returns an error response, or None when the
+    request may proceed. RFC 7591 method semantics, RFC 6749 §3.2.1
+    (confidential clients MUST authenticate, authorization_code included).
+    """
+    token_client = config.get_client(client_id)
+
+    # Public client (token_endpoint_auth_method 'none'): identified by
+    # client_id alone; any presented secret is ignored, never validated.
+    if token_client is not None and token_client.is_public:
+        # client_credentials IS client authentication, which a public
+        # client does not have (OAuth 2.1 §2.1; RFC 6749 §5.2).
+        if grant_type == "client_credentials":
+            audit_event(
+                "token_request",
+                "failed",
+                endpoint="/token",
+                client_id=client_id,
+                details={
+                    "reason": "client_credentials refused for a public client",
+                    "grant_type": grant_type,
+                },
+            )
+            return (
+                jsonify(
+                    {
+                        "error": "unauthorized_client",
+                        "error_description": (
+                            "The client_credentials grant requires client "
+                            "authentication; this client's "
+                            "token_endpoint_auth_method is 'none'"
+                        ),
+                    }
+                ),
+                400,
+            )
+        return None
+
+    method = token_client.token_endpoint_auth_method if token_client is not None else None
+
+    # client_secret_post: credentials in the body only; Basic is rejected.
+    if method == "client_secret_post":
+        if auth is not None:
+            return _token_auth_failed(
+                client_id,
+                "This client's token_endpoint_auth_method is "
+                "'client_secret_post'; use client_id and client_secret in the "
+                "request body, not HTTP Basic",
+            )
+        if not body_client_secret or not config.check_client(client_id, body_client_secret):
+            return _token_auth_failed(client_id, "Invalid client credentials")
+        return None
+
+    # client_secret_basic (the default) and unknown client_ids: HTTP Basic.
+    # A body secret without Basic is not the registered channel for a
+    # basic client, and cannot authenticate an unknown one either.
+    if auth is None:
+        if body_client_secret:
+            return _token_auth_failed(
+                client_id,
+                "This client's token_endpoint_auth_method is "
+                "'client_secret_basic'; present the secret via HTTP Basic, "
+                "not in the request body",
+            )
+        return _token_auth_failed(client_id, "Client authentication required")
+    if not config.check_client(auth.username, auth.password):
+        return _token_auth_failed(auth.username, "Invalid client credentials")
+    return None
+
+
 @oauth_bp.route("/token", methods=["POST"])
 def token() -> ResponseReturnValue:
     """OAuth2 token endpoint: shared validation, then per-grant dispatch."""
@@ -1204,70 +1294,15 @@ def token() -> ResponseReturnValue:
             401, description="client_id in request body does not match authenticated client"
         )
 
-    token_client = config.get_client(client_id)
-    if token_client is not None and token_client.is_public:
-        # Public client (#188): identified by client_id alone; a secret
-        # presented over either channel is ignored, never validated. The
-        # client_credentials grant is refused - it IS client
-        # authentication, which a public client does not have (OAuth 2.1
-        # §2.1; RFC 6749 §5.2 unauthorized_client).
-        if grant_type == "client_credentials":
-            audit_event(
-                "token_request",
-                "failed",
-                endpoint="/token",
-                client_id=client_id,
-                details={
-                    "reason": "client_credentials refused for a public client",
-                    "grant_type": grant_type,
-                },
-            )
-            return (
-                jsonify(
-                    {
-                        "error": "unauthorized_client",
-                        "error_description": (
-                            "The client_credentials grant requires client "
-                            "authentication; this client's "
-                            "token_endpoint_auth_method is 'none'"
-                        ),
-                    }
-                ),
-                400,
-            )
-    else:
-        # Confidential client (or unknown client_id): the pre-#188 rules,
-        # with client_secret_post now accepted alongside Basic.
-        if not auth and not body_client_secret and grant_type != "authorization_code":
-            audit_event(
-                "token_request",
-                "failed",
-                endpoint="/token",
-                client_id=client_id,
-                details={"reason": "Client authentication required", "grant_type": grant_type},
-            )
-            return abort(401, description="Client authentication required")
-
-        # Check client authentication (Basic wins when both are presented)
-        if auth:
-            if not config.check_client(auth.username, auth.password):
-                audit_event(
-                    "token_request",
-                    "failed",
-                    endpoint="/token",
-                    client_id=auth.username,
-                    details={"reason": "Invalid client credentials"},
-                )
-                return abort(401, description="Invalid client credentials")
-        elif body_client_secret and not config.check_client(client_id, body_client_secret):
-            audit_event(
-                "token_request",
-                "failed",
-                endpoint="/token",
-                client_id=client_id,
-                details={"reason": "Invalid client credentials"},
-            )
-            return abort(401, description="Invalid client credentials")
+    # One client-authentication boundary for every grant (#188, #254
+    # review): enforce the client's registered token_endpoint_auth_method
+    # here, before grant dispatch, so no grant - authorization_code
+    # included - can slip past it.
+    auth_error = _enforce_token_endpoint_auth(
+        config, grant_type, auth, client_id, body_client_secret
+    )
+    if auth_error is not None:
+        return auth_error
 
     # Validate the grant-independent 'exp' and 'extra' params BEFORE the grant
     # dispatch: the rotation branch atomically consumes the refresh token at
@@ -1665,50 +1700,48 @@ def revoke() -> ResponseReturnValue:
         # RFC 7009 says we should return 200 OK even if token is missing
         return "", 200
 
-    # Try to decode the token to get its JTI
+    # VERIFY the token's signature before trusting any claim (#254 review,
+    # blocking 1). The revocation store is keyed by jti, and the public
+    # client's ownership check reads client_id: both must come from a
+    # payload nanoidp actually signed, never from an attacker-supplied
+    # unsigned JWT. A token that fails verification (bad signature, wrong
+    # audience, expired) revokes nothing and still returns 200 - RFC 7009
+    # requires 200 regardless of outcome, and its privacy guidance forbids
+    # turning the endpoint into an oracle for a token's validity or owner.
+    crypto = get_crypto_service(config.settings.keys_dir)
     try:
-        # Decode without verification to get the JTI
-        payload = pyjwt.decode(token, options={"verify_signature": False})
-        jti = payload.get("jti")
+        payload = crypto.verify_jwt(token, config.settings.audience)
+    except ValueError:
+        return "", 200
 
-        # Ownership check for public clients (#188, RFC 7009 §2.1): with no
-        # credentials, "this token is mine" is the entire authorization to
-        # revoke. A token bound to another client - or carrying no client_id
-        # claim at all - is left untouched, and the response stays 200: per
-        # the RFC's privacy guidance, the endpoint must not become an oracle
-        # for whether a presented token exists, is valid, or whose it is.
-        if is_public and payload.get("client_id") != client_id:
-            audit_event(
-                "revocation_request",
-                "failed",
-                endpoint="/revoke",
-                client_id=client_id,
-                details={"reason": "Public client presented a token it does not own"},
-            )
-            return "", 200
+    jti = payload.get("jti")
 
-        if jti:
-            get_revocation_store().revoke(jti)
-            logger.info(f"Token revoked: {jti[:8]}...")
-        else:
-            # If no JTI, add the token hash to blacklist
-            import hashlib
-
-            token_hash = hashlib.sha256(token.encode()).hexdigest()
-            get_revocation_store().revoke(token_hash)
-
+    # Ownership check for public clients (#188, RFC 7009 §2.1): with no
+    # credentials, "this token is mine" is the entire authorization to
+    # revoke. Now that the payload is verified, client_id is trustworthy; a
+    # token bound to another client is left untouched, response still 200.
+    if is_public and payload.get("client_id") != client_id:
         audit_event(
             "revocation_request",
-            "success",
+            "failed",
             endpoint="/revoke",
             client_id=client_id,
-            username=payload.get("sub"),
-            details={"revoked": True},
+            details={"reason": "Public client presented a token it does not own"},
         )
+        return "", 200
 
-    except Exception:
-        # Even if we can't decode, we return 200 OK per RFC 7009
-        pass
+    if jti:
+        get_revocation_store().revoke(jti)
+        logger.info(f"Token revoked: {jti[:8]}...")
+
+    audit_event(
+        "revocation_request",
+        "success",
+        endpoint="/revoke",
+        client_id=client_id,
+        username=payload.get("sub"),
+        details={"revoked": True},
+    )
 
     # RFC 7009 requires 200 OK response regardless of outcome
     return "", 200

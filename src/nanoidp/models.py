@@ -148,16 +148,19 @@ class OAuthClient(BaseModel):
     ] = Field(
         default="client_secret_basic",
         description=(
-            "How this client authenticates at the token endpoint (issue #188). "
-            "'client_secret_basic' (default) and 'client_secret_post' are "
-            "confidential clients presenting their secret in the Authorization "
-            "header or the request body; either channel is accepted for both, "
-            "the value documents the client's intent. 'none' is a public "
-            "client (CLI, desktop app, SPA, MCP client - anything that cannot "
-            "keep a secret, RFC 8252/OAuth 2.1): it is identified by client_id "
-            "alone, MUST use PKCE with S256 on /authorize regardless of "
-            "profile, is refused the client_credentials grant "
-            "(unauthorized_client), and always gets refresh token rotation."
+            "How this client authenticates at the token endpoint (issue #188, "
+            "RFC 7591). The registered method is ENFORCED, not just "
+            "documented: 'client_secret_basic' (default) requires the secret "
+            "over HTTP Basic and rejects a body secret; 'client_secret_post' "
+            "requires client_id + client_secret as POST body parameters and "
+            "rejects Basic (RFC 6749 §2.3.1). Confidential clients MUST "
+            "authenticate for every grant, authorization_code included "
+            "(RFC 6749 §3.2.1). 'none' is a public client (CLI, desktop app, "
+            "SPA, MCP client - anything that cannot keep a secret, "
+            "RFC 8252/OAuth 2.1): identified by client_id alone, MUST use "
+            "PKCE with S256 on /authorize regardless of profile, is refused "
+            "the client_credentials grant (unauthorized_client), and always "
+            "gets refresh token rotation."
         ),
     )
     description: str = Field(default="", description="Client description")
