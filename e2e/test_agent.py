@@ -1763,6 +1763,48 @@ class NanoIDPTestAgent:
         except Exception as e:
             return self._add_result("Device Flow", TestCategory.OAUTH, False, str(e))
 
+    def test_public_client_device_flow(self) -> TestResult:
+        """A PUBLIC client completes the device flow with client_id alone (#255,
+        RFC 8628 §3.1/§3.4): no secret at the device authorization endpoint or
+        when polling the token endpoint. Uses the bundled mcp-public-client."""
+        pub = "mcp-public-client"
+        try:
+            # 1. device authorization: client_id alone, no auth header
+            resp = requests.post(
+                f"{self.base_url}/device_authorization",
+                data={"client_id": pub, "scope": "openid"}, timeout=5,
+            )
+            if resp.status_code != 200:
+                return self._add_result(
+                    "Public Client Device Flow", TestCategory.OAUTH, False,
+                    f"device_authorization for a public client -> {resp.status_code}",
+                    {"status": resp.status_code},
+                )
+            data = resp.json()
+            user_code, device_code = data.get("user_code"), data.get("device_code")
+            # 2. user approves
+            requests.post(
+                f"{self.base_url}/device",
+                data={"user_code": user_code, "username": self.username,
+                      "password": self.password}, timeout=5,
+            )
+            time.sleep(1)
+            # 3. poll the token endpoint with client_id alone, no secret
+            token_resp = requests.post(
+                f"{self.base_url}/token",
+                data={"grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+                      "device_code": device_code, "client_id": pub}, timeout=5,
+            )
+            ok = token_resp.status_code == 200 and "access_token" in token_resp.json()
+            return self._add_result(
+                "Public Client Device Flow", TestCategory.OAUTH, ok,
+                "a public client (no secret) completes device_auth -> verify -> "
+                "token with client_id alone (RFC 8628, #255)",
+                {"device_status": resp.status_code, "token_status": token_resp.status_code},
+            )
+        except Exception as e:
+            return self._add_result("Public Client Device Flow", TestCategory.OAUTH, False, str(e))
+
     def test_token_decode(self) -> TestResult:
         """Decode and validate JWT structure."""
         if not self.access_token:
@@ -4876,6 +4918,7 @@ class NanoIDPTestAgent:
                 self.test_id_token_audience_array,
                 self.test_id_token_not_accepted_as_access_token,
                 self.test_device_flow,
+                self.test_public_client_device_flow,
                 self.test_device_verification_base_url,
                 self.test_token_decode,
                 self.test_introspection,

@@ -1348,28 +1348,30 @@ def device_authorization() -> ResponseReturnValue:
     Device Authorization endpoint (RFC 8628).
     Initiates the device flow by returning device_code and user_code.
 
-    Required:
-    - Client authentication (Basic auth)
+    Client identification:
+    - A confidential client authenticates with its registered method.
+    - A public client (token_endpoint_auth_method 'none') presents its
+      client_id alone, no secret (RFC 8628 §3.1, #255).
 
     Optional:
     - scope: Requested scopes
     """
     config = get_config()
 
-    # Client authentication, enforced as at the token endpoint (#262):
-    # registered method enforced, two auth methods in one request rejected.
-    # Public clients are NOT supported on the device flow yet (#255 tracks
-    # that decision; today a public client uses authorization_code + PKCE).
+    # Client authentication. A confidential client authenticates as at the
+    # token endpoint (#262): registered method enforced, two auth methods in
+    # one request rejected. A PUBLIC client (token_endpoint_auth_method 'none')
+    # presents its client_id alone with no secret (RFC 8628 §3.1, #255): the
+    # issued device_code is bound to that client_id and only it can poll for
+    # the token, which is what stands in for client authentication here (the
+    # same shape as /revoke's public relaxation).
     auth = request.authorization
     body_client_id = request.form.get("client_id")
     body_client_secret = request.form.get("client_secret") or None
     resolved_client_id = (auth.username if auth else None) or body_client_id
     device_client = config.get_client(resolved_client_id) if resolved_client_id else None
     if device_client is not None and device_client.is_public:
-        auth_error: Optional[str] = (
-            "public clients are not supported on the device flow yet (#255); "
-            "this client's token_endpoint_auth_method is 'none'"
-        )
+        auth_error: Optional[str] = None
     else:
         auth_error = _enforce_registered_client_auth(
             config, resolved_client_id, auth, body_client_secret
