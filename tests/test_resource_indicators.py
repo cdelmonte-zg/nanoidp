@@ -56,6 +56,8 @@ class TestResourceValidation:
             ("https://example.com:abc/resource", False),  # non-numeric port (#254 review)
             ("https://example.com/%2Fpath", True),  # valid percent-encoding
             ("https://example.com:8443/resource", True),  # numeric port
+            ("https://example.com/\n", False),  # trailing newline (#256 review, \Z not $)
+            ("https://example.com/a\nb", False),  # embedded newline
             ("/relative/path", False),  # no scheme
             ("", False),
         ],
@@ -237,6 +239,41 @@ class TestRefreshToken:
             ).data
         )
         assert _aud(refreshed["access_token"]) == RES_A
+
+    def test_refresh_revalidates_against_current_allowed_resources(self, client, app):
+        """#256 review: a resource removed from the client's allowed_resources
+        after the grant was issued must not still be minted on a later
+        refresh that omits the resource parameter (the scope path
+        re-validates the same way, #186 B1)."""
+        with app.app_context():
+            get_config().settings.clients.append(
+                OAuthClient(
+                    client_id="rr", client_secret="s", allowed_resources=[RES_A]
+                )
+            )
+        first = json.loads(
+            client.post(
+                "/token",
+                data={"grant_type": "password", "username": "admin", "password": "admin",
+                      "scope": "openid", "resource": RES_A},
+                headers=_basic("rr", "s"),
+            ).data
+        )
+        assert _aud(first["access_token"]) == RES_A
+
+        # The admin removes RES_A from the allow-list.
+        with app.app_context():
+            for c in get_config().settings.clients:
+                if c.client_id == "rr":
+                    c.allowed_resources = [RES_B]
+
+        refreshed = client.post(
+            "/token",
+            data={"grant_type": "refresh_token", "refresh_token": first["refresh_token"]},
+            headers=_basic("rr", "s"),
+        )
+        assert refreshed.status_code == 400
+        assert json.loads(refreshed.data)["error"] == "invalid_target"
 
     def test_refresh_cannot_widen(self, client):
         first = json.loads(

@@ -631,13 +631,38 @@ def _resolve_token_resource(
     bound NO resource, so the request may not introduce one - a token can
     only narrow what was authorized, never widen it (RFC 8707 section 2); a
     non-empty list = the ceiling the request must stay within. A request
-    that sends no ``resource`` inherits ``original`` unchanged. Returns
+    that sends no ``resource`` inherits ``original`` - but re-validated
+    against the client's CURRENT ``allowed_resources``, so a resource
+    removed from the allow-list after the grant was issued is not still
+    minted on a later refresh (#256 review; the scope path re-validates the
+    same way with validate_only, #186 B1). Returns
     ``(resource_list_or_None, error_response_or_None)``; an ``invalid_target``
     is an RFC 6749 §5.2-shaped JSON error.
     """
     requested = request.form.getlist("resource")
     if not requested:
-        return (list(original) if original else None), None
+        if not original:
+            return None, None
+        if client is None:
+            # No client, no allow-list to enforce: inherit verbatim.
+            return list(original), None
+        # Re-validate the inherited resources against the current allow-list.
+        result = resolve_resources(original, client)
+        if not result.ok:
+            audit_event(
+                "token_request",
+                "failed",
+                endpoint="/token",
+                client_id=ctx.client_id,
+                details={"reason": result.error_description, "grant_type": ctx.grant_type},
+            )
+            return None, (
+                jsonify(
+                    {"error": "invalid_target", "error_description": result.error_description}
+                ),
+                400,
+            )
+        return (result.granted or None), None
     if client is None:
         return None, (
             jsonify({"error": "invalid_target", "error_description": "Unknown client"}),

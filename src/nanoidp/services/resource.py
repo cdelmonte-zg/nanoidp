@@ -32,7 +32,10 @@ from ..models import OAuthClient
 # permissive parser, not an RFC 3986 validator - it happily accepts a raw
 # space in the authority - so a resource indicator is charset-checked
 # against this set first (#254 review).
-_RFC3986_CHARS = re.compile(r"^[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=%]*$")
+# \Z, not $: in Python '$' also matches just before a trailing newline, so a
+# value ending in an (encoded) newline would slip past this control-character
+# guard and land in the token aud (#256 review). \Z anchors the true end.
+_RFC3986_CHARS = re.compile(r"\A[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=%]*\Z")
 
 
 @dataclass
