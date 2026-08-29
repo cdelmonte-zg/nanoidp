@@ -610,11 +610,15 @@ def _resolve_token_resource(
 ) -> Tuple[Optional[List[str]], Optional[ResponseReturnValue]]:
     """Resolve RFC 8707 resource indicators for a /token grant (#187).
 
-    ``original`` is what an earlier step already bound (an authorization
-    code, a refresh token, a device code) or None. A request that sends no
-    ``resource`` inherits ``original`` unchanged; a request that sends some
-    must keep them within ``original`` (narrowing, never widening - RFC 8707
-    section 2) and within the client's ``allowed_resources``. Returns
+    ``original`` is the resource set a prior step bound, with a deliberate
+    three-way meaning (#254 review, finding 1): ``None`` = there was no prior
+    authorization step (client_credentials, password authenticate directly),
+    so a requested resource is gated only by ``allowed_resources``; ``[]`` =
+    a prior step (an authorization code, a refresh token, a device code)
+    bound NO resource, so the request may not introduce one - a token can
+    only narrow what was authorized, never widen it (RFC 8707 section 2); a
+    non-empty list = the ceiling the request must stay within. A request
+    that sends no ``resource`` inherits ``original`` unchanged. Returns
     ``(resource_list_or_None, error_response_or_None)``; an ``invalid_target``
     is an RFC 6749 §5.2-shaped JSON error.
     """
@@ -853,9 +857,10 @@ def _grant_refresh_token(ctx: _GrantContext) -> GrantResult:
         return abort(401, description="Refresh token has been revoked")
 
     # Resource indicators (#187): the refresh may narrow the bound resources
-    # to a subset of what the refresh token remembers, never widen them.
+    # to a subset of what the refresh token remembers, never widen them - a
+    # refresh token that bound none ([]) cannot introduce one (#254 review).
     resource, resource_error = _resolve_token_resource(
-        ctx, client, payload.get("resource")
+        ctx, client, payload.get("resource") or []
     )
     if resource_error is not None:
         return resource_error
@@ -1070,8 +1075,11 @@ def _grant_authorization_code(ctx: _GrantContext) -> GrantResult:
         code_scope = scope_result.granted
 
     # Resource indicators (#187): the token request may narrow to a subset of
-    # what /authorize bound into the code, never widen (RFC 8707 section 2).
-    resource, resource_error = _resolve_token_resource(ctx, client, auth_code.resource)
+    # what /authorize bound into the code, never widen (RFC 8707 section 2);
+    # a code that bound none ([]) cannot introduce one at /token (#254 review).
+    resource, resource_error = _resolve_token_resource(
+        ctx, client, auth_code.resource or []
+    )
     if resource_error is not None:
         return resource_error
 
@@ -1240,7 +1248,7 @@ def _grant_device_code(ctx: _GrantContext) -> GrantResult:
         # scope and emit an ID Token when 'openid' was asked for (issue #36).
         # The user authenticated at /device, not at this poll (#42).
         resource, resource_error = _resolve_token_resource(
-            ctx, ctx.config.get_client(ctx.client_id), grant.resource
+            ctx, ctx.config.get_client(ctx.client_id), grant.resource or []
         )
         if resource_error is not None:
             return resource_error
@@ -1737,11 +1745,14 @@ def introspect() -> ResponseReturnValue:
     if get_revocation_store().is_revoked(jti):
         return jsonify({"active": False})
 
-    # Token is valid - return introspection response
+    # Token is valid - return introspection response. RFC 7662 §2.2:
+    # client_id is the client the TOKEN was issued to, not the caller doing
+    # the introspection - the access token carries that claim since #188.
+    # Fall back to the caller only for a legacy token without the claim.
     response = {
         "active": True,
         "token_type": "Bearer",
-        "client_id": client_id,
+        "client_id": payload.get("client_id", client_id),
         "username": payload.get("sub"),
         "sub": payload.get("sub"),
         "aud": payload.get("aud"),
@@ -1845,18 +1856,20 @@ def revoke() -> ResponseReturnValue:
         )
         return "", 200
 
+    # A verified nanoidp token always carries a jti (crypto.create_jwt sets
+    # one); the audit reflects only what was actually revoked, so a jti-less
+    # edge token is not logged as revoked (#254 review, finding 3).
     if jti:
         get_revocation_store().revoke(jti)
         logger.info(f"Token revoked: {jti[:8]}...")
-
-    audit_event(
-        "revocation_request",
-        "success",
-        endpoint="/revoke",
-        client_id=client_id,
-        username=payload.get("sub"),
-        details={"revoked": True},
-    )
+        audit_event(
+            "revocation_request",
+            "success",
+            endpoint="/revoke",
+            client_id=client_id,
+            username=payload.get("sub"),
+            details={"revoked": True},
+        )
 
     # RFC 7009 requires 200 OK response regardless of outcome
     return "", 200
@@ -2014,6 +2027,7 @@ def device_authorization() -> ResponseReturnValue:
 
     # Resource indicators (#187): validate and remember them on the device
     # grant, so the polled token binds its aud to them.
+    validated_resources = None
     device_resources = request.form.getlist("resource")
     if device_resources and client is not None:
         resource_result = resolve_resources(device_resources, client)
@@ -2034,11 +2048,15 @@ def device_authorization() -> ResponseReturnValue:
                 ),
                 400,
             )
+        # Store the de-duplicated granted list, not the raw request (#254
+        # review, finding 2): a repeated resource must not become a
+        # duplicate entry in the token aud.
+        validated_resources = resource_result.granted or None
 
     # Create the device authorization; the store prunes stale entries and
     # keeps the user-code index internally (#84, previously module globals).
     device_code, user_code = get_device_code_store().create(
-        client_id, scope, resource=device_resources or None
+        client_id, scope, resource=validated_resources
     )
 
     audit_event(

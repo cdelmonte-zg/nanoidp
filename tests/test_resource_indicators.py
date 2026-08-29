@@ -165,6 +165,15 @@ class TestAuthorizationCodeFlow:
         assert resp.status_code == 400
         assert json.loads(resp.data)["error"] == "invalid_target"
 
+    def test_token_cannot_introduce_a_resource_the_code_never_bound(self, client):
+        """#254 review, finding 1: a code that bound no resource cannot have
+        one introduced at /token - that would bind the token to a resource
+        /authorize never authorized (widening from nothing)."""
+        code = self._code(client, [])  # no resource at /authorize
+        resp = self._exchange(client, code, [RES_A])
+        assert resp.status_code == 400
+        assert json.loads(resp.data)["error"] == "invalid_target"
+
 
 class TestRefreshToken:
     def test_refresh_keeps_the_resource_aud(self, client):
@@ -226,6 +235,22 @@ class TestIntrospection:
         assert payload["active"] is True
         assert payload["aud"] == RES_A
 
+    def test_introspect_client_id_is_the_token_owner(self, client, app):
+        """#254 review, finding 4 (RFC 7662 §2.2): the response client_id is
+        the client the token was issued to, not the caller introspecting."""
+        with app.app_context():
+            get_config().settings.clients.append(
+                OAuthClient(client_id="rs", client_secret="rs-secret")
+            )
+        token = json.loads(
+            client.post(
+                "/token", data={"grant_type": "client_credentials"}, headers=_basic()
+            ).data
+        )["access_token"]
+        # A different client (a resource server) introspects the token.
+        resp = client.post("/introspect", data={"token": token}, headers=_basic("rs", "rs-secret"))
+        assert json.loads(resp.data)["client_id"] == "demo-client"
+
 
 class TestDeviceFlow:
     def test_resource_binds_the_device_token(self, client, app):
@@ -254,6 +279,35 @@ class TestDeviceFlow:
             headers=_basic(),
         )
         assert resp.status_code == 200
+        assert _aud(json.loads(resp.data)["access_token"]) == RES_A
+
+    def test_duplicate_device_resource_is_deduplicated(self, client, app):
+        """#254 review, finding 2: a repeated resource must not become a
+        duplicate entry in the token aud."""
+        start = json.loads(
+            client.post(
+                "/device_authorization",
+                data={"scope": "openid", "resource": [RES_A, RES_A]},
+                headers=_basic(),
+            ).data
+        )
+        from nanoidp.services import get_device_code_store
+
+        with app.app_context():
+            get_device_code_store().verify(
+                start["user_code"], "approve", "admin", "admin",
+                get_config().interactive_authenticate,
+            )
+        resp = client.post(
+            "/token",
+            data={
+                "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+                "device_code": start["device_code"],
+            },
+            headers=_basic(),
+        )
+        assert resp.status_code == 200
+        # A single resource collapses to a plain string, not a 1- or 2-item array.
         assert _aud(json.loads(resp.data)["access_token"]) == RES_A
 
     def test_invalid_device_resource_is_invalid_target(self, client):
