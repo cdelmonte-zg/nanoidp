@@ -51,7 +51,7 @@ implicitly throughout the project's history; this writes them down.
    authorization redirects, SAML SSO, UserInfo, are exercised over HTTP,
    as a real client would.
 5. **Features ship whole.** A feature lands together with its MCP exposure
-   (where applicable), its `examples/test_agent.py` e2e coverage and its
+   (where applicable), its `e2e/test_agent.py` e2e coverage and its
    docs, in the same PR.
 6. **RFC-citable behavior.** Token and protocol behaviors reference the
    spec paragraph that justifies them, in code comments and changelog

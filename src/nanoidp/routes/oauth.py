@@ -6,8 +6,7 @@ import json
 import logging
 import os
 from dataclasses import dataclass
-from typing import Callable, Dict, Optional, Tuple, Union
-from urllib.parse import urlencode
+from typing import Any, Dict, List, Optional, Tuple
 
 import jwt as pyjwt
 from flask import (
@@ -25,9 +24,8 @@ from flask import (
 from flask.typing import ResponseReturnValue
 
 from ..branding import effective_logos_dir, resolve_client_logo
-from ..config import ConfigManager, OAuthClient, User, get_config
+from ..config import ConfigManager, OAuthClient, get_config
 from ..services import (
-    DevicePollOutcome,
     DeviceVerifyOutcome,
     build_discovery_document,
     get_auth_code_store,
@@ -37,11 +35,18 @@ from ..services import (
     get_token_service,
 )
 from ..services.device_code import DEVICE_CODE_EXPIRES_IN, DEVICE_POLL_INTERVAL
-from ..services.redirect_uri import redirect_uri_is_registered, redirect_uri_rejection_reason
+from ..services.discovery import issuer_qualifies_for_iss_parameter
+from ..services.redirect_uri import (
+    append_authorization_params,
+    redirect_uri_is_registered,
+    redirect_uri_rejection_reason,
+)
+from ..services.resource import resolve_resources
 from ..services.scope import resolve_scope
 from ..services.token import resolve_user_claim, sanitize_claim_names
 from ._audit import audit_event
 from ._issuer import effective_issuer
+from .oauth_grants import _GRANT_HANDLERS, _GrantContext, _GrantOutcome
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +124,7 @@ class _AuthorizeParams:
     code_challenge_method: str
     nonce: str
     claims_param: str
+    resources: List[str]
 
 
 def _read_authorize_params() -> _AuthorizeParams:
@@ -142,6 +148,8 @@ def _read_authorize_params() -> _AuthorizeParams:
         ),
         nonce=params.get("nonce", session.get("oauth_nonce", "")),
         claims_param=params.get("claims", session.get("oauth_claims", "")),
+        # RFC 8707 resource is repeatable (#187): read every value, not one.
+        resources=params.getlist("resource") or session.get("oauth_resources", []),
     )
 
     if request.method == "GET":
@@ -154,6 +162,7 @@ def _read_authorize_params() -> _AuthorizeParams:
         session["oauth_code_challenge_method"] = p.code_challenge_method
         session["oauth_nonce"] = p.nonce
         session["oauth_claims"] = p.claims_param
+        session["oauth_resources"] = p.resources
 
     return p
 
@@ -177,21 +186,40 @@ def _authorize_reject(
     return jsonify({"error": error, "error_description": description}), 400
 
 
+def _authorize_error_redirect(
+    config: ConfigManager, p: _AuthorizeParams, error: str, description: str, reason: str
+) -> ResponseReturnValue:
+    """Deliver an authorization error to the client through the ALREADY
+    VALIDATED redirect_uri (RFC 6749 §4.1.2.1), carrying iss so the client
+    can still detect an authorization-server mix-up on an error (#189/RFC
+    9207 §2: iss appears on error responses too). Only reachable after
+    _validate_authorize_redirect_uri has run, so this never redirects to an
+    unvalidated URI - errors before that stay local (see _authorize_reject).
+    """
+    audit_event(
+        "authorization_request",
+        "failed",
+        endpoint="/authorize",
+        client_id=p.client_id,
+        details={"reason": reason},
+    )
+    params = {"error": error, "error_description": description}
+    if p.state:
+        params["state"] = p.state
+    issuer = effective_issuer(config.settings)
+    if issuer_qualifies_for_iss_parameter(issuer):
+        params["iss"] = issuer
+    return redirect(append_authorization_params(p.redirect_uri, params))
+
+
 def _validate_authorize_client(
     config: ConfigManager, p: _AuthorizeParams
 ) -> Tuple[Optional[OAuthClient], Optional[ResponseReturnValue]]:
-    """Required-parameter checks and client lookup: (client, None) or (None, error)."""
-    if p.response_type != "code":
-        return None, (
-            jsonify(
-                {
-                    "error": "unsupported_response_type",
-                    "error_description": "Only 'code' response_type is supported",
-                }
-            ),
-            400,
-        )
+    """Required-parameter checks and client lookup: (client, None) or (None, error).
 
+    response_type is NOT checked here: it is validated after the redirect_uri
+    is trusted (#258 review), so an unsupported_response_type on a valid
+    redirect_uri is delivered as an error redirect, not a local JSON."""
     if not p.client_id:
         return None, (
             jsonify({"error": "invalid_request", "error_description": "client_id is required"}),
@@ -212,6 +240,24 @@ def _validate_authorize_client(
     return client, None
 
 
+def _validate_authorize_response_type(
+    config: ConfigManager, p: _AuthorizeParams
+) -> Optional[ResponseReturnValue]:
+    """Only the authorization code flow is supported (#41). Checked after the
+    redirect_uri is validated so an unsupported_response_type is delivered as
+    an error redirect carrying iss (RFC 6749 §4.1.2.1, RFC 9207, #258
+    review), not a local JSON - the implicit flow is intentionally absent."""
+    if p.response_type != "code":
+        return _authorize_error_redirect(
+            config,
+            p,
+            "unsupported_response_type",
+            "Only 'code' response_type is supported",
+            f"unsupported response_type {p.response_type!r}",
+        )
+    return None
+
+
 def _validate_authorize_scope(
     config: ConfigManager, p: _AuthorizeParams, client: OAuthClient
 ) -> Optional[ResponseReturnValue]:
@@ -230,10 +276,11 @@ def _validate_authorize_scope(
         default_when_omitted="openid",
     )
     if not scope_result.ok:
-        return _authorize_reject(
-            p.client_id,
-            scope_result.error_description or "invalid scope",
+        return _authorize_error_redirect(
+            config,
+            p,
             "invalid_scope",
+            scope_result.error_description or "invalid scope",
             scope_result.error_description or "invalid scope",
         )
     p.scope = scope_result.granted or ""
@@ -292,19 +339,46 @@ def _validate_authorize_redirect_uri(
 
 
 def _validate_authorize_pkce(
-    config: ConfigManager, p: _AuthorizeParams
+    config: ConfigManager, p: _AuthorizeParams, client: Optional[OAuthClient] = None
 ) -> Optional[ResponseReturnValue]:
     """PKCE enforcement (issues #47, #68). Via the require_pkce setting (on by
     default in the stricter-dev profile) or implied by the oauth21 profile
     (OAuth 2.1 §4.1.1 makes PKCE mandatory), an authorization request
     without a code_challenge is rejected, so developers can verify their
-    client actually sends PKCE."""
+    client actually sends PKCE.
+
+    A public client (token_endpoint_auth_method 'none', #188) is held to
+    PKCE with S256 REGARDLESS of profile or require_pkce (OAuth 2.1
+    §7.5.1, RFC 7636): with no client authentication at the token
+    endpoint, the verifier is the only thing binding the code to the
+    party that started the flow."""
+    if client is not None and client.is_public:
+        if not p.code_challenge:
+            return _authorize_error_redirect(
+                config,
+                p,
+                "invalid_request",
+                "This client's token_endpoint_auth_method is 'none': PKCE "
+                "with code_challenge_method S256 is required",
+                "Public client without PKCE",
+            )
+        if (p.code_challenge_method or "plain") != "S256":
+            return _authorize_error_redirect(
+                config,
+                p,
+                "invalid_request",
+                "This client's token_endpoint_auth_method is 'none': "
+                "code_challenge_method must be S256",
+                "Public client with non-S256 PKCE",
+            )
+
     if config.settings.pkce_required and not p.code_challenge:
-        return _authorize_reject(
-            p.client_id,
-            "PKCE code_challenge required (require_pkce or oauth21)",
+        return _authorize_error_redirect(
+            config,
+            p,
             "invalid_request",
             "PKCE code_challenge is required " "(require_pkce setting or oauth21 profile)",
+            "PKCE code_challenge required (require_pkce or oauth21)",
         )
 
     if not p.code_challenge:
@@ -317,11 +391,12 @@ def _validate_authorize_pkce(
     # rejected at the authorization endpoint per §4.4.1.
     effective_method = p.code_challenge_method or "plain"
     if effective_method not in ("plain", "S256"):
-        return _authorize_reject(
-            p.client_id,
-            f"Unsupported code_challenge_method: {effective_method}",
+        return _authorize_error_redirect(
+            config,
+            p,
             "invalid_request",
             f"Unsupported code_challenge_method " f"'{effective_method}'; use S256 or plain",
+            f"Unsupported code_challenge_method: {effective_method}",
         )
 
     # The 'plain' method is only acceptable when S256 is unavailable
@@ -329,15 +404,43 @@ def _validate_authorize_pkce(
     # §7.5.2) profiles reject it outright, whether requested explicitly
     # or via the implicit default.
     if effective_method == "plain" and not config.settings.pkce_plain_allowed:
-        return _authorize_reject(
-            p.client_id,
-            "PKCE method 'plain' rejected by " f"{config.settings.security_profile} profile",
+        return _authorize_error_redirect(
+            config,
+            p,
             "invalid_request",
             "code_challenge_method 'plain' (including the "
             "implicit default when the parameter is omitted) "
             f"is not allowed by the {config.settings.security_profile} "
             "profile; use S256",
+            "PKCE method 'plain' rejected by " f"{config.settings.security_profile} profile",
         )
+    return None
+
+
+def _validate_authorize_resources(
+    config: ConfigManager, p: _AuthorizeParams, client: OAuthClient
+) -> Optional[ResponseReturnValue]:
+    """Validate the RFC 8707 ``resource`` indicators on /authorize (#187).
+
+    Each must be a syntactically valid indicator and, when the client
+    declares a non-empty ``allowed_resources``, one of that set; otherwise
+    the request is rejected with ``invalid_target`` (RFC 8707 section 2). The
+    validated resources travel with the authorization code, so /token binds
+    the access token aud to them."""
+    if not p.resources:
+        return None
+    result = resolve_resources(p.resources, client)
+    if not result.ok:
+        return _authorize_error_redirect(
+            config, p, "invalid_target",
+            result.error_description or "invalid resource",
+            result.error_description or "invalid_target",
+        )
+    # Persist the de-duplicated granted list, not the raw request (#254
+    # review, finding 3): the authorization code must not carry a repeated
+    # resource that would become a duplicate entry in the token aud, the
+    # same normalization the device flow already does.
+    p.resources = result.granted or []
     return None
 
 
@@ -365,6 +468,7 @@ def _handle_authorize_login(
             nonce=p.nonce if p.nonce else None,
             state=p.state if p.state else None,
             claims=_parse_claims_parameter(p.claims_param),
+            resource=list(p.resources) if p.resources else None,
         )
 
         # Clear OAuth session data
@@ -376,8 +480,18 @@ def _handle_authorize_login(
         redirect_params = {"code": code}
         if p.state:
             redirect_params["state"] = p.state
+        # RFC 9207 (#189): return the effective issuer so the client can
+        # detect an authorization-server mix-up. Sent exactly when it is
+        # advertised as supported in discovery (#258 review): a single
+        # predicate drives both, so a client never sees iss without the
+        # metadata promising it, or vice versa. The value is the per-request
+        # effective issuer, so it stays correct under issuer_from_request
+        # (#126).
+        issuer = effective_issuer(config.settings)
+        if issuer_qualifies_for_iss_parameter(issuer):
+            redirect_params["iss"] = issuer
 
-        callback_url = f"{p.redirect_uri}?{urlencode(redirect_params)}"
+        callback_url = append_authorization_params(p.redirect_uri, redirect_params)
 
         audit_event(
             "authorization_request",
@@ -472,13 +586,23 @@ def authorize() -> ResponseReturnValue:
         return error
     assert client is not None  # _validate_authorize_client returns one or the other
 
-    error = _validate_authorize_scope(config, p, client)
-    if error is not None:
-        return error
+    # redirect_uri is validated BEFORE scope/PKCE/resource (#189/RFC 9207):
+    # an unvalidated redirect_uri keeps its local error (never redirect to
+    # it), but once it is trusted, every later error is delivered to the
+    # client as an OAuth error redirect carrying iss (#258 review).
     error = _validate_authorize_redirect_uri(config, p, client)
     if error is not None:
         return error
-    error = _validate_authorize_pkce(config, p)
+    error = _validate_authorize_response_type(config, p)
+    if error is not None:
+        return error
+    error = _validate_authorize_scope(config, p, client)
+    if error is not None:
+        return error
+    error = _validate_authorize_pkce(config, p, client)
+    if error is not None:
+        return error
+    error = _validate_authorize_resources(config, p, client)
     if error is not None:
         return error
 
@@ -515,624 +639,122 @@ def client_logo(client_id: str) -> ResponseReturnValue:
 # ============================================================================
 
 
-@dataclass
-class _GrantOutcome:
-    """Issuance parameters a grant handler hands back to token()."""
-
-    user: User
-    username: str
-    nonce: Optional[str] = None
-    scope: Optional[str] = None
-    auth_time: Optional[int] = None
-    refresh_family: Optional[str] = None
-    # Claim names requested via the OIDC `claims` parameter (§5.5, #104).
-    id_token_claims: Optional[list] = None
-    userinfo_claims: Optional[list] = None
-    # False for grants with no end user: client_credentials must not hand
-    # out a refresh token (RFC 6749 §4.4.3, #239).
-    issue_refresh_token: bool = True
+def _token_auth_failed(client_id: Optional[str], reason: str) -> ResponseReturnValue:
+    audit_event(
+        "token_request",
+        "failed",
+        endpoint="/token",
+        client_id=client_id,
+        details={"reason": reason},
+    )
+    return jsonify({"error": "invalid_client", "error_description": reason}), 401
 
 
-@dataclass
-class _GrantContext:
-    """Request-scoped facts shared by every grant handler."""
+def _enforce_token_endpoint_auth(
+    config: ConfigManager,
+    grant_type: str,
+    auth: Optional[Any],
+    client_id: str,
+    body_client_secret: Optional[str],
+) -> Optional[ResponseReturnValue]:
+    """The single client-authentication boundary for /token (#188).
 
-    config: ConfigManager
-    # token() rejects requests without a client identity before dispatching,
-    # so handlers always see a concrete id.
-    client_id: str
-    grant_type: str
+    Enforces the client's registered token_endpoint_auth_method for every
+    grant, before dispatch. Returns an error response, or None when the
+    request may proceed. RFC 7591 method semantics, RFC 6749 §3.2.1
+    (confidential clients MUST authenticate, authorization_code included).
+    """
+    token_client = config.get_client(client_id)
 
-
-# A handler returns either issuance parameters or a finished error response.
-GrantResult = Union[_GrantOutcome, ResponseReturnValue]
-
-
-def _grant_refresh_token(ctx: _GrantContext) -> GrantResult:
-    """refresh_token grant (RFC 6749 §6; rotation per RFC 9700 §4.14)."""
-    refresh_token = request.form.get("refresh_token", "")
-    if not refresh_token:
-        audit_event(
-            "token_request",
-            "failed",
-            endpoint="/token",
-            client_id=ctx.client_id,
-            details={"reason": "Missing refresh_token", "grant_type": ctx.grant_type},
-        )
-        return abort(400, description="refresh_token is required")
-
-    # Verify and decode refresh token
-    crypto = get_crypto_service(ctx.config.settings.keys_dir)
-    try:
-        payload = crypto.verify_jwt(refresh_token, ctx.config.settings.audience)
-    except Exception as e:
-        audit_event(
-            "token_request",
-            "failed",
-            endpoint="/token",
-            client_id=ctx.client_id,
-            details={
-                "reason": f"Invalid refresh token: {str(e)}",
-                "grant_type": ctx.grant_type,
-            },
-        )
-        return abort(401, description=f"Invalid refresh token: {str(e)}")
-
-    # Check if it's actually a refresh token
-    if payload.get("token_type") != "refresh":
-        audit_event(
-            "token_request",
-            "failed",
-            endpoint="/token",
-            client_id=ctx.client_id,
-            details={"reason": "Not a refresh token", "grant_type": ctx.grant_type},
-        )
-        return abort(400, description="Invalid token type")
-
-    # A refresh token may only be spent by the client it was issued to
-    # (RFC 9700 §4.14, #56). The binding claim was added in #56; tokens
-    # minted before it carry no client_id and stay usable (legacy compat).
-    bound_client = payload.get("client_id")
-    if bound_client and bound_client != ctx.client_id:
-        audit_event(
-            "token_request",
-            "failed",
-            endpoint="/token",
-            client_id=ctx.client_id,
-            details={
-                "reason": "Refresh token was issued to a different client",
-                "grant_type": ctx.grant_type,
-                "bound_client": bound_client,
-            },
-        )
-        return abort(401, description="Refresh token was not issued to this client")
-
-    # Extract username and get user data
-    username = payload.get("sub")
-    if not username:
-        return abort(400, description="Invalid token: missing subject")
-
-    user = ctx.config.get_user(username)
-    if not user:
-        audit_event(
-            "token_request",
-            "failed",
-            endpoint="/token",
-            username=username,
-            client_id=ctx.client_id,
-            details={"reason": "User not found", "grant_type": ctx.grant_type},
-        )
-        return abort(401, description="User not found")
-
-    # Recover the originally granted scope persisted in the refresh token
-    # so an ID Token is re-issued when 'openid' was granted (OIDC Core
-    # §12.2, issue #39). A 'scope' form parameter may narrow, but never
-    # broaden, the original grant (RFC 6749 §6). Refresh tokens minted
-    # before scope was persisted carry no scope claim and keep the old
-    # behavior: tokens are refreshed without an ID Token. The refreshed
-    # ID Token intentionally carries no nonce - that claim binds the
-    # original authentication request, not later refreshes.
-    original_scope = payload.get("scope") or ""
-    requested_scope = request.form.get("scope")
-    scope: Optional[str]
-    if requested_scope:
-        granted = set(original_scope.split())
-        rejected = [s for s in requested_scope.split() if s not in granted]
-        if rejected:
+    # Public client (token_endpoint_auth_method 'none'): identified by
+    # client_id alone; any presented secret is ignored, never validated.
+    if token_client is not None and token_client.is_public:
+        # client_credentials IS client authentication, which a public
+        # client does not have (OAuth 2.1 §2.1; RFC 6749 §5.2).
+        if grant_type == "client_credentials":
             audit_event(
                 "token_request",
                 "failed",
                 endpoint="/token",
-                username=username,
-                client_id=ctx.client_id,
+                client_id=client_id,
                 details={
-                    "reason": "Requested scope exceeds originally granted scope",
-                    "grant_type": ctx.grant_type,
-                    "rejected_scopes": rejected,
+                    "reason": "client_credentials refused for a public client",
+                    "grant_type": grant_type,
                 },
             )
             return (
                 jsonify(
                     {
-                        "error": "invalid_scope",
-                        "error_description": "Requested scope exceeds originally granted scope",
+                        "error": "unauthorized_client",
+                        "error_description": (
+                            "The client_credentials grant requires client "
+                            "authentication; this client's "
+                            "token_endpoint_auth_method is 'none'"
+                        ),
                     }
                 ),
                 400,
             )
-        scope = requested_scope
-    else:
-        scope = original_scope or None
+        return None
 
-    # Re-validate against the vocabulary and this client's allowed_scopes
-    # (issue #186): both may have changed since the original grant, so
-    # narrowing alone (above) isn't enough to guarantee the refreshed token
-    # still only carries scopes this client may currently have.
-    # validate_only=True: an absent scope here means the ORIGINAL grant had
-    # none (a legacy refresh token predating this setting, or one issued
-    # before allowed_scopes was set) - it must stay absent, not be defaulted
-    # to the client's current full allowed set, or a refresh could silently
-    # GRANT MORE than the original authorization ever did (#186 review, B1).
-    client = ctx.config.get_client(ctx.client_id)
-    if client is not None:
-        scope_result = resolve_scope(
-            scope,
-            client,
-            ctx.config.settings.scopes_supported,
-            ctx.config.settings.scope_enforcement_active,
-            validate_only=True,
-        )
-        if not scope_result.ok:
-            audit_event(
-                "token_request",
-                "failed",
-                endpoint="/token",
-                username=username,
-                client_id=ctx.client_id,
-                details={
-                    "reason": scope_result.error_description,
-                    "grant_type": ctx.grant_type,
-                },
-            )
-            return (
-                jsonify(
-                    {"error": "invalid_scope", "error_description": scope_result.error_description}
-                ),
-                400,
-            )
-        scope = scope_result.granted
-
-    # A refreshed ID Token must carry the ORIGINAL authentication time
-    # (OIDC Core §12.2), persisted in the refresh token claims (#42).
-    auth_time = payload.get("auth_time")
-
-    # Claim names requested via the OIDC `claims` parameter are persisted in
-    # the refresh token like scope/auth_time (#112), so the refreshed ID Token
-    # keeps the requested claims and the refreshed access token keeps its
-    # `req_userinfo_claims` for /userinfo. Tokens minted before #112 carry
-    # neither claim and simply refresh without them. Deliberately NOT
-    # intersected with a narrowed scope: a claims request binds to the
-    # original authorization and §5.5 is orthogonal to scope, so it keeps
-    # being honoured when the client narrows the scope on refresh - narrowing
-    # sheds scope-derived claims, not claims requested by name. The values are
-    # taken as-is here; create_token sanitizes them (a hand-crafted refresh
-    # token may carry anything), so issuance below cannot fail on them.
-    id_token_claims = payload.get("req_id_token_claims")
-    userinfo_claims = payload.get("req_userinfo_claims")
-
-    # The family id survives rotation so descendants share it (#56).
-    refresh_family = payload.get("rt_family")
-
-    # Revocation check and (with rotation) consumption of this token, as a
-    # single check-and-claim under the store's lock: two concurrent refreshes
-    # of the same token can no longer both pass the check and both rotate
-    # (#56). Reuse of an already-consumed token is treated as leakage and
-    # revokes the whole family - attacker's copy and legitimate descendant
-    # alike (RFC 9700 §4.14.2). This call sits after every validation that
-    # may reject the request (binding, user, scope narrowing - and the
-    # grant-independent 'exp'/'extra' params, validated before the grant
-    # dispatch), so a rejected request never consumes the token: from here
-    # on, issuance is local signing and cannot fail.
-    jti = payload.get("jti")
-    reuse_detected = get_revocation_store().check_and_claim_refresh(
-        jti, refresh_family, ctx.config.settings.rotation_enabled
-    )
-    if reuse_detected:
-        audit_event(
-            "token_request",
-            "failed",
-            endpoint="/token",
-            username=username,
-            client_id=ctx.client_id,
-            details={
-                "reason": "Refresh token revoked (rotated, reused, or family revoked)",
-                "grant_type": ctx.grant_type,
-            },
-        )
-        return abort(401, description="Refresh token has been revoked")
-
-    return _GrantOutcome(
-        user=user,
-        username=username,
-        scope=scope,
-        auth_time=auth_time,
-        refresh_family=refresh_family,
-        id_token_claims=id_token_claims,
-        userinfo_claims=userinfo_claims,
-    )
+    reason = _enforce_registered_client_auth(config, client_id, auth, body_client_secret)
+    return _token_auth_failed(client_id, reason) if reason is not None else None
 
 
-def _grant_password(ctx: _GrantContext) -> GrantResult:
-    """password grant (RFC 6749 §4.3; removed by OAuth 2.1)."""
-    # OAuth 2.1 removes the resource-owner password grant entirely; under
-    # the oauth21 profile it is rejected (RFC 6749 §5.2) and absent from
-    # the discovery document's grant_types_supported (#68).
-    if not ctx.config.settings.password_grant_enabled:
-        audit_event(
-            "token_request",
-            "failed",
-            endpoint="/token",
-            client_id=ctx.client_id,
-            details={
-                "reason": "password grant disabled by the oauth21 profile",
-                "grant_type": ctx.grant_type,
-            },
-        )
-        return abort(
-            400,
-            description="Unsupported grant_type: the password grant is "
-            "disabled by the oauth21 profile",
-        )
+def _enforce_registered_client_auth(
+    config: ConfigManager,
+    client_id: Optional[str],
+    auth: Optional[Any],
+    body_client_secret: Optional[str],
+) -> Optional[str]:
+    """Enforce a CONFIDENTIAL client's registered token_endpoint_auth_method and
+    reject presenting two authentication methods in one request. Returns None
+    when the request may proceed, or a human-readable failure reason.
 
-    username = request.form.get("username", "").strip()
-    password = request.form.get("password", "")
-
-    if not username or not password:
-        audit_event(
-            "token_request",
-            "failed",
-            endpoint="/token",
-            client_id=ctx.client_id,
-            details={
-                "reason": "Missing username or password",
-                "grant_type": ctx.grant_type,
-            },
-        )
-        return abort(400, description="username and password required for password grant")
-
-    user = ctx.config.authenticate(username, password)
-    if not user:
-        audit_event(
-            "token_request",
-            "failed",
-            endpoint="/token",
-            username=username,
-            client_id=ctx.client_id,
-            details={"reason": "Invalid credentials", "grant_type": ctx.grant_type},
-        )
-        return abort(401, description="Invalid credentials")
-
-    # Scope validation (issue #186), same rule as every other grant.
-    client = ctx.config.get_client(ctx.client_id)
-    requested_scope = request.form.get("scope")
-    if client is not None:
-        scope_result = resolve_scope(
-            requested_scope,
-            client,
-            ctx.config.settings.scopes_supported,
-            ctx.config.settings.scope_enforcement_active,
-        )
-        if not scope_result.ok:
-            audit_event(
-                "token_request",
-                "failed",
-                endpoint="/token",
-                username=username,
-                client_id=ctx.client_id,
-                details={
-                    "reason": scope_result.error_description,
-                    "grant_type": ctx.grant_type,
-                },
-            )
-            return (
-                jsonify(
-                    {"error": "invalid_scope", "error_description": scope_result.error_description}
-                ),
-                400,
-            )
-        requested_scope = scope_result.granted
-
-    # An authenticated end-user is present, so honour an openid scope and
-    # emit an ID Token (issue #36). nonce is non-standard for this grant but
-    # accepted as a dev convenience; normalize an empty field to None so we
-    # don't emit an empty nonce claim (matches the authorization_code path).
-    return _GrantOutcome(
-        user=user,
-        username=username,
-        nonce=request.form.get("nonce") or None,
-        scope=requested_scope,
-    )
-
-
-def _grant_authorization_code(ctx: _GrantContext) -> GrantResult:
-    """authorization_code grant (RFC 6749 §4.1, PKCE per RFC 7636)."""
-    code = request.form.get("code", "")
-    redirect_uri = request.form.get("redirect_uri", "")
-    code_verifier = request.form.get("code_verifier")  # PKCE
-
-    if not code:
-        audit_event(
-            "token_request",
-            "failed",
-            endpoint="/token",
-            client_id=ctx.client_id,
-            details={"reason": "Missing authorization code", "grant_type": ctx.grant_type},
-        )
-        return abort(400, description="code is required")
-
-    if not redirect_uri:
-        audit_event(
-            "token_request",
-            "failed",
-            endpoint="/token",
-            client_id=ctx.client_id,
-            details={"reason": "Missing redirect_uri", "grant_type": ctx.grant_type},
-        )
-        return abort(400, description="redirect_uri is required")
-
-    # Consume the authorization code
-    auth_code_store = get_auth_code_store()
-    auth_code = auth_code_store.consume_code(
-        code=code,
-        client_id=ctx.client_id,
-        redirect_uri=redirect_uri,
-        code_verifier=code_verifier,
-    )
-
-    if not auth_code:
-        audit_event(
-            "token_request",
-            "failed",
-            endpoint="/token",
-            client_id=ctx.client_id,
-            details={
-                "reason": "Invalid or expired authorization code",
-                "grant_type": ctx.grant_type,
-            },
-        )
-        return abort(400, description="Invalid or expired authorization code")
-
-    # Get the user from the authorization code
-    username = auth_code.username
-    user = ctx.config.get_user(username)
-    if not user:
-        audit_event(
-            "token_request",
-            "failed",
-            endpoint="/token",
-            username=username,
-            client_id=ctx.client_id,
-            details={"reason": "User not found", "grant_type": ctx.grant_type},
-        )
-        return abort(401, description="User not found")
-
-    # Re-validate against the vocabulary and this client's allowed_scopes
-    # (issue #186): both may have changed between /authorize issuing the
-    # code and this exchange, so the check at issuance time isn't enough to
-    # guarantee the token still only carries scopes this client may
-    # currently have.
-    # validate_only=True: an absent scope here means /authorize granted none
-    # (not reachable today - it always resolves a non-empty scope before
-    # minting a code - but kept safe against a future refactor, same
-    # reasoning as the refresh grant's re-check, #186 review B1).
-    code_scope: Optional[str] = auth_code.scope if auth_code.scope is not None else None
-    client = ctx.config.get_client(ctx.client_id)
-    if client is not None:
-        scope_result = resolve_scope(
-            code_scope,
-            client,
-            ctx.config.settings.scopes_supported,
-            ctx.config.settings.scope_enforcement_active,
-            validate_only=True,
-        )
-        if not scope_result.ok:
-            audit_event(
-                "token_request",
-                "failed",
-                endpoint="/token",
-                username=username,
-                client_id=ctx.client_id,
-                details={
-                    "reason": scope_result.error_description,
-                    "grant_type": ctx.grant_type,
-                },
-            )
-            return (
-                jsonify(
-                    {"error": "invalid_scope", "error_description": scope_result.error_description}
-                ),
-                400,
-            )
-        code_scope = scope_result.granted
-
-    requested_claims = auth_code.claims or {}
-    return _GrantOutcome(
-        user=user,
-        username=username,
-        nonce=auth_code.nonce if auth_code.nonce is not None else None,
-        scope=code_scope,
-        # The user authenticated at the login page when the code was created,
-        # not at this token exchange - use that moment as auth_time (#42).
-        auth_time=int(auth_code.created_at.timestamp()),
-        # Claims the client asked for through the OIDC `claims` parameter (#104).
-        id_token_claims=requested_claims.get("id_token"),
-        userinfo_claims=requested_claims.get("userinfo"),
-    )
-
-
-def _grant_client_credentials(ctx: _GrantContext) -> GrantResult:
-    """client_credentials grant (RFC 6749 §4.4).
-
-    §4.4 makes the 'scope' parameter optional for this grant; before #186 it
-    was read nowhere, so a requested scope was silently dropped rather than
-    granted or rejected. Validated the same as every other grant now.
+    The single home for the confidential client-auth rule, shared by /token,
+    /introspect, /revoke and /device_authorization (#262). RFC 6749 §2.3 forbids
+    more than one auth method per request, so a body secret is never accepted
+    alongside Basic. Enforcing the client's REGISTERED method at all four
+    endpoints is nanoidp's consistency policy: RFC 7009 §2.1 and RFC 8628 tie
+    /revoke and /device_authorization to the token-endpoint method, while
+    RFC 7662 requires some client authentication at /introspect but does not
+    mandate reusing that method - nanoidp reuses it there too rather than add a
+    second field. Callers handle any public-client policy FIRST, so this only
+    ever sees confidential clients and unknown client_ids (both treated as
+    client_secret_basic, the default); the wrong channel for the registered
+    method is rejected instead of silently accepted.
     """
-    requested_scope = request.form.get("scope")
-    client = ctx.config.get_client(ctx.client_id)
-    if client is not None:
-        scope_result = resolve_scope(
-            requested_scope,
-            client,
-            ctx.config.settings.scopes_supported,
-            ctx.config.settings.scope_enforcement_active,
-        )
-        if not scope_result.ok:
-            audit_event(
-                "token_request",
-                "failed",
-                endpoint="/token",
-                client_id=ctx.client_id,
-                details={
-                    "reason": scope_result.error_description,
-                    "grant_type": ctx.grant_type,
-                },
-            )
+    client = config.get_client(client_id) if client_id else None
+    method = client.token_endpoint_auth_method if client is not None else "client_secret_basic"
+
+    # client_secret_post: credentials in the body only; Basic is rejected.
+    if method == "client_secret_post":
+        if auth is not None:
             return (
-                jsonify(
-                    {"error": "invalid_scope", "error_description": scope_result.error_description}
-                ),
-                400,
+                "This client's token_endpoint_auth_method is "
+                "'client_secret_post'; use client_id and client_secret in the "
+                "request body, not HTTP Basic"
             )
-        requested_scope = scope_result.granted
-        if requested_scope:
-            # client_credentials has no end-user context (RFC 6749 §4.4 has
-            # no ID Token concept), but create_token()'s id_token issuance is
-            # grant-agnostic - it mints one whenever 'openid' is in scope, no
-            # matter the grant. Accepted at validation (it's a real,
-            # vocabulary-listed scope) but silently dropped from what's
-            # actually granted, rather than rejected, matching this grant's
-            # pre-#186 behavior of never producing an ID Token.
-            remaining = [t for t in requested_scope.split() if t != "openid"]
-            requested_scope = " ".join(remaining) or None
+        if not body_client_secret or not config.check_client(client_id, body_client_secret):
+            return "Invalid client credentials"
+        return None
 
-    # Use default user for client credentials
-    default_username = ctx.config.default_user
-    user = ctx.config.get_user(default_username)
-    if not user:
-        # Create a minimal service account user. No password: it never
-        # authenticates with one, and User.password rejects "" since #158
-        # (min_length=1) - the old empty string made this path a 500 (#241).
-        user = User(
-            username="service-account",
-            password=None,
-            roles=["user"],
-            tenant="default",
-        )
-    # RFC 6749 §4.4.3: "A refresh token SHOULD NOT be included." The client
-    # authenticates itself on every request; a refresh token here would be a
-    # second, 7-day credential bound to the default user (or the synthetic
-    # service account) that the grant never authenticated, spendable at
-    # grant_type=refresh_token to obtain user-context tokens (#239).
-    return _GrantOutcome(
-        user=user,
-        username=user.username,
-        scope=requested_scope,
-        issue_refresh_token=False,
-    )
-
-
-def _grant_device_code(ctx: _GrantContext) -> GrantResult:
-    """device_code grant (RFC 8628 §3.4/§3.5)."""
-    device_code = request.form.get("device_code", "")
-    if not device_code:
-        audit_event(
-            "token_request",
-            "failed",
-            endpoint="/token",
-            client_id=ctx.client_id,
-            details={"reason": "Missing device_code", "grant_type": ctx.grant_type},
-        )
+    # client_secret_basic (the default) and unknown client_ids authenticate
+    # via HTTP Basic. A body client_secret is never accepted here, whether or
+    # not Basic is also present: for a basic client it is the wrong channel,
+    # and presenting it ALONGSIDE Basic is two authentication methods in one
+    # request (RFC 6749 §2.3, "MUST NOT use more than one").
+    if body_client_secret is not None:
         return (
-            jsonify({"error": "invalid_request", "error_description": "device_code is required"}),
-            400,
+            "This client authenticates with HTTP Basic; a client_secret in "
+            "the request body is not accepted, and must not be combined with "
+            "HTTP Basic (RFC 6749 §2.3)"
         )
-
-    # The store runs the whole lookup-check-claim sequence under its lock so
-    # two concurrent polls can't both claim the same authorized code
-    # (one-time use, issue #43).
-    outcome, user, grant = get_device_code_store().poll(
-        device_code, ctx.client_id, ctx.config.get_user
-    )
-
-    if outcome is DevicePollOutcome.NOT_FOUND:
-        audit_event(
-            "token_request",
-            "failed",
-            endpoint="/token",
-            client_id=ctx.client_id,
-            details={"reason": "Invalid device_code", "grant_type": ctx.grant_type},
-        )
-        return jsonify({"error": "invalid_grant", "error_description": "Invalid device code"}), 400
-    if outcome is DevicePollOutcome.WRONG_CLIENT:
-        return (
-            jsonify(
-                {
-                    "error": "invalid_grant",
-                    "error_description": "Device code was not issued to this client",
-                }
-            ),
-            400,
-        )
-    if outcome is DevicePollOutcome.EXPIRED:
-        return (
-            jsonify({"error": "expired_token", "error_description": "Device code has expired"}),
-            400,
-        )
-    if outcome is DevicePollOutcome.PENDING:
-        return (
-            jsonify(
-                {
-                    "error": "authorization_pending",
-                    "error_description": "User has not yet authorized the device",
-                }
-            ),
-            400,
-        )
-    if outcome is DevicePollOutcome.DENIED:
-        return (
-            jsonify(
-                {
-                    "error": "access_denied",
-                    "error_description": "User denied the authorization request",
-                }
-            ),
-            400,
-        )
-    if outcome is DevicePollOutcome.USER_NOT_FOUND:
-        return jsonify({"error": "server_error", "error_description": "User not found"}), 500
-    if outcome is DevicePollOutcome.AUTHORIZED and user and grant:
-        # The device flow authenticates an end-user, so honour the requested
-        # scope and emit an ID Token when 'openid' was asked for (issue #36).
-        # The user authenticated at /device, not at this poll (#42).
-        return _GrantOutcome(
-            user=user,
-            username=user.username,
-            scope=grant.scope,
-            auth_time=grant.auth_time,
-        )
-    return (
-        jsonify({"error": "server_error", "error_description": "Unknown device code status"}),
-        500,
-    )
-
-
-_GRANT_HANDLERS: Dict[str, Callable[[_GrantContext], GrantResult]] = {
-    "refresh_token": _grant_refresh_token,
-    "password": _grant_password,
-    "authorization_code": _grant_authorization_code,
-    "client_credentials": _grant_client_credentials,
-    "urn:ietf:params:oauth:grant-type:device_code": _grant_device_code,
-}
+    if auth is None:
+        return "Client authentication required"
+    if not config.check_client(auth.username, auth.password):
+        return "Invalid client credentials"
+    return None
 
 
 @oauth_bp.route("/token", methods=["POST"])
@@ -1143,6 +765,10 @@ def token() -> ResponseReturnValue:
     auth = request.authorization
     grant_type = request.form.get("grant_type", "client_credentials")
     body_client_id = request.form.get("client_id")
+    # client_secret_post (RFC 6749 §2.3.1, #188): discovery has always
+    # advertised it; the body secret is now actually validated instead of
+    # silently ignored.
+    body_client_secret = request.form.get("client_secret") or None
     auth_client_id = auth.username if auth else None
     client_id = body_client_id or auth_client_id
 
@@ -1169,27 +795,15 @@ def token() -> ResponseReturnValue:
             401, description="client_id in request body does not match authenticated client"
         )
 
-    # For grant types that require client authentication, enforce it
-    if not auth and grant_type != "authorization_code":
-        audit_event(
-            "token_request",
-            "failed",
-            endpoint="/token",
-            client_id=client_id,
-            details={"reason": "Client authentication required", "grant_type": grant_type},
-        )
-        return abort(401, description="Client authentication required")
-
-    # Check client authentication
-    if auth and not config.check_client(auth.username, auth.password):
-        audit_event(
-            "token_request",
-            "failed",
-            endpoint="/token",
-            client_id=auth.username if auth else None,
-            details={"reason": "Invalid client credentials"},
-        )
-        return abort(401, description="Invalid client credentials")
+    # One client-authentication boundary for every grant (#188, #254
+    # review): enforce the client's registered token_endpoint_auth_method
+    # here, before grant dispatch, so no grant - authorization_code
+    # included - can slip past it.
+    auth_error = _enforce_token_endpoint_auth(
+        config, grant_type, auth, client_id, body_client_secret
+    )
+    if auth_error is not None:
+        return auth_error
 
     # Validate the grant-independent 'exp' and 'extra' params BEFORE the grant
     # dispatch: the rotation branch atomically consumes the refresh token at
@@ -1284,6 +898,8 @@ def token() -> ResponseReturnValue:
         userinfo_claims=result.userinfo_claims,
         issuer=effective_issuer(config.settings),
         issue_refresh_token=result.issue_refresh_token,
+        resource=result.resource,
+        refresh_resource=result.refresh_resource,
     )
 
     # Audit log
@@ -1330,6 +946,12 @@ def userinfo() -> ResponseReturnValue:
     # Verify token
     crypto = get_crypto_service(config.settings.keys_dir)
     try:
+        # /userinfo is the OP's own protected resource, so a token must be
+        # audienced to oauth.audience here (OIDC Core §5.3). A resource-bound
+        # access token (#187) carries an RFC 8707 resource as aud and belongs
+        # at its resource server, not here - it is used against /introspect
+        # by that server instead. A client that needs UserInfo requests a
+        # token without a resource.
         payload = crypto.verify_jwt(token, config.settings.audience)
     except ValueError as e:
         audit_event(
@@ -1446,19 +1068,35 @@ def introspect() -> ResponseReturnValue:
     """
     config = get_config()
 
-    # Check client authentication (Basic auth)
+    # Client authentication using the registered token_endpoint_auth_method
+    # (#262): the method decides the channel and two auth methods in one
+    # request are rejected. RFC 7662 requires client authentication here but
+    # leaves the method open; reusing the registered method is nanoidp's
+    # consistency policy, not an RFC 7662 mandate. Deliberately NOT relaxed for
+    # public clients (RFC 7662 §2.1: this endpoint must resist token scanning,
+    # a public client_id is identification not authentication, and 'none' is
+    # not in introspection_endpoint_auth_methods_supported).
     auth = request.authorization
-    if not auth or not config.check_client(auth.username, auth.password):
+    body_client_id = request.form.get("client_id")
+    body_client_secret = request.form.get("client_secret") or None
+    client_id = (auth.username if auth else None) or body_client_id
+    introspect_client = config.get_client(client_id) if client_id else None
+    if introspect_client is not None and introspect_client.is_public:
+        auth_error: Optional[str] = (
+            "public clients cannot authenticate to the introspection endpoint "
+            "(RFC 7662 §2.1)"
+        )
+    else:
+        auth_error = _enforce_registered_client_auth(config, client_id, auth, body_client_secret)
+    if auth_error is not None:
         audit_event(
             "introspection_request",
             "failed",
             endpoint="/introspect",
-            client_id=auth.username if auth else None,
-            details={"reason": "Invalid client credentials"},
+            client_id=client_id,
+            details={"reason": auth_error},
         )
         return jsonify({"error": "invalid_client"}), 401
-
-    client_id = auth.username
 
     # Get the token to introspect
     token = request.form.get("token")
@@ -1469,7 +1107,9 @@ def introspect() -> ResponseReturnValue:
     # single signing key there is nothing to disambiguate, per RFC 7662 §2.1)
     crypto = get_crypto_service(config.settings.keys_dir)
     try:
-        payload = crypto.verify_jwt(token, config.settings.audience)
+        # Resource-bound access tokens (#187) carry an RFC 8707 resource as
+        # aud, not oauth.audience; verify signature+expiry, not audience.
+        payload = crypto.verify_jwt(token, None)
     except ValueError:
         # Token is invalid or expired
         audit_event(
@@ -1498,11 +1138,14 @@ def introspect() -> ResponseReturnValue:
     if get_revocation_store().is_revoked(jti):
         return jsonify({"active": False})
 
-    # Token is valid - return introspection response
+    # Token is valid - return introspection response. RFC 7662 §2.2:
+    # client_id is the client the TOKEN was issued to, not the caller doing
+    # the introspection - the access token carries that claim since #188.
+    # Fall back to the caller only for a legacy token without the claim.
     response = {
         "active": True,
         "token_type": "Bearer",
-        "client_id": client_id,
+        "client_id": payload.get("client_id", client_id),
         "username": payload.get("sub"),
         "sub": payload.get("sub"),
         "aud": payload.get("aud"),
@@ -1539,19 +1182,31 @@ def revoke() -> ResponseReturnValue:
     """
     config = get_config()
 
-    # Check client authentication (Basic auth)
+    # Client identification/authentication. Confidential clients present
+    # credentials via Basic or client_secret_post; a public client
+    # (token_endpoint_auth_method 'none', #188) is identified by client_id
+    # alone, and the ownership check below is what stands in for
+    # authentication (RFC 7009 §2.1).
     auth = request.authorization
-    if not auth or not config.check_client(auth.username, auth.password):
-        audit_event(
-            "revocation_request",
-            "failed",
-            endpoint="/revoke",
-            client_id=auth.username if auth else None,
-            details={"reason": "Invalid client credentials"},
-        )
-        return jsonify({"error": "invalid_client"}), 401
+    body_client_id = request.form.get("client_id")
+    body_client_secret = request.form.get("client_secret") or None
+    client_id = (auth.username if auth else None) or body_client_id
+    revoking_client = config.get_client(client_id) if client_id else None
+    is_public = revoking_client is not None and revoking_client.is_public
 
-    client_id = auth.username
+    # A confidential client authenticates as at the token endpoint (#262):
+    # registered method enforced, two auth methods in one request rejected.
+    if not is_public:
+        auth_error = _enforce_registered_client_auth(config, client_id, auth, body_client_secret)
+        if auth_error is not None:
+            audit_event(
+                "revocation_request",
+                "failed",
+                endpoint="/revoke",
+                client_id=client_id,
+                details={"reason": auth_error},
+            )
+            return jsonify({"error": "invalid_client"}), 401
 
     # Get the token to revoke
     token = request.form.get("token")
@@ -1559,22 +1214,44 @@ def revoke() -> ResponseReturnValue:
         # RFC 7009 says we should return 200 OK even if token is missing
         return "", 200
 
-    # Try to decode the token to get its JTI
+    # VERIFY the token's signature before trusting any claim (#254 review,
+    # blocking 1). The revocation store is keyed by jti, and the public
+    # client's ownership check reads client_id: both must come from a
+    # payload nanoidp actually signed, never from an attacker-supplied
+    # unsigned JWT. A token that fails verification (bad signature or expired)
+    # revokes nothing and still returns 200 - RFC 7009 requires 200 regardless
+    # of outcome, and its privacy guidance forbids turning the endpoint into
+    # an oracle for a token's validity or owner. Audience is NOT verified: a
+    # resource-bound access token (#187) carries an RFC 8707 resource as aud,
+    # and the client is still entitled to revoke it.
+    crypto = get_crypto_service(config.settings.keys_dir)
     try:
-        # Decode without verification to get the JTI
-        payload = pyjwt.decode(token, options={"verify_signature": False})
-        jti = payload.get("jti")
+        payload = crypto.verify_jwt(token, None)
+    except ValueError:
+        return "", 200
 
-        if jti:
-            get_revocation_store().revoke(jti)
-            logger.info(f"Token revoked: {jti[:8]}...")
-        else:
-            # If no JTI, add the token hash to blacklist
-            import hashlib
+    jti = payload.get("jti")
 
-            token_hash = hashlib.sha256(token.encode()).hexdigest()
-            get_revocation_store().revoke(token_hash)
+    # Ownership check for public clients (#188, RFC 7009 §2.1): with no
+    # credentials, "this token is mine" is the entire authorization to
+    # revoke. Now that the payload is verified, client_id is trustworthy; a
+    # token bound to another client is left untouched, response still 200.
+    if is_public and payload.get("client_id") != client_id:
+        audit_event(
+            "revocation_request",
+            "failed",
+            endpoint="/revoke",
+            client_id=client_id,
+            details={"reason": "Public client presented a token it does not own"},
+        )
+        return "", 200
 
+    # A verified nanoidp token always carries a jti (crypto.create_jwt sets
+    # one); the audit reflects only what was actually revoked, so a jti-less
+    # edge token is not logged as revoked (#254 review, finding 3).
+    if jti:
+        get_revocation_store().revoke(jti)
+        logger.info(f"Token revoked: {jti[:8]}...")
         audit_event(
             "revocation_request",
             "success",
@@ -1583,10 +1260,6 @@ def revoke() -> ResponseReturnValue:
             username=payload.get("sub"),
             details={"revoked": True},
         )
-
-    except Exception:
-        # Even if we can't decode, we return 200 OK per RFC 7009
-        pass
 
     # RFC 7009 requires 200 OK response regardless of outcome
     return "", 200
@@ -1683,21 +1356,37 @@ def device_authorization() -> ResponseReturnValue:
     """
     config = get_config()
 
-    # Check client authentication
+    # Client authentication, enforced as at the token endpoint (#262):
+    # registered method enforced, two auth methods in one request rejected.
+    # Public clients are NOT supported on the device flow yet (#255 tracks
+    # that decision; today a public client uses authorization_code + PKCE).
     auth = request.authorization
-    if not auth or not config.check_client(auth.username, auth.password):
+    body_client_id = request.form.get("client_id")
+    body_client_secret = request.form.get("client_secret") or None
+    resolved_client_id = (auth.username if auth else None) or body_client_id
+    device_client = config.get_client(resolved_client_id) if resolved_client_id else None
+    if device_client is not None and device_client.is_public:
+        auth_error: Optional[str] = (
+            "public clients are not supported on the device flow yet (#255); "
+            "this client's token_endpoint_auth_method is 'none'"
+        )
+    else:
+        auth_error = _enforce_registered_client_auth(
+            config, resolved_client_id, auth, body_client_secret
+        )
+    if auth_error is not None:
         audit_event(
             "device_authorization_request",
             "failed",
             endpoint="/device_authorization",
-            client_id=auth.username if auth else None,
-            details={"reason": "Invalid client credentials"},
+            client_id=resolved_client_id,
+            details={"reason": auth_error},
         )
         return jsonify({"error": "invalid_client"}), 401
 
     # check_client fails closed on a missing username, so it is present here;
     # the fallback only narrows the type.
-    client_id = auth.username or ""
+    client_id = resolved_client_id or ""
     requested_scope = request.form.get("scope", "")
 
     # Scope validation (issue #186), same rule as /authorize including the
@@ -1728,9 +1417,39 @@ def device_authorization() -> ResponseReturnValue:
         requested_scope = scope_result.granted or ""
     scope = requested_scope
 
+    # Resource indicators (#187): validate and remember them on the device
+    # grant, so the polled token binds its aud to them.
+    validated_resources = None
+    device_resources = request.form.getlist("resource")
+    if device_resources and client is not None:
+        resource_result = resolve_resources(device_resources, client)
+        if not resource_result.ok:
+            audit_event(
+                "device_authorization_request",
+                "failed",
+                endpoint="/device_authorization",
+                client_id=client_id,
+                details={"reason": resource_result.error_description},
+            )
+            return (
+                jsonify(
+                    {
+                        "error": "invalid_target",
+                        "error_description": resource_result.error_description,
+                    }
+                ),
+                400,
+            )
+        # Store the de-duplicated granted list, not the raw request (#254
+        # review, finding 2): a repeated resource must not become a
+        # duplicate entry in the token aud.
+        validated_resources = resource_result.granted or None
+
     # Create the device authorization; the store prunes stale entries and
     # keeps the user-code index internally (#84, previously module globals).
-    device_code, user_code = get_device_code_store().create(client_id, scope)
+    device_code, user_code = get_device_code_store().create(
+        client_id, scope, resource=validated_resources
+    )
 
     audit_event(
         "device_authorization_request",

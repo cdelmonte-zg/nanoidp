@@ -12,6 +12,7 @@ import json
 import pytest
 
 from nanoidp.config import get_config
+from tests.conftest import authorize_error
 
 AUTHORIZE_PARAMS = {
     "response_type": "code",
@@ -51,8 +52,8 @@ class TestRequirePkce:
 
     def test_authorize_without_code_challenge_rejected(self, client):
         resp = _authorize(client)
-        assert resp.status_code == 400
-        data = json.loads(resp.data)
+        assert resp.status_code == 302
+        data = authorize_error(resp)
         assert data["error"] == "invalid_request"
         assert "code_challenge" in data["error_description"]
 
@@ -72,8 +73,8 @@ class TestStricterDevProfile:
 
     def test_plain_method_rejected(self, client):
         resp = _authorize(client, code_challenge="x" * 43, code_challenge_method="plain")
-        assert resp.status_code == 400
-        assert "plain" in json.loads(resp.data)["error_description"]
+        assert resp.status_code == 302
+        assert "plain" in authorize_error(resp)["error_description"]
 
     def test_s256_method_accepted(self, client):
         resp = _authorize(client, code_challenge="x" * 43, code_challenge_method="S256")

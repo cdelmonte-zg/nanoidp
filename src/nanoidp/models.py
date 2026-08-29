@@ -8,9 +8,9 @@ the YAML shape coercers used when loading them. Persistence lives in
 which re-exports everything here for compatibility.
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
 _SAML_ATTR_NAME_DEFAULTS = {
     "saml_roles_attr_name": "roles",
@@ -136,7 +136,42 @@ class OAuthClient(BaseModel):
     model_config = ConfigDict(validate_assignment=True)
 
     client_id: str = Field(..., min_length=1, description="OAuth client ID")
-    client_secret: str = Field(..., min_length=1, description="OAuth client secret")
+    client_secret: Optional[str] = Field(
+        default=None, min_length=1,
+        description=(
+            "OAuth client secret. Required unless token_endpoint_auth_method "
+            "is 'none' (public client); ignored when it is."
+        ),
+    )
+    token_endpoint_auth_method: Literal[
+        "client_secret_basic", "client_secret_post", "none"
+    ] = Field(
+        default="client_secret_basic",
+        description=(
+            "How this client authenticates as a confidential client (issue "
+            "#188/#262, RFC 7591). The registered method is ENFORCED, not just "
+            "documented, at EVERY client-authenticated endpoint - /token, "
+            "/introspect, /revoke and /device_authorization: "
+            "'client_secret_basic' (default) requires the secret over HTTP "
+            "Basic and rejects a body secret; 'client_secret_post' requires "
+            "client_id + client_secret as POST body parameters and rejects "
+            "Basic (RFC 6749 §2.3.1); presenting two methods in one request is "
+            "rejected (RFC 6749 §2.3). Using the one registered method across "
+            "all these endpoints is nanoidp's consistency policy: RFC 7009 and "
+            "RFC 8628 tie /revoke and /device_authorization to the "
+            "token-endpoint method, while RFC 7662 permits client "
+            "authentication at /introspect without mandating the same method - "
+            "nanoidp applies it there too rather than add a second field. "
+            "Confidential clients MUST "
+            "authenticate for every grant, authorization_code included "
+            "(RFC 6749 §3.2.1). 'none' is a public client (CLI, desktop app, "
+            "SPA, MCP client - anything that cannot keep a secret, "
+            "RFC 8252/OAuth 2.1): identified by client_id alone, MUST use "
+            "PKCE with S256 on /authorize regardless of profile, is refused "
+            "the client_credentials grant (unauthorized_client), and always "
+            "gets refresh token rotation."
+        ),
+    )
     description: str = Field(default="", description="Client description")
     background_color: Optional[str] = Field(
         default=None, pattern=HEX_COLOR_PATTERN,
@@ -183,6 +218,38 @@ class OAuthClient(BaseModel):
             "invalid_scope, for every client, regardless of this field."
         ),
     )
+    allowed_resources: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Per-client RFC 8707 resource allow-list (issue #187). When "
+            "non-empty, a 'resource' indicator requested on /authorize or "
+            "/token must be one of these, otherwise the request is "
+            "invalid_target. Empty = this client may target any "
+            "syntactically valid resource (an absolute URI without a "
+            "fragment), the dev default - same 'empty = unrestricted' "
+            "convention as allowed_scopes and redirect_uris. Sending no "
+            "resource at all is always allowed and leaves the access token "
+            "aud at oauth.audience."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _confidential_clients_need_a_secret(self) -> "OAuthClient":
+        """A confidential client without a secret is a configuration error;
+        only token_endpoint_auth_method 'none' makes client_secret optional.
+        Runs on assignment too (validate_assignment), so switching a
+        secret-less public client back to a confidential method requires
+        setting the secret first."""
+        if self.token_endpoint_auth_method != "none" and not self.client_secret:
+            raise ValueError(
+                "client_secret is required unless token_endpoint_auth_method is 'none'"
+            )
+        return self
+
+    @property
+    def is_public(self) -> bool:
+        """Public client (issue #188): identified by client_id alone."""
+        return self.token_endpoint_auth_method == "none"
 
 
 class Settings(BaseModel):

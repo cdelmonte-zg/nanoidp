@@ -15,6 +15,7 @@ import threading
 import pytest
 
 from nanoidp.config import get_config
+from tests.conftest import authorize_error
 
 
 @pytest.fixture(autouse=True)
@@ -240,8 +241,8 @@ class TestImplicitPlainPkce:
             "/authorize",
             query_string={**self.AUTHORIZE, "code_challenge": "x" * 43},
         )
-        assert resp.status_code == 400
-        assert "plain" in json.loads(resp.data)["error_description"]
+        assert resp.status_code == 302
+        assert "plain" in authorize_error(resp)["error_description"]
 
     def test_dev_profile_still_accepts_omitted_method(self, client):
         resp = client.get(
@@ -259,8 +260,8 @@ class TestImplicitPlainPkce:
                 "code_challenge_method": "S512",
             },
         )
-        assert resp.status_code == 400
-        assert "S512" in json.loads(resp.data)["error_description"]
+        assert resp.status_code == 302
+        assert "S512" in authorize_error(resp)["error_description"]
 
 
 class TestRequirePkcePersistence:

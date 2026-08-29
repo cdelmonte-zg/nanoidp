@@ -8,7 +8,7 @@ subprocess, performs the MCP handshake, lists the tools and calls a couple of
 read-only ones, asserting on the results.
 
 Usage:
-    python examples/mcp_smoke_test.py [--config ./config]
+    python e2e/mcp_smoke_test.py [--config ./config]
 
 Exit code 0 on success, 1 on any failure.
 """

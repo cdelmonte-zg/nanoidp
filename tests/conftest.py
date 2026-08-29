@@ -237,3 +237,16 @@ def pkce_challenge_s256(pkce_verifier):
 def pkce_challenge_plain(pkce_verifier):
     """Generate a PKCE code challenge using plain method."""
     return pkce_verifier
+
+
+def authorize_error(resp):
+    """The OAuth error delivered on an /authorize error redirect (#189): the
+    error goes to the validated redirect_uri as query params now, not a local
+    JSON 400. Returns {"error": ..., "error_description": ..., "state": ...,
+    "iss": ...} with single (unwrapped) string values, or raises if the
+    response was not a redirect."""
+    from urllib.parse import parse_qs, urlparse
+
+    location = resp.headers.get("Location")
+    assert location is not None, f"expected an error redirect, got {resp.status_code}"
+    return {k: v[0] for k, v in parse_qs(urlparse(location).query).items()}

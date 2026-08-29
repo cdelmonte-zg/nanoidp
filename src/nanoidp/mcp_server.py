@@ -232,10 +232,26 @@ def _build_user_from_arguments(
     )
 
 
+_TOKEN_ENDPOINT_AUTH_METHODS = ("client_secret_basic", "client_secret_post", "none")
+
+
+def _normalize_auth_method(value: Any) -> str:
+    """Pre-validate token_endpoint_auth_method before any assignment (#188),
+    same principle as the hex colors: a bad value must reject the call, not
+    leave a client half-updated."""
+    if value not in _TOKEN_ENDPOINT_AUTH_METHODS:
+        raise ValueError(
+            "token_endpoint_auth_method must be one of "
+            + ", ".join(_TOKEN_ENDPOINT_AUTH_METHODS)
+        )
+    return str(value)
+
+
 def _client_to_dict(client: OAuthClient) -> dict[str, Any]:
     """Convert OAuthClient to dictionary (without secret)."""
     return {
         "client_id": client.client_id,
+        "token_endpoint_auth_method": client.token_endpoint_auth_method,
         "description": client.description,
         "background_color": client.background_color,
         "header_color": client.header_color,
@@ -245,6 +261,7 @@ def _client_to_dict(client: OAuthClient) -> dict[str, Any]:
         "additional_audiences": client.additional_audiences,
         "redirect_uris": client.redirect_uris,
         "allowed_scopes": client.allowed_scopes,
+        "allowed_resources": client.allowed_resources,
     }
 
 
@@ -525,6 +542,21 @@ _TOOLS: list[Tool] = [
                         "would scope-gate them out."
                     ),
                 },
+                "resource": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Audience value(s) to place in the access token's 'aud' "
+                        "claim (a string for one, an array for several) instead "
+                        "of oauth.audience, so a token minted for one MCP server "
+                        "is rejected by another (#187). Unlike the 'resource' "
+                        "parameter on the OAuth grant endpoints, this "
+                        "administrative/testing tool has no client context: it "
+                        "applies no RFC 8707 syntax validation and no per-client "
+                        "allowed_resources ceiling. The supplied values are used "
+                        "directly as the audience (optional)"
+                    ),
+                },
             },
             "required": ["username"],
         },
@@ -552,6 +584,18 @@ _TOOLS: list[Tool] = [
                 "token": {
                     "type": "string",
                     "description": "JWT token to verify",
+                },
+                "audience": {
+                    "type": "string",
+                    "description": (
+                        "Expected audience (#187). Omit to verify signature "
+                        "and expiry only and return the claims (so a "
+                        "resource-bound access token is not falsely reported "
+                        "invalid). Provide a value to also require the token's "
+                        "'aud' to match it - how you simulate a resource "
+                        "server accepting a token for itself and rejecting one "
+                        "minted for another (optional)"
+                    ),
                 },
             },
             "required": ["token"],
@@ -593,7 +637,25 @@ _TOOLS: list[Tool] = [
                 },
                 "client_secret": {
                     "type": "string",
-                    "description": "Client secret for authentication",
+                    "description": (
+                        "Client secret for authentication. Required unless "
+                        "token_endpoint_auth_method is 'none'"
+                    ),
+                },
+                "token_endpoint_auth_method": {
+                    "type": "string",
+                    "enum": ["client_secret_basic", "client_secret_post", "none"],
+                    "description": (
+                        "How the client authenticates as a confidential client "
+                        "(optional, default client_secret_basic). The method is "
+                        "enforced at every client-authenticated endpoint - "
+                        "/token, /introspect, /revoke, /device_authorization "
+                        "(#188/#262): basic uses HTTP Basic, post uses the "
+                        "request body, and the wrong channel is rejected. "
+                        "'none' = public client (#188): no secret, PKCE S256 "
+                        "mandatory on /authorize, client_credentials refused, "
+                        "refresh rotation forced"
+                    ),
                 },
                 "description": {
                     "type": "string",
@@ -634,8 +696,15 @@ _TOOLS: list[Tool] = [
                     "items": {"type": "string"},
                     "description": "Per-client scope allow-list (#186); when non-empty, /authorize and /token reject a requested scope outside this set with invalid_scope (RFC 6749 4.1.2.1/5.2). Empty = any scope in the global oauth.scopes_supported vocabulary is allowed (optional)",
                 },
+                "allowed_resources": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Per-client RFC 8707 resource allow-list (#187); when non-empty, a resource requested on /authorize or /token must be one of these or the request is invalid_target. Empty = any valid resource (an absolute URI without a fragment) is allowed (optional)",
+                },
             },
-            "required": ["client_id", "client_secret"],
+            # client_secret is validated in the handler: required for every
+            # auth method except 'none' (#188).
+            "required": ["client_id"],
         },
     ),
     Tool(
@@ -651,6 +720,15 @@ _TOOLS: list[Tool] = [
                 "client_secret": {
                     "type": "string",
                     "description": "New client secret (optional)",
+                },
+                "token_endpoint_auth_method": {
+                    "type": "string",
+                    "enum": ["client_secret_basic", "client_secret_post", "none"],
+                    "description": (
+                        "New token endpoint auth method (optional). Switching "
+                        "a secret-less client to a confidential method "
+                        "requires supplying client_secret in the same call"
+                    ),
                 },
                 "description": {
                     "type": "string",
@@ -690,6 +768,11 @@ _TOOLS: list[Tool] = [
                     "type": "array",
                     "items": {"type": "string"},
                     "description": "Replace the client's scope allow-list (#186); empty list removes the restriction (optional)",
+                },
+                "allowed_resources": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Replace the client's RFC 8707 resource allow-list (#187); empty list removes the restriction (optional)",
                 },
             },
             "required": ["client_id"],
@@ -1252,6 +1335,17 @@ def _tool_generate_token(arguments: dict[str, Any], config: ConfigManager) -> di
         or None,
         userinfo_claims=_normalize_str_list(arguments.get("userinfo_claims"), "userinfo_claims")
         or None,
+        # RFC 8707 resource indicators (#187): set the access token aud to the
+        # given resource(s). BOUNDARY: unlike /token, /authorize and
+        # /device_authorization - which run every requested resource through
+        # resolve_resources and reject one outside the client's
+        # allowed_resources with invalid_target - this tool has no client in
+        # the request. It mints a token directly for a user (a testing /
+        # simulation affordance, not an OAuth grant), so there is no per-client
+        # allowed_resources ceiling to apply and the aud is whatever is passed.
+        # That is deliberate; a reader expecting parity with /token should know
+        # the ceiling lives on the grant endpoints, not on this admin tool.
+        resource=_normalize_str_list(arguments.get("resource"), "resource") or None,
     )
     result = {
         "success": True,
@@ -1277,8 +1371,15 @@ def _tool_decode_token(arguments: dict[str, Any], config: ConfigManager) -> dict
 def _tool_verify_token(arguments: dict[str, Any], config: ConfigManager) -> dict[str, Any]:
     token = arguments["token"]
     crypto = get_crypto_service(config.settings.keys_dir)
+    # audience: optional (#187). Omitted -> verify signature and expiry only
+    # and return the claims (the aud is in them), so a resource-bound access
+    # token (aud = an RFC 8707 resource, not oauth.audience) is not falsely
+    # reported invalid. Provided -> verify the token is valid FOR that
+    # audience, which is how a caller simulates a resource server accepting
+    # or rejecting a token ("valid for A, not for B").
+    audience = arguments.get("audience")
     try:
-        payload = crypto.verify_jwt(token, config.settings.audience)
+        payload = crypto.verify_jwt(token, audience)
         return {"valid": True, "claims": payload}
     except Exception as e:
         # A rejected token is verify_token's designed answer, not a tool
@@ -1317,9 +1418,25 @@ def _tool_create_client(arguments: dict[str, Any], config: ConfigManager) -> dic
     if config.get_client(client_id):
         return {"success": False, "error": f"Client '{client_id}' already exists"}
 
+    auth_method = _normalize_auth_method(
+        arguments.get("token_endpoint_auth_method", "client_secret_basic")
+    )
+    client_secret = arguments.get("client_secret")
+    if auth_method == "none":
+        # A public client has no secret; drop a supplied one rather than
+        # persisting a dead, ignored value (#188, parity with the UI create
+        # form's server-side normalization).
+        client_secret = None
+    elif not client_secret:
+        return {
+            "success": False,
+            "error": "client_secret is required unless token_endpoint_auth_method is 'none'",
+        }
+
     new_client = OAuthClient(
         client_id=client_id,
-        client_secret=arguments["client_secret"],
+        client_secret=client_secret,
+        token_endpoint_auth_method=auth_method,  # type: ignore[arg-type]
         description=arguments.get("description", ""),
         background_color=_normalize_hex_color(
             arguments.get("background_color"), "background_color"
@@ -1331,6 +1448,7 @@ def _tool_create_client(arguments: dict[str, Any], config: ConfigManager) -> dic
         additional_audiences=_normalize_audiences(arguments.get("additional_audiences")),
         redirect_uris=_normalize_str_list(arguments.get("redirect_uris"), "redirect_uris"),
         allowed_scopes=_normalize_str_list(arguments.get("allowed_scopes"), "allowed_scopes"),
+        allowed_resources=_normalize_str_list(arguments.get("allowed_resources"), "allowed_resources"),
     )
     config.settings.clients.append(new_client)
     return {"success": True, "client": _client_to_dict(new_client)}
@@ -1360,6 +1478,11 @@ def _tool_update_client(arguments: dict[str, Any], config: ConfigManager) -> dic
         if "allowed_scopes" in arguments
         else None
     )
+    new_allowed_resources = (
+        _normalize_str_list(arguments["allowed_resources"], "allowed_resources")
+        if "allowed_resources" in arguments
+        else None
+    )
     new_background_color = (
         _normalize_hex_color(arguments["background_color"], "background_color")
         if "background_color" in arguments
@@ -1376,8 +1499,42 @@ def _tool_update_client(arguments: dict[str, Any], config: ConfigManager) -> dic
         else None
     )
 
-    if "client_secret" in arguments:
-        client.client_secret = arguments["client_secret"]
+    new_auth_method = (
+        _normalize_auth_method(arguments["token_endpoint_auth_method"])
+        if "token_endpoint_auth_method" in arguments
+        else None
+    )
+    # Check the method/secret combination BEFORE any assignment (#188), so
+    # the model validator can never reject mid-sequence and leave the live
+    # client half-updated.
+    effective_method = new_auth_method or client.token_endpoint_auth_method
+    effective_secret = (
+        (arguments["client_secret"] or None)
+        if "client_secret" in arguments
+        else client.client_secret
+    )
+    if effective_method != "none" and not effective_secret:
+        return {
+            "success": False,
+            "error": "client_secret is required unless token_endpoint_auth_method is 'none'",
+        }
+
+    # Assignment order matters under validate_assignment (#188). A public
+    # target (whether being switched to 'none' or already 'none') keeps NO
+    # secret: set the method first so clearing the secret is valid, then
+    # clear it - dropping any supplied or existing dead value, parity with
+    # the UI's server-side normalization (#254 review). A confidential
+    # target sets the new secret BEFORE flipping the method, or the model's
+    # confidential-clients-need-a-secret check would reject mid-update.
+    if effective_method == "none":
+        if new_auth_method is not None:
+            client.token_endpoint_auth_method = new_auth_method  # type: ignore[assignment]
+        client.client_secret = None
+    else:
+        if "client_secret" in arguments:
+            client.client_secret = arguments["client_secret"] or None
+        if new_auth_method is not None:
+            client.token_endpoint_auth_method = new_auth_method  # type: ignore[assignment]
     if "description" in arguments:
         client.description = arguments["description"]
     if "background_color" in arguments:
@@ -1396,6 +1553,8 @@ def _tool_update_client(arguments: dict[str, Any], config: ConfigManager) -> dic
         client.redirect_uris = new_redirect_uris
     if new_allowed_scopes is not None:
         client.allowed_scopes = new_allowed_scopes
+    if new_allowed_resources is not None:
+        client.allowed_resources = new_allowed_resources
 
     return {"success": True, "client": _client_to_dict(client)}
 

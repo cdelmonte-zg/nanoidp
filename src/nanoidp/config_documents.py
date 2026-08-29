@@ -34,7 +34,7 @@ import copy
 import logging
 import os
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple, Type, TypeVar
+from typing import Any, Callable, Dict, List, Literal, Mapping, Optional, Tuple, Type, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
@@ -75,6 +75,12 @@ class ClientEntry(BaseModel):
 
     client_id: str = ""
     client_secret: str = ""
+    # A closed enum so the generated config schema advertises the three
+    # values, and an invalid one fails at document-model load with a field
+    # path (#188 / #254 review) rather than only in to_client().
+    token_endpoint_auth_method: Literal[
+        "client_secret_basic", "client_secret_post", "none"
+    ] = "client_secret_basic"
     description: str = ""
     background_color: Optional[str] = None
     header_color: Optional[str] = None
@@ -84,11 +90,15 @@ class ClientEntry(BaseModel):
     additional_audiences: Any = None
     redirect_uris: Any = None
     allowed_scopes: Any = None
+    allowed_resources: Any = None
 
     def to_client(self) -> OAuthClient:
         return OAuthClient(
             client_id=self.client_id,
-            client_secret=self.client_secret,
+            # Absent/empty in YAML becomes None: valid for a public client
+            # ('none'), rejected by the model for a confidential one (#188).
+            client_secret=self.client_secret or None,
+            token_endpoint_auth_method=self.token_endpoint_auth_method,
             description=self.description,
             background_color=self.background_color,
             header_color=self.header_color,
@@ -103,6 +113,9 @@ class ClientEntry(BaseModel):
             ),
             allowed_scopes=_coerce_client_str_list(
                 self.allowed_scopes, self.client_id, "allowed_scopes"
+            ),
+            allowed_resources=_coerce_client_str_list(
+                self.allowed_resources, self.client_id, "allowed_resources"
             ),
         )
 

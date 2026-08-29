@@ -89,6 +89,10 @@
             "default": null,
             "title": "Additional Audiences"
           },
+          "allowed_resources": {
+            "default": null,
+            "title": "Allowed Resources"
+          },
           "allowed_scopes": {
             "default": null,
             "title": "Allowed Scopes"
@@ -157,6 +161,16 @@
             "default": false,
             "title": "Show Description",
             "type": "boolean"
+          },
+          "token_endpoint_auth_method": {
+            "default": "client_secret_basic",
+            "enum": [
+              "client_secret_basic",
+              "client_secret_post",
+              "none"
+            ],
+            "title": "Token Endpoint Auth Method",
+            "type": "string"
           }
         },
         "title": "ClientEntry",

@@ -1,7 +1,7 @@
 """
 Unit tests for the routes/ui.py form flows (#213).
 
-These flows were covered almost only by examples/test_agent.py, which CI
+These flows were covered almost only by e2e/test_agent.py, which CI
 runs without a management secret; that is exactly the blind spot where a
 mutation that 302s to /login can pass a status-code-only assertion (the
 PR #176 round-3 finding). Every mutating test here therefore asserts on
@@ -301,6 +301,64 @@ class TestClientForms:
         resp = client.post("/clients/ghost/regenerate-secret")
         assert resp.status_code == 302
         assert resp.headers["Location"].endswith("/clients")
+
+    def test_create_public_client_and_clients_page_renders(self, app, client):
+        """#188 / #254 review, finding 1: a public client has no secret, so
+        the clients list page must render it without slicing None."""
+        resp = client.post(
+            "/clients/create",
+            data={"client_id": "pub-ui", "token_endpoint_auth_method": "none"},
+        )
+        assert resp.status_code == 302
+        created = _get_client_by_id(app, "pub-ui")
+        assert created is not None and created.is_public and created.client_secret is None
+        # The page that the create flow redirects to must not 500.
+        page = client.get("/clients")
+        assert page.status_code == 200
+        assert b"pub-ui" in page.data
+
+    def test_create_public_client_drops_a_submitted_secret(self, app, client):
+        """#254 review round 2: the create form pre-generates a secret; a
+        browser that picks 'none' still submits it. The route must persist
+        client_secret=None regardless, matching the edit-to-none behaviour."""
+        resp = client.post(
+            "/clients/create",
+            data={
+                "client_id": "pub-gen",
+                "token_endpoint_auth_method": "none",
+                "client_secret": "a-pre-generated-value-from-the-form",
+            },
+        )
+        assert resp.status_code == 302
+        created = _get_client_by_id(app, "pub-gen")
+        assert created is not None and created.is_public
+        assert created.client_secret is None
+
+    def test_edit_to_public_with_blank_secret_drops_the_secret(self, app, client):
+        """#254 review, finding 3: switching a confidential client to 'none'
+        with a blank secret field must drop the old secret, not keep a dead
+        one in the persisted client."""
+        client.post("/clients/create", data=self.CREATE)
+        resp = client.post(
+            "/clients/ui-client/edit",
+            data={"token_endpoint_auth_method": "none", "client_secret": ""},
+        )
+        assert resp.status_code == 302
+        edited = _get_client_by_id(app, "ui-client")
+        assert edited.is_public is True
+        assert edited.client_secret is None
+
+    def test_regenerate_secret_refused_for_public_client(self, app, client):
+        """#254 review, finding 4: a public client has no secret; the route
+        must refuse rather than model_copy a secret onto it."""
+        client.post(
+            "/clients/create",
+            data={"client_id": "pub-regen", "token_endpoint_auth_method": "none"},
+        )
+        resp = client.post("/clients/pub-regen/regenerate-secret")
+        assert resp.status_code == 302
+        still = _get_client_by_id(app, "pub-regen")
+        assert still.is_public is True and still.client_secret is None
 
 
 class TestSettingsForm:

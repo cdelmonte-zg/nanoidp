@@ -18,6 +18,7 @@ import pytest
 
 from nanoidp.config import get_config
 from nanoidp.mcp_server import _execute_tool
+from tests.conftest import authorize_error
 
 
 class TestDiscoveryParity:
@@ -58,6 +59,5 @@ class TestResponseTypesHonest:
                 "redirect_uri": "http://localhost:9000/callback",
             },
         )
-        data = json.loads(resp.data)
-        assert resp.status_code == 400
-        assert data["error"] == "unsupported_response_type"
+        assert resp.status_code == 302
+        assert authorize_error(resp)["error"] == "unsupported_response_type"

@@ -287,6 +287,14 @@ oauth:
       allowed_scopes:           # optional; see "Registered scopes" below
         - "openid"
         - "profile"
+    - client_id: "cli-client"
+      token_endpoint_auth_method: "none"  # public client (#188): no secret
+      description: "CLI / SPA / MCP client that cannot keep a secret"
+    - client_id: "mcp-client"
+      client_secret: "secret"
+      description: "Client bound to specific MCP servers (RFC 8707, #187)"
+      allowed_resources:        # optional; see "Resource indicators" below
+        - "https://mcp.example/server"
   # logos_dir: "./static/logos"    # optional; defaults to src/nanoidp/static/logos
   # scopes_supported:               # optional; the global scope vocabulary
   #   - openid                      # (default: openid, profile, email, offline_access)
@@ -367,6 +375,72 @@ convention as `redirect_uris` above). Enforced at `/authorize`, every
 `/device_authorization`. `oauth.scope_enforcement: false` is a dev-only
 escape hatch back to the pre-#186 behavior - any scope string accepted,
 unchecked; refused outside the `dev` profile.
+
+**Public clients** (issue #188): `token_endpoint_auth_method: "none"`
+declares a client that cannot keep a secret - a CLI, desktop or native
+app, SPA, or MCP client. `client_secret` becomes optional (and is ignored
+if present: a stored secret never authenticates a public client);
+`/token` identifies the client by `client_id` alone. In exchange, the
+protections that replace client authentication are mandatory regardless
+of profile: `/authorize` requires PKCE with `S256` (OAuth 2.1 §7.5.1),
+the `client_credentials` grant is refused with `unauthorized_client`
+(it IS client authentication), and refresh tokens always rotate with
+reuse detection (OAuth 2.1 §4.3.1/§6.1), whatever
+`refresh_token_rotation` says. `/revoke` accepts a public client's
+`client_id` with an ownership check - the token's own `client_id` claim
+must match, otherwise the response is still `200` and nothing is revoked
+(RFC 7009 §2.1 and its privacy guidance). `/introspect` stays
+authenticated (RFC 7662): a public `client_id` is not authentication.
+A confidential client authenticates on every grant, `authorization_code`
+included (RFC 6749 §3.2.1); a missing or wrong secret is `invalid_client`.
+The registered `token_endpoint_auth_method` is enforced (RFC 7591) at
+**every** client-authenticated endpoint - `/token`, `/introspect`,
+`/revoke` and `/device_authorization` (issue #262): the default
+`client_secret_basic` requires HTTP Basic and rejects a body secret,
+while `client_secret_post` requires `client_id` + `client_secret` as POST
+body parameters and rejects Basic; presenting both HTTP Basic and a body
+secret in one request is rejected (RFC 6749 §2.3). Applying the one
+registered method across all of these endpoints is nanoidp's consistency
+policy, not an obligation of every RFC: RFC 7009 and RFC 8628 do tie
+`/revoke` and `/device_authorization` to the token-endpoint method, while
+RFC 7662 requires *some* client authentication at `/introspect` but leaves
+the method open - nanoidp reuses the registered method there too rather
+than introduce a second field. A client that authenticated to these
+endpoints over the other channel before must now use the channel its
+`token_endpoint_auth_method` names (or be re-registered for the method it
+actually uses).
+
+**Authorization response `iss`** (issue #189, RFC 9207): `/authorize`
+returns `iss=<effective issuer>` on every response delivered through a
+validated `redirect_uri` - success and error alike - so a client can
+detect an authorization-server mix-up. `iss` is delivered exactly when
+discovery advertises `authorization_response_iss_parameter_supported`: a
+single condition drives both, so metadata and behaviour never disagree.
+RFC 9207 requires the issuer to be an `https` URL with a host and no query
+or fragment, so the default `http://localhost:8000` dev issuer sends no
+`iss` and advertises `false`; point the issuer at `https` (directly, or
+reflected via `issuer_from_request` behind a TLS proxy) to turn RFC 9207
+on. The value follows `issuer_from_request`. Errors are OAuth error
+redirects (`error`, `error_description`, `state`, `iss`) once the
+`redirect_uri` is validated; an error before that - an unknown client, a
+malformed or unregistered `redirect_uri` - stays a local JSON response,
+never a redirect to an unvalidated URI.
+
+**Resource indicators** (issue #187, RFC 8707): a client may send one or
+more `resource` parameters on `/authorize`, `/token` and
+`/device_authorization`, and the access token's `aud` is bound to those
+resources - a token minted for one MCP server is then rejected by
+another. A `resource` must be an absolute URI without a fragment,
+otherwise the request is `invalid_target`. Per-client `allowed_resources`
+gates which resources a client may target (empty = any valid resource,
+the dev default, same "empty = unrestricted" convention as
+`allowed_scopes`). A `/token` request may narrow the resources a prior
+step bound (an authorization code, a refresh token) but never widen them.
+Sending no `resource` leaves `aud` at `oauth.audience`, unchanged for
+existing clients. `/introspect` reports the token's `aud`; there is no
+`resource_indicators_supported` discovery metadata (RFC 8707 defines
+none). An MCP client sends `resource` on both `/authorize` and `/token`
+(MCP Authorization).
 
 **Native apps (RFC 8252)**: two things a native client needs are built
 in. A private-use scheme URI such as `com.example.app:/oauth2redirect`

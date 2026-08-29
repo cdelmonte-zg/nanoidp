@@ -25,6 +25,7 @@ from pydantic import ValidationError
 from nanoidp.config import ConfigManager, OAuthClient, Settings, get_config
 from nanoidp.services.discovery import build_discovery_document
 from nanoidp.services.scope import resolve_scope
+from tests.conftest import authorize_error
 
 
 def _basic_auth(client_id: str, secret: str) -> dict:
@@ -219,9 +220,8 @@ class TestAuthorizeScopeEnforcement:
 
     def test_disallowed_scope_is_invalid_scope(self, client):
         response = self._authorize(client, "scoped-client", scope="email")
-        assert response.status_code == 400
-        data = json.loads(response.data)
-        assert data["error"] == "invalid_scope"
+        assert response.status_code == 302
+        assert authorize_error(response)["error"] == "invalid_scope"
 
     def test_allowed_scope_gets_login_page(self, client):
         response = self._authorize(client, "scoped-client", scope="openid")
@@ -233,9 +233,8 @@ class TestAuthorizeScopeEnforcement:
 
     def test_scope_outside_global_vocabulary_rejected_for_unrestricted_client(self, client):
         response = self._authorize(client, "demo-client", scope="admin")
-        assert response.status_code == 400
-        data = json.loads(response.data)
-        assert data["error"] == "invalid_scope"
+        assert response.status_code == 302
+        assert authorize_error(response)["error"] == "invalid_scope"
 
     def test_omitted_scope_on_restricted_client_defaults_to_full_allowed_set(self, client):
         """No 'scope' param at all - a bare login page, not an error."""

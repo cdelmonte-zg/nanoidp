@@ -28,19 +28,27 @@
                         <td><code>{{ client.client_id }}</code></td>
                         <td>{{ client.description or '-' }}</td>
                         <td>
+                            {% if client.is_public %}
+                            <span class="badge bg-secondary">public (none)</span>
+                            {% elif client.client_secret %}
                             <code class="text-muted">{{ client.client_secret[:8] }}...{{ client.client_secret[-4:] }}</code>
+                            {% else %}
+                            <span class="text-muted">-</span>
+                            {% endif %}
                         </td>
                         <td>
                             <div class="btn-group btn-group-sm">
                                 <a href="{{ url_for('ui.client_edit', client_id=client.client_id) }}" class="btn btn-outline-primary">
                                     <i class="bi bi-pencil"></i>
                                 </a>
+                                {% if not client.is_public %}
                                 <form action="{{ url_for('ui.client_regenerate_secret', client_id=client.client_id) }}" method="post" class="d-inline">
                                     <input type="hidden" name="expected_revision" value="{{ revision }}">
                                     <button type="submit" class="btn btn-outline-warning" title="Regenerate Secret" onclick="return confirm('Regenerate secret for {{ client.client_id }}? The old secret will stop working.')">
                                         <i class="bi bi-arrow-clockwise"></i>
                                     </button>
                                 </form>
+                                {% endif %}
                                 <form action="{{ url_for('ui.client_delete', client_id=client.client_id) }}" method="post" class="d-inline">
                                     <input type="hidden" name="expected_revision" value="{{ revision }}">
                                     <button type="submit" class="btn btn-outline-danger" onclick="return confirm('Delete client {{ client.client_id }}?')">
