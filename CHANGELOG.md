@@ -59,9 +59,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reload, reapply, save. The revision is deliberately the one the
   runtime was LOADED from, not the file's hash at ask time: on a
   runtime that is stale against the directory, a fresh disk hash would
-  pass the precondition exactly when the lost update is real. Omitting
-  the revisions keeps the save unconditional (last write wins), same
-  as before.
+  pass the precondition exactly when the lost update is real. Because
+  `save_config` always writes both files, there are exactly two modes:
+  omitting both revisions keeps the save unconditional (last write
+  wins, same as before), and supplying either makes the whole save
+  conflict-checked, with the omitted revision defaulting to the one
+  this runtime was loaded from - a save guarded on one file can never
+  silently overwrite the other from a stale snapshot.
 - **Display-only `description` on users, shown in the persona login
   picker** (#244): a user in `users.yaml` can carry an optional
   `description` (max 200 characters, plain text) rendered next to the

@@ -42,8 +42,11 @@ class TestLoadedRevisionsTrackTheParsedBytes:
         (config_dir / "users.yaml").unlink()
         config = ConfigManager(str(config_dir))
 
-        # Same value current_revision() reports for a missing path, so
-        # "create only if it still doesn't exist" round-trips.
+        # Same value current_revision() reports for a missing path - and
+        # for an existing zero-byte file, which shares sha256(b""): the
+        # precondition this enables means "the file still has the
+        # missing/empty revision", not literally "the file is still
+        # absent" (semantics from phase 2, kept as is).
         assert config.users_revision == revision_of_bytes(b"")
         assert config.users_revision == current_revision(config_dir / "users.yaml")
 

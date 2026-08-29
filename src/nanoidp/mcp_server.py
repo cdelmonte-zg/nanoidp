@@ -901,8 +901,14 @@ _TOOLS: list[Tool] = [
             "tool handed back (list_users and get_user carry "
             "users_revision; list_clients, get_client and get_settings "
             "carry settings_revision; reload_config and a successful "
-            "save_config carry both). Omitting them keeps today's "
-            "unconditional last-write-wins. A failure response's 'kind' "
+            "save_config carry both). save_config always writes both "
+            "files, so there are exactly two modes: omitting both "
+            "revisions keeps today's unconditional last-write-wins, and "
+            "supplying either makes the WHOLE save conflict-checked - "
+            "the omitted revision defaults to the one this runtime was "
+            "loaded from, so a save guarded on users.yaml cannot "
+            "silently overwrite a settings.yaml another writer changed, "
+            "or vice versa. A failure response's 'kind' "
             "distinguishes four outcomes: 'conflict' (nothing was written - "
             "a supplied revision was stale; call reload_config, reapply "
             "your change on the fresh state and save with the revisions "
@@ -924,7 +930,10 @@ _TOOLS: list[Tool] = [
                     "description": (
                         "users.yaml revision from a read tool; the save is "
                         "refused with kind 'conflict' if the file no longer "
-                        "matches it. Omit for unconditional last-write-wins."
+                        "matches it. Supplying either revision makes the "
+                        "whole two-file save conflict-checked (the omitted "
+                        "one defaults to this runtime's loaded revision); "
+                        "omit both for unconditional last-write-wins."
                     ),
                 },
                 "expected_settings_revision": {
@@ -1595,11 +1604,28 @@ def _tool_save_config(arguments: dict[str, Any], config: ConfigManager) -> dict[
     try:
         # Optional preconditions (#229 phase 5): the revisions a read tool
         # (list_users/get_user, list_clients/get_client/get_settings) or
-        # reload_config handed back. Absent = unconditional last-write-wins,
-        # same as save()'s own default and the UI's revision-less forms.
+        # reload_config handed back. save() always writes BOTH files, so
+        # there are exactly two modes and no third (#252 review): with no
+        # revision supplied the save is unconditional last-write-wins,
+        # same as save()'s own default and the UI's revision-less forms;
+        # with EITHER revision supplied the whole save is conflict-checked,
+        # the omitted one defaulting to the revision this runtime was
+        # loaded from. Passing a caller's partial precondition straight
+        # through would guard one file while this runtime's stale snapshot
+        # silently overwrote the other - the exact lost update the
+        # revisions exist to catch. "is None", not falsy: an explicit
+        # empty string is a supplied (and stale) revision, refused as a
+        # conflict rather than silently replaced.
+        users_rev = arguments.get("expected_users_revision")
+        settings_rev = arguments.get("expected_settings_revision")
+        if users_rev is not None or settings_rev is not None:
+            if users_rev is None:
+                users_rev = config.users_revision
+            if settings_rev is None:
+                settings_rev = config.settings_revision
         config.save(
-            expected_users_revision=arguments.get("expected_users_revision"),
-            expected_settings_revision=arguments.get("expected_settings_revision"),
+            expected_users_revision=users_rev,
+            expected_settings_revision=settings_rev,
         )
         # The post-save reload refreshed the tracked revisions to what was
         # just written, so a follow-up save can chain from this response.

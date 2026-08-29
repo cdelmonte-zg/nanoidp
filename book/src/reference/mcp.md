@@ -51,8 +51,16 @@ back as `expected_users_revision` / `expected_settings_revision`. A save
 whose revision no longer matches the file is refused with
 `{"success": false, "kind": "conflict"}` before anything is written: call
 `reload_config`, reapply the change on the fresh state, and save again
-with the revisions from its response. Omitting the revisions keeps the
-save unconditional (last write wins), same as before.
+with the revisions from its response.
+
+`save_config` always writes both files, so there are exactly two modes.
+Omitting both revisions keeps the save unconditional (last write wins),
+same as before. Supplying either revision makes the whole save
+conflict-checked: the omitted one defaults to the revision this runtime
+was loaded from, so a save guarded on `users.yaml` cannot silently
+overwrite a `settings.yaml` another writer changed in the meantime, or
+vice versa - there is no mode where one file is guarded and the other is
+overwritten from a stale snapshot.
 
 ## Claude Code configuration
 

@@ -518,6 +518,70 @@ class TestRevisionPreconditions:
         assert users_file.read_bytes() == users_before
         assert settings_file.read_bytes() == settings_before
 
+    @pytest.mark.asyncio
+    async def test_a_users_only_guard_still_protects_settings(
+        self, mcp_config, mcp_call_tool
+    ):
+        """#252 review blocker: save_config always writes BOTH files, so a
+        caller following the natural flow (get_user -> mutate user ->
+        save with only expected_users_revision) must not have its stale
+        settings snapshot silently overwrite a settings.yaml another
+        writer - one that touches only that file, like the UI's settings
+        form - changed in the meantime. Supplying either revision makes
+        the whole save conflict-checked; the omitted one defaults to the
+        runtime's loaded revision."""
+        loaded_users_rev = mcp_config.users_revision
+        users_file = mcp_config.config_dir / "users.yaml"
+        settings_file = mcp_config.config_dir / "settings.yaml"
+
+        # Another writer moves ONLY settings.yaml; users.yaml still
+        # matches the revision this runtime loaded.
+        settings_file.write_text(settings_file.read_text() + "\n# settings-only writer\n")
+        users_before = users_file.read_bytes()
+        settings_before = settings_file.read_bytes()
+
+        _payload(
+            await mcp_call_tool(
+                "create_user", {"username": "cross-user", "password": "pw12345"}
+            )
+        )
+        result = await mcp_call_tool(
+            "save_config", {"expected_users_revision": loaded_users_rev}
+        )
+
+        assert result.is_error is True
+        payload = _payload(result)
+        assert payload["success"] is False
+        assert payload["kind"] == "conflict"
+        assert users_file.read_bytes() == users_before
+        assert settings_file.read_bytes() == settings_before
+
+    @pytest.mark.asyncio
+    async def test_a_settings_only_guard_still_protects_users(
+        self, mcp_config, mcp_call_tool
+    ):
+        """The symmetric leg: a save guarded only on settings.yaml must
+        not overwrite a users.yaml another writer changed."""
+        loaded_settings_rev = mcp_config.settings_revision
+        users_file = mcp_config.config_dir / "users.yaml"
+        settings_file = mcp_config.config_dir / "settings.yaml"
+
+        users_file.write_text(users_file.read_text() + "\n# users-only writer\n")
+        users_before = users_file.read_bytes()
+        settings_before = settings_file.read_bytes()
+
+        _payload(await mcp_call_tool("update_settings", {"audience": "must-not-land"}))
+        result = await mcp_call_tool(
+            "save_config", {"expected_settings_revision": loaded_settings_rev}
+        )
+
+        assert result.is_error is True
+        payload = _payload(result)
+        assert payload["success"] is False
+        assert payload["kind"] == "conflict"
+        assert users_file.read_bytes() == users_before
+        assert settings_file.read_bytes() == settings_before
+
 
 class TestDispatchGuards:
     @pytest.mark.asyncio
