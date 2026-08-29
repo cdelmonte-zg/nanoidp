@@ -46,19 +46,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **RFC 9207: `iss` on the authorization response** (#189). `/authorize`
-  now appends `iss=<effective issuer>` to the success redirect, so a
-  client can detect an authorization-server mix-up (MCP 2026-07-28
-  recommends this). The value is the per-request effective issuer, so it
-  stays correct under `issuer_from_request` (#126). RFC 9207 requires an
-  `https` issuer with no query or fragment, so
-  `authorization_response_iss_parameter_supported` is advertised in
-  discovery only when the effective issuer meets that - an `http://localhost`
-  dev issuer still gets the parameter appended (useful for testing) but is
-  not advertised as compliant, no silent dev relaxation in the metadata.
-  nanoidp renders authorization errors locally as JSON rather than
-  redirecting them, so `iss` rides only on the success redirect and is
-  never a reason to redirect to an unvalidated URI. The device flow is
-  unaffected.
+  returns `iss=<effective issuer>` on every response delivered through a
+  validated `redirect_uri` - success and error alike - so a client can
+  detect an authorization-server mix-up (MCP 2026-07-28 recommends this).
+  The value is the per-request effective issuer, so it stays correct under
+  `issuer_from_request` (#126). `iss` is delivered exactly when discovery
+  advertises `authorization_response_iss_parameter_supported`: one
+  condition drives both, so metadata and behaviour never disagree. RFC
+  9207 requires an `https` issuer with a host and no query or fragment, so
+  the default `http://localhost:8000` sends no `iss` and advertises
+  `false`; point the issuer at `https` (directly or reflected via
+  `issuer_from_request` behind a TLS proxy) to turn RFC 9207 on. **Related
+  behaviour change**: authorization errors that occur after the
+  `redirect_uri` is validated (invalid_scope, PKCE errors, invalid_target)
+  are now OAuth error redirects to the client (`error`,
+  `error_description`, `state`, `iss`) instead of a local JSON 400, per
+  RFC 6749 §4.1.2.1 - completing the RFC 9207 "error responses too"
+  requirement. Errors before the `redirect_uri` is trusted (unknown
+  client, malformed or unregistered `redirect_uri`) stay local JSON. The
+  device flow is unaffected.
 - **RFC 8707 Resource Indicators: `resource` binds the access token
   audience** (#187). A client may send one or more `resource` parameters
   on `/authorize`, `/token` (every grant) and `/device_authorization`;

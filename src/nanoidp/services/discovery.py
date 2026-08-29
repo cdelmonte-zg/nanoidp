@@ -14,15 +14,31 @@ from ..config import Settings
 
 
 def issuer_qualifies_for_iss_parameter(issuer: str) -> bool:
-    """RFC 9207 §2 requires the issuer identifier to be an ``https`` URL with
-    no query or fragment (#189). nanoidp usually runs on
-    ``http://localhost:8000``, which does not qualify: the ``iss`` parameter
-    is still appended to the authorization response (harmless, useful for
-    testing), but ``authorization_response_iss_parameter_supported`` is
-    advertised only when the effective issuer actually meets the RFC - no
-    silent dev relaxation in the metadata."""
-    parsed = urlparse(issuer)
-    return parsed.scheme == "https" and not parsed.query and not parsed.fragment
+    """Whether the issuer is a valid RFC 9207 §2 / RFC 8414 issuer identifier:
+    an ``https`` URL with a host and no query or fragment component (#189).
+
+    This is the single predicate for both directions of the RFC 9207
+    contract (#258 review): ``iss`` is appended to the authorization response
+    exactly when it is advertised as supported, so metadata and behaviour can
+    never disagree. nanoidp usually runs on ``http://localhost:8000``, which
+    does not qualify - so by default no ``iss`` is sent and the metadata is
+    ``false``; point the issuer at an ``https`` URL (directly or reflected via
+    ``issuer_from_request`` behind a TLS proxy) to turn RFC 9207 on.
+
+    A query or fragment is forbidden as a component, so a bare ``?`` or ``#``
+    (an empty component) disqualifies too; the value must have a host; and a
+    malformed issuer (bad IPv6 literal, non-numeric port) is rejected, never
+    a discovery 500."""
+    # An empty query/fragment component still counts (urlparse would report
+    # "" for both), so reject the delimiter outright (#258 review).
+    if "?" in issuer or "#" in issuer:
+        return False
+    try:
+        parsed = urlparse(issuer)
+        _ = parsed.port  # validates the port: a non-numeric one raises here.
+    except ValueError:
+        return False
+    return parsed.scheme == "https" and bool(parsed.hostname)
 
 
 def build_discovery_document(

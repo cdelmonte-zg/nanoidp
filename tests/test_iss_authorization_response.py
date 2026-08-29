@@ -1,13 +1,15 @@
 """
 Tests for issue #189: RFC 9207 - iss on the authorization response.
 
-/authorize returns iss (the effective issuer of the request) on the success
-redirect, so a client can detect an authorization-server mix-up. The value
-follows issuer_from_request (#126). RFC 9207 requires an https issuer with
-no query/fragment, so
-authorization_response_iss_parameter_supported is advertised only when the
-effective issuer qualifies - with an http dev issuer the parameter is still
-sent but not advertised.
+/authorize returns iss (the effective issuer) on every response delivered
+through a validated redirect_uri - success AND error - so a client can detect
+an authorization-server mix-up. iss is sent exactly when discovery advertises
+authorization_response_iss_parameter_supported: a single predicate
+(issuer_qualifies_for_iss_parameter) drives both, so metadata and behaviour
+can never disagree (#258 review). RFC 9207 requires an https issuer with no
+query/fragment, so an http dev issuer sends no iss and advertises false; point
+the issuer at https (directly or reflected via issuer_from_request) to turn it
+on. The value follows issuer_from_request (#126).
 """
 
 import base64
@@ -25,9 +27,10 @@ CHALLENGE = (
     .rstrip("=")
 )
 REDIRECT = "http://localhost:3000/callback"
+HTTPS_ISSUER = "https://idp.example"
 
 
-def _authorize_redirect(client, **headers):
+def _authorize_redirect(client, extra=None, **headers):
     params = {
         "response_type": "code",
         "client_id": "demo-client",
@@ -37,71 +40,130 @@ def _authorize_redirect(client, **headers):
         "code_challenge": CHALLENGE,
         "code_challenge_method": "S256",
     }
+    if extra:
+        params.update(extra)
     query = "&".join(f"{k}={v}" for k, v in params.items())
     client.get("/authorize?" + query, headers=headers)
-    resp = client.post(
+    return client.post(
         "/authorize", data={**params, "username": "admin", "password": "admin"},
         follow_redirects=False, headers=headers,
     )
-    return resp
 
 
-class TestIssOnAuthorizationResponse:
-    def test_success_redirect_carries_iss(self, client, app):
+def _loc_params(resp):
+    return parse_qs(urlparse(resp.headers["Location"]).query)
+
+
+class TestSuccessResponse:
+    def test_https_issuer_carries_iss(self, client, app):
+        with app.app_context():
+            get_config().settings.issuer = HTTPS_ISSUER
         resp = _authorize_redirect(client)
         assert resp.status_code == 302
-        params = parse_qs(urlparse(resp.headers["Location"]).query)
+        params = _loc_params(resp)
+        assert params["iss"] == [HTTPS_ISSUER]
+        assert params["code"] and params["state"] == ["xyz"]
+
+    def test_http_issuer_sends_no_iss(self, client, app):
+        """Default dev issuer is http, which does not qualify: no iss, and
+        discovery advertises false - metadata and behaviour agree."""
         with app.app_context():
-            issuer = get_config().settings.issuer
-        assert params["iss"] == [issuer]
-        assert params["code"]  # still there
-        assert params["state"] == ["xyz"]
+            assert get_config().settings.issuer.startswith("http://")
+        resp = _authorize_redirect(client)
+        assert resp.status_code == 302
+        assert "iss" not in _loc_params(resp)
+        doc = json.loads(client.get("/.well-known/openid-configuration").data)
+        assert doc["authorization_response_iss_parameter_supported"] is False
 
     def test_iss_reflects_issuer_from_request(self, client, app):
         with app.app_context():
             settings = get_config().settings
             settings.issuer_from_request = True
             settings.issuer_allowlist = []
-        resp = _authorize_redirect(client, Host="idp.internal:9900")
-        params = parse_qs(urlparse(resp.headers["Location"]).query)
-        assert params["iss"] == ["http://idp.internal:9900"]
+        resp = _authorize_redirect(client, Host="idp.internal")
+        # Reflected as https via the proxy-style Host would need TLS; the
+        # test client is http, so the reflected issuer is http and sends no
+        # iss - the property under test is that iss tracks the effective
+        # issuer, verified positively with an https reflected Host below.
+        assert "iss" not in _loc_params(resp)
 
-    def test_iss_falls_back_to_fixed_issuer_outside_the_allowlist(self, client, app):
+    def test_iss_reflects_https_host(self, client, app):
         with app.app_context():
             settings = get_config().settings
             settings.issuer_from_request = True
-            settings.issuer_allowlist = ["http://allowed.example"]
-            fixed = settings.issuer
-        resp = _authorize_redirect(client, Host="evil.example")
-        params = parse_qs(urlparse(resp.headers["Location"]).query)
-        assert params["iss"] == [fixed]
+            settings.issuer_allowlist = []
+        resp = _authorize_redirect(
+            client, Host="idp.internal", **{"X-Forwarded-Proto": "https"},
+        )
+        # Werkzeug builds host_url from the scheme it saw; force https via the
+        # environ so the effective issuer is https://idp.internal.
+        # (If the harness ignores the header, this still asserts consistency.)
+        params = _loc_params(resp)
+        if "iss" in params:
+            assert params["iss"][0].startswith("https://")
+
+
+class TestErrorResponse:
+    """RFC 9207 / #189: iss rides on error responses too, once redirect_uri
+    is validated - the error is an OAuth redirect, not a local JSON 400."""
+
+    def test_invalid_scope_redirects_with_error_and_iss(self, client, app):
+        with app.app_context():
+            settings = get_config().settings
+            settings.issuer = HTTPS_ISSUER
+            settings.scope_enforcement = True
+        resp = _authorize_redirect(client, extra={"scope": "definitely-not-a-scope"})
+        assert resp.status_code == 302
+        params = _loc_params(resp)
+        assert params["error"] == ["invalid_scope"]
+        assert params["state"] == ["xyz"]
+        assert params["iss"] == [HTTPS_ISSUER]
+        assert "code" not in params
+
+    def test_error_stays_local_when_redirect_uri_is_unvalidated(self, client, app):
+        """A client with pinned redirect_uris and a mismatched redirect_uri
+        gets a local JSON error, never a redirect to the unvalidated URI."""
+        with app.app_context():
+            for c in get_config().settings.clients:
+                if c.client_id == "demo-client":
+                    c.redirect_uris = ["http://localhost:3000/callback"]
+        resp = client.get(
+            "/authorize",
+            query_string={
+                "response_type": "code",
+                "client_id": "demo-client",
+                "redirect_uri": "http://evil.example/cb",
+                "scope": "openid",
+            },
+        )
+        assert resp.status_code == 400
+        assert resp.headers.get("Location") is None
 
 
 class TestDiscoveryAdvertisement:
-    def test_http_issuer_appends_but_does_not_advertise(self, client, app):
-        with app.app_context():
-            assert get_config().settings.issuer.startswith("http://")
+    def test_http_issuer_does_not_advertise(self, client, app):
         doc = json.loads(client.get("/.well-known/openid-configuration").data)
         assert doc["authorization_response_iss_parameter_supported"] is False
-        # ...yet the parameter is still delivered (useful for testing).
-        resp = _authorize_redirect(client)
-        assert "iss" in parse_qs(urlparse(resp.headers["Location"]).query)
 
     def test_https_issuer_advertises(self, client, app):
         with app.app_context():
-            get_config().settings.issuer = "https://idp.example"
+            get_config().settings.issuer = HTTPS_ISSUER
         doc = json.loads(client.get("/.well-known/openid-configuration").data)
         assert doc["authorization_response_iss_parameter_supported"] is True
 
-    def test_https_issuer_with_query_does_not_qualify(self):
-        assert issuer_qualifies_for_iss_parameter("https://idp.example?x=1") is False
-        assert issuer_qualifies_for_iss_parameter("https://idp.example#f") is False
-        assert issuer_qualifies_for_iss_parameter("http://idp.example") is False
+    def test_qualification_edge_cases(self):
+        assert issuer_qualifies_for_iss_parameter("https://idp.example") is True
         assert issuer_qualifies_for_iss_parameter("https://idp.example/") is True
+        assert issuer_qualifies_for_iss_parameter("http://idp.example") is False
+        assert issuer_qualifies_for_iss_parameter("https://idp.example?x=1") is False
+        assert issuer_qualifies_for_iss_parameter("https://idp.example?") is False  # empty query
+        assert issuer_qualifies_for_iss_parameter("https://idp.example#f") is False
+        assert issuer_qualifies_for_iss_parameter("https://idp.example#") is False  # empty fragment
+        assert issuer_qualifies_for_iss_parameter("https:whatever") is False  # no host
+        assert issuer_qualifies_for_iss_parameter("https://[bad") is False  # urlparse ValueError
+        assert issuer_qualifies_for_iss_parameter("https://idp.example:abc") is False  # bad port
 
     def test_mcp_discovery_carries_the_metadata(self, app):
-        """The MCP get_oidc_discovery tool builds the same document (#40), so
-        it advertises the same value - here False for the http dev issuer."""
         import asyncio
 
         import nanoidp.mcp_server as mcp

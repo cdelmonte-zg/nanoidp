@@ -697,8 +697,13 @@ class NanoIDPTestAgent:
                 allow_redirects=False,
                 timeout=5,
             )
+            # #189: a post-redirect-validation error (here PKCE) is now an
+            # OAuth error redirect, not a local 400.
+            no_pkce_loc = no_pkce.headers.get("Location", "")
             refused_without_pkce = (
-                no_pkce.status_code == 400 and "S256" in no_pkce.text
+                no_pkce.status_code in (302, 303)
+                and "error=invalid_request" in no_pkce_loc
+                and "S256" in no_pkce_loc
             )
 
             # Leg 2: full PKCE S256 flow with client_id alone at /token.
@@ -785,6 +790,21 @@ class NanoIDPTestAgent:
     def test_authorization_code_pkce(self) -> TestResult:
         """Authorization Code Flow with PKCE (simulated)."""
         try:
+            # RFC 9207 (#189): capture the issuer to compare iss against
+            # BEFORE starting the request - the anti-mix-up property is that
+            # the client checks iss against an issuer it established earlier,
+            # not one it fetched from the same response. None when discovery
+            # says iss is unsupported (an http dev issuer), so we then assert
+            # iss is absent.
+            _disco = requests.get(
+                f"{self.base_url}/.well-known/openid-configuration", timeout=5
+            ).json()
+            self._iss_expected_issuer = (
+                _disco.get("issuer")
+                if _disco.get("authorization_response_iss_parameter_supported")
+                else None
+            )
+
             # Step 1: Generate PKCE challenge
             self._pkce_verifier = secrets.token_urlsafe(32)
             challenge = base64.urlsafe_b64encode(
@@ -848,20 +868,24 @@ class NanoIDPTestAgent:
                                 "State mismatch"
                             )
 
-                        # RFC 9207 (#189): the authorization response carries
-                        # iss, and it must equal the discovery issuer.
+                        # RFC 9207 (#189): iss is delivered exactly when
+                        # discovery advertises support, and then must equal the
+                        # discovery issuer (captured up-front, the value the
+                        # client trusts and compares against - the anti-mix-up
+                        # property). With an http dev issuer neither is present.
                         returned_iss = params.get("iss", [None])[0]
-                        discovery = requests.get(
-                            f"{self.base_url}/.well-known/openid-configuration",
-                            timeout=5,
-                        ).json()
-                        if returned_iss != discovery.get("issuer"):
+                        iss_supported = self._iss_expected_issuer is not None
+                        if iss_supported and returned_iss != self._iss_expected_issuer:
                             return self._add_result(
-                                "Auth Code + PKCE",
-                                TestCategory.OAUTH,
-                                False,
+                                "Auth Code + PKCE", TestCategory.OAUTH, False,
                                 f"iss mismatch: response {returned_iss!r} != "
-                                f"discovery {discovery.get('issuer')!r} (RFC 9207)",
+                                f"discovery {self._iss_expected_issuer!r} (RFC 9207)",
+                            )
+                        if not iss_supported and returned_iss is not None:
+                            return self._add_result(
+                                "Auth Code + PKCE", TestCategory.OAUTH, False,
+                                "iss sent while discovery advertises it "
+                                "unsupported (RFC 9207 metadata/behaviour must agree)",
                             )
 
                         # Step 3: Exchange code for token
@@ -1224,12 +1248,11 @@ class NanoIDPTestAgent:
                 )
 
             def is_invalid_scope(resp: requests.Response) -> bool:
-                if resp.status_code != 400:
+                # #189: an /authorize scope error is delivered as an OAuth
+                # error redirect (error=invalid_scope) to the redirect_uri.
+                if resp.status_code not in (302, 303):
                     return False
-                try:
-                    return resp.json().get("error") == "invalid_scope"
-                except ValueError:
-                    return False
+                return "error=invalid_scope" in resp.headers.get("Location", "")
 
             authorize_disallowed = authorize("email")
             authorize_allowed = authorize("openid")

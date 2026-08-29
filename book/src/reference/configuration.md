@@ -403,16 +403,20 @@ endpoint and stay lenient: they accept a confidential client's secret
 over either HTTP Basic or the request body.
 
 **Authorization response `iss`** (issue #189, RFC 9207): `/authorize`
-returns `iss=<effective issuer>` on the success redirect, so a client can
-detect an authorization-server mix-up. The value is the per-request
-effective issuer, so it follows `issuer_from_request`. RFC 9207 requires
-the issuer to be an `https` URL with no query or fragment;
-`authorization_response_iss_parameter_supported` is advertised in
-discovery only when the effective issuer meets that, so an `http://localhost`
-dev issuer still gets the parameter (useful for testing) but is not
-advertised as compliant. nanoidp renders authorization errors locally as
-JSON rather than redirecting them, so `iss` rides only on the success
-redirect - it is never a reason to redirect to an unvalidated URI.
+returns `iss=<effective issuer>` on every response delivered through a
+validated `redirect_uri` - success and error alike - so a client can
+detect an authorization-server mix-up. `iss` is delivered exactly when
+discovery advertises `authorization_response_iss_parameter_supported`: a
+single condition drives both, so metadata and behaviour never disagree.
+RFC 9207 requires the issuer to be an `https` URL with a host and no query
+or fragment, so the default `http://localhost:8000` dev issuer sends no
+`iss` and advertises `false`; point the issuer at `https` (directly, or
+reflected via `issuer_from_request` behind a TLS proxy) to turn RFC 9207
+on. The value follows `issuer_from_request`. Errors are OAuth error
+redirects (`error`, `error_description`, `state`, `iss`) once the
+`redirect_uri` is validated; an error before that - an unknown client, a
+malformed or unregistered `redirect_uri` - stays a local JSON response,
+never a redirect to an unvalidated URI.
 
 **Resource indicators** (issue #187, RFC 8707): a client may send one or
 more `resource` parameters on `/authorize`, `/token` and

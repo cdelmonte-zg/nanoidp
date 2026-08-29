@@ -20,6 +20,7 @@ from pydantic import ValidationError
 
 from nanoidp.config import ConfigManager, get_config
 from nanoidp.models import OAuthClient
+from tests.conftest import authorize_error
 
 PUBLIC_ID = "pub-cli"
 REDIRECT = "http://localhost:3000/callback"
@@ -195,20 +196,20 @@ class TestAuthorizePkceMandatory:
 
     def test_authorize_without_challenge_is_rejected(self, client, public_client):
         resp = _authorize(client)
-        assert resp.status_code == 400
-        data = json.loads(resp.data)
+        assert resp.status_code == 302
+        data = authorize_error(resp)
         assert data["error"] == "invalid_request"
         assert "S256" in data["error_description"]
 
     def test_authorize_with_plain_method_is_rejected(self, client, public_client):
         resp = _authorize(client, code_challenge="x" * 43, code_challenge_method="plain")
-        assert resp.status_code == 400
-        assert "S256" in json.loads(resp.data)["error_description"]
+        assert resp.status_code == 302
+        assert "S256" in authorize_error(resp)["error_description"]
 
     def test_authorize_with_omitted_method_is_rejected(self, client, public_client):
         """RFC 7636 defaults an omitted method to 'plain' - which is not S256."""
         resp = _authorize(client, code_challenge="x" * 43)
-        assert resp.status_code == 400
+        assert resp.status_code == 302
 
     def test_authorize_with_s256_renders_login(self, client, public_client):
         resp = _authorize(client, code_challenge=CHALLENGE, code_challenge_method="S256")

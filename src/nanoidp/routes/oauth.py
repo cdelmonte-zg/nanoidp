@@ -37,6 +37,7 @@ from ..services import (
     get_token_service,
 )
 from ..services.device_code import DEVICE_CODE_EXPIRES_IN, DEVICE_POLL_INTERVAL
+from ..services.discovery import issuer_qualifies_for_iss_parameter
 from ..services.redirect_uri import redirect_uri_is_registered, redirect_uri_rejection_reason
 from ..services.resource import resolve_resources
 from ..services.scope import resolve_scope
@@ -182,6 +183,32 @@ def _authorize_reject(
     return jsonify({"error": error, "error_description": description}), 400
 
 
+def _authorize_error_redirect(
+    config: ConfigManager, p: _AuthorizeParams, error: str, description: str, reason: str
+) -> ResponseReturnValue:
+    """Deliver an authorization error to the client through the ALREADY
+    VALIDATED redirect_uri (RFC 6749 §4.1.2.1), carrying iss so the client
+    can still detect an authorization-server mix-up on an error (#189/RFC
+    9207 §2: iss appears on error responses too). Only reachable after
+    _validate_authorize_redirect_uri has run, so this never redirects to an
+    unvalidated URI - errors before that stay local (see _authorize_reject).
+    """
+    audit_event(
+        "authorization_request",
+        "failed",
+        endpoint="/authorize",
+        client_id=p.client_id,
+        details={"reason": reason},
+    )
+    params = {"error": error, "error_description": description}
+    if p.state:
+        params["state"] = p.state
+    issuer = effective_issuer(config.settings)
+    if issuer_qualifies_for_iss_parameter(issuer):
+        params["iss"] = issuer
+    return redirect(f"{p.redirect_uri}?{urlencode(params)}")
+
+
 def _validate_authorize_client(
     config: ConfigManager, p: _AuthorizeParams
 ) -> Tuple[Optional[OAuthClient], Optional[ResponseReturnValue]]:
@@ -235,10 +262,11 @@ def _validate_authorize_scope(
         default_when_omitted="openid",
     )
     if not scope_result.ok:
-        return _authorize_reject(
-            p.client_id,
-            scope_result.error_description or "invalid scope",
+        return _authorize_error_redirect(
+            config,
+            p,
             "invalid_scope",
+            scope_result.error_description or "invalid scope",
             scope_result.error_description or "invalid scope",
         )
     p.scope = scope_result.granted or ""
@@ -312,28 +340,31 @@ def _validate_authorize_pkce(
     party that started the flow."""
     if client is not None and client.is_public:
         if not p.code_challenge:
-            return _authorize_reject(
-                p.client_id,
-                "Public client without PKCE",
+            return _authorize_error_redirect(
+                config,
+                p,
                 "invalid_request",
                 "This client's token_endpoint_auth_method is 'none': PKCE "
                 "with code_challenge_method S256 is required",
+                "Public client without PKCE",
             )
         if (p.code_challenge_method or "plain") != "S256":
-            return _authorize_reject(
-                p.client_id,
-                "Public client with non-S256 PKCE",
+            return _authorize_error_redirect(
+                config,
+                p,
                 "invalid_request",
                 "This client's token_endpoint_auth_method is 'none': "
                 "code_challenge_method must be S256",
+                "Public client with non-S256 PKCE",
             )
 
     if config.settings.pkce_required and not p.code_challenge:
-        return _authorize_reject(
-            p.client_id,
-            "PKCE code_challenge required (require_pkce or oauth21)",
+        return _authorize_error_redirect(
+            config,
+            p,
             "invalid_request",
             "PKCE code_challenge is required " "(require_pkce setting or oauth21 profile)",
+            "PKCE code_challenge required (require_pkce or oauth21)",
         )
 
     if not p.code_challenge:
@@ -346,11 +377,12 @@ def _validate_authorize_pkce(
     # rejected at the authorization endpoint per §4.4.1.
     effective_method = p.code_challenge_method or "plain"
     if effective_method not in ("plain", "S256"):
-        return _authorize_reject(
-            p.client_id,
-            f"Unsupported code_challenge_method: {effective_method}",
+        return _authorize_error_redirect(
+            config,
+            p,
             "invalid_request",
             f"Unsupported code_challenge_method " f"'{effective_method}'; use S256 or plain",
+            f"Unsupported code_challenge_method: {effective_method}",
         )
 
     # The 'plain' method is only acceptable when S256 is unavailable
@@ -358,14 +390,15 @@ def _validate_authorize_pkce(
     # §7.5.2) profiles reject it outright, whether requested explicitly
     # or via the implicit default.
     if effective_method == "plain" and not config.settings.pkce_plain_allowed:
-        return _authorize_reject(
-            p.client_id,
-            "PKCE method 'plain' rejected by " f"{config.settings.security_profile} profile",
+        return _authorize_error_redirect(
+            config,
+            p,
             "invalid_request",
             "code_challenge_method 'plain' (including the "
             "implicit default when the parameter is omitted) "
             f"is not allowed by the {config.settings.security_profile} "
             "profile; use S256",
+            "PKCE method 'plain' rejected by " f"{config.settings.security_profile} profile",
         )
     return None
 
@@ -384,9 +417,10 @@ def _validate_authorize_resources(
         return None
     result = resolve_resources(p.resources, client)
     if not result.ok:
-        return _authorize_reject(
-            p.client_id, result.error_description or "invalid_target",
-            "invalid_target", result.error_description or "invalid resource",
+        return _authorize_error_redirect(
+            config, p, "invalid_target",
+            result.error_description or "invalid resource",
+            result.error_description or "invalid_target",
         )
     # Persist the de-duplicated granted list, not the raw request (#254
     # review, finding 3): the authorization code must not carry a repeated
@@ -433,15 +467,15 @@ def _handle_authorize_login(
         if p.state:
             redirect_params["state"] = p.state
         # RFC 9207 (#189): return the effective issuer so the client can
-        # detect an authorization-server mix-up. Only added to a response
-        # delivered through the already-validated redirect_uri; nanoidp
-        # renders authorization errors locally as JSON (see
-        # _authorize_reject) rather than redirecting them, so there is no
-        # client-redirected error response for iss to ride on - and iss is
-        # never a reason to redirect to an unvalidated URI. The value is the
-        # per-request effective issuer, so it stays correct under
-        # issuer_from_request (#126).
-        redirect_params["iss"] = effective_issuer(config.settings)
+        # detect an authorization-server mix-up. Sent exactly when it is
+        # advertised as supported in discovery (#258 review): a single
+        # predicate drives both, so a client never sees iss without the
+        # metadata promising it, or vice versa. The value is the per-request
+        # effective issuer, so it stays correct under issuer_from_request
+        # (#126).
+        issuer = effective_issuer(config.settings)
+        if issuer_qualifies_for_iss_parameter(issuer):
+            redirect_params["iss"] = issuer
 
         callback_url = f"{p.redirect_uri}?{urlencode(redirect_params)}"
 
@@ -538,10 +572,14 @@ def authorize() -> ResponseReturnValue:
         return error
     assert client is not None  # _validate_authorize_client returns one or the other
 
-    error = _validate_authorize_scope(config, p, client)
+    # redirect_uri is validated BEFORE scope/PKCE/resource (#189/RFC 9207):
+    # an unvalidated redirect_uri keeps its local error (never redirect to
+    # it), but once it is trusted, every later error is delivered to the
+    # client as an OAuth error redirect carrying iss (#258 review).
+    error = _validate_authorize_redirect_uri(config, p, client)
     if error is not None:
         return error
-    error = _validate_authorize_redirect_uri(config, p, client)
+    error = _validate_authorize_scope(config, p, client)
     if error is not None:
         return error
     error = _validate_authorize_pkce(config, p, client)
