@@ -848,6 +848,22 @@ class NanoIDPTestAgent:
                                 "State mismatch"
                             )
 
+                        # RFC 9207 (#189): the authorization response carries
+                        # iss, and it must equal the discovery issuer.
+                        returned_iss = params.get("iss", [None])[0]
+                        discovery = requests.get(
+                            f"{self.base_url}/.well-known/openid-configuration",
+                            timeout=5,
+                        ).json()
+                        if returned_iss != discovery.get("issuer"):
+                            return self._add_result(
+                                "Auth Code + PKCE",
+                                TestCategory.OAUTH,
+                                False,
+                                f"iss mismatch: response {returned_iss!r} != "
+                                f"discovery {discovery.get('issuer')!r} (RFC 9207)",
+                            )
+
                         # Step 3: Exchange code for token
                         token_response = self.session.post(
                             f"{self.base_url}/token",

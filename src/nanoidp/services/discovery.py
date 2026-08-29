@@ -8,8 +8,21 @@ omitted ``claims_supported``/``azp`` and the auth-method metadata).
 """
 
 from typing import Any, Dict, Optional
+from urllib.parse import urlparse
 
 from ..config import Settings
+
+
+def issuer_qualifies_for_iss_parameter(issuer: str) -> bool:
+    """RFC 9207 §2 requires the issuer identifier to be an ``https`` URL with
+    no query or fragment (#189). nanoidp usually runs on
+    ``http://localhost:8000``, which does not qualify: the ``iss`` parameter
+    is still appended to the authorization response (harmless, useful for
+    testing), but ``authorization_response_iss_parameter_supported`` is
+    advertised only when the effective issuer actually meets the RFC - no
+    silent dev relaxation in the metadata."""
+    parsed = urlparse(issuer)
+    return parsed.scheme == "https" and not parsed.query and not parsed.fragment
 
 
 def build_discovery_document(
@@ -79,5 +92,12 @@ def build_discovery_document(
         # advertise it there (#47, #68)
         "code_challenge_methods_supported": (
             ["plain", "S256"] if settings.pkce_plain_allowed else ["S256"]
+        ),
+        # RFC 9207 (#189): /authorize returns iss in the response. Advertised
+        # only when the effective issuer is a query/fragment-free https URL,
+        # as the RFC requires; with an http dev issuer the parameter is still
+        # sent but not advertised (see issuer_qualifies_for_iss_parameter).
+        "authorization_response_iss_parameter_supported": (
+            issuer_qualifies_for_iss_parameter(issuer)
         ),
     }

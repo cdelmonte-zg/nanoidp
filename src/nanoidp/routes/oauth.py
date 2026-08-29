@@ -432,6 +432,16 @@ def _handle_authorize_login(
         redirect_params = {"code": code}
         if p.state:
             redirect_params["state"] = p.state
+        # RFC 9207 (#189): return the effective issuer so the client can
+        # detect an authorization-server mix-up. Only added to a response
+        # delivered through the already-validated redirect_uri; nanoidp
+        # renders authorization errors locally as JSON (see
+        # _authorize_reject) rather than redirecting them, so there is no
+        # client-redirected error response for iss to ride on - and iss is
+        # never a reason to redirect to an unvalidated URI. The value is the
+        # per-request effective issuer, so it stays correct under
+        # issuer_from_request (#126).
+        redirect_params["iss"] = effective_issuer(config.settings)
 
         callback_url = f"{p.redirect_uri}?{urlencode(redirect_params)}"
 

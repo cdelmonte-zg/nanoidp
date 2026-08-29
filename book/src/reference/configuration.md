@@ -402,6 +402,18 @@ body parameters and rejects Basic. The other credentialed endpoints -
 endpoint and stay lenient: they accept a confidential client's secret
 over either HTTP Basic or the request body.
 
+**Authorization response `iss`** (issue #189, RFC 9207): `/authorize`
+returns `iss=<effective issuer>` on the success redirect, so a client can
+detect an authorization-server mix-up. The value is the per-request
+effective issuer, so it follows `issuer_from_request`. RFC 9207 requires
+the issuer to be an `https` URL with no query or fragment;
+`authorization_response_iss_parameter_supported` is advertised in
+discovery only when the effective issuer meets that, so an `http://localhost`
+dev issuer still gets the parameter (useful for testing) but is not
+advertised as compliant. nanoidp renders authorization errors locally as
+JSON rather than redirecting them, so `iss` rides only on the success
+redirect - it is never a reason to redirect to an unvalidated URI.
+
 **Resource indicators** (issue #187, RFC 8707): a client may send one or
 more `resource` parameters on `/authorize`, `/token` and
 `/device_authorization`, and the access token's `aud` is bound to those

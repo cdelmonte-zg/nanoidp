@@ -45,6 +45,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   changes only the secret, so every field (present and future) is carried.
 
 ### Added
+- **RFC 9207: `iss` on the authorization response** (#189). `/authorize`
+  now appends `iss=<effective issuer>` to the success redirect, so a
+  client can detect an authorization-server mix-up (MCP 2026-07-28
+  recommends this). The value is the per-request effective issuer, so it
+  stays correct under `issuer_from_request` (#126). RFC 9207 requires an
+  `https` issuer with no query or fragment, so
+  `authorization_response_iss_parameter_supported` is advertised in
+  discovery only when the effective issuer meets that - an `http://localhost`
+  dev issuer still gets the parameter appended (useful for testing) but is
+  not advertised as compliant, no silent dev relaxation in the metadata.
+  nanoidp renders authorization errors locally as JSON rather than
+  redirecting them, so `iss` rides only on the success redirect and is
+  never a reason to redirect to an unvalidated URI. The device flow is
+  unaffected.
 - **RFC 8707 Resource Indicators: `resource` binds the access token
   audience** (#187). A client may send one or more `resource` parameters
   on `/authorize`, `/token` (every grant) and `/device_authorization`;
