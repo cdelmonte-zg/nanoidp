@@ -348,3 +348,38 @@ class TestApiGenerateTokenIssuer:
             self._minted_iss(client, "evil.example.com")
             == get_config().settings.issuer
         )
+
+
+class TestApiGenerateTokenBinding:
+    """/api/users/<u>/token mirrors the MCP generate_token tool for #73: an
+    unbound token (no client_id) gets no refresh token, since a refresh token
+    with no client_id binding is refused; a client_id (which must be a real
+    client) binds it so the refresh token is actually spendable."""
+
+    def test_unbound_token_has_no_refresh_token(self, client):
+        resp = client.post("/api/users/admin/token")
+        assert resp.status_code == 200
+        data = json.loads(resp.data)
+        assert "access_token" in data
+        assert "refresh_token" not in data
+
+    def test_bound_token_refresh_is_spendable(self, client):
+        import base64
+
+        resp = client.post("/api/users/admin/token", json={"client_id": "demo-client"})
+        assert resp.status_code == 200
+        rt = json.loads(resp.data)["refresh_token"]
+        header = {
+            "Authorization": "Basic " + base64.b64encode(b"demo-client:demo-secret").decode()
+        }
+        refreshed = client.post(
+            "/token",
+            data={"grant_type": "refresh_token", "refresh_token": rt},
+            headers=header,
+        )
+        assert refreshed.status_code == 200, refreshed.data
+
+    def test_unknown_client_id_is_rejected(self, client):
+        resp = client.post("/api/users/admin/token", json={"client_id": "does-not-exist"})
+        assert resp.status_code == 400
+        assert "does-not-exist" in json.loads(resp.data)["error"]

@@ -42,7 +42,7 @@ covered in [SAML options](saml.md).
 | `GET /api/health` | Health check |
 | `GET /api/users` | List users |
 | `GET /api/users/{username}` | Get user details |
-| `POST /api/users/{username}/token` | Generate token |
+| `POST /api/users/{username}/token` | Generate a token for a user (testing). Optional JSON body: `exp_minutes`, and `client_id` (must name a real client) which binds the token and issues a spendable `refresh_token`; without `client_id` the response is an access token only (no `refresh_token`, since one with no client binding is refused since 3.0, #73). |
 | `GET /api/audit` | Get audit log |
 | `GET /api/audit/stats` | Audit log statistics |
 | `POST /api/audit/clear` | Clear the audit log |
