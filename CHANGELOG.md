@@ -59,7 +59,11 @@ previous leniency allowed - needs a one-time adjustment.
   tool gains an optional `client_id` (which must name a real client) that binds
   the minted token and issues a refresh token spendable by it; without it the
   tool mints an unbound access token with no refresh token at all, rather than
-  hand back one that could not be spent.
+  hand back one that could not be spent. The HTTP testing endpoint
+  `POST /api/users/<username>/token` gets the same treatment - a new optional
+  `client_id` binds the token, and it no longer returns a `refresh_token` when
+  unbound - so all three token minters (a grant, the MCP tool, this endpoint)
+  agree.
 
 ### Added
 - **Mock protected MCP server as an e2e fixture** (#191). `e2e/mock_mcp_server.py`
