@@ -1466,11 +1466,13 @@ def device_authorization() -> ResponseReturnValue:
     # A hard cap bounds the in-memory store, which matters now that a public
     # client can create entries with its client_id alone (#255): at capacity,
     # refuse new authorizations rather than grow without bound or evict a live
-    # one. This is a temporary server-side condition (the store drains as codes
-    # expire), reported as server_error with 503 - NOT slow_down, which RFC 8628
-    # §3.5 defines specifically for the token endpoint's POLLING response
-    # (increase the interval), a semantics that has no place on the device
-    # authorization response (whose errors follow RFC 6749 §5.2).
+    # one. Deliberately NOT an OAuth error code: RFC 8628 §3.2 says the device
+    # authorization response's errors take the RFC 6749 §5.2 (token endpoint)
+    # form, and §5.2 has no registered code for server saturation (server_error
+    # is registered for the authorization endpoint only, and slow_down is the
+    # token endpoint's POLLING signal, §3.5). So this is a plain HTTP 503 - the
+    # correct semantics for a temporary capacity exhaustion - with a message and
+    # a Retry-After hint, not a fabricated OAuth token error.
     try:
         device_code, user_code = get_device_code_store().create(
             client_id, scope, resource=validated_resources
@@ -1483,15 +1485,10 @@ def device_authorization() -> ResponseReturnValue:
             client_id=client_id,
             details={"reason": "device code store at capacity"},
         )
-        return (
-            jsonify(
-                {
-                    "error": "server_error",
-                    "error_description": "Too many pending device authorizations; retry later",
-                }
-            ),
-            503,
-        )
+        response = jsonify({"message": "Too many pending device authorizations; retry later"})
+        response.status_code = 503
+        response.headers["Retry-After"] = str(DEVICE_POLL_INTERVAL)
+        return response
 
     audit_event(
         "device_authorization_request",

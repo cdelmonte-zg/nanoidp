@@ -391,14 +391,18 @@ class TestDeviceCodeStoreCapacity:
         with pytest.raises(dc.DeviceCodeStoreFull):
             store.create("demo-client", "openid")
 
-    def test_endpoint_returns_503_server_error_at_capacity(self, client, auth_header, monkeypatch):
-        # server_error (RFC 6749 §5.2), NOT slow_down: slow_down is the token
-        # endpoint's polling response (RFC 8628 §3.5), not a device-authorization
-        # capacity error.
+    def test_endpoint_returns_plain_503_at_capacity(self, client, auth_header, monkeypatch):
+        # A plain HTTP 503 (with a message + Retry-After), NOT a fabricated OAuth
+        # error: RFC 8628 §3.2 takes the RFC 6749 §5.2 error form, which has no
+        # registered code for saturation (server_error is authorization-endpoint
+        # only; slow_down is the token endpoint's polling signal, §3.5).
         from nanoidp.services import device_code as dc
 
         monkeypatch.setattr(dc, "MAX_PENDING_DEVICE_CODES", 1)
         assert client.post("/device_authorization", headers=auth_header).status_code == 200
         resp = client.post("/device_authorization", headers=auth_header)
         assert resp.status_code == 503
-        assert json.loads(resp.data)["error"] == "server_error"
+        body = json.loads(resp.data)
+        assert "error" not in body  # not a fake OAuth token error
+        assert "message" in body
+        assert resp.headers.get("Retry-After")
