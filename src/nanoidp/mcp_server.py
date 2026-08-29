@@ -546,16 +546,15 @@ _TOOLS: list[Tool] = [
                     "type": "array",
                     "items": {"type": "string"},
                     "description": (
-                        "RFC 8707 resource indicator(s) (#187): bind the access "
-                        "token 'aud' to these resources (a string for one, an "
-                        "array for several) instead of oauth.audience, so a "
-                        "token minted for one MCP server is rejected by "
-                        "another. Each must be an absolute URI without a "
-                        "fragment. This tool mints for a user directly, with no "
-                        "client in the request, so the per-client "
-                        "allowed_resources ceiling that /token enforces does "
-                        "not apply here - the aud is whatever you pass "
-                        "(optional)"
+                        "Audience value(s) to place in the access token's 'aud' "
+                        "claim (a string for one, an array for several) instead "
+                        "of oauth.audience, so a token minted for one MCP server "
+                        "is rejected by another (#187). Unlike the 'resource' "
+                        "parameter on the OAuth grant endpoints, this "
+                        "administrative/testing tool has no client context: it "
+                        "applies no RFC 8707 syntax validation and no per-client "
+                        "allowed_resources ceiling. The supplied values are used "
+                        "directly as the audience (optional)"
                     ),
                 },
             },
