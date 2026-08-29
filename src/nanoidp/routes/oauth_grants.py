@@ -3,8 +3,9 @@
 One handler per grant type, each taking a _GrantContext and returning a
 _GrantOutcome (issuance parameters) or a Flask error response. token() in
 routes/oauth.py does the shared validation and dispatches through
-_GRANT_HANDLERS. These handlers depend only on services/models, never back
-on routes.oauth, so the import is one-way.
+_GRANT_HANDLERS. These handlers depend on lower-level services/models and the
+shared route audit helper (._audit), never back on routes.oauth, so the import
+stays one-way and there is no cycle.
 """
 
 from dataclasses import dataclass
