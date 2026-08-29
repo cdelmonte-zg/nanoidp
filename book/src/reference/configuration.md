@@ -391,6 +391,9 @@ reuse detection (OAuth 2.1 §4.3.1/§6.1), whatever
 must match, otherwise the response is still `200` and nothing is revoked
 (RFC 7009 §2.1 and its privacy guidance). `/introspect` stays
 authenticated (RFC 7662): a public `client_id` is not authentication.
+`/device_authorization` accepts a public client by `client_id` alone
+(RFC 8628 §3.1, #255) - it presents the `client_id` as a parameter, not
+via HTTP Basic or a secret, and the issued `device_code` is bound to it.
 A confidential client authenticates on every grant, `authorization_code`
 included (RFC 6749 §3.2.1); a missing or wrong secret is `invalid_client`.
 The registered `token_endpoint_auth_method` is enforced (RFC 7591) at
@@ -409,6 +412,18 @@ than introduce a second field. A client that authenticated to these
 endpoints over the other channel before must now use the channel its
 `token_endpoint_auth_method` names (or be re-registered for the method it
 actually uses).
+
+Public-client handling differs by endpoint (each follows its own RFC), so
+here it is in one place:
+
+| Endpoint | A public client (`token_endpoint_auth_method: "none"`) |
+|----------|--------------------------------------------------------|
+| `/authorize` | Accepted; PKCE with `S256` is mandatory regardless of profile (OAuth 2.1 §7.5.1). |
+| `/token` - `authorization_code`, `refresh_token`, `device_code` | Identified by `client_id` alone; refresh tokens always rotate with reuse detection. |
+| `/token` - `client_credentials` | Refused with `unauthorized_client` (the grant IS client authentication). |
+| `/device_authorization` | Accepted by `client_id` alone (RFC 8628 §3.1); HTTP Basic or a `client_secret` is rejected; the `device_code` is bound to the client. |
+| `/revoke` | Accepted by `client_id` alone; an ownership check on the token's `client_id` claim stands in for authentication (RFC 7009 §2.1). |
+| `/introspect` | Refused - a public `client_id` is not authentication (RFC 7662); `none` is not in `introspection_endpoint_auth_methods_supported`. |
 
 **Authorization response `iss`** (issue #189, RFC 9207): `/authorize`
 returns `iss=<effective issuer>` on every response delivered through a
