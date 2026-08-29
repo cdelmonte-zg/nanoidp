@@ -158,6 +158,41 @@ class TestTokenToolBranches:
         assert verified["claims"]["sub"] == "admin"
 
     @pytest.mark.asyncio
+    async def test_resource_bound_token_verifies_and_simulates_a_resource_server(
+        self, mcp_config, mcp_call_tool
+    ):
+        """#187: generate_token binds the aud to a resource, and verify_token
+        with no audience accepts it (a resource-bound token is not falsely
+        invalid), while an explicit audience simulates a resource server
+        accepting a token for itself and rejecting one minted for another."""
+        import base64 as _b64
+
+        generated = _payload(
+            await mcp_call_tool(
+                "generate_token",
+                {"username": "admin", "scope": "openid", "resource": ["https://mcp-a/x"]},
+            )
+        )
+        token = generated["access_token"]
+        aud = json.loads(_b64.urlsafe_b64decode(token.split(".")[1] + "==="))["aud"]
+        assert aud == "https://mcp-a/x"
+
+        # No audience: valid, claims returned (the aud is visible).
+        any_aud = _payload(await mcp_call_tool("verify_token", {"token": token}))
+        assert any_aud["valid"] is True
+        assert any_aud["claims"]["aud"] == "https://mcp-a/x"
+
+        # For its own resource: valid; for another: invalid.
+        for_a = _payload(
+            await mcp_call_tool("verify_token", {"token": token, "audience": "https://mcp-a/x"})
+        )
+        for_b = _payload(
+            await mcp_call_tool("verify_token", {"token": token, "audience": "https://mcp-b/y"})
+        )
+        assert for_a["valid"] is True
+        assert for_b["valid"] is not True
+
+    @pytest.mark.asyncio
     async def test_generate_token_unknown_user_fails(self, mcp_config, mcp_call_tool):
         result = await mcp_call_tool("generate_token", {"username": "ghost"})
         assert result.is_error is True

@@ -542,6 +542,18 @@ _TOOLS: list[Tool] = [
                         "would scope-gate them out."
                     ),
                 },
+                "resource": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "RFC 8707 resource indicator(s) (#187): bind the access "
+                        "token 'aud' to these resources (a string for one, an "
+                        "array for several) instead of oauth.audience, so a "
+                        "token minted for one MCP server is rejected by "
+                        "another. Each must be an absolute URI without a "
+                        "fragment (optional)"
+                    ),
+                },
             },
             "required": ["username"],
         },
@@ -569,6 +581,18 @@ _TOOLS: list[Tool] = [
                 "token": {
                     "type": "string",
                     "description": "JWT token to verify",
+                },
+                "audience": {
+                    "type": "string",
+                    "description": (
+                        "Expected audience (#187). Omit to verify signature "
+                        "and expiry only and return the claims (so a "
+                        "resource-bound access token is not falsely reported "
+                        "invalid). Provide a value to also require the token's "
+                        "'aud' to match it - how you simulate a resource "
+                        "server accepting a token for itself and rejecting one "
+                        "minted for another (optional)"
+                    ),
                 },
             },
             "required": ["token"],
@@ -1303,6 +1327,9 @@ def _tool_generate_token(arguments: dict[str, Any], config: ConfigManager) -> di
         or None,
         userinfo_claims=_normalize_str_list(arguments.get("userinfo_claims"), "userinfo_claims")
         or None,
+        # RFC 8707 resource indicators (#187): bind the access token aud to
+        # the given resource(s), the same as sending resource on /token.
+        resource=_normalize_str_list(arguments.get("resource"), "resource") or None,
     )
     result = {
         "success": True,
@@ -1328,8 +1355,15 @@ def _tool_decode_token(arguments: dict[str, Any], config: ConfigManager) -> dict
 def _tool_verify_token(arguments: dict[str, Any], config: ConfigManager) -> dict[str, Any]:
     token = arguments["token"]
     crypto = get_crypto_service(config.settings.keys_dir)
+    # audience: optional (#187). Omitted -> verify signature and expiry only
+    # and return the claims (the aud is in them), so a resource-bound access
+    # token (aud = an RFC 8707 resource, not oauth.audience) is not falsely
+    # reported invalid. Provided -> verify the token is valid FOR that
+    # audience, which is how a caller simulates a resource server accepting
+    # or rejecting a token ("valid for A, not for B").
+    audience = arguments.get("audience")
     try:
-        payload = crypto.verify_jwt(token, config.settings.audience)
+        payload = crypto.verify_jwt(token, audience)
         return {"valid": True, "claims": payload}
     except Exception as e:
         # A rejected token is verify_token's designed answer, not a tool
