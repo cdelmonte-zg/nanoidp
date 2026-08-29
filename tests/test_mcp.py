@@ -1092,6 +1092,7 @@ class TestGenerateTokenClaims:
         result = await self._generate(
             {
                 "username": "admin",
+                "client_id": "demo-client",
                 "scope": "openid",
                 "id_token_claims": ["email"],
                 "userinfo_claims": ["department"],
@@ -1117,3 +1118,39 @@ class TestGenerateTokenClaims:
             refreshed["access_token"], options={"verify_signature": False}
         )
         assert access_payload["req_userinfo_claims"] == ["department"]
+
+    @pytest.mark.asyncio
+    async def test_unbound_token_has_no_refresh_token(self, app):
+        """Without client_id, generate_token mints an UNBOUND access token and
+        issues NO refresh token: a refresh token with no client_id binding is
+        refused since 3.0 (#73), so handing one back would be a dead credential."""
+        result = await self._generate({"username": "admin", "scope": "openid"})
+        assert "access_token" in result
+        assert "refresh_token" not in result
+
+    @pytest.mark.asyncio
+    async def test_bound_token_refresh_token_is_spendable(self, app, client, auth_header):
+        """With a valid client_id, the token is bound and its refresh token can
+        be spent by that client."""
+        result = await self._generate({"username": "admin", "scope": "openid", "client_id": "demo-client"})
+        resp = client.post(
+            "/token",
+            data={"grant_type": "refresh_token", "refresh_token": result["refresh_token"]},
+            headers=auth_header,
+        )
+        assert resp.status_code == 200, resp.data
+
+    @pytest.mark.asyncio
+    async def test_unknown_client_id_is_rejected(self, app):
+        """A client_id that names no configured client is refused up front,
+        rather than stamping a binding no authenticable client could match."""
+        from nanoidp.config import get_config
+        from nanoidp.mcp_server import _execute_tool
+
+        result = await _execute_tool(
+            "generate_token",
+            {"username": "admin", "client_id": "does-not-exist"},
+            get_config(),
+        )
+        assert result["success"] is False
+        assert "does-not-exist" in result["error"]

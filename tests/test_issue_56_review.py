@@ -69,8 +69,10 @@ class TestRefreshTokenClientBinding:
         # OIDC Core §12.2: the refreshed ID Token aud MUST equal the original
         assert refreshed_aud == original_aud == "demo-client"
 
-    def test_legacy_refresh_token_without_binding_still_works(self, app, client, auth_header):
-        """Tokens minted before the client_id claim existed keep working."""
+    def test_legacy_refresh_token_without_binding_is_rejected(self, app, client, auth_header):
+        """3.0 (#73): a refresh token with no client_id binding claim - minted
+        before the binding existed - is refused with invalid_grant, ending the
+        transitional compat that let any authenticated client spend it."""
         with app.app_context():
             from nanoidp.services import get_crypto_service
             settings = get_config().settings
@@ -81,7 +83,8 @@ class TestRefreshTokenClientBinding:
                 extra={"token_type": "refresh", "token_use": "refresh"},
             )
         resp = _refresh(client, auth_header, legacy)
-        assert resp.status_code == 200
+        assert resp.status_code == 400
+        assert json.loads(resp.data)["error"] == "invalid_grant"
 
 
 class TestAtomicRotationAndFamilies:

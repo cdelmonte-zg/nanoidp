@@ -506,6 +506,17 @@ _TOOLS: list[Tool] = [
                     "type": "integer",
                     "description": "Token expiration in minutes (optional, default: 60)",
                 },
+                "client_id": {
+                    "type": "string",
+                    "description": (
+                        "Bind the token to this client (optional; must name a "
+                        "real client). Stamps the client_id claim and issues a "
+                        "refresh token spendable by that client. Omit for an "
+                        "unbound token: NO refresh token is issued (an unbound "
+                        "one could not be spent since 3.0, #73), just an access "
+                        "token, fine for a one-shot test"
+                    ),
+                },
                 "extra_claims": {
                     "type": "object",
                     "description": "Additional claims to include in the token",
@@ -1320,12 +1331,28 @@ def _tool_generate_token(arguments: dict[str, Any], config: ConfigManager) -> di
     if not user:
         return {"success": False, "error": f"User '{username}' not found"}
 
+    # Optional client binding (#73). A given client_id must name a real client:
+    # binding to an unknown one would stamp a client_id claim no authenticable
+    # client could ever match, i.e. a refresh token that looks bound but is
+    # dead - reject it up front instead.
+    client_id = arguments.get("client_id")
+    if client_id is not None and config.get_client(client_id) is None:
+        return {"success": False, "error": f"Client '{client_id}' not found"}
+
     token_service = get_token_service()
     token_response = token_service.create_token(
         user=user,
         exp_minutes=arguments.get("expires_in_minutes", config.settings.token_expiry_minutes),
         extra_claims=arguments.get("extra_claims"),
         scope=arguments.get("scope"),
+        # Client binding (#73): with client_id, the token is bound and a
+        # refresh token is issued (spendable by that client). Without it the
+        # token is unbound and NO refresh token is issued at all - a refresh
+        # token with no client_id binding is refused since 3.0, so handing one
+        # back would be a dead credential. The unbound access token is still
+        # fine for a one-shot test.
+        client_id=client_id,
+        issue_refresh_token=client_id is not None,
         # _execute_tool is also reachable directly (see tests), bypassing
         # call_tool's input_schema validation; reject a non-list with a
         # clean error here too instead of minting a token whose malformed
@@ -1339,10 +1366,10 @@ def _tool_generate_token(arguments: dict[str, Any], config: ConfigManager) -> di
         # given resource(s). BOUNDARY: unlike /token, /authorize and
         # /device_authorization - which run every requested resource through
         # resolve_resources and reject one outside the client's
-        # allowed_resources with invalid_target - this tool has no client in
-        # the request. It mints a token directly for a user (a testing /
-        # simulation affordance, not an OAuth grant), so there is no per-client
-        # allowed_resources ceiling to apply and the aud is whatever is passed.
+        # allowed_resources with invalid_target - this tool never applies that
+        # per-client ceiling, even when client_id is given for the refresh
+        # binding above: it mints a token directly (a testing / simulation
+        # affordance, not an OAuth grant), so the aud is whatever is passed.
         # That is deliberate; a reader expecting parity with /token should know
         # the ceiling lives on the grant endpoints, not on this admin tool.
         resource=_normalize_str_list(arguments.get("resource"), "resource") or None,
@@ -1350,10 +1377,13 @@ def _tool_generate_token(arguments: dict[str, Any], config: ConfigManager) -> di
     result = {
         "success": True,
         "access_token": token_response["access_token"],
-        "refresh_token": token_response["refresh_token"],
         "token_type": token_response["token_type"],
         "expires_in": token_response["expires_in"],
     }
+    # Present only for a bound (client_id) token; create_token omits the key
+    # entirely when no refresh token is issued.
+    if "refresh_token" in token_response:
+        result["refresh_token"] = token_response["refresh_token"]
     if "id_token" in token_response:
         result["id_token"] = token_response["id_token"]
     return result
