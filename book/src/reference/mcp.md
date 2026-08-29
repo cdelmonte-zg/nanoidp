@@ -17,7 +17,7 @@ readonly mode, and the exposure warnings, see the
 | `create_persona_user` | Create a password-less user for persona login mode (local dev/testing convenience) |
 | `update_user` | Update an existing user (password, email, roles, …) |
 | `delete_user` | Delete a user |
-| `generate_token` | Generate OAuth2 tokens for a user (pass `scope` with `openid` to also get an ID Token; `id_token_claims`/`userinfo_claims` mirror the OIDC `claims` request parameter; `resource` binds the access token `aud` to an RFC 8707 resource, #187; `client_id` binds the token to a client so its refresh token is spendable - omit for an unbound, non-refreshable token, #73) |
+| `generate_token` | Generate OAuth2 tokens for a user (pass `scope` with `openid` to also get an ID Token; `id_token_claims`/`userinfo_claims` mirror the OIDC `claims` request parameter; `resource` binds the access token `aud` to an RFC 8707 resource, #187; `client_id` (must name a real client) binds the token and issues a refresh token spendable by it - omit for an unbound access token with no refresh token, #73) |
 | `decode_token` | Decode JWT token (without verification) |
 | `verify_token` | Verify JWT token signature and expiration (pass `audience` to also require the token's `aud` to match, simulating a resource server; omit it to accept a resource-bound token and read its claims, #187) |
 | `list_clients` | List OAuth clients |
