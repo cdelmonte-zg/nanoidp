@@ -307,13 +307,24 @@ def _read_bytes(file_path: Path) -> bytes:
     return file_path.read_bytes()
 
 
+def revision_of_bytes(raw: bytes) -> Revision:
+    """The revision of content a caller has already read.
+
+    One recipe for the whole codebase: a reader that parses raw bytes
+    itself (ConfigManager._stage_directory, #229 phase 5) must hash the
+    bytes it actually parsed, not re-read the file - a second read could
+    hash different content than what its parse saw.
+    """
+    return hashlib.sha256(raw).hexdigest()
+
+
 def current_revision(file_path: Path) -> Revision:
     """The revision a reader hands back later as ``expected_revision``.
 
     A missing file has a well-defined revision (the hash of empty bytes),
     so a caller can request "only create this if it still doesn't exist".
     """
-    return hashlib.sha256(_read_bytes(file_path)).hexdigest()
+    return revision_of_bytes(_read_bytes(file_path))
 
 
 WriteItem = Tuple[Path, Optional[Revision], Callable[[Dict[str, Any]], Any]]

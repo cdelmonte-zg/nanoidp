@@ -17,7 +17,7 @@ import pytest
 import yaml
 
 from nanoidp.config import ConfigManager, ReloadAfterSaveError
-from nanoidp.config_writer import ConflictError, LockUnavailableError
+from nanoidp.config_writer import ConflictError, LockUnavailableError, current_revision
 from nanoidp.hooks import HookError
 
 
@@ -305,7 +305,7 @@ class TestConfigToolBranches:
     async def test_save_config_failure_is_a_clean_error(
         self, mcp_config, mcp_call_tool, monkeypatch
     ):
-        def _failing_save():
+        def _failing_save(**kwargs):
             raise OSError("disk full")
 
         monkeypatch.setattr(mcp_config, "save", _failing_save)
@@ -323,7 +323,7 @@ class TestConfigToolBranches:
         was written" (ConflictError) apart from the other two save()
         failure modes by more than the free-text error message."""
 
-        def _failing_save():
+        def _failing_save(**kwargs):
             raise ConflictError("settings.yaml changed since it was last read")
 
         monkeypatch.setattr(mcp_config, "save", _failing_save)
@@ -341,7 +341,7 @@ class TestConfigToolBranches:
         mirror hook fails - the error text says so, and 'kind' carries
         the hook's own kind rather than a generic one."""
 
-        def _failing_save():
+        def _failing_save(**kwargs):
             raise HookError("on_config_saved shell hook exited 1", kind="on_config_saved")
 
         monkeypatch.setattr(mcp_config, "save", _failing_save)
@@ -361,7 +361,7 @@ class TestConfigToolBranches:
         mistake this for "nothing was written" and retry expecting a
         different outcome."""
 
-        def _failing_save():
+        def _failing_save(**kwargs):
             raise ReloadAfterSaveError("runtime could not reload settings.yaml")
 
         monkeypatch.setattr(mcp_config, "save", _failing_save)
@@ -382,7 +382,7 @@ class TestConfigToolBranches:
         actually catch it rather than falling through to the generic
         branch, which would drop 'kind' entirely."""
 
-        def _failing_save():
+        def _failing_save(**kwargs):
             raise LockUnavailableError(
                 "Timed out after 10.0s waiting for the write lock", kind="lock_timeout"
             )
@@ -409,6 +409,114 @@ class TestConfigToolBranches:
         rotated = _payload(await mcp_call_tool("rotate_keys", {}))
         assert rotated["success"] is True
         assert rotated["new_kid"] != kid_before
+
+
+class TestRevisionPreconditions:
+    """#229 phase 5: the read tools hand out the revisions the runtime was
+    loaded from, and save_config accepts them as optional preconditions -
+    the MCP leg of the same read -> mutate -> conflict-checked-save loop
+    the web UI's forms got in phase 4."""
+
+    @pytest.mark.asyncio
+    async def test_read_tools_expose_the_loaded_revisions(
+        self, mcp_config, mcp_call_tool
+    ):
+        users_rev = mcp_config.users_revision
+        settings_rev = mcp_config.settings_revision
+
+        assert _payload(await mcp_call_tool("list_users", {}))["users_revision"] == users_rev
+        found = _payload(await mcp_call_tool("get_user", {"username": "admin"}))
+        assert found["users_revision"] == users_rev
+        # The not-found branch carries it too: get_user -> create_user ->
+        # save_config is "create only if the file still looks like it did
+        # when I saw them absent".
+        absent = _payload(await mcp_call_tool("get_user", {"username": "nobody"}))
+        assert absent["found"] is False
+        assert absent["users_revision"] == users_rev
+
+        assert (
+            _payload(await mcp_call_tool("list_clients", {}))["settings_revision"]
+            == settings_rev
+        )
+        client = _payload(await mcp_call_tool("get_client", {"client_id": "branch-client"}))
+        assert client["settings_revision"] == settings_rev
+        no_client = _payload(await mcp_call_tool("get_client", {"client_id": "ghost"}))
+        assert no_client["found"] is False
+        assert no_client["settings_revision"] == settings_rev
+
+        assert (
+            _payload(await mcp_call_tool("get_settings", {}))["settings_revision"]
+            == settings_rev
+        )
+
+    @pytest.mark.asyncio
+    async def test_reload_config_hands_back_fresh_revisions(
+        self, mcp_config, mcp_call_tool
+    ):
+        settings_file = mcp_config.config_dir / "settings.yaml"
+        settings_file.write_text(settings_file.read_text() + "\n# another writer\n")
+
+        payload = _payload(await mcp_call_tool("reload_config", {}))
+
+        assert payload["success"] is True
+        assert payload["settings_revision"] == current_revision(settings_file)
+        assert payload["users_revision"] == current_revision(
+            mcp_config.config_dir / "users.yaml"
+        )
+
+    @pytest.mark.asyncio
+    async def test_save_config_with_fresh_revisions_succeeds_and_chains(
+        self, mcp_config, mcp_call_tool
+    ):
+        _payload(await mcp_call_tool("update_settings", {"audience": "rev-aud"}))
+        payload = _payload(
+            await mcp_call_tool(
+                "save_config",
+                {
+                    "expected_users_revision": mcp_config.users_revision,
+                    "expected_settings_revision": mcp_config.settings_revision,
+                },
+            )
+        )
+
+        assert payload["success"] is True
+        saved = yaml.safe_load((mcp_config.config_dir / "settings.yaml").read_text())
+        assert saved["oauth"]["audience"] == "rev-aud"
+        # The response's revisions describe what was just written, so a
+        # follow-up save can chain from them without another read call.
+        assert payload["settings_revision"] == current_revision(
+            mcp_config.config_dir / "settings.yaml"
+        )
+        assert payload["users_revision"] == current_revision(
+            mcp_config.config_dir / "users.yaml"
+        )
+
+    @pytest.mark.asyncio
+    async def test_save_config_with_a_stale_revision_is_refused_writing_nothing(
+        self, mcp_config, mcp_call_tool
+    ):
+        """The real two-writer path, no monkeypatching: another writer
+        moves users.yaml after this runtime loaded; a save carrying the
+        loaded revision must be refused with kind 'conflict' and leave
+        BOTH files exactly as that writer left them."""
+        loaded_users_rev = mcp_config.users_revision
+        users_file = mcp_config.config_dir / "users.yaml"
+        settings_file = mcp_config.config_dir / "settings.yaml"
+        users_file.write_text(users_file.read_text() + "\n# another writer\n")
+        users_before = users_file.read_bytes()
+        settings_before = settings_file.read_bytes()
+
+        _payload(await mcp_call_tool("update_settings", {"audience": "must-not-land"}))
+        result = await mcp_call_tool(
+            "save_config", {"expected_users_revision": loaded_users_rev}
+        )
+
+        assert result.is_error is True
+        payload = _payload(result)
+        assert payload["success"] is False
+        assert payload["kind"] == "conflict"
+        assert users_file.read_bytes() == users_before
+        assert settings_file.read_bytes() == settings_before
 
 
 class TestDispatchGuards:

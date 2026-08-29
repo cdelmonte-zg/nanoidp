@@ -200,6 +200,8 @@ class TestMCPSecurityIntegration:
             config.users = {}
             # Concrete, or the tool result is a MagicMock that cannot be serialized.
             config.default_user = "admin"
+            config.users_revision = "0" * 64
+            config.settings_revision = "0" * 64
             config.settings.clients = []
             config.settings.issuer = "http://localhost:8000"
             config.settings.audience = "test"

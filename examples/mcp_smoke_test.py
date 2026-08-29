@@ -83,6 +83,44 @@ async def run(config_dir: str) -> int:
                 return 1
             print("[OK] get_keys_info")
 
+            # Revision preconditions (#229 phase 5). Read tools hand out the
+            # revision of the file the runtime was loaded from; save_config
+            # with a deliberately WRONG revision must be refused with kind
+            # 'conflict' before anything is written. Deliberately no
+            # positive save here: this script may run against a checked-in
+            # config directory, and the conflict branch is the one leg
+            # guaranteed to leave every file byte-identical.
+            result = await session.call_tool("list_users", {})
+            users_payload = json.loads(result.content[0].text)
+            users_revision = users_payload.get("users_revision", "")
+            if len(users_revision) != 64:
+                print(f"[FAIL] list_users users_revision not a sha256 hex: {users_revision!r}")
+                return 1
+            result = await session.call_tool("get_settings", {})
+            settings_payload = json.loads(result.content[0].text)
+            if len(settings_payload.get("settings_revision", "")) != 64:
+                print(
+                    f"[FAIL] get_settings settings_revision not a sha256 hex: "
+                    f"{settings_payload.get('settings_revision')!r}"
+                )
+                return 1
+            result = await session.call_tool(
+                "save_config", {"expected_users_revision": "0" * 64}
+            )
+            conflict = json.loads(result.content[0].text)
+            if conflict.get("success") is not False or conflict.get("kind") != "conflict":
+                print(f"[FAIL] stale save_config not refused as a conflict: {conflict!r}")
+                return 1
+            result = await session.call_tool("list_users", {})
+            after = json.loads(result.content[0].text).get("users_revision")
+            if after != users_revision:
+                print(
+                    f"[FAIL] users.yaml moved despite the refused save: "
+                    f"{users_revision} -> {after}"
+                )
+                return 1
+            print("[OK] revision preconditions: read tools expose them, stale save refused")
+
             # NANOIDP_E2E_PLUGIN: the installed reference plugin, bootstrapped
             # through NANOIDP_BOOTSTRAP_PLUGIN, must be visible to an agent
             # through get_settings (#185 parity with /api/config).

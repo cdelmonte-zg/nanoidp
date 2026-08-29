@@ -894,21 +894,47 @@ _TOOLS: list[Tool] = [
             "via create/update tools without persist=True support). Writes "
             "users.yaml and settings.yaml as one coordinated, conflict-checked "
             "save (#229) and then refreshes the running configuration from "
-            "what was just written. A failure response's 'kind' distinguishes "
-            "four outcomes: 'conflict' (nothing was written - unused by this "
-            "tool today, reserved for a future precondition), 'lock_timeout' "
-            "or 'lock_unsupported' (nothing was written either - the write "
-            "never started; lock_timeout is worth retrying, lock_unsupported "
-            "means this config directory's filesystem does not support "
-            "advisory locks and will not succeed on retry), a hook's own "
-            "'kind' under hooks.strict (both files ARE written; only the "
-            "mirror push failed), or 'reload_after_save' (both files ARE "
-            "written but the runtime could not adopt them - do not retry "
-            "expecting a different result, the file on disk is authoritative)."
+            "what was just written. To refuse the save if another writer "
+            "(the web UI, another agent, a second nanoidp process on the "
+            "same directory) changed a file since you read it, pass the "
+            "expected_users_revision / expected_settings_revision a read "
+            "tool handed back (list_users and get_user carry "
+            "users_revision; list_clients, get_client and get_settings "
+            "carry settings_revision; reload_config and a successful "
+            "save_config carry both). Omitting them keeps today's "
+            "unconditional last-write-wins. A failure response's 'kind' "
+            "distinguishes four outcomes: 'conflict' (nothing was written - "
+            "a supplied revision was stale; call reload_config, reapply "
+            "your change on the fresh state and save with the revisions "
+            "from its response), 'lock_timeout' or 'lock_unsupported' "
+            "(nothing was written either - the write never started; "
+            "lock_timeout is worth retrying, lock_unsupported means this "
+            "config directory's filesystem does not support advisory locks "
+            "and will not succeed on retry), a hook's own 'kind' under "
+            "hooks.strict (both files ARE written; only the mirror push "
+            "failed), or 'reload_after_save' (both files ARE written but "
+            "the runtime could not adopt them - do not retry expecting a "
+            "different result, the file on disk is authoritative)."
         ),
         input_schema={
             "type": "object",
-            "properties": {},
+            "properties": {
+                "expected_users_revision": {
+                    "type": "string",
+                    "description": (
+                        "users.yaml revision from a read tool; the save is "
+                        "refused with kind 'conflict' if the file no longer "
+                        "matches it. Omit for unconditional last-write-wins."
+                    ),
+                },
+                "expected_settings_revision": {
+                    "type": "string",
+                    "description": (
+                        "settings.yaml revision from a read tool; same "
+                        "contract as expected_users_revision."
+                    ),
+                },
+            },
             "required": [],
         },
     ),
@@ -1113,6 +1139,10 @@ def _tool_list_users(arguments: dict[str, Any], config: ConfigManager) -> dict[s
     return {
         "count": len(users),
         "default_user": config.default_user,
+        # The users.yaml revision this runtime was loaded from (#229 phase
+        # 5): pass it to save_config as expected_users_revision to refuse
+        # the save if another writer moved the file since.
+        "users_revision": config.users_revision,
         "users": users,
     }
 
@@ -1121,8 +1151,11 @@ def _tool_get_user(arguments: dict[str, Any], config: ConfigManager) -> dict[str
     username = arguments["username"]
     user = config.get_user(username)
     if user:
-        return {"found": True, "user": _user_to_dict(user)}
-    return {"found": False, "username": username}
+        return {"found": True, "user": _user_to_dict(user), "users_revision": config.users_revision}
+    # Meaningful on the not-found branch too: get_user -> create_user ->
+    # save_config(expected_users_revision=...) is "create this user only
+    # if the file still looks like it did when I saw them absent".
+    return {"found": False, "username": username, "users_revision": config.users_revision}
 
 
 def _tool_create_user(arguments: dict[str, Any], config: ConfigManager) -> dict[str, Any]:
@@ -1248,15 +1281,25 @@ def _tool_verify_token(arguments: dict[str, Any], config: ConfigManager) -> dict
 # Client Management
 def _tool_list_clients(arguments: dict[str, Any], config: ConfigManager) -> dict[str, Any]:
     clients = [_client_to_dict(c) for c in config.settings.clients]
-    return {"count": len(clients), "clients": clients}
+    # Clients live in settings.yaml, so their precondition is the
+    # settings revision (#229 phase 5).
+    return {
+        "count": len(clients),
+        "settings_revision": config.settings_revision,
+        "clients": clients,
+    }
 
 
 def _tool_get_client(arguments: dict[str, Any], config: ConfigManager) -> dict[str, Any]:
     client_id = arguments["client_id"]
     client = config.get_client(client_id)
     if client:
-        return {"found": True, "client": _client_to_dict(client)}
-    return {"found": False, "client_id": client_id}
+        return {
+            "found": True,
+            "client": _client_to_dict(client),
+            "settings_revision": config.settings_revision,
+        }
+    return {"found": False, "client_id": client_id, "settings_revision": config.settings_revision}
 
 
 def _tool_create_client(arguments: dict[str, Any], config: ConfigManager) -> dict[str, Any]:
@@ -1365,6 +1408,9 @@ def _tool_get_settings(arguments: dict[str, Any], config: ConfigManager) -> dict
         # Same key as GET /api/config (#175): the contract an agent targets.
         "config_version": config.config_version,
         "config_validation": "strict" if config.strict_config else "warn",
+        # The settings.yaml revision this runtime was loaded from (#229
+        # phase 5), for save_config's expected_settings_revision.
+        "settings_revision": config.settings_revision,
         "issuer": settings.issuer,
         "issuer_from_request": settings.issuer_from_request,
         "issuer_allowlist": settings.issuer_allowlist,
@@ -1424,7 +1470,15 @@ def _tool_reload_config(arguments: dict[str, Any], config: ConfigManager) -> dic
         config.reload()
     except HookError as exc:
         return {"success": False, "error": f"Reload failed: {exc.message}", "kind": exc.kind}
-    return {"success": True, "message": "Configuration reloaded"}
+    # Fresh revisions right in the response (#229 phase 5): after a
+    # save_config conflict, reload -> reapply the change -> save with
+    # these, without another read call in between.
+    return {
+        "success": True,
+        "message": "Configuration reloaded",
+        "users_revision": config.users_revision,
+        "settings_revision": config.settings_revision,
+    }
 
 
 def _tool_validate_config(arguments: dict[str, Any], config: ConfigManager) -> dict[str, Any]:
@@ -1539,11 +1593,24 @@ def _tool_update_settings(arguments: dict[str, Any], config: ConfigManager) -> d
 
 def _tool_save_config(arguments: dict[str, Any], config: ConfigManager) -> dict[str, Any]:
     try:
-        config.save()
-        return {"success": True, "message": "Configuration saved to YAML files"}
+        # Optional preconditions (#229 phase 5): the revisions a read tool
+        # (list_users/get_user, list_clients/get_client/get_settings) or
+        # reload_config handed back. Absent = unconditional last-write-wins,
+        # same as save()'s own default and the UI's revision-less forms.
+        config.save(
+            expected_users_revision=arguments.get("expected_users_revision"),
+            expected_settings_revision=arguments.get("expected_settings_revision"),
+        )
+        # The post-save reload refreshed the tracked revisions to what was
+        # just written, so a follow-up save can chain from this response.
+        return {
+            "success": True,
+            "message": "Configuration saved to YAML files",
+            "users_revision": config.users_revision,
+            "settings_revision": config.settings_revision,
+        }
     except ConflictError as exc:
-        # Nothing was written - the precondition (unused by this tool
-        # today, but shared by the underlying save()) was stale.
+        # Nothing was written - a supplied expected_*_revision was stale.
         return {"success": False, "error": exc.message, "kind": exc.kind}
     except LockUnavailableError as exc:
         # Nothing was written either - the lock is acquired before

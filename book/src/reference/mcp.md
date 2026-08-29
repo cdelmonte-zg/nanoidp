@@ -27,8 +27,8 @@ readonly mode, and the exposure warnings, see the
 | `delete_client` | Delete an OAuth client |
 | `get_settings` | Get current IdP settings |
 | `update_settings` | Update IdP settings |
-| `save_config` | Persist the current configuration to the YAML files |
-| `reload_config` | Reload configuration from files |
+| `save_config` | Persist the current configuration to the YAML files, optionally guarded by `expected_users_revision` / `expected_settings_revision` (see below) |
+| `reload_config` | Reload configuration from files (the response carries fresh `users_revision` / `settings_revision`) |
 | `validate_config` | Lint the running config directory without starting or executing anything (no hook, no plugin): `{valid, findings}` |
 | `get_oidc_discovery` | Get OIDC discovery document (same document as `/.well-known/openid-configuration`) |
 | `get_jwks` | Get JSON Web Key Set |
@@ -37,6 +37,22 @@ readonly mode, and the exposure warnings, see the
 | `clear_audit_log` | Clear the audit log |
 | `get_keys_info` | Get signing key info (active kid, previous keys) |
 | `rotate_keys` | Rotate signing keys (old key stays valid for verification) |
+
+## Conflict-checked saves
+
+The declared configuration can have several writers at once: the web UI,
+another agent, or a second nanoidp process (a Flask server and a
+`nanoidp-mcp` companion) on the same directory. To catch a concurrent
+change instead of silently overwriting it, the read tools return the
+revision of the file the runtime was loaded from - `list_users` and
+`get_user` carry `users_revision`; `list_clients`, `get_client` and
+`get_settings` carry `settings_revision` - and `save_config` accepts them
+back as `expected_users_revision` / `expected_settings_revision`. A save
+whose revision no longer matches the file is refused with
+`{"success": false, "kind": "conflict"}` before anything is written: call
+`reload_config`, reapply the change on the fresh state, and save again
+with the revisions from its response. Omitting the revisions keeps the
+save unconditional (last write wins), same as before.
 
 ## Claude Code configuration
 
