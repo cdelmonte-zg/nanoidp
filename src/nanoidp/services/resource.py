@@ -20,22 +20,87 @@ clients are unaffected - RFC 8707 makes the parameter optional, and the MCP
 requirement to send it is an obligation on the client, not the AS.
 """
 
+import ipaddress
 import re
 from dataclasses import dataclass
 from typing import List, Optional
-from urllib.parse import urlparse
+from urllib.parse import urlsplit
 
 from ..models import OAuthClient
 
-# The characters RFC 3986 permits in a URI: unreserved, gen-delims,
-# sub-delims and the percent sign for percent-encoding. urlparse is a
-# permissive parser, not an RFC 3986 validator - it happily accepts a raw
-# space in the authority - so a resource indicator is charset-checked
-# against this set first (#254 review).
-# \Z, not $: in Python '$' also matches just before a trailing newline, so a
-# value ending in an (encoded) newline would slip past this control-character
-# guard and land in the token aud (#256 review). \Z anchors the true end.
+# The characters RFC 3986 permits anywhere in a URI: unreserved, gen-delims,
+# sub-delims and the percent sign. This is a pre-parse guard, NOT the whole
+# check: urlsplit is a permissive parser (it accepts a raw space) AND it
+# silently strips ASCII tab/newline before parsing (WHATWG behaviour), so a
+# value carrying a control character would otherwise reach the token aud with
+# the control character removed. Rejecting anything outside this set first
+# catches the space, tab, newline, control and non-ASCII bytes the
+# per-component grammar below never sees (#254/#256 review).
+# \Z, not $: in Python '$' also matches just before a trailing newline.
 _RFC3986_CHARS = re.compile(r"\A[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=%]*\Z")
+
+# RFC 3986 per-component ABNF (#257). A single global whitelist accepts '[' and
+# ']' anywhere and leans on urlsplit's numeric-range port check; the grammar is
+# per component: brackets are legal only inside an IP-literal host, a port is
+# *DIGIT, and path/query pchar excludes the gen-delims a whitelist would admit.
+_UNRESERVED = r"A-Za-z0-9\-._~"
+_SUB_DELIMS = r"!$&'()*+,;="
+_PCT = r"%[0-9A-Fa-f]{2}"
+# pchar = unreserved / pct-encoded / sub-delims / ":" / "@"
+_PCHAR = rf"(?:[{_UNRESERVED}{_SUB_DELIMS}:@]|{_PCT})"
+_SCHEME_RE = re.compile(r"\A[A-Za-z][A-Za-z0-9+\-.]*\Z")
+# userinfo = *( unreserved / pct-encoded / sub-delims / ":" )
+_USERINFO_RE = re.compile(rf"\A(?:[{_UNRESERVED}{_SUB_DELIMS}:]|{_PCT})*\Z")
+# reg-name = *( unreserved / pct-encoded / sub-delims ) - also matches IPv4address
+_REG_NAME_RE = re.compile(rf"\A(?:[{_UNRESERVED}{_SUB_DELIMS}]|{_PCT})*\Z")
+_PORT_RE = re.compile(r"\A[0-9]*\Z")  # port = *DIGIT
+# path = *( pchar / "/" ); query = *( pchar / "/" / "?" )
+_PATH_RE = re.compile(rf"\A(?:{_PCHAR}|/)*\Z")
+_QUERY_RE = re.compile(rf"\A(?:{_PCHAR}|[/?])*\Z")
+# IPvFuture = "v" 1*HEXDIG "." 1*( unreserved / sub-delims / ":" )
+_IPVFUTURE_RE = re.compile(rf"\A[vV][0-9A-Fa-f]+\.[{_UNRESERVED}{_SUB_DELIMS}:]+\Z")
+
+
+def _is_valid_host(host: str) -> bool:
+    """RFC 3986 §3.2.2 host = IP-literal / IPv4address / reg-name."""
+    if host.startswith("[") and host.endswith("]"):
+        inner = host[1:-1]
+        if inner[:1] in ("v", "V"):
+            return bool(_IPVFUTURE_RE.match(inner))
+        try:
+            ipaddress.IPv6Address(inner)
+            return True
+        except ValueError:
+            return False
+    # reg-name / IPv4address: brackets are legal ONLY in an IP-literal, so a
+    # reg-name carrying '[' or ']' is rejected here (the gap a whitelist missed).
+    return bool(_REG_NAME_RE.match(host))
+
+
+def _is_valid_authority(authority: str) -> bool:
+    """RFC 3986 §3.2 authority = [ userinfo '@' ] host [ ':' port ]."""
+    rest = authority
+    if "@" in rest:
+        userinfo, rest = rest.rsplit("@", 1)
+        if not _USERINFO_RE.match(userinfo):
+            return False
+    # Split host from port, honouring an IP-literal's own colons.
+    if rest.startswith("["):
+        end = rest.find("]")
+        if end == -1:
+            return False
+        host, after = rest[: end + 1], rest[end + 1 :]
+        if after == "":
+            port = ""
+        elif after.startswith(":"):
+            port = after[1:]
+        else:
+            return False
+    elif ":" in rest:
+        host, port = rest.rsplit(":", 1)
+    else:
+        host, port = rest, ""
+    return bool(_PORT_RE.match(port)) and _is_valid_host(host)
 
 
 @dataclass
@@ -69,36 +134,38 @@ def is_valid_resource_indicator(value: str) -> bool:
     """
     if not value:
         return False
-    # Reject anything outside the RFC 3986 character set (a raw space, a
-    # control character, a non-ASCII byte) before parsing (#254 review).
+    # Pre-parse guard for the characters urlsplit permits or silently strips
+    # (raw space, control, tab/newline, non-ASCII) - see _RFC3986_CHARS.
     if not _RFC3986_CHARS.match(value):
         return False
     # A fragment component is forbidden outright: reject any '#', not just a
-    # non-empty fragment (#254 review) - urlparse treats a trailing '#' as an
-    # empty fragment, which is still a fragment component RFC 8707 disallows.
+    # non-empty fragment - urlsplit treats a trailing '#' as an empty fragment,
+    # which is still a fragment component RFC 8707 disallows (#254 review).
     if "#" in value:
         return False
-    # Every '%' must introduce a valid percent-encoded octet (RFC 3986 §2.1,
-    # "pct-encoded = '%' HEXDIG HEXDIG"): the charset check above admits a
-    # bare '%', so '%ZZ' and a trailing '%' still need rejecting (#254 review).
-    if re.search(r"%(?![0-9A-Fa-f]{2})", value):
-        return False
     try:
-        parsed = urlparse(value)
-        # Accessing .port validates it: RFC 3986 defines port as *DIGIT, and
-        # urlparse raises ValueError on a non-numeric one (e.g. ':abc') only
-        # when the attribute is read (#254 review).
-        _ = parsed.port
+        parts = urlsplit(value)
     except ValueError:
-        # urlparse raises on a malformed authority (bad IPv6 literal, a
-        # non-numeric port); that is an invalid indicator, handled as
-        # invalid_target, not a crash.
+        # A malformed value (e.g. a bad IPv6 literal urlsplit rejects) is an
+        # invalid indicator handled as invalid_target, never a crash.
         return False
-    if not parsed.scheme:
+    # scheme ":" hier-part [ "?" query ], no fragment (absolute-URI, RFC 3986
+    # §4.3). Validate each component against its own ABNF (#257).
+    if not _SCHEME_RE.match(parts.scheme):
         return False
-    # An absolute URI has either an authority (https://host/...) or, for a
+    if parts.query and not _QUERY_RE.match(parts.query):
+        return False
+    if parts.netloc:
+        # hier-part with an authority: path is path-abempty (empty or "/"...).
+        if not _is_valid_authority(parts.netloc):
+            return False
+        if parts.path and not parts.path.startswith("/"):
+            return False
+    if parts.path and not _PATH_RE.match(parts.path):
+        return False
+    # absolute-URI needs a hier-part: an authority (https://host/...) or, for a
     # non-hierarchical scheme, an opaque path (urn:example:resource).
-    return bool(parsed.netloc or parsed.path)
+    return bool(parts.netloc or parts.path)
 
 
 def resolve_resources(

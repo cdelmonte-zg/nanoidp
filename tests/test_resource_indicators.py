@@ -60,6 +60,16 @@ class TestResourceValidation:
             ("https://example.com/a\nb", False),  # embedded newline
             ("/relative/path", False),  # no scheme
             ("", False),
+            # per-component RFC 3986 (#257)
+            ("https://example.com/a[b]", False),  # '[' ']' are host-only, not pchar
+            ("https://example.com/p?x[y]=1", False),  # brackets not query-legal either
+            ("https://[::1]:8443/mcp", True),  # IPv6 host literal + port
+            ("https://[::1]/mcp", True),  # IPv6 host literal, no port
+            ("https://[gg::1]/mcp", False),  # malformed IPv6 literal
+            ("https://user:pass@example.com/mcp", True),  # userinfo
+            ("https://exa[mple.com/mcp", False),  # '[' in reg-name host
+            ("https://example.com:99999/mcp", True),  # port = *DIGIT, no range limit
+            ("https://example.com/seg;p=1", True),  # sub-delims/':' are valid pchar
         ],
     )
     def test_indicator_syntax(self, value, valid):
