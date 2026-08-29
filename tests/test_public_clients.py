@@ -769,3 +769,14 @@ class TestPublicClientDeviceFlow:
         )
         assert resp.status_code == 400
         assert json.loads(resp.data)["error"] == "invalid_grant"
+
+    def test_public_client_basic_header_is_rejected(self, client, public_client):
+        # RFC 8628 §3.1: a public client uses the client_id parameter, not Basic.
+        resp = client.post("/device_authorization", headers=_basic(PUBLIC_ID, "anything"))
+        assert resp.status_code == 401
+
+    def test_public_client_body_secret_is_rejected(self, client, public_client):
+        resp = client.post(
+            "/device_authorization", data={"client_id": PUBLIC_ID, "client_secret": "x"}
+        )
+        assert resp.status_code == 401

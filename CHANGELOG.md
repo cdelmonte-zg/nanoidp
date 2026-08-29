@@ -68,9 +68,14 @@ previous leniency allowed - needs a one-time adjustment.
   grant: it presents its `client_id` alone at `/device_authorization` (§3.1)
   and again when polling `/token` (§3.4), with no secret. The issued
   `device_code` is bound to that `client_id` and only it can redeem it, which
-  stands in for client authentication. Confidential clients still authenticate
-  as before; #188 shipped public clients for authorization_code + PKCE, and
-  this completes the pair for CLI/TV/IoT-style clients.
+  stands in for client authentication (it presents client_id as a parameter,
+  not via HTTP Basic or a secret, RFC 8628 §3.1; both are rejected). Confidential
+  clients still authenticate as before; #188 shipped public clients for
+  authorization_code + PKCE, and this completes the pair for CLI/TV/IoT-style
+  clients. Because an unauthenticated device authorization request is cheaper to
+  spam, the in-memory device-code store is now capacity-bounded: at the cap it
+  returns `503` `slow_down` rather than growing without bound or evicting a live
+  authorization.
 - **Mock protected MCP server as an e2e fixture** (#191). `e2e/mock_mcp_server.py`
   is a minimal MCP Streamable HTTP resource server (the `mcp` SDK's
   resource-server mode) with three scope-gated tools (`read_document` /

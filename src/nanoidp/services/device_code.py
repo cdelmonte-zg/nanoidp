@@ -34,6 +34,20 @@ _USER_CODE_CHARS = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
 DEVICE_CODE_EXPIRES_IN = 600  # seconds (RFC 8628 leaves this to the AS)
 DEVICE_POLL_INTERVAL = 5  # seconds
 
+# A hard cap on concurrently pending device authorizations, so the in-memory
+# store cannot grow without bound. It matters now that a public client can
+# create entries with its client_id alone (#255): an unauthenticated device
+# authorization request is cheaper to spam than a credentialed one. The cap is
+# generous for real dev/test use (each entry lives at most
+# DEVICE_CODE_EXPIRES_IN and is pruned on the next create); reaching it refuses
+# NEW authorizations rather than evicting live ones, so an in-flight legitimate
+# code is never dropped.
+MAX_PENDING_DEVICE_CODES = 10_000
+
+
+class DeviceCodeStoreFull(Exception):
+    """Raised by create() when MAX_PENDING_DEVICE_CODES pending entries exist."""
+
 
 @dataclass
 class DeviceCodeGrant:
@@ -103,6 +117,10 @@ class DeviceCodeStore:
 
         with self._lock:
             self.prune_expired()
+            if len(self._codes) >= MAX_PENDING_DEVICE_CODES:
+                raise DeviceCodeStoreFull(
+                    f"{MAX_PENDING_DEVICE_CODES} device authorizations already pending"
+                )
             self._codes[device_code] = DeviceCodeGrant(
                 user_code=user_code,
                 client_id=client_id,

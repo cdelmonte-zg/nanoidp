@@ -34,7 +34,11 @@ from ..services import (
     get_revocation_store,
     get_token_service,
 )
-from ..services.device_code import DEVICE_CODE_EXPIRES_IN, DEVICE_POLL_INTERVAL
+from ..services.device_code import (
+    DEVICE_CODE_EXPIRES_IN,
+    DEVICE_POLL_INTERVAL,
+    DeviceCodeStoreFull,
+)
 from ..services.discovery import issuer_qualifies_for_iss_parameter
 from ..services.redirect_uri import (
     append_authorization_params,
@@ -1371,7 +1375,17 @@ def device_authorization() -> ResponseReturnValue:
     resolved_client_id = (auth.username if auth else None) or body_client_id
     device_client = config.get_client(resolved_client_id) if resolved_client_id else None
     if device_client is not None and device_client.is_public:
-        auth_error: Optional[str] = None
+        # RFC 8628 §3.1: a public client provides its client_id as a parameter,
+        # not via HTTP Basic or a client_secret. The client_id is public, so
+        # this is about using the right channel (as /token enforces the
+        # registered method), not secrecy - presenting either is rejected.
+        if auth is not None or body_client_secret is not None:
+            auth_error: Optional[str] = (
+                "a public client presents its client_id as a parameter, without "
+                "HTTP Basic or a client_secret (RFC 8628 §3.1)"
+            )
+        else:
+            auth_error = None
     else:
         auth_error = _enforce_registered_client_auth(
             config, resolved_client_id, auth, body_client_secret
@@ -1449,9 +1463,32 @@ def device_authorization() -> ResponseReturnValue:
 
     # Create the device authorization; the store prunes stale entries and
     # keeps the user-code index internally (#84, previously module globals).
-    device_code, user_code = get_device_code_store().create(
-        client_id, scope, resource=validated_resources
-    )
+    # A hard cap bounds the in-memory store, which matters now that a public
+    # client can create entries with its client_id alone (#255): at capacity,
+    # refuse new authorizations rather than grow without bound or evict a live
+    # one. RFC 8628 has no dedicated error here, so use slow_down (§3.5) - the
+    # honest signal to a caller flooding the endpoint.
+    try:
+        device_code, user_code = get_device_code_store().create(
+            client_id, scope, resource=validated_resources
+        )
+    except DeviceCodeStoreFull:
+        audit_event(
+            "device_authorization_request",
+            "failed",
+            endpoint="/device_authorization",
+            client_id=client_id,
+            details={"reason": "device code store at capacity"},
+        )
+        return (
+            jsonify(
+                {
+                    "error": "slow_down",
+                    "error_description": "Too many pending device authorizations; retry later",
+                }
+            ),
+            503,
+        )
 
     audit_event(
         "device_authorization_request",

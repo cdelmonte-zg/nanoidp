@@ -375,3 +375,27 @@ class TestDeviceAuthorizationResponse:
 
         # Should be at least 1 second and at most 60 seconds
         assert 1 <= interval <= 60
+
+
+class TestDeviceCodeStoreCapacity:
+    """#255: the in-memory device code store is capacity-bounded, so a public
+    client (client_id alone, no credential) cannot grow it without bound."""
+
+    def test_store_raises_when_full(self, monkeypatch):
+        from nanoidp.services import device_code as dc
+
+        monkeypatch.setattr(dc, "MAX_PENDING_DEVICE_CODES", 2)
+        store = dc.DeviceCodeStore()
+        store.create("demo-client", "openid")
+        store.create("demo-client", "openid")
+        with pytest.raises(dc.DeviceCodeStoreFull):
+            store.create("demo-client", "openid")
+
+    def test_endpoint_returns_slow_down_at_capacity(self, client, auth_header, monkeypatch):
+        from nanoidp.services import device_code as dc
+
+        monkeypatch.setattr(dc, "MAX_PENDING_DEVICE_CODES", 1)
+        assert client.post("/device_authorization", headers=auth_header).status_code == 200
+        resp = client.post("/device_authorization", headers=auth_header)
+        assert resp.status_code == 503
+        assert json.loads(resp.data)["error"] == "slow_down"
