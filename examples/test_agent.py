@@ -4278,12 +4278,16 @@ class NanoIDPTestAgent:
             self._add_result(
                 "oauth21 Authorize Strictness",
                 TestCategory.OAUTH,
-                no_pkce.status_code == 400
-                and plain.status_code == 400
+                # PKCE errors on a registered client redirect_uri are OAuth
+                # error redirects now (#189); the unregistered-client error
+                # happens before redirect_uri is trusted, so it stays local.
+                no_pkce.status_code in (302, 303)
+                and "error=invalid_request" in no_pkce.headers.get("Location", "")
+                and plain.status_code in (302, 303)
                 and s256.status_code == 200
                 and unregistered.status_code == 400,
-                "no-PKCE 400, plain 400, S256+registered 200, "
-                "unregistered client 400",
+                "no-PKCE redirect(error), plain redirect(error), "
+                "S256+registered 200, unregistered client local 400",
                 {
                     "no_pkce": no_pkce.status_code,
                     "plain": plain.status_code,
