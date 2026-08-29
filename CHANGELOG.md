@@ -63,18 +63,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `none`; the token and revocation lists do. Full support across
   settings.yaml, the UI client form, and the MCP
   `create_client`/`update_client` tools (`client_secret` no longer
-  required when the method is `none`). The registered method is
-  **enforced**, not just recorded (RFC 7591): a `client_secret_basic`
+  required when the method is `none`). At `/token` the registered method
+  is **enforced**, not just recorded (RFC 7591): a `client_secret_basic`
   client must present its secret over HTTP Basic and a
   `client_secret_post` client in the request body - the wrong channel is
   rejected with `invalid_client`. `client_secret_post` is now validated
   at `/token`, `/introspect`, `/revoke` and `/device_authorization`;
   discovery had advertised it forever while the body secret was silently
-  ignored. Confidential clients now authenticate on **every** grant,
-  including `authorization_code` (RFC 6749 §3.2.1): the code exchange no
-  longer had a client-authentication exemption. And **access tokens
-  carry a `client_id` claim** (RFC 9068 §2.2) binding them to the client
-  they were issued to, as refresh tokens have since 2.2.0.
+  ignored. (The three non-token endpoints accept a confidential secret
+  over either channel; only `/token` enforces the registered method.)
+  Confidential clients now authenticate on **every** grant, including
+  `authorization_code` (RFC 6749 §3.2.1): the code exchange no longer had
+  a client-authentication exemption - a confidential client doing
+  `authorization_code` + PKCE must now present its secret or be
+  re-registered as `token_endpoint_auth_method: none`. And **access
+  tokens carry a `client_id` claim** (RFC 9068 §2.2) binding them to the
+  client they were issued to, as refresh tokens have since 2.2.0.
 - **MCP callers can make `save_config` conflict-checked** (#229 phase 5,
   the MCP leg of the same loop the web UI's forms got in phase 4): the
   read tools return the revision of the file the runtime was loaded

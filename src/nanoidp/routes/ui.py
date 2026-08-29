@@ -526,8 +526,13 @@ def client_edit(client_id: str) -> ResponseReturnValue:
         )
         client_secret: str | None = request.form.get("client_secret", "").strip()
         if not client_secret:
-            # Keep existing secret (None for a secret-less public client, #188)
-            client_secret = client.client_secret
+            if auth_method == "none":
+                # Switching to public (#188): drop any old secret rather than
+                # carrying a dead, ignored value into the persisted client.
+                client_secret = None
+            else:
+                # Keep the existing secret (blank field = unchanged).
+                client_secret = client.client_secret
 
         updated_client = OAuthClient(
             client_id=client_id,
@@ -598,6 +603,14 @@ def client_regenerate_secret(client_id: str) -> ResponseReturnValue:
 
     if not client:
         flash(f"Client '{client_id}' not found", "error")
+        return redirect(url_for("ui.clients"))
+
+    # A public client (token_endpoint_auth_method 'none', #188) has no
+    # secret to regenerate; the button is hidden for it, but guard the
+    # route too so a direct POST cannot stamp a (dead, ignored) secret
+    # onto it - model_copy below bypasses the model validator.
+    if client.is_public:
+        flash(f"Client '{client_id}' is public (token_endpoint_auth_method 'none') and has no secret", "error")
         return redirect(url_for("ui.clients"))
 
     try:
