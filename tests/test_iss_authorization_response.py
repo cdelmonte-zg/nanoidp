@@ -155,6 +155,21 @@ class TestErrorResponse:
         assert resp.status_code == 400
         assert resp.headers.get("Location") is None
 
+    def test_append_params_preserves_the_query_byte_for_byte(self):
+        """#258 review: the existing query is retained exactly, not
+        parse/re-encoded - %20 stays %20 (not +), %2f stays %2f (not %2F),
+        and a bare flag stays bare (not flag=)."""
+        from nanoidp.services.redirect_uri import append_authorization_params
+
+        result = append_authorization_params(
+            "https://client.example/cb?x=a%20b&y=%2f&flag", {"code": "abc"}
+        )
+        assert result == "https://client.example/cb?x=a%20b&y=%2f&flag&code=abc"
+        # No existing query -> a '?' separator.
+        assert append_authorization_params("https://c/cb", {"code": "x"}) == (
+            "https://c/cb?code=x"
+        )
+
     def test_error_redirect_preserves_an_existing_query(self, client, app):
         """#258 review: a redirect_uri may carry its own query (RFC 6749
         §3.1.2), which MUST be retained - the error params are appended with

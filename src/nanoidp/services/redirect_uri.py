@@ -29,23 +29,25 @@ exact matching, port included.
 """
 
 from typing import Dict, Iterable
-from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+from urllib.parse import urlencode, urlparse
 
 
 def append_authorization_params(uri: str, params: Dict[str, str]) -> str:
-    """Append authorization-response parameters to a redirect URI, preserving
-    any query the URI already carries.
+    """Append authorization-response parameters to a redirect URI, retaining
+    any query the URI already carries byte-for-byte.
 
     The single place that builds an authorization response URI (success or
     error). RFC 6749 §3.1.2 lets a ``redirect_uri`` carry a query, and that
     query MUST be retained when the authorization server adds response
-    parameters - so ``https://c/cb?tenant=foo`` + ``{"code": "x"}`` becomes
-    ``https://c/cb?tenant=foo&code=x``, never a second ``?`` that folds
-    ``code`` into the ``tenant`` value.
+    parameters. The URI has already been validated and matched against the
+    registered value, so there is nothing to interpret in the existing query
+    - it is preserved exactly (no parse/re-encode round trip that would turn
+    ``%20`` into ``+``, ``%2f`` into ``%2F`` or a bare ``flag`` into
+    ``flag=``). A fragment is already forbidden, so a plain append is safe:
+    ``https://c/cb?tenant=foo`` + ``{"code": "x"}`` -> ``.../cb?tenant=foo&code=x``.
     """
-    parts = urlparse(uri)
-    merged = parse_qsl(parts.query, keep_blank_values=True) + list(params.items())
-    return urlunparse(parts._replace(query=urlencode(merged)))
+    separator = "&" if "?" in uri else "?"
+    return f"{uri}{separator}{urlencode(params)}"
 
 # RFC 8252 §7.3: loopback interface redirection is defined for the IPv4 and
 # IPv6 loopback literals only. urlparse().hostname strips the brackets from
