@@ -445,14 +445,17 @@ def client_create() -> ResponseReturnValue:
             flash("Client ID is required", "error")
             return redirect(url_for("ui.client_create"))
 
+        auth_method = request.form.get("token_endpoint_auth_method", "client_secret_basic")
         client_secret = request.form.get("client_secret", "").strip()
-        if not client_secret:
-            flash("Client Secret is required", "error")
+        if not client_secret and auth_method != "none":
+            # A public client (#188) has no secret; every other method needs one.
+            flash("Client Secret is required unless the auth method is 'none'", "error")
             return redirect(url_for("ui.client_create"))
 
         client = OAuthClient(
             client_id=client_id,
-            client_secret=client_secret,
+            client_secret=client_secret or None,
+            token_endpoint_auth_method=auth_method,  # type: ignore[arg-type]
             description=request.form.get("description", ""),
             background_color=request.form.get("background_color") or None,
             header_color=request.form.get("header_color") or None,
@@ -518,14 +521,18 @@ def client_edit(client_id: str) -> ResponseReturnValue:
 
     # POST: Update client
     try:
-        client_secret = request.form.get("client_secret", "").strip()
+        auth_method = request.form.get(
+            "token_endpoint_auth_method", client.token_endpoint_auth_method
+        )
+        client_secret: str | None = request.form.get("client_secret", "").strip()
         if not client_secret:
-            # Keep existing secret
+            # Keep existing secret (None for a secret-less public client, #188)
             client_secret = client.client_secret
 
         updated_client = OAuthClient(
             client_id=client_id,
             client_secret=client_secret,
+            token_endpoint_auth_method=auth_method,  # type: ignore[arg-type]
             description=request.form.get("description", ""),
             background_color=request.form.get("background_color") or None,
             header_color=request.form.get("header_color") or None,

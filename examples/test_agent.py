@@ -599,6 +599,128 @@ class NanoIDPTestAgent:
                 "Device Verification Base URL", TestCategory.OAUTH, False, str(e)
             )
 
+    def test_public_client_flow(self) -> TestResult:
+        """Public client end-to-end (issue #188): a client with
+        token_endpoint_auth_method 'none' and no secret completes the PKCE
+        code flow identified by client_id alone, is refused /authorize
+        without PKCE, and is refused the client_credentials grant."""
+        public_id = f"pub-e2e-{secrets.token_hex(4)}"
+        redirect_uri = "http://localhost:3000/callback"
+        try:
+            create = self.session.post(
+                f"{self.base_url}/clients/create",
+                data={
+                    "client_id": public_id,
+                    "token_endpoint_auth_method": "none",
+                    "description": "Public client e2e (#188)",
+                },
+                allow_redirects=False,
+                timeout=5,
+            )
+            if create.status_code not in (302, 303):
+                return self._add_result(
+                    "Public Client Flow", TestCategory.OAUTH, False,
+                    f"Public client creation failed: status={create.status_code}",
+                )
+
+            # Leg 1: /authorize without PKCE must be refused, even though
+            # require_pkce is off in the default profile.
+            no_pkce = requests.get(
+                f"{self.base_url}/authorize",
+                params={
+                    "response_type": "code",
+                    "client_id": public_id,
+                    "redirect_uri": redirect_uri,
+                    "scope": "openid",
+                },
+                allow_redirects=False,
+                timeout=5,
+            )
+            refused_without_pkce = (
+                no_pkce.status_code == 400 and "S256" in no_pkce.text
+            )
+
+            # Leg 2: full PKCE S256 flow with client_id alone at /token.
+            verifier = secrets.token_urlsafe(32)
+            challenge = base64.urlsafe_b64encode(
+                hashlib.sha256(verifier.encode()).digest()
+            ).decode().rstrip("=")
+            auth_params = {
+                "response_type": "code",
+                "client_id": public_id,
+                "redirect_uri": redirect_uri,
+                "scope": "openid",
+                "state": secrets.token_urlsafe(16),
+                "code_challenge": challenge,
+                "code_challenge_method": "S256",
+            }
+            flow = requests.Session()
+            page = flow.get(
+                f"{self.base_url}/authorize", params=auth_params,
+                allow_redirects=False, timeout=5,
+            )
+            code = None
+            if page.status_code == 200:
+                login = flow.post(
+                    f"{self.base_url}/authorize",
+                    data={**auth_params, "username": self.username, "password": self.password},
+                    allow_redirects=False,
+                    timeout=5,
+                )
+                if login.status_code == 302:
+                    params = parse_qs(urlparse(login.headers.get("Location", "")).query)
+                    code = params.get("code", [None])[0]
+            token_ok = False
+            if code:
+                token_resp = requests.post(
+                    f"{self.base_url}/token",
+                    data={
+                        "grant_type": "authorization_code",
+                        "code": code,
+                        "redirect_uri": redirect_uri,
+                        "client_id": public_id,
+                        "code_verifier": verifier,
+                    },
+                    timeout=5,
+                )
+                token_ok = (
+                    token_resp.status_code == 200
+                    and "access_token" in token_resp.json()
+                )
+
+            # Leg 3: client_credentials must come back unauthorized_client.
+            cc = requests.post(
+                f"{self.base_url}/token",
+                data={"grant_type": "client_credentials", "client_id": public_id},
+                timeout=5,
+            )
+            cc_refused = (
+                cc.status_code == 400
+                and cc.json().get("error") == "unauthorized_client"
+            )
+
+            success = refused_without_pkce and token_ok and cc_refused
+            return self._add_result(
+                "Public Client Flow",
+                TestCategory.OAUTH,
+                success,
+                "issue #188: PKCE S256 flow with client_id alone; refused "
+                "without PKCE; refused client_credentials",
+                {
+                    "refused_without_pkce": refused_without_pkce,
+                    "code_flow_token": token_ok,
+                    "client_credentials_refused": cc_refused,
+                },
+            )
+        except Exception as e:
+            return self._add_result(
+                "Public Client Flow", TestCategory.OAUTH, False, f"Error: {e}"
+            )
+        finally:
+            self.session.post(
+                f"{self.base_url}/clients/{public_id}/delete", timeout=5
+            )
+
     def test_authorization_code_pkce(self) -> TestResult:
         """Authorization Code Flow with PKCE (simulated)."""
         try:
@@ -4251,6 +4373,7 @@ class NanoIDPTestAgent:
                 self.test_issuer_from_request,
                 self.test_issuer_from_proxy_headers,
                 self.test_authorization_code_pkce,
+                self.test_public_client_flow,
                 self.test_redirect_uri_exact_matching,
                 self.test_native_app_redirect_uris,
                 self.test_scope_enforcement,

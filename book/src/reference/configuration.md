@@ -287,6 +287,9 @@ oauth:
       allowed_scopes:           # optional; see "Registered scopes" below
         - "openid"
         - "profile"
+    - client_id: "cli-client"
+      token_endpoint_auth_method: "none"  # public client (#188): no secret
+      description: "CLI / SPA / MCP client that cannot keep a secret"
   # logos_dir: "./static/logos"    # optional; defaults to src/nanoidp/static/logos
   # scopes_supported:               # optional; the global scope vocabulary
   #   - openid                      # (default: openid, profile, email, offline_access)
@@ -367,6 +370,25 @@ convention as `redirect_uris` above). Enforced at `/authorize`, every
 `/device_authorization`. `oauth.scope_enforcement: false` is a dev-only
 escape hatch back to the pre-#186 behavior - any scope string accepted,
 unchecked; refused outside the `dev` profile.
+
+**Public clients** (issue #188): `token_endpoint_auth_method: "none"`
+declares a client that cannot keep a secret - a CLI, desktop or native
+app, SPA, or MCP client. `client_secret` becomes optional (and is ignored
+if present: a stored secret never authenticates a public client);
+`/token` identifies the client by `client_id` alone. In exchange, the
+protections that replace client authentication are mandatory regardless
+of profile: `/authorize` requires PKCE with `S256` (OAuth 2.1 §7.5.1),
+the `client_credentials` grant is refused with `unauthorized_client`
+(it IS client authentication), and refresh tokens always rotate with
+reuse detection (OAuth 2.1 §4.3.1/§6.1), whatever
+`refresh_token_rotation` says. `/revoke` accepts a public client's
+`client_id` with an ownership check - the token's own `client_id` claim
+must match, otherwise the response is still `200` and nothing is revoked
+(RFC 7009 §2.1 and its privacy guidance). `/introspect` stays
+authenticated (RFC 7662): a public `client_id` is not authentication.
+The default `token_endpoint_auth_method` is `client_secret_basic`;
+`client_secret_post` (secret in the request body) is accepted at
+`/token`, `/introspect`, `/revoke` and `/device_authorization` alike.
 
 **Native apps (RFC 8252)**: two things a native client needs are built
 in. A private-use scheme URI such as `com.example.app:/oauth2redirect`

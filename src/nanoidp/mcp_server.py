@@ -232,10 +232,26 @@ def _build_user_from_arguments(
     )
 
 
+_TOKEN_ENDPOINT_AUTH_METHODS = ("client_secret_basic", "client_secret_post", "none")
+
+
+def _normalize_auth_method(value: Any) -> str:
+    """Pre-validate token_endpoint_auth_method before any assignment (#188),
+    same principle as the hex colors: a bad value must reject the call, not
+    leave a client half-updated."""
+    if value not in _TOKEN_ENDPOINT_AUTH_METHODS:
+        raise ValueError(
+            "token_endpoint_auth_method must be one of "
+            + ", ".join(_TOKEN_ENDPOINT_AUTH_METHODS)
+        )
+    return str(value)
+
+
 def _client_to_dict(client: OAuthClient) -> dict[str, Any]:
     """Convert OAuthClient to dictionary (without secret)."""
     return {
         "client_id": client.client_id,
+        "token_endpoint_auth_method": client.token_endpoint_auth_method,
         "description": client.description,
         "background_color": client.background_color,
         "header_color": client.header_color,
@@ -593,7 +609,20 @@ _TOOLS: list[Tool] = [
                 },
                 "client_secret": {
                     "type": "string",
-                    "description": "Client secret for authentication",
+                    "description": (
+                        "Client secret for authentication. Required unless "
+                        "token_endpoint_auth_method is 'none'"
+                    ),
+                },
+                "token_endpoint_auth_method": {
+                    "type": "string",
+                    "enum": ["client_secret_basic", "client_secret_post", "none"],
+                    "description": (
+                        "How the client authenticates at /token (optional, "
+                        "default client_secret_basic). 'none' = public client "
+                        "(#188): no secret, PKCE S256 mandatory on /authorize, "
+                        "client_credentials refused, refresh rotation forced"
+                    ),
                 },
                 "description": {
                     "type": "string",
@@ -635,7 +664,9 @@ _TOOLS: list[Tool] = [
                     "description": "Per-client scope allow-list (#186); when non-empty, /authorize and /token reject a requested scope outside this set with invalid_scope (RFC 6749 4.1.2.1/5.2). Empty = any scope in the global oauth.scopes_supported vocabulary is allowed (optional)",
                 },
             },
-            "required": ["client_id", "client_secret"],
+            # client_secret is validated in the handler: required for every
+            # auth method except 'none' (#188).
+            "required": ["client_id"],
         },
     ),
     Tool(
@@ -651,6 +682,15 @@ _TOOLS: list[Tool] = [
                 "client_secret": {
                     "type": "string",
                     "description": "New client secret (optional)",
+                },
+                "token_endpoint_auth_method": {
+                    "type": "string",
+                    "enum": ["client_secret_basic", "client_secret_post", "none"],
+                    "description": (
+                        "New token endpoint auth method (optional). Switching "
+                        "a secret-less client to a confidential method "
+                        "requires supplying client_secret in the same call"
+                    ),
                 },
                 "description": {
                     "type": "string",
@@ -1317,9 +1357,20 @@ def _tool_create_client(arguments: dict[str, Any], config: ConfigManager) -> dic
     if config.get_client(client_id):
         return {"success": False, "error": f"Client '{client_id}' already exists"}
 
+    auth_method = _normalize_auth_method(
+        arguments.get("token_endpoint_auth_method", "client_secret_basic")
+    )
+    client_secret = arguments.get("client_secret")
+    if not client_secret and auth_method != "none":
+        return {
+            "success": False,
+            "error": "client_secret is required unless token_endpoint_auth_method is 'none'",
+        }
+
     new_client = OAuthClient(
         client_id=client_id,
-        client_secret=arguments["client_secret"],
+        client_secret=client_secret or None,
+        token_endpoint_auth_method=auth_method,  # type: ignore[arg-type]
         description=arguments.get("description", ""),
         background_color=_normalize_hex_color(
             arguments.get("background_color"), "background_color"
@@ -1376,8 +1427,36 @@ def _tool_update_client(arguments: dict[str, Any], config: ConfigManager) -> dic
         else None
     )
 
+    new_auth_method = (
+        _normalize_auth_method(arguments["token_endpoint_auth_method"])
+        if "token_endpoint_auth_method" in arguments
+        else None
+    )
+    # Check the method/secret combination BEFORE any assignment (#188), so
+    # the model validator can never reject mid-sequence and leave the live
+    # client half-updated.
+    effective_method = new_auth_method or client.token_endpoint_auth_method
+    effective_secret = (
+        (arguments["client_secret"] or None)
+        if "client_secret" in arguments
+        else client.client_secret
+    )
+    if effective_method != "none" and not effective_secret:
+        return {
+            "success": False,
+            "error": "client_secret is required unless token_endpoint_auth_method is 'none'",
+        }
+
+    # Assignment order matters under validate_assignment (#188): switching TO
+    # 'none' must set the method before a secret could be cleared; switching
+    # AWAY from 'none' must set the new secret before the method, or the
+    # model's confidential-clients-need-a-secret check rejects mid-update.
+    if new_auth_method == "none":
+        client.token_endpoint_auth_method = new_auth_method  # type: ignore[assignment]
     if "client_secret" in arguments:
-        client.client_secret = arguments["client_secret"]
+        client.client_secret = arguments["client_secret"] or None
+    if new_auth_method is not None and new_auth_method != "none":
+        client.token_endpoint_auth_method = new_auth_method  # type: ignore[assignment]
     if "description" in arguments:
         client.description = arguments["description"]
     if "background_color" in arguments:

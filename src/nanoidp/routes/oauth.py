@@ -292,13 +292,37 @@ def _validate_authorize_redirect_uri(
 
 
 def _validate_authorize_pkce(
-    config: ConfigManager, p: _AuthorizeParams
+    config: ConfigManager, p: _AuthorizeParams, client: Optional[OAuthClient] = None
 ) -> Optional[ResponseReturnValue]:
     """PKCE enforcement (issues #47, #68). Via the require_pkce setting (on by
     default in the stricter-dev profile) or implied by the oauth21 profile
     (OAuth 2.1 §4.1.1 makes PKCE mandatory), an authorization request
     without a code_challenge is rejected, so developers can verify their
-    client actually sends PKCE."""
+    client actually sends PKCE.
+
+    A public client (token_endpoint_auth_method 'none', #188) is held to
+    PKCE with S256 REGARDLESS of profile or require_pkce (OAuth 2.1
+    §7.5.1, RFC 7636): with no client authentication at the token
+    endpoint, the verifier is the only thing binding the code to the
+    party that started the flow."""
+    if client is not None and client.is_public:
+        if not p.code_challenge:
+            return _authorize_reject(
+                p.client_id,
+                "Public client without PKCE",
+                "invalid_request",
+                "This client's token_endpoint_auth_method is 'none': PKCE "
+                "with code_challenge_method S256 is required",
+            )
+        if (p.code_challenge_method or "plain") != "S256":
+            return _authorize_reject(
+                p.client_id,
+                "Public client with non-S256 PKCE",
+                "invalid_request",
+                "This client's token_endpoint_auth_method is 'none': "
+                "code_challenge_method must be S256",
+            )
+
     if config.settings.pkce_required and not p.code_challenge:
         return _authorize_reject(
             p.client_id,
@@ -478,7 +502,7 @@ def authorize() -> ResponseReturnValue:
     error = _validate_authorize_redirect_uri(config, p, client)
     if error is not None:
         return error
-    error = _validate_authorize_pkce(config, p)
+    error = _validate_authorize_pkce(config, p, client)
     if error is not None:
         return error
 
@@ -734,8 +758,15 @@ def _grant_refresh_token(ctx: _GrantContext) -> GrantResult:
     # dispatch), so a rejected request never consumes the token: from here
     # on, issuance is local signing and cannot fail.
     jti = payload.get("jti")
+    # A public client always rotates (#188, OAuth 2.1 §4.3.1/§6.1): with no
+    # client authentication, sender-constraining is unavailable, so one-time
+    # refresh tokens with reuse detection are the only leash. Confidential
+    # clients follow the refresh_token_rotation setting as before.
+    rotation_enabled = ctx.config.settings.rotation_enabled or (
+        client is not None and client.is_public
+    )
     reuse_detected = get_revocation_store().check_and_claim_refresh(
-        jti, refresh_family, ctx.config.settings.rotation_enabled
+        jti, refresh_family, rotation_enabled
     )
     if reuse_detected:
         audit_event(
@@ -1143,6 +1174,10 @@ def token() -> ResponseReturnValue:
     auth = request.authorization
     grant_type = request.form.get("grant_type", "client_credentials")
     body_client_id = request.form.get("client_id")
+    # client_secret_post (RFC 6749 §2.3.1, #188): discovery has always
+    # advertised it; the body secret is now actually validated instead of
+    # silently ignored.
+    body_client_secret = request.form.get("client_secret") or None
     auth_client_id = auth.username if auth else None
     client_id = body_client_id or auth_client_id
 
@@ -1169,27 +1204,70 @@ def token() -> ResponseReturnValue:
             401, description="client_id in request body does not match authenticated client"
         )
 
-    # For grant types that require client authentication, enforce it
-    if not auth and grant_type != "authorization_code":
-        audit_event(
-            "token_request",
-            "failed",
-            endpoint="/token",
-            client_id=client_id,
-            details={"reason": "Client authentication required", "grant_type": grant_type},
-        )
-        return abort(401, description="Client authentication required")
+    token_client = config.get_client(client_id)
+    if token_client is not None and token_client.is_public:
+        # Public client (#188): identified by client_id alone; a secret
+        # presented over either channel is ignored, never validated. The
+        # client_credentials grant is refused - it IS client
+        # authentication, which a public client does not have (OAuth 2.1
+        # §2.1; RFC 6749 §5.2 unauthorized_client).
+        if grant_type == "client_credentials":
+            audit_event(
+                "token_request",
+                "failed",
+                endpoint="/token",
+                client_id=client_id,
+                details={
+                    "reason": "client_credentials refused for a public client",
+                    "grant_type": grant_type,
+                },
+            )
+            return (
+                jsonify(
+                    {
+                        "error": "unauthorized_client",
+                        "error_description": (
+                            "The client_credentials grant requires client "
+                            "authentication; this client's "
+                            "token_endpoint_auth_method is 'none'"
+                        ),
+                    }
+                ),
+                400,
+            )
+    else:
+        # Confidential client (or unknown client_id): the pre-#188 rules,
+        # with client_secret_post now accepted alongside Basic.
+        if not auth and not body_client_secret and grant_type != "authorization_code":
+            audit_event(
+                "token_request",
+                "failed",
+                endpoint="/token",
+                client_id=client_id,
+                details={"reason": "Client authentication required", "grant_type": grant_type},
+            )
+            return abort(401, description="Client authentication required")
 
-    # Check client authentication
-    if auth and not config.check_client(auth.username, auth.password):
-        audit_event(
-            "token_request",
-            "failed",
-            endpoint="/token",
-            client_id=auth.username if auth else None,
-            details={"reason": "Invalid client credentials"},
-        )
-        return abort(401, description="Invalid client credentials")
+        # Check client authentication (Basic wins when both are presented)
+        if auth:
+            if not config.check_client(auth.username, auth.password):
+                audit_event(
+                    "token_request",
+                    "failed",
+                    endpoint="/token",
+                    client_id=auth.username,
+                    details={"reason": "Invalid client credentials"},
+                )
+                return abort(401, description="Invalid client credentials")
+        elif body_client_secret and not config.check_client(client_id, body_client_secret):
+            audit_event(
+                "token_request",
+                "failed",
+                endpoint="/token",
+                client_id=client_id,
+                details={"reason": "Invalid client credentials"},
+            )
+            return abort(401, description="Invalid client credentials")
 
     # Validate the grant-independent 'exp' and 'extra' params BEFORE the grant
     # dispatch: the rotation branch atomically consumes the refresh token at
@@ -1446,19 +1524,32 @@ def introspect() -> ResponseReturnValue:
     """
     config = get_config()
 
-    # Check client authentication (Basic auth)
+    # Client authentication: Basic or client_secret_post. Deliberately NOT
+    # relaxed for public clients (#188): RFC 7662 §2.1 requires this
+    # endpoint to be protected against token scanning, and a public
+    # client_id is identification, not authentication - so 'none' is not in
+    # introspection_endpoint_auth_methods_supported either.
     auth = request.authorization
-    if not auth or not config.check_client(auth.username, auth.password):
+    body_client_id = request.form.get("client_id")
+    body_client_secret = request.form.get("client_secret") or None
+    if auth:
+        authenticated = config.check_client(auth.username, auth.password)
+        client_id = auth.username
+    elif body_client_id and body_client_secret:
+        authenticated = config.check_client(body_client_id, body_client_secret)
+        client_id = body_client_id
+    else:
+        authenticated = False
+        client_id = body_client_id
+    if not authenticated:
         audit_event(
             "introspection_request",
             "failed",
             endpoint="/introspect",
-            client_id=auth.username if auth else None,
+            client_id=client_id,
             details={"reason": "Invalid client credentials"},
         )
         return jsonify({"error": "invalid_client"}), 401
-
-    client_id = auth.username
 
     # Get the token to introspect
     token = request.form.get("token")
@@ -1539,19 +1630,34 @@ def revoke() -> ResponseReturnValue:
     """
     config = get_config()
 
-    # Check client authentication (Basic auth)
+    # Client identification/authentication. Confidential clients present
+    # credentials via Basic or client_secret_post; a public client
+    # (token_endpoint_auth_method 'none', #188) is identified by client_id
+    # alone, and the ownership check below is what stands in for
+    # authentication (RFC 7009 §2.1).
     auth = request.authorization
-    if not auth or not config.check_client(auth.username, auth.password):
-        audit_event(
-            "revocation_request",
-            "failed",
-            endpoint="/revoke",
-            client_id=auth.username if auth else None,
-            details={"reason": "Invalid client credentials"},
-        )
-        return jsonify({"error": "invalid_client"}), 401
+    body_client_id = request.form.get("client_id")
+    client_id = (auth.username if auth else None) or body_client_id
+    revoking_client = config.get_client(client_id) if client_id else None
+    is_public = revoking_client is not None and revoking_client.is_public
 
-    client_id = auth.username
+    if not is_public:
+        body_client_secret = request.form.get("client_secret") or None
+        if auth:
+            authenticated = config.check_client(auth.username, auth.password)
+        elif body_client_id and body_client_secret:
+            authenticated = config.check_client(body_client_id, body_client_secret)
+        else:
+            authenticated = False
+        if not authenticated:
+            audit_event(
+                "revocation_request",
+                "failed",
+                endpoint="/revoke",
+                client_id=client_id,
+                details={"reason": "Invalid client credentials"},
+            )
+            return jsonify({"error": "invalid_client"}), 401
 
     # Get the token to revoke
     token = request.form.get("token")
@@ -1564,6 +1670,22 @@ def revoke() -> ResponseReturnValue:
         # Decode without verification to get the JTI
         payload = pyjwt.decode(token, options={"verify_signature": False})
         jti = payload.get("jti")
+
+        # Ownership check for public clients (#188, RFC 7009 §2.1): with no
+        # credentials, "this token is mine" is the entire authorization to
+        # revoke. A token bound to another client - or carrying no client_id
+        # claim at all - is left untouched, and the response stays 200: per
+        # the RFC's privacy guidance, the endpoint must not become an oracle
+        # for whether a presented token exists, is valid, or whose it is.
+        if is_public and payload.get("client_id") != client_id:
+            audit_event(
+                "revocation_request",
+                "failed",
+                endpoint="/revoke",
+                client_id=client_id,
+                details={"reason": "Public client presented a token it does not own"},
+            )
+            return "", 200
 
         if jti:
             get_revocation_store().revoke(jti)
@@ -1683,21 +1805,35 @@ def device_authorization() -> ResponseReturnValue:
     """
     config = get_config()
 
-    # Check client authentication
+    # Check client authentication: Basic or client_secret_post. Public
+    # clients are NOT special-cased here (#188 keeps device-flow support
+    # for token_endpoint_auth_method 'none' as an explicit follow-up
+    # decision; today a public client uses authorization_code + PKCE).
     auth = request.authorization
-    if not auth or not config.check_client(auth.username, auth.password):
+    body_client_id = request.form.get("client_id")
+    body_client_secret = request.form.get("client_secret") or None
+    if auth:
+        authenticated = config.check_client(auth.username, auth.password)
+        resolved_client_id = auth.username
+    elif body_client_id and body_client_secret:
+        authenticated = config.check_client(body_client_id, body_client_secret)
+        resolved_client_id = body_client_id
+    else:
+        authenticated = False
+        resolved_client_id = body_client_id
+    if not authenticated:
         audit_event(
             "device_authorization_request",
             "failed",
             endpoint="/device_authorization",
-            client_id=auth.username if auth else None,
+            client_id=resolved_client_id,
             details={"reason": "Invalid client credentials"},
         )
         return jsonify({"error": "invalid_client"}), 401
 
     # check_client fails closed on a missing username, so it is present here;
     # the fallback only narrows the type.
-    client_id = auth.username or ""
+    client_id = resolved_client_id or ""
     requested_scope = request.form.get("scope", "")
 
     # Scope validation (issue #186), same rule as /authorize including the

@@ -40,9 +40,12 @@ def build_discovery_document(
         "end_session_endpoint": f"{issuer}/logout",
         "device_authorization_endpoint": f"{issuer}/device_authorization",
         "jwks_uri": f"{issuer}/.well-known/jwks.json",
-        "token_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post"],
+        # 'none' = public clients (#188). Deliberately NOT in the
+        # introspection list: RFC 7662 requires an authenticated caller,
+        # and a public client_id is not authentication.
+        "token_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post", "none"],
         "introspection_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post"],
-        "revocation_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post"],
+        "revocation_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post", "none"],
         # Only the authorization code flow is implemented; the implicit flow is
         # deprecated by the OAuth 2.0 Security BCP and intentionally absent.
         "response_types_supported": ["code"],

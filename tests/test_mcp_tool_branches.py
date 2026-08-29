@@ -583,6 +583,91 @@ class TestRevisionPreconditions:
         assert settings_file.read_bytes() == settings_before
 
 
+class TestPublicClientTools:
+    """#188: the MCP client tools handle token_endpoint_auth_method,
+    including the secret/method interplay that must never half-update."""
+
+    @pytest.mark.asyncio
+    async def test_create_public_client_needs_no_secret(self, mcp_config, mcp_call_tool):
+        payload = _payload(
+            await mcp_call_tool(
+                "create_client",
+                {"client_id": "pub-mcp", "token_endpoint_auth_method": "none"},
+            )
+        )
+        assert payload["success"] is True
+        assert payload["client"]["token_endpoint_auth_method"] == "none"
+        assert "client_secret" not in payload["client"]
+        assert mcp_config.get_client("pub-mcp").is_public is True
+
+    @pytest.mark.asyncio
+    async def test_create_confidential_client_without_secret_is_refused(
+        self, mcp_config, mcp_call_tool
+    ):
+        result = await mcp_call_tool("create_client", {"client_id": "no-secret"})
+        payload = _payload(result)
+        assert payload["success"] is False
+        assert "client_secret is required" in payload["error"]
+        assert mcp_config.get_client("no-secret") is None
+
+    @pytest.mark.asyncio
+    async def test_invalid_auth_method_rejects_before_any_mutation(
+        self, mcp_config, mcp_call_tool
+    ):
+        result = await mcp_call_tool(
+            "update_client",
+            {
+                "client_id": "branch-client",
+                "description": "must-not-land",
+                "token_endpoint_auth_method": "client_secret_jwt",
+            },
+        )
+        assert result.is_error is True
+        client = mcp_config.get_client("branch-client")
+        assert client.description != "must-not-land"
+
+    @pytest.mark.asyncio
+    async def test_switch_to_none_then_back_requires_a_secret(
+        self, mcp_config, mcp_call_tool
+    ):
+        payload = _payload(
+            await mcp_call_tool(
+                "update_client",
+                {"client_id": "branch-client", "token_endpoint_auth_method": "none"},
+            )
+        )
+        assert payload["success"] is True
+
+        # Back to confidential WITHOUT a secret: refused before any
+        # assignment, the client stays public and fully intact.
+        refused = _payload(
+            await mcp_call_tool(
+                "update_client",
+                {
+                    "client_id": "branch-client",
+                    "token_endpoint_auth_method": "client_secret_basic",
+                    "client_secret": "",
+                },
+            )
+        )
+        assert refused["success"] is False
+        assert mcp_config.get_client("branch-client").is_public is True
+
+        # With a secret in the same call it works (secret assigned first).
+        back = _payload(
+            await mcp_call_tool(
+                "update_client",
+                {
+                    "client_id": "branch-client",
+                    "token_endpoint_auth_method": "client_secret_basic",
+                    "client_secret": "fresh-secret",
+                },
+            )
+        )
+        assert back["success"] is True
+        assert mcp_config.get_client("branch-client").is_public is False
+
+
 class TestDispatchGuards:
     @pytest.mark.asyncio
     async def test_readonly_mode_rejects_mutating_tool(

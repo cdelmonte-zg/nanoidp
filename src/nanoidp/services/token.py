@@ -307,6 +307,13 @@ class TokenService:
         if userinfo_claims:
             extra["req_userinfo_claims"] = userinfo_claims
 
+        # Bind the access token to the client it was issued to (#188): what
+        # RFC 9068 §2.2 requires of a JWT access token's 'client_id' claim,
+        # and what /revoke's ownership check for public clients reads.
+        # Refresh tokens have carried the same claim since #56.
+        if client_id:
+            extra["client_id"] = client_id
+
         # Mark the token type so access-token endpoints can reject ID/refresh
         # tokens presented as access tokens (issue #34). Set last so it cannot be
         # overridden by caller-supplied extra_claims.

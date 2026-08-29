@@ -75,6 +75,9 @@ class ClientEntry(BaseModel):
 
     client_id: str = ""
     client_secret: str = ""
+    # Kept a plain str so an invalid value fails in to_client() with
+    # OAuthClient's own Literal error, like the color patterns (#188).
+    token_endpoint_auth_method: str = "client_secret_basic"
     description: str = ""
     background_color: Optional[str] = None
     header_color: Optional[str] = None
@@ -88,7 +91,10 @@ class ClientEntry(BaseModel):
     def to_client(self) -> OAuthClient:
         return OAuthClient(
             client_id=self.client_id,
-            client_secret=self.client_secret,
+            # Absent/empty in YAML becomes None: valid for a public client
+            # ('none'), rejected by the model for a confidential one (#188).
+            client_secret=self.client_secret or None,
+            token_endpoint_auth_method=self.token_endpoint_auth_method,  # type: ignore[arg-type]
             description=self.description,
             background_color=self.background_color,
             header_color=self.header_color,

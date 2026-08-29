@@ -45,6 +45,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   changes only the secret, so every field (present and future) is carried.
 
 ### Added
+- **Public clients: `token_endpoint_auth_method: "none"` with mandatory
+  PKCE S256** (#188). A client that cannot keep a secret (CLI, desktop
+  app, SPA, MCP client) can now be declared with
+  `token_endpoint_auth_method: "none"`: `client_secret` becomes optional
+  (ignored - and never a credential - if present), and `/token`
+  identifies the client by `client_id` alone. The protections that stand
+  in for client authentication are enforced regardless of profile:
+  `/authorize` requires PKCE with `S256` (OAuth 2.1 §7.5.1),
+  `client_credentials` is refused with `unauthorized_client`, and
+  refresh tokens always rotate with reuse detection (OAuth 2.1
+  §4.3.1/§6.1) whatever `refresh_token_rotation` says. `/revoke` accepts
+  a public client's `client_id` with an ownership check (the token's
+  `client_id` claim must match; otherwise still `200`, nothing revoked -
+  RFC 7009 §2.1 and its privacy guidance). `/introspect` deliberately
+  stays authenticated (RFC 7662) and its discovery list does not gain
+  `none`; the token and revocation lists do. Full support across
+  settings.yaml, the UI client form, and the MCP
+  `create_client`/`update_client` tools (`client_secret` no longer
+  required when the method is `none`). Two adjacent corrections ship
+  with it: **`client_secret_post` is now actually validated** at
+  `/token`, `/introspect`, `/revoke` and `/device_authorization` -
+  discovery had advertised it forever while the body secret was
+  silently ignored; a client that was sending a *wrong* body secret and
+  succeeding anyway will now get the `invalid_client`/401 it always
+  should have. And **access tokens now carry a `client_id` claim**
+  (RFC 9068 §2.2) binding them to the client they were issued to, as
+  refresh tokens have since 2.2.0.
 - **MCP callers can make `save_config` conflict-checked** (#229 phase 5,
   the MCP leg of the same loop the web UI's forms got in phase 4): the
   read tools return the revision of the file the runtime was loaded

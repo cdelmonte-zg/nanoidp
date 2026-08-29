@@ -269,9 +269,13 @@ def client_to_yaml(client: OAuthClient) -> Dict[str, Any]:
     """
     entry: Dict[str, Any] = {
         "client_id": client.client_id,
-        "client_secret": _quoted(client.client_secret),
-        "description": _quoted(client.description),
     }
+    # A secret-less public client gets no client_secret key at all (#188).
+    if client.client_secret is not None:
+        entry["client_secret"] = _quoted(client.client_secret)
+    if client.token_endpoint_auth_method != "client_secret_basic":
+        entry["token_endpoint_auth_method"] = client.token_endpoint_auth_method
+    entry["description"] = _quoted(client.description)
     if client.background_color:
         entry["background_color"] = client.background_color
     if client.header_color:
@@ -310,12 +314,26 @@ def merge_client_entry(raw_entry: Dict[str, Any], client: OAuthClient) -> Dict[s
         ("footer_color", client.footer_color),
     ):
         if not is_unchanged(raw_entry.get(field_name), new_value):
-            if field_name in {"client_secret", "description"}:
+            if field_name == "client_secret" and new_value is None:
+                # Secret-less public client (#188): drop the key, never
+                # write the string "None".
+                updated.pop(field_name, None)
+            elif field_name in {"client_secret", "description"}:
                 updated[field_name] = _quoted(str(new_value))
             else:
                 updated[field_name] = new_value if new_value else None
                 if updated[field_name] is None:
                     updated.pop(field_name, None)
+
+    # Default-valued scalar: written only when it differs from the default,
+    # same shape as the booleans below (#188).
+    if not is_unchanged(
+        raw_entry.get("token_endpoint_auth_method"), client.token_endpoint_auth_method
+    ):
+        if client.token_endpoint_auth_method != "client_secret_basic":
+            updated["token_endpoint_auth_method"] = client.token_endpoint_auth_method
+        else:
+            updated.pop("token_endpoint_auth_method", None)
 
     for field_name, new_bool_value, default_value in (
         ("show_client_id", client.show_client_id, True),

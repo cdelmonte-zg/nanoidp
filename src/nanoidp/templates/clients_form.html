@@ -33,8 +33,23 @@
                     </div>
 
                     <div class="mb-3">
+                        <label for="token_endpoint_auth_method" class="form-label">Token Endpoint Auth Method</label>
+                        <select class="form-select" id="token_endpoint_auth_method" name="token_endpoint_auth_method"
+                                onchange="authMethodChanged()">
+                            {% set current_method = client.token_endpoint_auth_method if client else 'client_secret_basic' %}
+                            <option value="client_secret_basic" {% if current_method == 'client_secret_basic' %}selected{% endif %}>client_secret_basic (confidential)</option>
+                            <option value="client_secret_post" {% if current_method == 'client_secret_post' %}selected{% endif %}>client_secret_post (confidential)</option>
+                            <option value="none" {% if current_method == 'none' %}selected{% endif %}>none (public: CLI, SPA, MCP client)</option>
+                        </select>
+                        <div class="form-text">
+                            A public client ("none") has no secret, must use PKCE with S256 on /authorize,
+                            cannot use the client_credentials grant, and always gets refresh token rotation.
+                        </div>
+                    </div>
+
+                    <div class="mb-3">
                         <label for="client_secret" class="form-label">
-                            Client Secret {% if not client %}<span class="text-danger">*</span>{% endif %}
+                            Client Secret {% if not client %}<span class="text-danger" id="client_secret_required_marker">*</span>{% endif %}
                         </label>
                         <div class="input-group">
                             <input type="text" class="form-control" id="client_secret" name="client_secret"
@@ -194,6 +209,21 @@
 
 {% block extra_js %}
 <script>
+function authMethodChanged() {
+    // A public client ("none", #188) has no secret: lift the HTML-side
+    // requirement so the form can submit with the field empty. The server
+    // re-validates either way.
+    const isPublic = document.getElementById('token_endpoint_auth_method').value === 'none';
+    const secretInput = document.getElementById('client_secret');
+    if (secretInput.hasAttribute('data-was-required') || secretInput.required) {
+        secretInput.setAttribute('data-was-required', '1');
+        secretInput.required = !isPublic;
+    }
+    const marker = document.getElementById('client_secret_required_marker');
+    if (marker) marker.hidden = isPublic;
+}
+document.addEventListener('DOMContentLoaded', authMethodChanged);
+
 function generateSecret() {
     const array = new Uint8Array(32);
     crypto.getRandomValues(array);

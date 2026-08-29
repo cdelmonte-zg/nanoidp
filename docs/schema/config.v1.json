@@ -157,6 +157,11 @@
             "default": false,
             "title": "Show Description",
             "type": "boolean"
+          },
+          "token_endpoint_auth_method": {
+            "default": "client_secret_basic",
+            "title": "Token Endpoint Auth Method",
+            "type": "string"
           }
         },
         "title": "ClientEntry",

@@ -8,9 +8,9 @@ the YAML shape coercers used when loading them. Persistence lives in
 which re-exports everything here for compatibility.
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
 _SAML_ATTR_NAME_DEFAULTS = {
     "saml_roles_attr_name": "roles",
@@ -136,7 +136,30 @@ class OAuthClient(BaseModel):
     model_config = ConfigDict(validate_assignment=True)
 
     client_id: str = Field(..., min_length=1, description="OAuth client ID")
-    client_secret: str = Field(..., min_length=1, description="OAuth client secret")
+    client_secret: Optional[str] = Field(
+        default=None, min_length=1,
+        description=(
+            "OAuth client secret. Required unless token_endpoint_auth_method "
+            "is 'none' (public client); ignored when it is."
+        ),
+    )
+    token_endpoint_auth_method: Literal[
+        "client_secret_basic", "client_secret_post", "none"
+    ] = Field(
+        default="client_secret_basic",
+        description=(
+            "How this client authenticates at the token endpoint (issue #188). "
+            "'client_secret_basic' (default) and 'client_secret_post' are "
+            "confidential clients presenting their secret in the Authorization "
+            "header or the request body; either channel is accepted for both, "
+            "the value documents the client's intent. 'none' is a public "
+            "client (CLI, desktop app, SPA, MCP client - anything that cannot "
+            "keep a secret, RFC 8252/OAuth 2.1): it is identified by client_id "
+            "alone, MUST use PKCE with S256 on /authorize regardless of "
+            "profile, is refused the client_credentials grant "
+            "(unauthorized_client), and always gets refresh token rotation."
+        ),
+    )
     description: str = Field(default="", description="Client description")
     background_color: Optional[str] = Field(
         default=None, pattern=HEX_COLOR_PATTERN,
@@ -183,6 +206,24 @@ class OAuthClient(BaseModel):
             "invalid_scope, for every client, regardless of this field."
         ),
     )
+
+    @model_validator(mode="after")
+    def _confidential_clients_need_a_secret(self) -> "OAuthClient":
+        """A confidential client without a secret is a configuration error;
+        only token_endpoint_auth_method 'none' makes client_secret optional.
+        Runs on assignment too (validate_assignment), so switching a
+        secret-less public client back to a confidential method requires
+        setting the secret first."""
+        if self.token_endpoint_auth_method != "none" and not self.client_secret:
+            raise ValueError(
+                "client_secret is required unless token_endpoint_auth_method is 'none'"
+            )
+        return self
+
+    @property
+    def is_public(self) -> bool:
+        """Public client (issue #188): identified by client_id alone."""
+        return self.token_endpoint_auth_method == "none"
 
 
 class Settings(BaseModel):
