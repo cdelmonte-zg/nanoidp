@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking Changes
+
+This release tightens the OAuth **client-authentication contract** to match the
+RFCs. Well-behaved confidential and public clients are unaffected; clients that
+relied on nanoidp's previous leniency need a one-time adjustment.
+
+- **Client authentication is now enforced at every client-authenticated
+  endpoint** (#188, #262): `/token`, `/introspect`, `/revoke` and
+  `/device_authorization`.
+  - A **confidential client must authenticate on `authorization_code`** too -
+    the code exchange no longer has a client-authentication exemption (RFC 6749
+    §3.2.1). *Migration:* present the client secret on the code exchange, or
+    re-register the client as `token_endpoint_auth_method: "none"` if it cannot
+    keep a secret (and use PKCE).
+  - The registered **`token_endpoint_auth_method` is enforced**: a
+    `client_secret_basic` client must use HTTP Basic and a `client_secret_post`
+    client must use the request body - the wrong channel is rejected with
+    `invalid_client`. Previously a body secret was accepted (or silently
+    ignored) regardless of the registered method. *Migration:* send credentials
+    over the channel the client is registered for; set
+    `token_endpoint_auth_method` to match how your client actually authenticates.
+  - **Two authentication methods in one request are rejected** (HTTP Basic and a
+    body `client_secret` together, RFC 6749 §2.3) - Basic no longer silently
+    wins. *Migration:* send credentials one way only.
+  - Public-client policy is unchanged: `/introspect` and `/device_authorization`
+    still refuse public clients; `/revoke` keeps its RFC 7009 §2.1 ownership
+    relaxation.
+- **`/authorize` reports errors after `redirect_uri` validation by redirecting
+  to the client** (#189, RFC 6749 §4.1.2.1 / RFC 9207): `unsupported_response_type`,
+  `invalid_scope`, PKCE errors and `invalid_target` are now `302` redirects
+  carrying `error`, `error_description`, `state` and `iss`, not a local JSON
+  `400`. Errors before `redirect_uri` is validated (unknown client,
+  missing/malformed/unregistered `redirect_uri`) still return JSON locally.
+  *Migration:* a client that parsed the `400` body should read the error from
+  the redirect query instead - which is what a spec-compliant client already does.
+
 ### Fixed
 - **`client_credentials` no longer returns a refresh token** (#239). RFC
   6749 §4.4.3: "A refresh token SHOULD NOT be included" - the client

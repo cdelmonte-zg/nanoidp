@@ -553,3 +553,120 @@ class TestDiscovery:
         assert "none" in doc["token_endpoint_auth_methods_supported"]
         assert "none" in doc["revocation_endpoint_auth_methods_supported"]
         assert "none" not in doc["introspection_endpoint_auth_methods_supported"]
+
+
+class TestNonTokenEndpointAuthEnforcement:
+    """#262: /introspect, /revoke and /device_authorization authenticate a
+    confidential client the same way /token does - the registered
+    token_endpoint_auth_method is enforced and two auth methods in one request
+    are rejected (RFC 7009 §2.1, RFC 7662 §2.1, RFC 6749 §2.3). Behaviour
+    change: a body secret from a client_secret_basic client, Basic from a
+    client_secret_post client, or Basic+body together used to be accepted and
+    now is not. The public-client policy is unchanged: introspect and device
+    refuse public clients, revoke keeps its ownership relaxation."""
+
+    def _token(self, client):
+        return json.loads(
+            client.post(
+                "/token", data={"grant_type": "client_credentials"},
+                headers=_basic("demo-client", "demo-secret"),
+            ).data
+        )["access_token"]
+
+    # /introspect
+    def test_introspect_basic_via_basic_works(self, client):
+        resp = client.post(
+            "/introspect", data={"token": self._token(client)},
+            headers=_basic("demo-client", "demo-secret"),
+        )
+        assert resp.status_code == 200
+        assert json.loads(resp.data)["active"] is True
+
+    def test_introspect_basic_client_rejects_body_secret(self, client):
+        resp = client.post(
+            "/introspect",
+            data={"token": self._token(client), "client_id": "demo-client", "client_secret": "demo-secret"},
+        )
+        assert resp.status_code == 401
+
+    def test_introspect_rejects_basic_plus_body_secret(self, client):
+        resp = client.post(
+            "/introspect",
+            data={"token": self._token(client), "client_secret": "demo-secret"},
+            headers=_basic("demo-client", "demo-secret"),
+        )
+        assert resp.status_code == 401
+
+    def test_introspect_post_client_rejects_basic(self, client, post_client):
+        resp = client.post(
+            "/introspect", data={"token": self._token(client)},
+            headers=_basic("post-cli", "post-secret"),
+        )
+        assert resp.status_code == 401
+
+    def test_introspect_public_client_rejected(self, client, public_client):
+        resp = client.post(
+            "/introspect", data={"token": self._token(client), "client_id": PUBLIC_ID}
+        )
+        assert resp.status_code == 401
+
+    # /revoke
+    def test_revoke_basic_via_basic_works(self, client):
+        resp = client.post(
+            "/revoke", data={"token": self._token(client)},
+            headers=_basic("demo-client", "demo-secret"),
+        )
+        assert resp.status_code == 200
+
+    def test_revoke_basic_client_rejects_body_secret(self, client):
+        resp = client.post(
+            "/revoke",
+            data={"token": self._token(client), "client_id": "demo-client", "client_secret": "demo-secret"},
+        )
+        assert resp.status_code == 401
+
+    def test_revoke_rejects_basic_plus_body_secret(self, client):
+        resp = client.post(
+            "/revoke",
+            data={"token": self._token(client), "client_secret": "demo-secret"},
+            headers=_basic("demo-client", "demo-secret"),
+        )
+        assert resp.status_code == 401
+
+    def test_revoke_public_client_still_relaxed(self, client, public_client):
+        # RFC 7009 §2.1 relaxation preserved: client_id alone, no secret, 200.
+        resp = client.post("/revoke", data={"token": "whatever", "client_id": PUBLIC_ID})
+        assert resp.status_code == 200
+
+    # /device_authorization
+    def test_device_basic_via_basic_works(self, client):
+        resp = client.post(
+            "/device_authorization", data={"scope": "openid"},
+            headers=_basic("demo-client", "demo-secret"),
+        )
+        assert resp.status_code == 200
+        assert "device_code" in json.loads(resp.data)
+
+    def test_device_basic_client_rejects_body_secret(self, client):
+        resp = client.post(
+            "/device_authorization",
+            data={"client_id": "demo-client", "client_secret": "demo-secret"},
+        )
+        assert resp.status_code == 401
+
+    def test_device_rejects_basic_plus_body_secret(self, client):
+        resp = client.post(
+            "/device_authorization", data={"client_secret": "demo-secret"},
+            headers=_basic("demo-client", "demo-secret"),
+        )
+        assert resp.status_code == 401
+
+    def test_device_post_client_rejects_basic(self, client, post_client):
+        resp = client.post(
+            "/device_authorization", headers=_basic("post-cli", "post-secret")
+        )
+        assert resp.status_code == 401
+
+    def test_device_public_client_rejected(self, client, public_client):
+        resp = client.post("/device_authorization", data={"client_id": PUBLIC_ID})
+        assert resp.status_code == 401

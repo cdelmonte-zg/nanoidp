@@ -697,68 +697,60 @@ def _enforce_token_endpoint_auth(
             )
         return None
 
-    method = token_client.token_endpoint_auth_method if token_client is not None else None
+    reason = _enforce_registered_client_auth(config, client_id, auth, body_client_secret)
+    return _token_auth_failed(client_id, reason) if reason is not None else None
+
+
+def _enforce_registered_client_auth(
+    config: ConfigManager,
+    client_id: Optional[str],
+    auth: Optional[Any],
+    body_client_secret: Optional[str],
+) -> Optional[str]:
+    """Enforce a CONFIDENTIAL client's registered token_endpoint_auth_method and
+    reject presenting two authentication methods in one request. Returns None
+    when the request may proceed, or a human-readable failure reason.
+
+    The single home for the confidential client-auth rule, shared by /token,
+    /introspect, /revoke and /device_authorization (#262): RFC 7009 §2.1 and
+    RFC 7662 §2.1 say those endpoints authenticate "as at the token endpoint",
+    and RFC 6749 §2.3 forbids more than one auth method per request. Callers
+    handle any public-client policy FIRST, so this only ever sees confidential
+    clients and unknown client_ids (both treated as client_secret_basic, the
+    default) - a body secret is never accepted alongside Basic, and the wrong
+    channel for the registered method is rejected instead of silently accepted.
+    """
+    client = config.get_client(client_id) if client_id else None
+    method = client.token_endpoint_auth_method if client is not None else "client_secret_basic"
 
     # client_secret_post: credentials in the body only; Basic is rejected.
     if method == "client_secret_post":
         if auth is not None:
-            return _token_auth_failed(
-                client_id,
+            return (
                 "This client's token_endpoint_auth_method is "
                 "'client_secret_post'; use client_id and client_secret in the "
-                "request body, not HTTP Basic",
+                "request body, not HTTP Basic"
             )
         if not body_client_secret or not config.check_client(client_id, body_client_secret):
-            return _token_auth_failed(client_id, "Invalid client credentials")
+            return "Invalid client credentials"
         return None
 
     # client_secret_basic (the default) and unknown client_ids authenticate
-    # via HTTP Basic. A body client_secret is never accepted here, whether
-    # or not Basic is also present: for a basic client it is the wrong
-    # channel, and presenting it ALONGSIDE Basic is two authentication
-    # methods in one request (RFC 6749 §2.3, "MUST NOT use more than one").
-    # nanoidp enforces the registered method, so this client error is made
-    # visible instead of silently letting Basic win.
+    # via HTTP Basic. A body client_secret is never accepted here, whether or
+    # not Basic is also present: for a basic client it is the wrong channel,
+    # and presenting it ALONGSIDE Basic is two authentication methods in one
+    # request (RFC 6749 §2.3, "MUST NOT use more than one").
     if body_client_secret is not None:
-        return _token_auth_failed(
-            client_id,
+        return (
             "This client authenticates with HTTP Basic; a client_secret in "
             "the request body is not accepted, and must not be combined with "
-            "HTTP Basic (RFC 6749 §2.3)",
+            "HTTP Basic (RFC 6749 §2.3)"
         )
     if auth is None:
-        return _token_auth_failed(client_id, "Client authentication required")
+        return "Client authentication required"
     if not config.check_client(auth.username, auth.password):
-        return _token_auth_failed(auth.username, "Invalid client credentials")
+        return "Invalid client credentials"
     return None
-
-
-def _authenticate_confidential_client(
-    config: ConfigManager,
-) -> tuple[bool, Optional[str]]:
-    """Confidential client authentication for the RFC 7009/7662/8628 endpoints.
-
-    The shared "credentials via HTTP Basic or client_secret_post body" check
-    that /introspect, /revoke and /device_authorization each carried inline.
-    Returns ``(authenticated, resolved_client_id)``; the caller applies its own
-    policy around it (introspect never relaxes for public clients; revoke calls
-    this only when the client is not public; device requires it outright).
-
-    This is deliberately SEPARATE from ``_enforce_token_endpoint_auth`` (the
-    /token boundary, #188), which additionally enforces the client's registered
-    token_endpoint_auth_method and rejects presenting two auth methods at once.
-    Aligning these endpoints with that stricter boundary (RFC 7009 §2.1 /
-    RFC 7662 §2.1 say they authenticate "as at the token endpoint") is a
-    behaviour change tracked separately in #262, not part of this extraction.
-    """
-    auth = request.authorization
-    body_client_id = request.form.get("client_id")
-    body_client_secret = request.form.get("client_secret") or None
-    if auth:
-        return config.check_client(auth.username, auth.password), auth.username
-    if body_client_id and body_client_secret:
-        return config.check_client(body_client_id, body_client_secret), body_client_id
-    return False, body_client_id
 
 
 @oauth_bp.route("/token", methods=["POST"])
@@ -1072,19 +1064,31 @@ def introspect() -> ResponseReturnValue:
     """
     config = get_config()
 
-    # Client authentication: Basic or client_secret_post. Deliberately NOT
-    # relaxed for public clients (#188): RFC 7662 §2.1 requires this
-    # endpoint to be protected against token scanning, and a public
-    # client_id is identification, not authentication - so 'none' is not in
-    # introspection_endpoint_auth_methods_supported either.
-    authenticated, client_id = _authenticate_confidential_client(config)
-    if not authenticated:
+    # Client authentication, enforced as at the token endpoint (#262): the
+    # registered token_endpoint_auth_method decides the channel and two auth
+    # methods in one request are rejected. Deliberately NOT relaxed for public
+    # clients (RFC 7662 §2.1: this endpoint must resist token scanning, a
+    # public client_id is identification not authentication, and 'none' is not
+    # in introspection_endpoint_auth_methods_supported).
+    auth = request.authorization
+    body_client_id = request.form.get("client_id")
+    body_client_secret = request.form.get("client_secret") or None
+    client_id = (auth.username if auth else None) or body_client_id
+    introspect_client = config.get_client(client_id) if client_id else None
+    if introspect_client is not None and introspect_client.is_public:
+        auth_error: Optional[str] = (
+            "public clients cannot authenticate to the introspection endpoint "
+            "(RFC 7662 §2.1)"
+        )
+    else:
+        auth_error = _enforce_registered_client_auth(config, client_id, auth, body_client_secret)
+    if auth_error is not None:
         audit_event(
             "introspection_request",
             "failed",
             endpoint="/introspect",
             client_id=client_id,
-            details={"reason": "Invalid client credentials"},
+            details={"reason": auth_error},
         )
         return jsonify({"error": "invalid_client"}), 401
 
@@ -1179,19 +1183,22 @@ def revoke() -> ResponseReturnValue:
     # authentication (RFC 7009 §2.1).
     auth = request.authorization
     body_client_id = request.form.get("client_id")
+    body_client_secret = request.form.get("client_secret") or None
     client_id = (auth.username if auth else None) or body_client_id
     revoking_client = config.get_client(client_id) if client_id else None
     is_public = revoking_client is not None and revoking_client.is_public
 
+    # A confidential client authenticates as at the token endpoint (#262):
+    # registered method enforced, two auth methods in one request rejected.
     if not is_public:
-        authenticated, _ = _authenticate_confidential_client(config)
-        if not authenticated:
+        auth_error = _enforce_registered_client_auth(config, client_id, auth, body_client_secret)
+        if auth_error is not None:
             audit_event(
                 "revocation_request",
                 "failed",
                 endpoint="/revoke",
                 client_id=client_id,
-                details={"reason": "Invalid client credentials"},
+                details={"reason": auth_error},
             )
             return jsonify({"error": "invalid_client"}), 401
 
@@ -1343,18 +1350,31 @@ def device_authorization() -> ResponseReturnValue:
     """
     config = get_config()
 
-    # Check client authentication: Basic or client_secret_post. Public
-    # clients are NOT special-cased here (#188 keeps device-flow support
-    # for token_endpoint_auth_method 'none' as an explicit follow-up
-    # decision; today a public client uses authorization_code + PKCE).
-    authenticated, resolved_client_id = _authenticate_confidential_client(config)
-    if not authenticated:
+    # Client authentication, enforced as at the token endpoint (#262):
+    # registered method enforced, two auth methods in one request rejected.
+    # Public clients are NOT supported on the device flow yet (#255 tracks
+    # that decision; today a public client uses authorization_code + PKCE).
+    auth = request.authorization
+    body_client_id = request.form.get("client_id")
+    body_client_secret = request.form.get("client_secret") or None
+    resolved_client_id = (auth.username if auth else None) or body_client_id
+    device_client = config.get_client(resolved_client_id) if resolved_client_id else None
+    if device_client is not None and device_client.is_public:
+        auth_error: Optional[str] = (
+            "public clients are not supported on the device flow yet (#255); "
+            "this client's token_endpoint_auth_method is 'none'"
+        )
+    else:
+        auth_error = _enforce_registered_client_auth(
+            config, resolved_client_id, auth, body_client_secret
+        )
+    if auth_error is not None:
         audit_event(
             "device_authorization_request",
             "failed",
             endpoint="/device_authorization",
             client_id=resolved_client_id,
-            details={"reason": "Invalid client credentials"},
+            details={"reason": auth_error},
         )
         return jsonify({"error": "invalid_client"}), 401
 
