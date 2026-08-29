@@ -35,14 +35,30 @@ resulting audience-bound access token.
 | `delete_document` | `documents:write` |
 | `admin_operation` | `admin` |
 
-A token missing a tool's scope is refused with `insufficient_scope`; a token
-whose `aud` is a different resource is rejected at the transport with `401`.
+Authorization happens in two distinct layers, and the fixture shows both:
+
+- **Resource-level scope floor** (`documents:read`), enforced by the SDK's
+  bearer middleware before any tool runs. A token that lacks it gets the
+  conformant MCP/RFC 9728 challenge: `403` with `WWW-Authenticate: Bearer
+  error="insufficient_scope", ..., resource_metadata="<the RFC 9728 URL>"`.
+  This is the transport-level response an MCP client keys off.
+- **Application-level per-tool check** for the finer `documents:write` /
+  `admin` operations, made inside each tool. A caller past the floor but
+  lacking the elevated scope gets an in-band MCP tool error (`isError`), not
+  an HTTP challenge - a second, application-defined authorization decision.
+
+A token whose `aud` is a different resource is rejected at the transport with
+`401` + `WWW-Authenticate: Bearer` before any tool runs (RFC 8707 audience
+binding).
 
 ## Running it
 
 nanoidp must advertise the three scopes in its vocabulary, and its issuer
 must equal the URL it actually serves (the mock derives the JWKS URL from the
-issuer):
+issuer). The delegated leg logs in as a PUBLIC client (PKCE, no secret): the
+bundled config registers `mcp-public-client` with
+`token_endpoint_auth_method: none` for exactly this, since a real MCP client
+holds no client secret.
 
 ```yaml
 # settings.yaml

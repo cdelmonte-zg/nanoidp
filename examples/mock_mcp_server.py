@@ -14,6 +14,22 @@ exposing three tools, each gated on one scope:
     delete_document  -> documents:write
     admin_operation  -> admin
 
+Two authorization layers, deliberately kept distinct so the e2e can show
+each one:
+
+  * A RESOURCE-level scope floor (``documents:read``), enforced by the SDK's
+    bearer-auth middleware BEFORE any tool runs. A token that lacks it gets a
+    real MCP/RFC 9728 challenge: HTTP 403 with
+    ``WWW-Authenticate: Bearer error="insufficient_scope", ...,
+    resource_metadata="<the RFC 9728 URL>"``. This is the conformant,
+    transport-level insufficient_scope response an MCP client keys off.
+  * An APPLICATION-level per-tool check inside each tool for the finer
+    ``documents:write`` / ``admin`` operations. A caller past the read floor
+    but lacking the elevated scope gets an MCP tool error (``isError``), the
+    in-band way a tool refuses an operation. This is NOT the RFC challenge -
+    it is a second, application-defined authorization decision, and the e2e
+    labels it as such.
+
 Bearer tokens are validated JWKS-only (self-contained JWT): the server
 fetches nanoidp's JWKS once, verifies the RS256 signature, and checks `iss`,
 `aud` (which must equal this server's own resource URL), `exp` and the
@@ -50,12 +66,22 @@ TOOL_SCOPES = {
 }
 
 
+# The resource-level scope floor: the SDK's bearer-auth middleware requires
+# it on every request and, when absent, returns the conformant HTTP 403
+# insufficient_scope challenge (WWW-Authenticate + RFC 9728 resource_metadata)
+# BEFORE a tool runs. The finer per-tool scopes below are checked in-band.
+RESOURCE_SCOPE_FLOOR = "documents:read"
+
+
 class InsufficientScope(ToolError):
-    """Raised by a tool when the bearer token lacks the tool's scope. Subclasses
-    the SDK's ToolError so it surfaces as a clean tool error (is_error result
-    the client reliably sees) instead of an UnexpectedToolError with a server
-    traceback - the resource server equivalent of a 403 insufficient_scope
-    (RFC 6750 §3.1 / MCP)."""
+    """Raised by a tool for the APPLICATION-level per-tool check, when a caller
+    past the resource scope floor still lacks the finer scope an operation
+    needs (documents:write / admin). Subclasses the SDK's ToolError so it
+    surfaces as a clean tool error (an isError result the client reliably sees)
+    rather than an UnexpectedToolError with a server traceback. This is NOT the
+    RFC 9728 insufficient_scope challenge (that is the transport-level 403 the
+    middleware sends for the resource floor) - it is a second, in-band
+    authorization decision the tool makes for itself."""
 
 
 class MockTokenVerifier(TokenVerifier):
@@ -124,7 +150,9 @@ def build_server(issuer: str, resource: str) -> MCPServer:
         auth=AuthSettings(
             issuer_url=issuer,  # type: ignore[arg-type]
             resource_server_url=resource,  # type: ignore[arg-type]
-            required_scopes=[],
+            # Resource-level floor: the SDK 403s any request lacking it with
+            # the conformant insufficient_scope challenge, before a tool runs.
+            required_scopes=[RESOURCE_SCOPE_FLOOR],
         ),
     )
 

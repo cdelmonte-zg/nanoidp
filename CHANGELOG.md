@@ -53,14 +53,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `iss`, `aud` == its own resource URL, `exp`, scopes), serves the RFC 9728
   `/.well-known/oauth-protected-resource` document naming nanoidp as its
   authorization server, and answers an unauthenticated call with `401` +
-  `WWW-Authenticate` pointing at that metadata. `examples/test_agent.py`
-  gains an `--mcp` suite that drives the whole loop deterministically as the
-  MCP client (401 -> RFC 9728 discovery -> `/authorize` with PKCE and
-  `resource=` -> `/token` -> `tools/call`): resource-bound token accepted,
-  wrong-audience token rejected, insufficient-scope tool call refused,
-  client_credentials workload, a token revoked at nanoidp still accepted by
-  the JWKS-only server until `exp` (asserted as the documented consequence of
-  self-contained tokens), and a token surviving a key rotation. New guide
+  `WWW-Authenticate` pointing at that metadata. It demonstrates two
+  authorization layers, kept distinct: a resource-level scope floor
+  (`documents:read`), enforced by the SDK's bearer middleware, which returns
+  the conformant MCP/RFC 9728 `403` `WWW-Authenticate: Bearer
+  error="insufficient_scope"` + `resource_metadata` challenge before any tool
+  runs; and an application-level per-tool check inside each tool for the finer
+  `documents:write` / `admin` operations, which surfaces as an in-band MCP
+  tool error. `examples/test_agent.py` gains an `--mcp` suite that drives the
+  whole loop deterministically as the MCP client (401 -> RFC 9728 discovery ->
+  `/authorize` with PKCE and `resource=` -> `/token` -> `tools/call`):
+  delegated login as a PUBLIC client (PKCE, no secret) yielding a
+  resource-bound token accepted for a scoped tool; a wrong-audience token
+  rejected with `401` at the transport (asserted at the HTTP layer); the
+  conformant `403` insufficient-scope challenge; the application-level
+  per-tool refusal; a refresh token that cannot be widened in scope on refresh
+  (RFC 6749 §6); a client_credentials workload; a token revoked at nanoidp
+  still accepted by the JWKS-only server until `exp` (the documented
+  consequence of self-contained tokens); and a pre-rotation token still
+  verifying after a key rotation, with the test asserting nanoidp retains the
+  previous key's `kid` in its published JWKS. Adds the `mcp-public-client`
+  (`token_endpoint_auth_method: none`) to the example config. New guide
   "Testing an MCP client against nanoidp". This is the deliverable that ties
   #186 (scopes), #187 (resource indicators) and #188 (public clients)
   together into a demonstrable OAuth/MCP round trip.

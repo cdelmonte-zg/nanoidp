@@ -45,6 +45,11 @@ oauth:
     allowed_scopes:
     - openid
     - profile
+  - client_id: mcp-public-client
+    token_endpoint_auth_method: none
+    description: 'Public MCP client (PKCE, no secret) for the OAuth/MCP interop suite (issue #191)'
+    redirect_uris:
+    - http://localhost:3000/callback
   issuer_from_request: false
   issuer_from_proxy_headers: false
   # logos_dir: ./static/logos  # optional override; defaults to src/nanoidp/static/logos

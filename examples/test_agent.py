@@ -4452,10 +4452,18 @@ class NanoIDPTestAgent:
 
     # ==================== MCP resource-server suite (issue #191) ====================
 
-    def _mcp_pkce_resource_token(self, resource: str, scope: str) -> Optional[str]:
-        """Delegated user login through the full PKCE + resource flow, returning
-        an access token whose aud is `resource` (RFC 8707). Mirrors what an MCP
-        client does after reading the RFC 9728 metadata."""
+    # A real MCP client is a PUBLIC OAuth client: it authenticates the user
+    # through PKCE and holds no client secret (issue #191, finding on #260).
+    # The e2e config registers mcp-public-client with
+    # token_endpoint_auth_method 'none'.
+    MCP_PUBLIC_CLIENT = "mcp-public-client"
+
+    def _mcp_pkce_token_response(self, resource: str, scope: str) -> Optional[dict]:
+        """Delegated user login through the full PKCE + resource flow as a
+        PUBLIC client (no client secret, client_id in the token body). Mirrors
+        what an MCP client does after reading the RFC 9728 metadata. Returns
+        the raw /token JSON (access_token, and refresh_token when offline_access
+        was requested), or None if any step fails."""
         verifier = secrets.token_urlsafe(32)
         challenge = base64.urlsafe_b64encode(
             hashlib.sha256(verifier.encode()).digest()
@@ -4463,7 +4471,7 @@ class NanoIDPTestAgent:
         redirect_uri = "http://localhost:3000/callback"
         params = {
             "response_type": "code",
-            "client_id": self.client_id,
+            "client_id": self.MCP_PUBLIC_CLIENT,
             "redirect_uri": redirect_uri,
             "scope": scope,
             "state": secrets.token_urlsafe(16),
@@ -4483,6 +4491,7 @@ class NanoIDPTestAgent:
         code = parse_qs(urlparse(resp.headers.get("Location", "")).query).get("code", [None])[0]
         if not code:
             return None
+        # Public client: no HTTP Basic, client_id travels in the body.
         token_resp = sess.post(
             f"{self.base_url}/token",
             data={
@@ -4491,13 +4500,19 @@ class NanoIDPTestAgent:
                 "redirect_uri": redirect_uri,
                 "code_verifier": verifier,
                 "resource": resource,
+                "client_id": self.MCP_PUBLIC_CLIENT,
             },
-            auth=(self.client_id, self.client_secret),
             timeout=5,
         )
         if token_resp.status_code != 200:
             return None
-        return token_resp.json().get("access_token")
+        return token_resp.json()
+
+    def _mcp_pkce_resource_token(self, resource: str, scope: str) -> Optional[str]:
+        """The access token from a delegated public-client PKCE flow (aud =
+        `resource`, RFC 8707)."""
+        body = self._mcp_pkce_token_response(resource, scope)
+        return body.get("access_token") if body else None
 
     def _mcp_cc_resource_token(self, resource: str, scope: str) -> Optional[str]:
         """A client_credentials workload token bound to `resource`."""
@@ -4609,33 +4624,128 @@ class NanoIDPTestAgent:
             self._add_result("MCP Client Credentials Workload", TestCategory.MCP, False, f"Error: {e}")
 
     def _mcp_test_wrong_audience(self, mcp_url: str) -> None:
-        """A token minted for a DIFFERENT resource is rejected (aud mismatch)."""
+        """A token minted for a DIFFERENT resource is rejected at the transport
+        with a 401 (aud mismatch, RFC 8707). Asserted at the HTTP layer so a
+        vacuous pass (no token, or a swallowed exception read as
+        "unauthorized") cannot hide a real regression."""
         try:
             other = "http://localhost:9999/other-mcp"
             token = self._mcp_cc_resource_token(other, "documents:read")
-            outcome, detail = self._mcp_call_tool(mcp_url, token, "read_document", {"document_id": "d1"})
-            success = outcome == "unauthorized"
+            # The token MUST have been issued for the wrong-audience check to
+            # mean anything; a None token would 401 for the wrong reason.
+            assert token is not None, "could not mint a token for the other resource"
+            resp = requests.post(
+                mcp_url,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
+                    "Accept": "application/json, text/event-stream",
+                },
+                json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+                timeout=5,
+            )
+            www = resp.headers.get("WWW-Authenticate", "")
+            success = resp.status_code == 401 and "Bearer" in www
             self._add_result(
                 "MCP Wrong Audience Rejected", TestCategory.MCP, success,
-                "a token whose aud is another resource is rejected by this MCP "
-                "server (RFC 8707 audience binding)", {"outcome": outcome, "detail": detail},
+                "a token whose aud is another resource is rejected with 401 + "
+                "WWW-Authenticate: Bearer (RFC 8707 audience binding)",
+                {"status": resp.status_code, "www_authenticate": www},
             )
         except Exception as e:
             self._add_result("MCP Wrong Audience Rejected", TestCategory.MCP, False, f"Error: {e}")
 
-    def _mcp_test_insufficient_scope(self, mcp_url: str) -> None:
-        """A token with documents:read only is refused delete_document."""
+    def _mcp_test_insufficient_scope_challenge(self, mcp_url: str) -> None:
+        """A token lacking the resource scope floor gets the CONFORMANT MCP
+        insufficient_scope challenge: HTTP 403 with WWW-Authenticate: Bearer
+        error="insufficient_scope" and the RFC 9728 resource_metadata pointer
+        (MCP 2026-07-28). Asserted at the HTTP layer - this is the transport
+        response an MCP client keys off, not an in-band tool error."""
+        try:
+            # aud = this resource (passes the audience check) but scope lacks
+            # documents:read (the resource floor) -> the SDK 403s before a tool.
+            token = self._mcp_cc_resource_token(mcp_url, "documents:write")
+            assert token is not None, "could not mint a documents:write-only token"
+            resp = requests.post(
+                mcp_url,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
+                    "Accept": "application/json, text/event-stream",
+                },
+                json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+                timeout=5,
+            )
+            www = resp.headers.get("WWW-Authenticate", "")
+            success = (
+                resp.status_code == 403
+                and 'error="insufficient_scope"' in www
+                and "resource_metadata=" in www
+            )
+            self._add_result(
+                "MCP Insufficient Scope Challenge (403)", TestCategory.MCP, success,
+                "a token lacking the resource scope floor gets a conformant 403 "
+                'WWW-Authenticate: Bearer error="insufficient_scope" + '
+                "resource_metadata (RFC 9728 / MCP 2026-07-28)",
+                {"status": resp.status_code, "www_authenticate": www},
+            )
+        except Exception as e:
+            self._add_result(
+                "MCP Insufficient Scope Challenge (403)", TestCategory.MCP, False, f"Error: {e}"
+            )
+
+    def _mcp_test_per_tool_scope(self, mcp_url: str) -> None:
+        """The APPLICATION-level layer: a caller past the resource floor
+        (documents:read) but lacking a tool's elevated scope (delete_document
+        needs documents:write) is refused in-band with an MCP tool error. This
+        is a second, application-defined authorization decision, distinct from
+        the transport-level 403 challenge above."""
         try:
             token = self._mcp_cc_resource_token(mcp_url, "documents:read")
             outcome, detail = self._mcp_call_tool(mcp_url, token, "delete_document", {"document_id": "d1"})
             success = outcome == "tool_error" and "insufficient_scope" in detail
             self._add_result(
-                "MCP Insufficient Scope Rejected", TestCategory.MCP, success,
+                "MCP Per-Tool Scope (application-level)", TestCategory.MCP, success,
                 "delete_document (documents:write) refused to a documents:read "
-                "token with insufficient_scope", {"outcome": outcome, "detail": detail},
+                "token with an in-band tool error", {"outcome": outcome, "detail": detail},
             )
         except Exception as e:
-            self._add_result("MCP Insufficient Scope Rejected", TestCategory.MCP, False, f"Error: {e}")
+            self._add_result("MCP Per-Tool Scope (application-level)", TestCategory.MCP, False, f"Error: {e}")
+
+    def _mcp_test_refresh_scope_escalation(self, mcp_url: str) -> None:
+        """A public MCP client cannot widen scope on refresh: a refresh token
+        issued for documents:read, replayed asking for documents:write, is
+        refused (RFC 6749 §6 - refresh must not grant additional scope)."""
+        try:
+            body = self._mcp_pkce_token_response(mcp_url, "offline_access documents:read")
+            assert body is not None, "delegated PKCE flow returned no token"
+            refresh_token = body.get("refresh_token")
+            assert refresh_token, "no refresh_token issued (offline_access)"
+            resp = requests.post(
+                f"{self.base_url}/token",
+                data={
+                    "grant_type": "refresh_token",
+                    "refresh_token": refresh_token,
+                    "scope": "documents:read documents:write",
+                    "resource": mcp_url,
+                    "client_id": self.MCP_PUBLIC_CLIENT,
+                },
+                timeout=5,
+            )
+            # Either the request is rejected (invalid_scope), or the token is
+            # issued but NOT widened - documents:write must never appear.
+            granted = resp.json().get("scope", "") if resp.status_code == 200 else ""
+            success = resp.status_code == 400 or "documents:write" not in granted.split()
+            self._add_result(
+                "MCP Refresh Scope Escalation Rejected", TestCategory.MCP, success,
+                "a refresh token for documents:read cannot be widened to "
+                "documents:write on refresh (RFC 6749 §6)",
+                {"status": resp.status_code, "granted_scope": granted},
+            )
+        except Exception as e:
+            self._add_result(
+                "MCP Refresh Scope Escalation Rejected", TestCategory.MCP, False, f"Error: {e}"
+            )
 
     def _mcp_test_revoked_still_valid_until_exp(self, mcp_url: str) -> None:
         """A token revoked at nanoidp is reported inactive by /introspect but
@@ -4660,18 +4770,42 @@ class NanoIDPTestAgent:
                 "MCP Revoked Token Still Valid At Resource", TestCategory.MCP, False, f"Error: {e}"
             )
 
+    @staticmethod
+    def _jwt_kid(token: str) -> Optional[str]:
+        """The `kid` from a JWT header, without verifying the token."""
+        try:
+            header_b64 = token.split(".")[0]
+            header_b64 += "=" * (-len(header_b64) % 4)
+            return json.loads(base64.urlsafe_b64decode(header_b64)).get("kid")
+        except Exception:
+            return None
+
     def _mcp_test_key_rotation(self, mcp_url: str) -> None:
-        """A token minted before a key rotation stays valid: nanoidp keeps the
-        previous keys in its JWKS, so the MCP server can still verify it."""
+        """A token minted before a key rotation stays valid because nanoidp
+        RETAINS the previous key in its published JWKS. Asserted at the source:
+        the pre-rotation token's kid must still appear in nanoidp's
+        /.well-known/jwks.json after the rotation (not merely be served from the
+        MCP server's PyJWKClient cache), AND the token must still verify."""
         try:
             token = self._mcp_cc_resource_token(mcp_url, "documents:read")
+            assert token is not None, "could not mint a pre-rotation token"
+            old_kid = self._jwt_kid(token)
+            assert old_kid, "pre-rotation token carries no kid"
             rotate = self.session.post(f"{self.base_url}/api/keys/rotate", timeout=5)
+            jwks = requests.get(f"{self.base_url}/.well-known/jwks.json", timeout=5).json()
+            published_kids = {k.get("kid") for k in jwks.get("keys", [])}
+            old_kid_retained = old_kid in published_kids
             outcome, _ = self._mcp_call_tool(mcp_url, token, "read_document", {"document_id": "d1"})
-            success = rotate.status_code == 200 and outcome == "ok"
+            success = rotate.status_code == 200 and old_kid_retained and outcome == "ok"
             self._add_result(
                 "MCP Token Survives Key Rotation", TestCategory.MCP, success,
-                "a pre-rotation token still verifies at the MCP server "
-                "(previous keys retained in the JWKS)", {"mcp_outcome": outcome},
+                "after rotation the pre-rotation kid is still in nanoidp's "
+                "published JWKS and the token still verifies at the MCP server",
+                {
+                    "rotate_status": rotate.status_code,
+                    "old_kid_retained": old_kid_retained,
+                    "mcp_outcome": outcome,
+                },
             )
         except Exception as e:
             self._add_result("MCP Token Survives Key Rotation", TestCategory.MCP, False, f"Error: {e}")
@@ -4691,7 +4825,9 @@ class NanoIDPTestAgent:
         self._mcp_test_delegated_pkce(mcp_url)
         self._mcp_test_client_credentials(mcp_url)
         self._mcp_test_wrong_audience(mcp_url)
-        self._mcp_test_insufficient_scope(mcp_url)
+        self._mcp_test_insufficient_scope_challenge(mcp_url)
+        self._mcp_test_per_tool_scope(mcp_url)
+        self._mcp_test_refresh_scope_escalation(mcp_url)
         self._mcp_test_revoked_still_valid_until_exp(mcp_url)
         self._mcp_test_key_rotation(mcp_url)
         print("\n" + "-" * 70)
