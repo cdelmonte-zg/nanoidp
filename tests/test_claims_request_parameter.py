@@ -433,6 +433,7 @@ class TestClaimsPersistAcrossRefresh:
                 "token_type": "refresh",
                 "token_use": "refresh",
                 "scope": "openid",
+                "client_id": "demo-client",
                 "rt_family": "forged-family",
                 "req_id_token_claims": 42,  # non-iterable
                 "req_userinfo_claims": "email",  # bare string, not a list
@@ -456,6 +457,7 @@ class TestClaimsPersistAcrossRefresh:
                 "token_type": "refresh",
                 "token_use": "refresh",
                 "scope": "openid",
+                "client_id": "demo-client",
                 "rt_family": "forged-family-2",
                 "req_id_token_claims": ["email", {"essential": True}],
             },

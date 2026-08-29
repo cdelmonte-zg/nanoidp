@@ -50,6 +50,15 @@ previous leniency allowed - needs a one-time adjustment.
   missing/malformed/unregistered `redirect_uri`) still return JSON locally.
   *Migration:* a client that parsed the `400` body should read the error from
   the redirect query instead - which is what a spec-compliant client already does.
+- **A refresh token without a `client_id` binding claim is rejected** (#73,
+  `invalid_grant`, RFC 6749 §5.2). The binding was added in 2.2.0 (#56);
+  tokens minted before it were still spendable by any authenticated client
+  until they expired - a transitional compat deferred to the next major, now
+  closed. *Migration:* discard refresh tokens minted before 2.2.0 and obtain
+  new ones (every grant since 2.2.0 already binds them). The MCP `generate_token`
+  tool gains an optional `client_id` that binds the minted token so its refresh
+  token is spendable; without it the tool mints an unbound token, fine for a
+  one-shot access-token test but not refreshable.
 
 ### Added
 - **Mock protected MCP server as an e2e fixture** (#191). `e2e/mock_mcp_server.py`

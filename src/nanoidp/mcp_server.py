@@ -506,6 +506,16 @@ _TOOLS: list[Tool] = [
                     "type": "integer",
                     "description": "Token expiration in minutes (optional, default: 60)",
                 },
+                "client_id": {
+                    "type": "string",
+                    "description": (
+                        "Bind the token to this client (optional). Stamps the "
+                        "client_id claim so the refresh token is spendable - "
+                        "since 3.0 a refresh token with no client_id binding is "
+                        "refused (#73). Omit for an unbound token, fine for a "
+                        "one-shot access-token test but not refreshable"
+                    ),
+                },
                 "extra_claims": {
                     "type": "object",
                     "description": "Additional claims to include in the token",
@@ -1326,6 +1336,12 @@ def _tool_generate_token(arguments: dict[str, Any], config: ConfigManager) -> di
         exp_minutes=arguments.get("expires_in_minutes", config.settings.token_expiry_minutes),
         extra_claims=arguments.get("extra_claims"),
         scope=arguments.get("scope"),
+        # Optional client binding (#73): stamps the client_id claim so the
+        # refresh token can actually be spent - since 3.0 a refresh token with
+        # no client_id binding is refused. Omit for an unbound token (aud =
+        # oauth.audience or the resource below); such a token is fine for a
+        # one-shot access-token test but is NOT refreshable.
+        client_id=arguments.get("client_id"),
         # _execute_tool is also reachable directly (see tests), bypassing
         # call_tool's input_schema validation; reject a non-list with a
         # clean error here too instead of minting a token whose malformed
@@ -1339,10 +1355,10 @@ def _tool_generate_token(arguments: dict[str, Any], config: ConfigManager) -> di
         # given resource(s). BOUNDARY: unlike /token, /authorize and
         # /device_authorization - which run every requested resource through
         # resolve_resources and reject one outside the client's
-        # allowed_resources with invalid_target - this tool has no client in
-        # the request. It mints a token directly for a user (a testing /
-        # simulation affordance, not an OAuth grant), so there is no per-client
-        # allowed_resources ceiling to apply and the aud is whatever is passed.
+        # allowed_resources with invalid_target - this tool never applies that
+        # per-client ceiling, even when client_id is given for the refresh
+        # binding above: it mints a token directly (a testing / simulation
+        # affordance, not an OAuth grant), so the aud is whatever is passed.
         # That is deliberate; a reader expecting parity with /token should know
         # the ceiling lives on the grant endpoints, not on this admin tool.
         resource=_normalize_str_list(arguments.get("resource"), "resource") or None,

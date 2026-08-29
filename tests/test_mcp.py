@@ -1092,6 +1092,7 @@ class TestGenerateTokenClaims:
         result = await self._generate(
             {
                 "username": "admin",
+                "client_id": "demo-client",
                 "scope": "openid",
                 "id_token_claims": ["email"],
                 "userinfo_claims": ["department"],
@@ -1117,3 +1118,17 @@ class TestGenerateTokenClaims:
             refreshed["access_token"], options={"verify_signature": False}
         )
         assert access_payload["req_userinfo_claims"] == ["department"]
+
+    @pytest.mark.asyncio
+    async def test_unbound_token_cannot_be_refreshed(self, app, client, auth_header):
+        """Without client_id, generate_token mints an UNBOUND token: fine for a
+        one-shot access-token test, but its refresh token has no client_id
+        binding, so since 3.0 (#73) it cannot be spent."""
+        result = await self._generate({"username": "admin", "scope": "openid"})
+        resp = client.post(
+            "/token",
+            data={"grant_type": "refresh_token", "refresh_token": result["refresh_token"]},
+            headers=auth_header,
+        )
+        assert resp.status_code == 400
+        assert json.loads(resp.data)["error"] == "invalid_grant"

@@ -183,10 +183,35 @@ def _grant_refresh_token(ctx: _GrantContext) -> GrantResult:
         return abort(400, description="Invalid token type")
 
     # A refresh token may only be spent by the client it was issued to
-    # (RFC 9700 §4.14, #56). The binding claim was added in #56; tokens
-    # minted before it carry no client_id and stay usable (legacy compat).
+    # (RFC 9700 §4.14, #56). Since 3.0 the binding claim is MANDATORY (#73):
+    # a refresh token with no client_id claim - minted before the binding
+    # existed (pre-2.2.0/#56) - is refused, ending the transitional compat
+    # that let any authenticated client spend such a token until it expired.
     bound_client = payload.get("client_id")
-    if bound_client and bound_client != ctx.client_id:
+    if not bound_client:
+        audit_event(
+            "token_request",
+            "failed",
+            endpoint="/token",
+            client_id=ctx.client_id,
+            details={
+                "reason": "Refresh token has no client_id binding claim",
+                "grant_type": ctx.grant_type,
+            },
+        )
+        return (
+            jsonify(
+                {
+                    "error": "invalid_grant",
+                    "error_description": (
+                        "This refresh token predates client binding and is no "
+                        "longer accepted; obtain a new one"
+                    ),
+                }
+            ),
+            400,
+        )
+    if bound_client != ctx.client_id:
         audit_event(
             "token_request",
             "failed",
