@@ -7,8 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [3.0.0] - 2026-08-29
-
 ### Breaking Changes
 
 This release tightens and unifies nanoidp's OAuth **client-authentication
@@ -1288,7 +1286,6 @@ previous leniency allowed - needs a one-time adjustment.
 - Key rotation with JWKS support for multiple keys
 - External key import support
 
-[3.0.0]: https://github.com/cdelmonte-zg/nanoidp/compare/v2.8.0...v3.0.0
 [2.8.0]: https://github.com/cdelmonte-zg/nanoidp/compare/v2.7.0...v2.8.0
 [2.7.0]: https://github.com/cdelmonte-zg/nanoidp/compare/v2.6.0...v2.7.0
 [2.6.0]: https://github.com/cdelmonte-zg/nanoidp/compare/v2.5.0...v2.6.0
