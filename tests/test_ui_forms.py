@@ -317,6 +317,23 @@ class TestClientForms:
         assert page.status_code == 200
         assert b"pub-ui" in page.data
 
+    def test_create_public_client_drops_a_submitted_secret(self, app, client):
+        """#254 review round 2: the create form pre-generates a secret; a
+        browser that picks 'none' still submits it. The route must persist
+        client_secret=None regardless, matching the edit-to-none behaviour."""
+        resp = client.post(
+            "/clients/create",
+            data={
+                "client_id": "pub-gen",
+                "token_endpoint_auth_method": "none",
+                "client_secret": "a-pre-generated-value-from-the-form",
+            },
+        )
+        assert resp.status_code == 302
+        created = _get_client_by_id(app, "pub-gen")
+        assert created is not None and created.is_public
+        assert created.client_secret is None
+
     def test_edit_to_public_with_blank_secret_drops_the_secret(self, app, client):
         """#254 review, finding 3: switching a confidential client to 'none'
         with a blank secret field must drop the old secret, not keep a dead

@@ -326,6 +326,19 @@ class TestMethodEnforcement:
         )
         assert resp.status_code == 401
 
+    def test_basic_client_rejects_valid_basic_plus_a_body_secret(self, client):
+        """#254 review round 2: two authentication methods in one request is
+        an RFC 6749 §2.3 violation and must be rejected even when the Basic
+        credentials are valid - Basic must not silently win over a
+        contradictory body secret."""
+        for body_secret in ("demo-secret", "wrong"):
+            resp = client.post(
+                "/token",
+                data={"grant_type": "client_credentials", "client_secret": body_secret},
+                headers=_basic("demo-client", "demo-secret"),
+            )
+            assert resp.status_code == 401, body_secret
+
     def test_post_client_authenticates_via_body(self, client, post_client):
         resp = client.post(
             "/token",

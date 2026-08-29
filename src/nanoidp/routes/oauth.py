@@ -1239,17 +1239,21 @@ def _enforce_token_endpoint_auth(
             return _token_auth_failed(client_id, "Invalid client credentials")
         return None
 
-    # client_secret_basic (the default) and unknown client_ids: HTTP Basic.
-    # A body secret without Basic is not the registered channel for a
-    # basic client, and cannot authenticate an unknown one either.
+    # client_secret_basic (the default) and unknown client_ids authenticate
+    # via HTTP Basic. A body client_secret is never accepted here, whether
+    # or not Basic is also present: for a basic client it is the wrong
+    # channel, and presenting it ALONGSIDE Basic is two authentication
+    # methods in one request (RFC 6749 §2.3, "MUST NOT use more than one").
+    # nanoidp enforces the registered method, so this client error is made
+    # visible instead of silently letting Basic win.
+    if body_client_secret is not None:
+        return _token_auth_failed(
+            client_id,
+            "This client authenticates with HTTP Basic; a client_secret in "
+            "the request body is not accepted, and must not be combined with "
+            "HTTP Basic (RFC 6749 §2.3)",
+        )
     if auth is None:
-        if body_client_secret:
-            return _token_auth_failed(
-                client_id,
-                "This client's token_endpoint_auth_method is "
-                "'client_secret_basic'; present the secret via HTTP Basic, "
-                "not in the request body",
-            )
         return _token_auth_failed(client_id, "Client authentication required")
     if not config.check_client(auth.username, auth.password):
         return _token_auth_failed(auth.username, "Invalid client credentials")

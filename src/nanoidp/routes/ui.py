@@ -446,15 +446,22 @@ def client_create() -> ResponseReturnValue:
             return redirect(url_for("ui.client_create"))
 
         auth_method = request.form.get("token_endpoint_auth_method", "client_secret_basic")
-        client_secret = request.form.get("client_secret", "").strip()
-        if not client_secret and auth_method != "none":
-            # A public client (#188) has no secret; every other method needs one.
+        client_secret: str | None = request.form.get("client_secret", "").strip()
+        if auth_method == "none":
+            # A public client (#188) has no secret. Normalize server-side, not
+            # just in the form JS: the create form pre-generates a secret, and
+            # the JS only lifts the 'required' constraint when 'none' is
+            # picked - it does not clear that generated value, so a real
+            # browser would otherwise persist a dead, ignored secret (#254
+            # review), the same reason edit-to-none drops it.
+            client_secret = None
+        elif not client_secret:
             flash("Client Secret is required unless the auth method is 'none'", "error")
             return redirect(url_for("ui.client_create"))
 
         client = OAuthClient(
             client_id=client_id,
-            client_secret=client_secret or None,
+            client_secret=client_secret,
             token_endpoint_auth_method=auth_method,  # type: ignore[arg-type]
             description=request.form.get("description", ""),
             background_color=request.form.get("background_color") or None,
