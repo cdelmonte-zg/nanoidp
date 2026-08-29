@@ -170,7 +170,7 @@ A new client field touches all of these:
 
 Then: tests for the YAML round-trip and the persist-through-edit and
 regenerate-secret paths, MCP parity coverage, and an
-`examples/test_agent.py` scenario, in the same PR (features ship
+`e2e/test_agent.py` scenario, in the same PR (features ship
 whole). #214 settled how this flow is protected: no code-generating
 registry - the declarative surfaces (the YAML load contract, the MCP
 read surface and tool schemas, the form template) are pinned to
@@ -183,7 +183,7 @@ builders) stay covered by the per-feature tests this list requires.
 
 - `tests/` (unit and integration through the Flask test client) runs
   in CI on Python 3.10/3.11/3.12, with coverage uploaded to Codecov.
-- `examples/test_agent.py` is the end-to-end agent: it drives a real
+- `e2e/test_agent.py` is the end-to-end agent: it drives a real
   server over HTTP and MCP the way an agent would. CI runs it in the
   `http-e2e` and `mcp-e2e` jobs. When a test creates state through
   the UI it must use the shared session (`self.session`), or the

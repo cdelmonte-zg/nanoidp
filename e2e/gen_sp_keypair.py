@@ -10,7 +10,7 @@ certificate in settings.yaml:
         - /path/to/sp-cert.pem
 
 Usage:
-    python examples/gen_sp_keypair.py [--out DIR] [--cn COMMON_NAME]
+    python e2e/gen_sp_keypair.py [--out DIR] [--cn COMMON_NAME]
 """
 
 import argparse

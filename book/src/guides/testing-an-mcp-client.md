@@ -3,7 +3,7 @@
 nanoidp is an OAuth 2.1 / OIDC authorization server. To test a real MCP
 client's authorization code against it end to end, you need a protected MCP
 *resource* server for the client to call. The repository ships a fixture for
-exactly this: [`examples/mock_mcp_server.py`](https://github.com/cdelmonte-zg/nanoidp/blob/main/examples/mock_mcp_server.py),
+exactly this: [`e2e/mock_mcp_server.py`](https://github.com/cdelmonte-zg/nanoidp/blob/main/e2e/mock_mcp_server.py),
 a minimal MCP Streamable HTTP server that validates bearer tokens against
 nanoidp and exposes three scope-gated tools.
 
@@ -79,17 +79,17 @@ oauth:
 PORT=8003 python -m nanoidp
 
 # the mock resource server
-python examples/mock_mcp_server.py \
+python e2e/mock_mcp_server.py \
   --issuer http://localhost:8003 \
   --resource http://localhost:9100/mcp \
   --port 9100
 
 # drive the whole loop deterministically (no LLM)
-python examples/test_agent.py --url http://localhost:8003 \
+python e2e/test_agent.py --url http://localhost:8003 \
   --mcp http://localhost:9100/mcp
 ```
 
-`examples/test_agent.py --mcp` acts as the MCP client itself, through the
+`e2e/test_agent.py --mcp` acts as the MCP client itself, through the
 `mcp` SDK, so a failure means PKCE, discovery, `resource`, audience, scope or
 MCP framing is wrong - never that a model chose not to call a tool.
 

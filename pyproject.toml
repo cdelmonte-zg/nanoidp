@@ -74,7 +74,7 @@ dev = [
     "mypy>=1.8.0",
     "types-PyYAML",
     "types-jsonschema",
-    "requests>=2.31.0",  # examples/test_agent.py (e2e)
+    "requests>=2.31.0",  # e2e/test_agent.py (e2e)
     "import-linter>=2.1",  # wildcard forbidden_modules; architectural import contracts (#149), see [tool.importlinter]
 ]
 

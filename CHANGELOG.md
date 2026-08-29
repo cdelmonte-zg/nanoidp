@@ -45,7 +45,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   changes only the secret, so every field (present and future) is carried.
 
 ### Added
-- **Mock protected MCP server as an e2e fixture** (#191). `examples/mock_mcp_server.py`
+- **Mock protected MCP server as an e2e fixture** (#191). `e2e/mock_mcp_server.py`
   is a minimal MCP Streamable HTTP resource server (the `mcp` SDK's
   resource-server mode) with three scope-gated tools (`read_document` /
   `documents:read`, `delete_document` / `documents:write`, `admin_operation`
@@ -60,7 +60,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   error="insufficient_scope"` + `resource_metadata` challenge before any tool
   runs; and an application-level per-tool check inside each tool for the finer
   `documents:write` / `admin` operations, which surfaces as an in-band MCP
-  tool error. `examples/test_agent.py` gains an `--mcp` suite that drives the
+  tool error. `e2e/test_agent.py` gains an `--mcp` suite that drives the
   whole loop deterministically as the MCP client (401 -> RFC 9728 discovery ->
   `/authorize` with PKCE and `resource=` -> `/token` -> `tools/call`):
   delegated login as a PUBLIC client (PKCE, no secret) yielding a
@@ -308,6 +308,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the dashboard's own buttons (generate token, clear audit log) keep working
   after one unlock; and the MCP check now always reads the `ConfigManager`
   actually serving the request.
+
+### Changed
+- **The end-to-end test harness moved from `examples/` to a dedicated `e2e/`
+  directory.** `test_agent.py`, `mock_mcp_server.py`, `mcp_smoke_test.py` and
+  `gen_sp_keypair.py` now live under `e2e/`; `examples/` keeps only the real
+  usage examples (client integrations, plugins). The harness was never a
+  usage example - it is the CI end-to-end suite - and mixing the two made the
+  repository harder to read. Invocations change from `python examples/...` to
+  `python e2e/...` (CI, CONTRIBUTING and the docs are updated); no behaviour
+  and no packaged code changed.
 
 ## [2.7.0] - 2026-08-25
 

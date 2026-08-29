@@ -1,7 +1,7 @@
 """
 Unit tests for the routes/ui.py form flows (#213).
 
-These flows were covered almost only by examples/test_agent.py, which CI
+These flows were covered almost only by e2e/test_agent.py, which CI
 runs without a management secret; that is exactly the blind spot where a
 mutation that 302s to /login can pass a status-code-only assertion (the
 PR #176 round-3 finding). Every mutating test here therefore asserts on

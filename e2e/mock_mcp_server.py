@@ -41,7 +41,7 @@ server - that is the difference between self-contained and introspected
 tokens, and this fixture only shows the self-contained side.
 
 Run:
-    python examples/mock_mcp_server.py \
+    python e2e/mock_mcp_server.py \
         --issuer http://localhost:8000 \
         --resource http://localhost:9100/mcp \
         --host 127.0.0.1 --port 9100

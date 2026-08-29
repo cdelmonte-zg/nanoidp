@@ -72,16 +72,16 @@ NanoIDP includes a comprehensive test agent that validates all functionality aga
 
 ```bash
 # Run against local server (default: http://localhost:8000)
-python examples/test_agent.py
+python e2e/test_agent.py
 
 # Run against custom URL
-python examples/test_agent.py --url http://localhost:9000
+python e2e/test_agent.py --url http://localhost:9000
 
 # Verbose output
-python examples/test_agent.py --verbose
+python e2e/test_agent.py --verbose
 
 # JSON output
-python examples/test_agent.py --json
+python e2e/test_agent.py --json
 ```
 
 The test agent covers:

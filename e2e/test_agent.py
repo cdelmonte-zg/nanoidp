@@ -4817,7 +4817,7 @@ class NanoIDPTestAgent:
 
         Requires a running nanoidp (whose oauth.scopes_supported includes
         documents:read, documents:write, admin) AND the mock MCP server
-        (examples/mock_mcp_server.py) reachable at `mcp_url`."""
+        (e2e/mock_mcp_server.py) reachable at `mcp_url`."""
         print("\n" + "=" * 70)
         print("  NanoIDP OAuth/MCP Interoperability Suite (#191)")
         print("=" * 70)
