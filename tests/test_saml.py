@@ -478,7 +478,11 @@ class TestSAMLAttributeQuery:
             content_type='text/xml'
         )
 
-        assert response.status_code == 400
+        # SOAP 1.1 §6.2 (#287): errors ride HTTP 500 with a Fault whose
+        # faultcode says whose fault it is - a malformed query is Client's.
+        assert response.status_code == 500
+        assert b"soap:Client" in response.data
+        assert b"Subject not found" in response.data
 
     def test_attribute_query_unknown_user_returns_error_status(self, client):
         """#275: an unknown NameID gets a SAML error status
@@ -1551,7 +1555,9 @@ class TestSAMLFlowsComprehensive:
             content_type='text/xml'
         )
 
-        assert response.status_code == 400
+        # SOAP Fault (#287): HTTP 500, faultcode soap:Client.
+        assert response.status_code == 500
+        assert b"soap:Client" in response.data
 
     # =========================================================================
     # METADATA

@@ -1206,6 +1206,22 @@ def _reject(name: str, code: str, message: str) -> CallToolResult:
     missing/invalid admin secret, unknown tool, bad arguments), which had
     drifted from each other - e.g. the admin-secret audit entry used to omit
     `tool`.
+
+    THE MCP ERROR MODEL IS TWO DELIBERATE LAYERS (#287), not one shape:
+
+    - DISPATCH refusals (this function): the call never reached a tool -
+      ``{"error", "code", "tool"}`` with ``is_error=True``. The ``code``
+      taxonomy (MCP_READONLY, MCP_ADMIN_SECRET_*, MCP_UNKNOWN_TOOL,
+      MCP_INVALID_ARGUMENTS, MCP_TOOL_FAILED) is transport-level.
+    - DOMAIN results (the handlers): the tool ran and answered -
+      ``{"success": False, "error", ...}`` (plus ``kind`` where a typed
+      condition exists: conflict, hook policy), with ``is_error`` unset,
+      because "user not found" is a valid answer, not a failed call.
+
+    Collapsing them into one shape would break every MCP consumer for a
+    cosmetic gain; what matters is that each layer has exactly one shape,
+    which this function and the handlers' shared conventions keep true.
+    See CONTRIBUTING, "Error surfaces".
     """
     _log_mcp_tool(name, success=False, details={"error": code, "tool": name})
     return _text_result({"error": message, "code": code, "tool": name}, is_error=True)
