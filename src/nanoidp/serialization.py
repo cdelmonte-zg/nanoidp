@@ -675,3 +675,27 @@ def atomic_write_yaml(file_path: Path, data: Dict[str, Any]) -> None:
             shutil.copy2(backup_path, file_path)
             logger.warning(f"Restored {file_path} from backup after write failure")
         raise RuntimeError(f"Failed to write {file_path}: {e}") from e
+
+
+def atomic_write_text(file_path: Path, text: str) -> None:
+    """Atomically write literal text with the same temp-then-replace shape as
+    ``atomic_write_yaml``, minus the YAML dump (#282).
+
+    For writers that own an exact byte representation - the wizard's and
+    ``init``'s commented templates - where a ruamel round-trip would be a
+    needless re-serialization. Same guarantee: on failure the target is left
+    exactly as it was and the temp file is cleaned up. Callers are expected
+    to have validated ``text`` (the document models) BEFORE calling.
+    """
+    fd, temp_path = tempfile.mkstemp(
+        suffix=".yaml", prefix=file_path.stem + "_", dir=file_path.parent
+    )
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(text)
+        _replace_with_retry(temp_path, file_path)
+        logger.info(f"Successfully wrote {file_path}")
+    except Exception as e:
+        if os.path.exists(temp_path):
+            os.unlink(temp_path)
+        raise RuntimeError(f"Failed to write {file_path}: {e}") from e

@@ -109,8 +109,12 @@ def init_config(config_dir: str) -> None:
     if os.path.exists(users_path):
         print(f"  [skip] {users_path} already exists")
     else:
-        with open(users_path, "w") as f:
-            f.write(DEFAULT_USERS_YAML)
+        # Same validate-then-atomic-write path as the wizard (#282): the
+        # template is static, but validating it here means a drifted default
+        # fails init loudly instead of shipping a directory that will not load.
+        from nanoidp.wizard import _validate_and_write
+
+        _validate_and_write(users_path, DEFAULT_USERS_YAML, kind="users")
         print(f"  [created] {users_path}")
 
     # Create settings.yaml
@@ -118,8 +122,9 @@ def init_config(config_dir: str) -> None:
     if os.path.exists(settings_path):
         print(f"  [skip] {settings_path} already exists")
     else:
-        with open(settings_path, "w") as f:
-            f.write(DEFAULT_SETTINGS_YAML)
+        from nanoidp.wizard import _validate_and_write
+
+        _validate_and_write(settings_path, DEFAULT_SETTINGS_YAML, kind="settings")
         print(f"  [created] {settings_path}")
 
     # Create keys directory

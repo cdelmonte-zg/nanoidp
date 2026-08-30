@@ -429,3 +429,53 @@ class TestKeyRotationAPI:
         assert new_kid in new_kids
         # Old key should still be in JWKS (for token validation)
         assert old_kid in new_kids
+
+
+class TestKeysDirFollowsConfig:
+    """#281: get_crypto_service used to ignore keys_dir once the singleton
+    existed - after a config reload changing keys_dir, all 19 call sites kept
+    signing and serving JWKS from the old directory."""
+
+    @pytest.fixture(autouse=True)
+    def _isolate_singleton(self):
+        from nanoidp.services import crypto
+
+        crypto._crypto_service = None
+        yield
+        crypto._crypto_service = None
+
+    def test_same_keys_dir_returns_same_instance(self, tmp_path):
+        from nanoidp.services.crypto import get_crypto_service
+
+        first = get_crypto_service(str(tmp_path / "k1"))
+        assert get_crypto_service(str(tmp_path / "k1")) is first
+
+    def test_changed_keys_dir_recreates_the_service(self, tmp_path):
+        from pathlib import Path
+
+        from nanoidp.services.crypto import get_crypto_service
+
+        first = get_crypto_service(str(tmp_path / "k1"))
+        second = get_crypto_service(str(tmp_path / "k2"))
+        assert second is not first
+        assert second.keys_dir == Path(str(tmp_path / "k2"))
+        # And the new service signs with the NEW directory's key.
+        assert (tmp_path / "k2" / "rsa_private.pem").exists()
+
+    def test_external_keys_are_never_discarded_over_keys_dir(self, tmp_path):
+        """init_crypto_service (external PEMs) stays authoritative: a
+        keys_dir-only divergence must not silently swap the operator's keys
+        for generated ones."""
+        from nanoidp.services.crypto import CryptoService, get_crypto_service, init_crypto_service
+
+        # Generate a pair to stand in for operator-provided PEMs.
+        seed = CryptoService(str(tmp_path / "seed"))
+        assert seed is not None
+        external = init_crypto_service(
+            keys_dir=str(tmp_path / "hosted"),
+            external_private_key=str(tmp_path / "seed" / "rsa_private.pem"),
+            external_public_key=str(tmp_path / "seed" / "rsa_public.pem"),
+            external_key_id="op-key",
+        )
+        assert external.uses_external_keys
+        assert get_crypto_service(str(tmp_path / "elsewhere")) is external

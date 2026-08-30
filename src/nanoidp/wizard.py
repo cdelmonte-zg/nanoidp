@@ -216,8 +216,7 @@ users:
 default_user: "{admin_user}"
 """
 
-    with open(os.path.join(config_path, "users.yaml"), "w") as f:
-        f.write(users_yaml)
+    _validate_and_write(os.path.join(config_path, "users.yaml"), users_yaml, kind="users")
 
     # settings.yaml
     settings_yaml = f"""# NanoIDP Settings Configuration
@@ -260,8 +259,34 @@ authority_prefixes:
 """
 
     # Development tool - credentials stored in plaintext intentionally for ease of use
-    with open(os.path.join(config_path, "settings.yaml"), "w") as f:  # noqa: S101
-        f.write(settings_yaml)
+    _validate_and_write(
+        os.path.join(config_path, "settings.yaml"), settings_yaml, kind="settings"
+    )
+
+
+def _validate_and_write(path: str, text: str, kind: str) -> None:
+    """Validate a rendered template through the document models, then write it
+    atomically (#282).
+
+    The wizard used to write raw f-strings with open(): a template typo (or a
+    hostile value surviving the prompts) reached disk unvalidated, and a crash
+    mid-write could leave a torn file. Validation runs BEFORE anything touches
+    disk; the write goes through the same temp-then-replace primitive as every
+    other config writer.
+    """
+    from pathlib import Path
+
+    import yaml as _yaml
+
+    from .config_documents import SettingsDocument, UsersDocument
+    from .serialization import atomic_write_text
+
+    data = _yaml.safe_load(text)
+    if kind == "settings":
+        SettingsDocument.model_validate(data)
+    else:
+        UsersDocument.model_validate(data)
+    atomic_write_text(Path(path), text)
 
 
 if __name__ == "__main__":
