@@ -9,7 +9,7 @@ from flask.typing import ResponseReturnValue
 
 from ..config import get_config
 from ..hooks import HookError
-from ..services import get_audit_log, get_token_service
+from ..services import get_audit_log, get_crypto_service, get_token_service
 from ._auth import management_secret_required_for_api
 from ._issuer import effective_issuer, effective_saml_entity_id, effective_saml_sso_url
 
@@ -244,8 +244,6 @@ def rotate_keys() -> ResponseReturnValue:
     Returns:
         JSON with old_kid, new_kid, and rotation details.
     """
-    from ..services import get_crypto_service
-
     config = get_config()
     crypto = get_crypto_service(config.settings.keys_dir)
 
@@ -273,8 +271,6 @@ def rotate_keys() -> ResponseReturnValue:
 @api_bp.route("/keys/info")
 def keys_info() -> ResponseReturnValue:
     """Get information about current cryptographic keys."""
-    from ..services import get_crypto_service
-
     config = get_config()
     crypto = get_crypto_service(config.settings.keys_dir)
 

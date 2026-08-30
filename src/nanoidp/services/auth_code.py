@@ -12,6 +12,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
+from ..config import get_config_if_loaded
+
 logger = logging.getLogger(__name__)
 
 
@@ -105,12 +107,12 @@ class AuthCodeStore:
             self._cleanup_expired()
             self._codes[code] = auth_code
 
-        # Verbose logging controlled by settings (late import to avoid circular dependency)
-        try:
-            from ..config import get_config
-            verbose = get_config().settings.verbose_logging
-        except Exception:
-            verbose = True  # Default to verbose if config not available
+        # Verbose logging controlled by settings. No cycle here (#285: the
+        # old deferred import claimed one; config never imports services) -
+        # but never CONSTRUCT the configuration from a log path, same rule
+        # as audit.py: default to verbose when it is not loaded yet.
+        loaded = get_config_if_loaded()
+        verbose = loaded.settings.verbose_logging if loaded is not None else True
 
         if verbose:
             logger.debug(f"Created authorization code for user '{username}', client '{client_id}'")

@@ -49,7 +49,10 @@ implicitly throughout the project's history; this writes them down.
    and models wherever possible so equivalent surfaces cannot drift (see
    #40: the shared discovery builder). Protocol surfaces themselves,
    authorization redirects, SAML SSO, UserInfo, are exercised over HTTP,
-   as a real client would.
+   as a real client would. The same rule generalizes past MCP: a domain
+   policy has ONE home, and routes/tools are adapters that delegate to it
+   rather than reinterpret it - CONTRIBUTING's "Domain invariants have
+   one home" (#285) is this principle stated as a review criterion.
 5. **Features ship whole.** A feature lands together with its MCP exposure
    (where applicable), its `e2e/test_agent.py` e2e coverage and its
    docs, in the same PR.
