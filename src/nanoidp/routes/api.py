@@ -152,6 +152,8 @@ def get_configuration() -> ResponseReturnValue:
         "server": {
             "host": settings.host,
             "port": settings.port,
+            "rate_limit_enabled": settings.rate_limit_enabled,
+            "rate_limit_token_endpoint": settings.rate_limit_token_endpoint,
         },
         "oauth": {
             "issuer": settings.issuer,

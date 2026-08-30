@@ -4,7 +4,7 @@ Flask application factory for NanoIDP.
 
 import logging
 import os
-from typing import Optional
+from typing import Any, Optional
 
 from flask import Flask, Response, jsonify
 from flask_cors import CORS
@@ -127,6 +127,7 @@ def create_app(
             app=app,
             default_limits=[],  # No default limits
             storage_uri="memory://",
+            headers_enabled=True,  # RateLimit-*/Retry-After on 429 (#304)
         )
         logger.info(f"  - Rate limiting: enabled ({settings.rate_limit_token_endpoint} on /token)")
     else:
@@ -143,6 +144,44 @@ def create_app(
     app.register_blueprint(saml_bp)
     app.register_blueprint(ui_bp)
     app.register_blueprint(api_bp)
+
+    # Actually APPLY the /token rate limit (#304). Until 3.0 the limiter
+    # was created with default_limits=[] and no view ever decorated, so
+    # rate_limit_enabled: true logged "enabled" while enforcing nothing -
+    # a "metadata never lies" violation. The wrap must happen after the
+    # blueprint registration above, which is what puts oauth.token into
+    # app.view_functions.
+    if settings.rate_limit_enabled:
+        def _token_rate_limited(request_limit: Any) -> Response:
+            # on_breach on THIS limit, not a global 429 handler (#314
+            # review): /token's throttle response is a protocol-shaped
+            # JSON, and scoping it here means a future limit on some other
+            # endpoint does not inherit an OAuth-flavored body. RFC 6749
+            # defines no error code for throttling; flask-limiter's
+            # Retry-After/X-RateLimit-* headers (headers_enabled above)
+            # carry the machine-readable part.
+            response = jsonify(
+                {
+                    "error": "rate_limit_exceeded",
+                    "error_description": (
+                        "Too many token requests; retry after the "
+                        "interval in the Retry-After header"
+                    ),
+                }
+            )
+            response.status_code = 429
+            return response
+
+        # The rate string was validated at the config boundary
+        # (Settings.validate_rate_limit_notation): flask-limiter would not
+        # raise on a malformed one - it logs and falls back to the default
+        # limits, which are [] here, silently disabling the throttle.
+        # flask-limiter's decorator returns the same callable it received;
+        # the ignore covers werkzeug's wide view-function union.
+        app.view_functions["oauth.token"] = limiter.limit(  # type: ignore[assignment]
+            settings.rate_limit_token_endpoint,
+            on_breach=_token_rate_limited,
+        )(app.view_functions["oauth.token"])
 
     # Context processor to inject version into all templates
     @app.context_processor

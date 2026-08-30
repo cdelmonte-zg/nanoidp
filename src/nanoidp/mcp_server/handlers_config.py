@@ -52,6 +52,8 @@ def _tool_get_settings(arguments: dict[str, Any], config: ConfigManager) -> dict
             "debug": settings.debug,
         },
         "login_mode": settings.login_mode,
+        "rate_limit_enabled": settings.rate_limit_enabled,
+        "rate_limit_token_endpoint": settings.rate_limit_token_endpoint,
         "refresh_token_rotation": settings.refresh_token_rotation,
         "require_pkce": settings.require_pkce,
         "jwt_algorithm": settings.jwt_algorithm,

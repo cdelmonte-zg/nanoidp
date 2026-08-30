@@ -476,6 +476,8 @@ class OwnedSetting:
 OWNED_SETTINGS: tuple[OwnedSetting, ...] = (
     OwnedSetting("server", "host", "host"),
     OwnedSetting("server", "port", "port"),
+    OwnedSetting("server", "rate_limit_enabled", "rate_limit_enabled"),
+    OwnedSetting("server", "rate_limit_token_endpoint", "rate_limit_token_endpoint"),
     OwnedSetting("oauth", "issuer", "issuer"),
     OwnedSetting("oauth", "issuer_from_request", "issuer_from_request"),
     OwnedSetting("oauth", "issuer_allowlist", "issuer_allowlist", "omit_when_falsy", []),

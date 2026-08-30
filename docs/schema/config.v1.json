@@ -534,6 +534,16 @@
             "default": 8000,
             "title": "Port",
             "type": "integer"
+          },
+          "rate_limit_enabled": {
+            "default": false,
+            "title": "Rate Limit Enabled",
+            "type": "boolean"
+          },
+          "rate_limit_token_endpoint": {
+            "default": "10/minute",
+            "title": "Rate Limit Token Endpoint",
+            "type": "string"
           }
         },
         "title": "ServerSection",
