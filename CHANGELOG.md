@@ -151,9 +151,11 @@ previous leniency allowed - needs a one-time adjustment.
   revoked or foreign code/refresh-token - and invalid resource-owner
   credentials on the password grant - are `invalid_grant` (400); an
   unknown or profile-disabled grant type is `unsupported_grant_type`
-  (400); client-authentication failures stay `invalid_client` (401) and,
-  when the client attempted HTTP Basic, now carry the `WWW-Authenticate:
-  Basic` challenge §5.2 requires. Descriptions are fixed text (no library
+  (400); client-authentication failures are `invalid_client` - 401 with
+  the `WWW-Authenticate: Basic` challenge when the client attempted HTTP
+  Basic (the §5.2 MUST), 400 otherwise (§5.2's default; RFC 9110 §11.6.1
+  forbids a challenge-less 401, and a Basic challenge would be wrong for
+  a `client_secret_post` client anyway). Descriptions are fixed text (no library
   detail and no reflected caller input - the unsupported grant type's raw
   value lives in the audit event, not the response). *Migration:* branches that used to answer 401 for GRANT problems
   (revoked/foreign refresh token, unknown user, wrong password) now

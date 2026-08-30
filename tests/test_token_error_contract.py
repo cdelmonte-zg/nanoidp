@@ -54,7 +54,9 @@ def _refresh_claims(**over):
 
 # (case id, form data or callable(app)->data, headers, status, error code)
 CASES = [
-    ("no_client_auth", {"grant_type": "client_credentials"}, {}, 401, "invalid_client"),
+    # 400, not 401: no Authorization header was attempted, and RFC 9110
+    # forbids a challenge-less 401 (#310 review round 2).
+    ("no_client_auth", {"grant_type": "client_credentials"}, {}, 400, "invalid_client"),
     (
         "unsupported_grant_type",
         {"grant_type": "carrier-pigeon"},
@@ -232,13 +234,50 @@ class TestTokenErrorContract:
         assert resp.get_json()["error"] == "invalid_client"
         assert resp.headers.get("WWW-Authenticate", "").startswith("Basic")
 
-    def test_invalid_client_without_auth_header_has_no_challenge(self, client):
-        """The MUST is conditional on the attempt: no Authorization header
-        sent, no WWW-Authenticate issued."""
+    def test_invalid_client_without_auth_header_is_400_no_challenge(self, client):
+        """No Authorization header attempted: §5.2's DEFAULT applies -
+        invalid_client 400 - because RFC 9110 §11.6.1 forbids a 401 without
+        a WWW-Authenticate challenge, and issuing a Basic challenge to a
+        client that never tried Basic would be wrong too (#310 round 2)."""
         resp = client.post("/token", data={"grant_type": "client_credentials"})
-        assert resp.status_code == 401
+        assert resp.status_code == 400
         assert resp.get_json()["error"] == "invalid_client"
         assert "WWW-Authenticate" not in resp.headers
+
+    def test_client_secret_post_wrong_secret_is_400_no_basic_challenge(self, client, app):
+        """A client_secret_post client with a wrong BODY secret never
+        touched the Authorization header: 400 invalid_client, and no Basic
+        challenge for a client whose registered method is not Basic
+        (#310 round 2 - the case that makes the 400/401 split matter)."""
+        from nanoidp.config import OAuthClient, get_config
+
+        with app.app_context():
+            settings = get_config().settings
+            settings.clients.append(
+                OAuthClient(
+                    client_id="post-client-310",
+                    client_secret="post-secret",
+                    token_endpoint_auth_method="client_secret_post",
+                )
+            )
+        try:
+            resp = client.post(
+                "/token",
+                data={
+                    "grant_type": "client_credentials",
+                    "client_id": "post-client-310",
+                    "client_secret": "wrong",
+                },
+            )
+            assert resp.status_code == 400
+            assert resp.get_json()["error"] == "invalid_client"
+            assert "WWW-Authenticate" not in resp.headers
+        finally:
+            with app.app_context():
+                settings = get_config().settings
+                settings.clients = [
+                    c for c in settings.clients if c.client_id != "post-client-310"
+                ]
 
     def test_client_id_mismatch_is_json_with_challenge(self, client):
         """Basic for one client plus a contradictory body client_id: 401

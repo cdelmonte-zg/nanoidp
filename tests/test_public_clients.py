@@ -353,7 +353,9 @@ class TestMethodEnforcement:
                 "client_secret": "demo-secret",
             },
         )
-        assert resp.status_code == 401
+        # 400 since #310: no Basic was attempted (RFC 9110 forbids a
+        # challenge-less 401).
+        assert resp.status_code == 400
 
     def test_basic_client_rejects_valid_basic_plus_a_body_secret(self, client):
         """#254 review round 2: two authentication methods in one request is
@@ -387,7 +389,7 @@ class TestMethodEnforcement:
         )
         assert resp.status_code == 401
 
-    def test_post_client_with_wrong_body_secret_is_401(self, client, post_client):
+    def test_post_client_with_wrong_body_secret_is_400(self, client, post_client):
         resp = client.post(
             "/token",
             data={
@@ -396,7 +398,11 @@ class TestMethodEnforcement:
                 "client_secret": "wrong",
             },
         )
-        assert resp.status_code == 401
+        # 400 since #310: the secret travelled in the BODY, no Authorization
+        # header attempted - and a Basic challenge would be wrong for a
+        # client_secret_post client anyway.
+        assert resp.status_code == 400
+        assert "WWW-Authenticate" not in resp.headers
 
     def test_confidential_authorization_code_requires_client_auth(self, client):
         """A confidential client cannot redeem a code with client_id alone
@@ -423,7 +429,9 @@ class TestMethodEnforcement:
                 "client_id": "demo-client",
             },
         )
-        assert resp.status_code == 401
+        # 400 since #310: no Basic was attempted (RFC 9110 forbids a
+        # challenge-less 401).
+        assert resp.status_code == 400
 
     def test_introspect_with_post_client_body_secret_works(self, client, post_client):
         token = json.loads(

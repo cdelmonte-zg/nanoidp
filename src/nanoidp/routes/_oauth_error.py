@@ -29,16 +29,21 @@ def oauth_error(error: str, description: str, status: int = 400) -> Tuple[Respon
 def invalid_client_error(
     description: str, *, basic_attempted: bool
 ) -> Tuple[Response, int]:
-    """A §5.2 ``invalid_client`` 401.
+    """A §5.2 ``invalid_client`` response, status per BOTH specs (#310
+    review round 2).
 
-    When the client ATTEMPTED authentication via the Authorization header,
-    §5.2 says the response MUST be 401 and MUST include a WWW-Authenticate
-    header matching the scheme the client used (#310 review) - nanoidp
-    supports Basic there, so that is the challenge issued. A client that
-    never sent the header gets the JSON alone: the MUST is conditional on
-    the attempt.
+    RFC 6749 §5.2: invalid_client is 400 by default; when the client
+    ATTEMPTED authentication via the Authorization header the response
+    MUST be 401 and MUST include a WWW-Authenticate challenge for the
+    scheme used (Basic here). RFC 9110 §11.6.1 closes the other door: ANY
+    401 must carry at least one challenge - so a failure with no
+    Authorization header attempted (a missing client_id, a wrong
+    client_secret_post body secret) answers 400, never a challenge-less
+    401 and never a Basic challenge for a client whose registered method
+    is not Basic.
     """
-    body, status = oauth_error("invalid_client", description, 401)
     if basic_attempted:
+        body, status = oauth_error("invalid_client", description, 401)
         body.headers["WWW-Authenticate"] = 'Basic realm="nanoidp"'
-    return body, status
+        return body, status
+    return oauth_error("invalid_client", description, 400)

@@ -269,7 +269,8 @@ class TestAuthorizationCodeFlowWithPKCE:
             'code_verifier': pkce_verifier
         })
 
-        assert response.status_code == 401
+        # 400 since #310: no Authorization header attempted (RFC 9110).
+        assert response.status_code == 400
 
     def test_pkce_missing_verifier_fails(self, client, auth_header, pkce_challenge_s256):
         """Test that missing code_verifier fails when challenge was provided."""
@@ -379,7 +380,8 @@ class TestPasswordGrant:
             'password': 'admin'
         })
 
-        assert response.status_code == 401
+        # 400 since #310: no Authorization header attempted (RFC 9110).
+        assert response.status_code == 400
 
 
 class TestClientCredentialsGrant:
@@ -411,7 +413,8 @@ class TestClientCredentialsGrant:
             'grant_type': 'client_credentials'
         })
 
-        assert response.status_code == 401
+        # 400 since #310: no Authorization header attempted (RFC 9110).
+        assert response.status_code == 400
 
 
 class TestRefreshTokenGrant:
