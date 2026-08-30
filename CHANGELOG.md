@@ -155,7 +155,10 @@ previous leniency allowed - needs a one-time adjustment.
   the `WWW-Authenticate: Basic` challenge when the client attempted HTTP
   Basic (the §5.2 MUST), 400 otherwise (§5.2's default; RFC 9110 §11.6.1
   forbids a challenge-less 401, and a Basic challenge would be wrong for
-  a `client_secret_post` client anyway). Descriptions are fixed text (no library
+  a `client_secret_post` client anyway). The attempt is detected from the
+  raw `Authorization` header (#311): a syntactically broken Basic header -
+  which werkzeug parses to nothing - still counts as an attempted Basic
+  and gets the 401 + challenge. Descriptions are fixed text (no library
   detail and no reflected caller input - the unsupported grant type's raw
   value lives in the audit event, not the response). *Migration:* branches that used to answer 401 for GRANT problems
   (revoked/foreign refresh token, unknown user, wrong password) now

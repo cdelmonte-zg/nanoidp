@@ -380,3 +380,32 @@ class TestTokenErrorContract:
         )
         assert spent.status_code == 400
         assert spent.get_json()["error"] == "invalid_grant"
+
+
+class TestBrokenBasicHeaderIsStillAnAttempt:
+    """#311: werkzeug parses a syntactically broken Basic header to None,
+    which used to land in the no-attempt branch (400, no challenge). The
+    attempt is now detected from the RAW header: a botched Basic is still
+    a Basic attempt - 401 with the challenge."""
+
+    def test_garbage_basic_header_gets_401_with_challenge(self, client):
+        resp = client.post(
+            "/token",
+            data={"grant_type": "client_credentials"},
+            headers={"Authorization": "Basic %%%not-base64%%%"},
+        )
+        assert resp.status_code == 401
+        assert resp.get_json()["error"] == "invalid_client"
+        assert resp.headers.get("WWW-Authenticate", "").startswith("Basic")
+
+    def test_bearer_header_is_not_a_basic_attempt(self, client):
+        """A different scheme is not a Basic attempt: no Basic challenge,
+        400 per the §5.2 default."""
+        resp = client.post(
+            "/token",
+            data={"grant_type": "client_credentials"},
+            headers={"Authorization": "Bearer some-token"},
+        )
+        assert resp.status_code == 400
+        assert resp.get_json()["error"] == "invalid_client"
+        assert "WWW-Authenticate" not in resp.headers
