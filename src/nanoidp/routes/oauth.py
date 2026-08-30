@@ -1352,15 +1352,12 @@ def end_session() -> ResponseReturnValue:
             username = payload.get("sub")
 
             # Optionally revoke the token. The hint is decoded UNVERIFIED, so
-            # its exp only narrows retention; the store caps any value at the
-            # bounded default and never extends past it (#288).
+            # NO claim from it - exp included - reaches the store: the store's
+            # trust contract (#293 review) is that expires_at comes from a
+            # verified payload only; here the bounded default applies.
             jti = payload.get("jti")
-            exp = payload.get("exp")
             if jti:
-                get_revocation_store().revoke(
-                    jti,
-                    expires_at=exp if isinstance(exp, (int, float)) else None,
-                )
+                get_revocation_store().revoke(jti)
         except Exception:
             pass  # Invalid token, continue anyway
 

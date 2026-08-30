@@ -17,23 +17,37 @@ it names expires - after ``exp`` the signature check rejects it anyway - so
 every entry carries an expiry and the store sweeps opportunistically on the
 mutating paths (which already serialize under the lock). Before this, both
 sets grew without bound: every revocation and every rotation on a long-lived
-instance was a permanent memory increment.
+instance was a permanent memory increment. A VERIFIED exp is kept exactly
+(tokens minted via /api or MCP can legitimately outlive any fixed bound);
+callers holding only unverified claims pass no exp at all; and writes are
+monotonic - re-revoking never shortens retention (#293 review round 1).
 """
 
 import threading
 import time
 from typing import Dict, Optional
 
-# The longest a revocation entry can matter when the caller cannot supply the
-# token's own exp: no nanoidp token outlives the 7-day refresh JWT
-# (services/token.py mints refresh tokens with a fixed 7-day expiry; access
-# and ID tokens are shorter). One extra day absorbs clock skew.
-_MAX_RETENTION_SECONDS = 8 * 24 * 3600
+# The retention when the caller cannot supply a TRUSTED exp: covers the
+# 7-day refresh JWT (services/token.py mints refresh tokens with a fixed
+# 7-day expiry) plus one day of clock skew. NOT a cap on trusted expiries:
+# /api/users/<username>/token and MCP generate_token mint access tokens with
+# arbitrary exp_minutes, so a verified exp can legitimately exceed this -
+# capping it let a revoked 14-day token flicker back after the day-8 sweep
+# (#293 review round 1, blocker 1).
+_DEFAULT_RETENTION_SECONDS = 8 * 24 * 3600
 
 
 class RevocationStore:
     """Revoked token ids (jti or token hash) and revoked rotation families,
-    each remembered until its expiry."""
+    each remembered until its expiry.
+
+    TRUST CONTRACT: ``expires_at`` must come from a VERIFIED payload's
+    ``exp`` (crypto.verify_jwt), and is then kept exactly - however long.
+    A caller holding only unverified claims (e.g. /logout's id_token_hint)
+    passes None and gets the bounded default; the trust decision lives at
+    the call site, not in a store-side cap that would break trusted long
+    expiries.
+    """
 
     def __init__(self) -> None:
         self._revoked_tokens: Dict[str, float] = {}
@@ -42,16 +56,14 @@ class RevocationStore:
 
     @staticmethod
     def _effective_expiry(expires_at: Optional[float]) -> float:
-        """The caller's exp when it has one (a verified payload's ``exp``),
-        else the conservative retention bound."""
+        """The verified exp when the caller has one, kept exactly; the
+        bounded default otherwise. A past exp still earns a short memory so
+        a just-revoked, just-expired token cannot flicker back before the
+        caller's own exp check catches it."""
         now = time.time()
         if expires_at is None:
-            return now + _MAX_RETENTION_SECONDS
-        # Never trust an attacker-influenced exp to EXTEND retention past the
-        # bound (e.g. /logout decodes id_token_hint unverified), and treat a
-        # past exp as "still worth a short memory" rather than an instant
-        # no-op, so a just-revoked, just-expired token cannot flicker back.
-        return min(max(expires_at, now + 60), now + _MAX_RETENTION_SECONDS)
+            return now + _DEFAULT_RETENTION_SECONDS
+        return max(expires_at, now + 60)
 
     def _sweep_locked(self) -> None:
         """Drop expired entries; caller holds the lock."""
@@ -63,11 +75,21 @@ class RevocationStore:
 
     def revoke(self, token_id: str, expires_at: Optional[float] = None) -> None:
         """Mark a single token id (jti or fallback hash) as revoked until
-        ``expires_at`` (the token's own ``exp`` when the caller has a
-        verified payload; bounded default otherwise)."""
+        ``expires_at`` (a VERIFIED payload's ``exp``, kept exactly; bounded
+        default when the caller has none - see the class trust contract).
+
+        Monotonic: re-revoking an id can only EXTEND its retention, never
+        shorten it - the old set.add() was naturally idempotent, and a plain
+        assignment would let a later revoke with a shorter expiry (a second
+        /logout, say) cut an existing revocation short (#293 review round 1,
+        blocker 2).
+        """
         with self._lock:
             self._sweep_locked()
-            self._revoked_tokens[token_id] = self._effective_expiry(expires_at)
+            self._revoked_tokens[token_id] = max(
+                self._revoked_tokens.get(token_id, 0.0),
+                self._effective_expiry(expires_at),
+            )
 
     def is_revoked(self, token_id: Optional[str]) -> bool:
         """Lock-free membership test (single dict op, atomic under the GIL).

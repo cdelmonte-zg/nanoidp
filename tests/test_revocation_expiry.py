@@ -15,7 +15,7 @@ import time
 import pytest
 
 from nanoidp.services import revocation
-from nanoidp.services.revocation import _MAX_RETENTION_SECONDS, RevocationStore
+from nanoidp.services.revocation import _DEFAULT_RETENTION_SECONDS, RevocationStore
 
 
 @pytest.fixture
@@ -43,15 +43,37 @@ class TestEntryExpiry:
         store.revoke("jti-noexp")
         assert store.is_revoked("jti-noexp")
 
-        _advance(monkeypatch, _MAX_RETENTION_SECONDS + 60)
+        _advance(monkeypatch, _DEFAULT_RETENTION_SECONDS + 60)
         store.revoke("other")
         assert not store.is_revoked("jti-noexp")
 
-    def test_attacker_supplied_far_future_exp_is_capped(self, store):
-        """/logout decodes id_token_hint UNVERIFIED: a forged exp must not
-        pin memory forever."""
-        store.revoke("jti-forged", expires_at=time.time() + 10 * 365 * 24 * 3600)
-        assert store._revoked_tokens["jti-forged"] <= time.time() + _MAX_RETENTION_SECONDS + 1
+    def test_logout_forged_exp_never_reaches_the_store(self, client):
+        """/logout decodes id_token_hint UNVERIFIED, so no claim from it -
+        exp included - reaches the store (#293 review round 1): the entry
+        gets the bounded default, not the forged 10-year exp. Route-level
+        because the trust decision lives at the call site now, not in a
+        store-side cap (which would break trusted long expiries, blocker 1)."""
+        import jwt as pyjwt
+
+        from nanoidp.services.revocation import get_revocation_store
+
+        forged = pyjwt.encode(
+            {"jti": "forged-jti", "exp": time.time() + 10 * 365 * 24 * 3600, "sub": "x"},
+            "attacker-key",
+            algorithm="HS256",
+        )
+        get_revocation_store().clear()
+        try:
+            resp = client.get("/logout", query_string={"id_token_hint": forged})
+            assert resp.status_code in (200, 302)
+            store = get_revocation_store()
+            assert store.is_revoked("forged-jti")
+            assert (
+                store._revoked_tokens["forged-jti"]
+                <= time.time() + _DEFAULT_RETENTION_SECONDS + 1
+            )
+        finally:
+            get_revocation_store().clear()
 
     def test_already_expired_token_keeps_a_short_memory(self, store):
         """A just-revoked, just-expired token must not flicker back as
@@ -100,3 +122,37 @@ class TestRefreshClaimExpiry:
         assert store.check_and_claim_refresh("r2", "famZ", True) is True
         store.clear()
         assert store.check_and_claim_refresh("r1", "famZ", True) is False
+
+
+class TestReviewRound1Blockers:
+    """#293 review round 1: two retention-semantics blockers."""
+
+    def test_trusted_exp_beyond_the_bound_survives_the_sweep(self, store, monkeypatch):
+        """B1: /api/users/<u>/token accepts arbitrary exp_minutes, so a
+        VERIFIED token can outlive the 8-day bound - capping a trusted exp
+        let a revoked 14-day token flicker back after the day-8 sweep."""
+        fourteen_days = time.time() + 14 * 24 * 3600
+        store.revoke("jti-long", expires_at=fourteen_days)
+
+        _advance(monkeypatch, 9 * 24 * 3600)
+        store.revoke("trigger-sweep")
+        assert store.is_revoked("jti-long"), (
+            "a verified 14-day token must stay revoked past day 8"
+        )
+
+        _advance(monkeypatch, 15 * 24 * 3600)
+        store.revoke("trigger-sweep-2")
+        assert not store.is_revoked("jti-long")
+
+    def test_re_revoking_never_shortens_retention(self, store, monkeypatch):
+        """B2: writes are monotonic - a second revoke of the same jti with a
+        shorter expiry must not shorten the existing retention (the old
+        set.add() was naturally idempotent; the dict assignment was not)."""
+        store.revoke("jti-twice", expires_at=time.time() + 3600)
+        store.revoke("jti-twice", expires_at=time.time() + 60)
+
+        _advance(monkeypatch, 600)
+        store.revoke("trigger-sweep")
+        assert store.is_revoked("jti-twice"), (
+            "the 1-hour revocation must survive a later 60-second re-revoke"
+        )
