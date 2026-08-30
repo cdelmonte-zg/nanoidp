@@ -342,7 +342,19 @@ class CryptoService:
     def verify_jwt(
         self, token: str, audience: Optional[Union[str, List[str]]]
     ) -> Dict[str, Any]:
-        """Verify and decode a JWT token.
+        """Verify a JWT acceptable as a NANOIDP token - not any valid RS256
+        JWT.
+
+        The ``exp`` claim is REQUIRED (#306). That is nanoidp's token-profile
+        policy, not a JWT-spec requirement (RFC 7519 leaves exp optional):
+        OIDC Core requires exp on ID Tokens and RFC 9068 requires it on JWT
+        access tokens, ``create_jwt`` has always stamped one on everything
+        nanoidp mints, and a token accepted here must have a finite lifetime
+        - an eternal bearer token would let an integration test pass against
+        nanoidp and fail against any real IdP. Only hand-crafted tokens
+        signed with the nanoidp key ever lacked it. No other claim is
+        required here; widening the enforced profile (iss, iat, jti, ...)
+        is a separate discussion.
 
         ``audience`` accepts a list as well as a string (PyJWT semantics:
         the token is valid if its ``aud`` matches any of the values), so ID
@@ -362,7 +374,11 @@ class CryptoService:
                 self.pub_pem,
                 algorithms=["RS256"],
                 audience=audience,
-                options={"verify_signature": True, "verify_aud": audience is not None},
+                options={
+                    "verify_signature": True,
+                    "verify_aud": audience is not None,
+                    "require": ["exp"],
+                },
             )
             return payload
         except jwt.ExpiredSignatureError as e:

@@ -445,13 +445,15 @@ class TestRefreshTokenGrant:
         assert response.status_code == 400
 
     def test_refresh_token_invalid_token(self, client, auth_header):
-        """Test refresh token grant with invalid token."""
+        """An unverifiable refresh token is invalid_grant, RFC 6749 §5.2
+        JSON - it used to be a Werkzeug 401 HTML abort (#306/#287)."""
         response = client.post('/token', data={
             'grant_type': 'refresh_token',
             'refresh_token': 'invalid-token'
         }, headers=auth_header)
 
-        assert response.status_code == 401
+        assert response.status_code == 400
+        assert response.get_json()["error"] == "invalid_grant"
 
     def test_refresh_token_with_access_token_fails(self, client, auth_header):
         """Test that using access_token as refresh_token fails."""
