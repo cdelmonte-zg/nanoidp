@@ -142,10 +142,11 @@ previous leniency allowed - needs a one-time adjustment.
   affected. *Migration:* add an `exp` to such fixtures. No other claim is
   newly required.
 - **An unverifiable refresh token now answers RFC 6749 §5.2 JSON**
-  (`invalid_grant`, HTTP 400) instead of a Werkzeug 401 HTML page - the
-  one protocol-endpoint error that still violated the "Error surfaces"
-  rule (#287). *Migration:* read `error` from the JSON body; the status
-  moves from 401 to 400.
+  (`invalid_grant`, HTTP 400) instead of a Werkzeug 401 HTML page, per
+  the "Error surfaces" rule (#287). Other /token error branches still
+  answer Werkzeug HTML; converting them is tracked separately.
+  *Migration:* read `error` from the JSON body; the status moves from 401
+  to 400.
 
 ### Added
 - **Access-point parity contract for token issuance** (#283,
