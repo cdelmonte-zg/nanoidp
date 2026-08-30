@@ -17,6 +17,10 @@ from lxml import etree
 from ..config import get_config
 from ..exceptions import SAMLSignatureError
 from ..services import get_crypto_service
+from ..services.saml_attributes import (
+    append_attribute_statement,
+    resolve_saml_attributes,
+)
 from ..services.saml_verification import (
     load_sp_certificates,
     verify_post_signature,
@@ -158,21 +162,6 @@ def _parse_saml_request(
         return None
 
 
-def _add_export_attr(attrs: dict, name: str, values: list) -> None:
-    """Add an exported roles/groups attribute, merging on a name collision.
-
-    ``saml_roles_attr_name`` and ``saml_groups_attr_name`` are configured
-    independently, so both exports can target the same attribute (e.g.
-    ``memberOf``). Plain assignment would let the second list silently replace
-    the first (#134); merging keeps both, roles first, deduplicated.
-    """
-    existing = attrs.get(name)
-    if isinstance(existing, (list, tuple)):
-        attrs[name] = list(existing) + [v for v in values if v not in existing]
-    else:
-        attrs[name] = list(values)
-
-
 def _build_saml_response(
     acs_url: str,
     issuer: str,
@@ -279,25 +268,8 @@ def _build_saml_response(
     ctxc = etree.SubElement(ctx, "{urn:oasis:names:tc:SAML:2.0:assertion}AuthnContextClassRef")
     ctxc.text = authn_context
 
-    if attributes:
-        attrs = etree.SubElement(
-            assertion, "{urn:oasis:names:tc:SAML:2.0:assertion}AttributeStatement"
-        )
-        for k, v in attributes.items():
-            if v is None:
-                continue
-            attr = etree.SubElement(
-                attrs, "{urn:oasis:names:tc:SAML:2.0:assertion}Attribute", Name=k
-            )
-            if isinstance(v, (list, tuple)):
-                for item in v:
-                    av = etree.SubElement(
-                        attr, "{urn:oasis:names:tc:SAML:2.0:assertion}AttributeValue"
-                    )
-                    av.text = str(item)
-            else:
-                av = etree.SubElement(attr, "{urn:oasis:names:tc:SAML:2.0:assertion}AttributeValue")
-                av.text = str(v)
+    # One shared emission path for both builders (#302).
+    append_attribute_statement(assertion, attributes)
 
     xml = etree.tostring(resp, xml_declaration=True, encoding="UTF-8")
 
@@ -517,26 +489,6 @@ def _sso_authenticate_inline(
     )
 
 
-def _sso_build_attributes(config: Any, user: Any) -> Dict[str, Any]:
-    """The assertion's attribute set for this user.
-
-    Roles/groups are opt-in: they have no standard SAML attribute name, so
-    the SP-specific name is configured alongside the switch.
-    """
-    saml_attrs: Dict[str, Any] = {
-        "identity_class": user.identity_class,
-        "entitlements": user.entitlements,
-        "email": user.email,
-    }
-    if config.settings.saml_export_roles and user.roles:
-        _add_export_attr(saml_attrs, config.settings.saml_roles_attr_name, user.roles)
-    if config.settings.saml_export_groups and user.groups:
-        _add_export_attr(saml_attrs, config.settings.saml_groups_attr_name, user.groups)
-    if user.attributes:
-        saml_attrs.update(user.attributes)
-    return saml_attrs
-
-
 def _sso_parse_request(
     config: Any, saml_request_b64: str
 ) -> tuple[Optional[str], Optional[str], Optional[ResponseReturnValue]]:
@@ -573,7 +525,10 @@ def _sso_success_response(
     relay_state: str,
 ) -> ResponseReturnValue:
     """Build, audit and auto-submit the SAML Response for an authenticated user."""
-    saml_attrs = _sso_build_attributes(config, user)
+    # Shared resolver (#302); the SSO assertion never carries source_acl -
+    # a login assertion is not a backend authorization lookup (deliberate,
+    # see services/saml_attributes.py and the saml.md divergence table).
+    saml_attrs = resolve_saml_attributes(config.settings, user, include_source_acl=False)
 
     name_id = user.email or f"{username}@example.org"
 
@@ -796,33 +751,10 @@ def _build_attribute_query_response(
     conditions.set("NotBefore", iso(now))
     conditions.set("NotOnOrAfter", iso(not_after))
 
-    # AttributeStatement - user authorization attributes
-    if attributes:
-        attr_statement = etree.SubElement(assertion, f"{{{SAML2_NS}}}AttributeStatement")
-
-        for attr_name, attr_value in attributes.items():
-            if attr_value is None:
-                continue
-
-            attribute = etree.SubElement(attr_statement, f"{{{SAML2_NS}}}Attribute")
-            attribute.set("Name", attr_name)
-
-            # Handle multi-value attributes
-            # Lists are expanded to multiple AttributeValue elements
-            # Scalar values are kept as a single AttributeValue
-            if isinstance(attr_value, (list, tuple)):
-                for value in attr_value:
-                    attr_val_elem = etree.SubElement(attribute, f"{{{SAML2_NS}}}AttributeValue")
-                    attr_val_elem.text = str(value)
-            elif isinstance(attr_value, str) and "," in attr_value and "\\" not in attr_value:
-                # Split comma-separated values (like entitlements)
-                for value in attr_value.split(","):
-                    attr_val_elem = etree.SubElement(attribute, f"{{{SAML2_NS}}}AttributeValue")
-                    attr_val_elem.text = value.strip()
-            else:
-                # Single scalar value
-                attr_val_elem = etree.SubElement(attribute, f"{{{SAML2_NS}}}AttributeValue")
-                attr_val_elem.text = str(attr_value)
+    # One shared emission path for both builders (#302): strings are never
+    # comma-split (the #134 rule the old loop here contradicted), lists are
+    # one AttributeValue per entry.
+    append_attribute_statement(assertion, attributes)
 
     return etree.tostring(response, encoding="unicode", pretty_print=True)
 
@@ -949,37 +881,16 @@ def attribute_query() -> ResponseReturnValue:
         user = config.get_user(user_id)
 
         if user:
-            # Build attributes from user config
-            attributes: Dict[str, Any] = {
-                "email": user.email or f"{user_id}@example.com",
-            }
-
-            # Add core authorization attributes
-            if user.identity_class:
-                attributes["identity_class"] = user.identity_class
-            if user.entitlements:
-                # Passed as a list: the response builder emits one
-                # AttributeValue per entry, and a comma-bearing entitlement
-                # stays a single value instead of being split (#134).
-                attributes["entitlements"] = user.entitlements
-            # Add source_acl for data source authorization
-            if user.source_acl:
-                attributes["source_acl"] = user.source_acl  # List for multiple values
-
-            # Roles/groups only when explicitly enabled (see /saml/sso).
-            # Lists, not ",".join: same reason as entitlements above (#134).
-            if config.settings.saml_export_roles and user.roles:
-                _add_export_attr(attributes, config.settings.saml_roles_attr_name, user.roles)
-            if config.settings.saml_export_groups and user.groups:
-                _add_export_attr(attributes, config.settings.saml_groups_attr_name, user.groups)
-
-            # Add custom attributes
-            if user.attributes:
-                for key, value in user.attributes.items():
-                    if isinstance(value, list):
-                        attributes[key] = ",".join(str(v) for v in value)
-                    else:
-                        attributes[key] = value
+            # Shared resolver (#302). Two behavior changes vs the old inline
+            # block, each finishing an existing rule: no fabricated
+            # <user>@example.com when the user has no email (#275 - never
+            # invent facts about a principal), and custom list attributes
+            # reach the XML per-value instead of ",".join-then-resplit
+            # (#134). source_acl IS exported here - this surface exists for
+            # backend authorization lookups (deliberate divergence from SSO).
+            attributes = resolve_saml_attributes(
+                config.settings, user, include_source_acl=True
+            )
         else:
             # Unknown principal (#275): a SAML error status, not a signed
             # assertion full of invented attributes - the SP under test must

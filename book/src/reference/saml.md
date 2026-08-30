@@ -165,3 +165,25 @@ only includes namespaces actually used in the signed element. This is
 important when SPs extract the `<Assertion>` element from the `<Response>`
 to verify the signature independently. With standard C14N, the signature
 includes parent namespaces that break when the Assertion is extracted.
+
+## The two SAML surfaces: one resolver, declared differences (#302)
+
+Both the SSO assertion and the attribute-query assertion resolve a user's
+attributes through the same service (`services/saml_attributes.py`), so
+they cannot drift silently. Their remaining differences are deliberate:
+
+| Aspect | SSO assertion | Attribute-query assertion | Why |
+|---|---|---|---|
+| `source_acl` | not exported | exported | the query surface exists for backend authorization lookups; a login assertion carries no document-level ACLs |
+| `AuthnStatement` / `AuthnContextClassRef` | present | absent | an attribute lookup is not an authentication event; asserting one would be false |
+| `SubjectConfirmation` | present (bearer, 5-minute window) | absent | ties an assertion to a login exchange the query never had |
+| `AudienceRestriction` | pinned to `oauth.audience` | absent | the query requester's audience is unknown (the endpoint is unauthenticated by design) |
+
+Shared rules on both surfaces: an absent or empty fact is an absent
+attribute (no fabricated `email`, no empty `Attribute` elements - None and
+empty list/tuple/set/dict/string alike); a list value becomes one
+`AttributeValue` per entry and a string is never split on commas (#134);
+roles/groups exports are opt-in under their configured names. When the
+roles and groups exports target the SAME configured name, their lists are
+merged (roles first, deduplicated); a collision between an export name and
+a scalar core attribute is not merged - the export list replaces it.
