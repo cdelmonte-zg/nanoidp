@@ -143,7 +143,10 @@ previous leniency allowed - needs a one-time adjustment.
   the nine user shapes (model, YAML entry, MCP read/create/update surfaces,
   UI form, REST read) are held to field-set equality with documented,
   asserted exclusions - the guard whose absence let #280 drift silently.
-  Found and recorded #291 (the UI users form has no `attributes` input).
+  Found #291 - originally misfiled as "no `attributes` input in the UI
+  form" (the dynamic `attr_key[]`/`attr_value[]` widget was there all
+  along, invisible to the single-name regex); the real defect behind it is
+  fixed below.
 - **"Domain invariants have one home" review rule** (#285) in CONTRIBUTING,
   echoed from VISION principle 4; five deferred imports claiming
   nonexistent circular dependencies hoisted to module top, and the one
@@ -320,6 +323,19 @@ previous leniency allowed - needs a one-time adjustment.
   claims (the `/logout` id_token_hint) pass nothing and get a bounded
   8-day default; and writes are monotonic, so re-revoking a jti can only
   extend its retention, never shorten it.
+- **The UI users form no longer corrupts non-string attributes on edit**
+  (#291): a list- or mapping-valued custom attribute (settable via YAML and
+  MCP) rendered in the edit form as its Python repr, so an untouched edit
+  round-trip silently replaced `{"teams": ["alpha", "beta"]}` with the
+  string `"['alpha', 'beta']"`. Each row now carries an explicit
+  `attr_encoding[]` (review round 1): `string` values stay verbatim even
+  when they LOOK like JSON (so the string `'["a"]'` survives an edit as a
+  string), `json` rows (container values rendered as JSON) parse back, and
+  rows typed fresh in the browser use `auto` - the `[`/`{` heuristic, with
+  malformed JSON degrading to the literal string.
+  The duplicated attribute-row parser in the create and edit routes is now
+  one shared helper, and the user-field parity test recognizes the widget
+  explicitly instead of excluding the field.
 - **MCP `update_user` can now update custom `attributes`** (#280): the field
   was accepted by `create_user` and returned by every read surface, but the
   `update_user` schema and handler silently lacked it - an agent could set

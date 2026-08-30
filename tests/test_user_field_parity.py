@@ -16,8 +16,9 @@ that stops being true also fails):
 - ``password`` never appears on a read surface (_user_to_dict, /api/users).
 - The MCP _USER_COMMON_PROPERTIES block omits username/password because the
   create/update schemas declare those two separately.
-- The UI users form has no input for ``attributes`` - the one write surface
-  that cannot touch the field, recorded as #291 rather than silently skipped.
+- ``attributes`` in the UI is a dynamic ``attr_key[]``/``attr_value[]``
+  widget, not a single named input - recognized explicitly (#291 corrected:
+  the input was never missing, the single-name regex just could not see it).
 - ``/api/users/<u>`` adds derived ``authorities`` (not a stored field).
 """
 
@@ -61,13 +62,17 @@ class TestUserFieldParity:
     def test_users_form_has_an_input_per_field(self):
         html = _TEMPLATE.read_text()
         form_names = set(re.findall(r'name="([a-z_]+)"', html))
-        # attributes: the UI form cannot set custom attributes today - the
-        # only write surface with that gap, tracked as #291. If this
-        # assertion starts failing because the input EXISTS, close #291 and
-        # delete the exclusion.
+        # attributes is a dynamic key/value widget, not a single named input:
+        # attr_key[]/attr_value[] rows (brackets, so the regex above cannot
+        # see them - the #291 premise error: this test originally declared
+        # the input missing without reading the template). Recognized
+        # explicitly instead of excluded.
+        widget_names = set(re.findall(r'name="([a-z_\[\]]+)"', html))
+        assert {"attr_key[]", "attr_value[]"} <= widget_names, (
+            "the users form lost its attributes widget"
+        )
         missing = _MODEL_FIELDS - form_names - {"attributes"}
         assert not missing, f"users_form.html has no input for: {sorted(missing)}"
-        assert "attributes" not in form_names, "attributes input exists: close #291"
 
     def test_api_read_surface_matches_the_model(self, client):
         resp = client.get("/api/users/admin")

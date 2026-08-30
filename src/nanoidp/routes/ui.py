@@ -239,15 +239,8 @@ def user_create() -> ResponseReturnValue:
         entitlements = [e.strip() for e in request.form.get("entitlements", "").split("\n") if e.strip()]
         source_acl = [a.strip() for a in request.form.get("source_acl", "").split("\n") if a.strip()]
 
-        # Parse dynamic attributes
-        attr_keys = request.form.getlist("attr_key[]")
-        attr_values = request.form.getlist("attr_value[]")
-        attributes = {}
-        for key, value in zip(attr_keys, attr_values, strict=False):
-            key = key.strip()
-            value = value.strip()
-            if key and value:
-                attributes[key] = value
+        # Parse dynamic attributes (shared with the edit route, #291)
+        attributes = _parse_attribute_rows()
 
         user = User(
             username=username,
@@ -340,15 +333,8 @@ def user_edit(username: str) -> ResponseReturnValue:
         entitlements = [e.strip() for e in request.form.get("entitlements", "").split("\n") if e.strip()]
         source_acl = [a.strip() for a in request.form.get("source_acl", "").split("\n") if a.strip()]
 
-        # Parse dynamic attributes
-        attr_keys = request.form.getlist("attr_key[]")
-        attr_values = request.form.getlist("attr_value[]")
-        attributes = {}
-        for key, value in zip(attr_keys, attr_values, strict=False):
-            key = key.strip()
-            value = value.strip()
-            if key and value:
-                attributes[key] = value
+        # Parse dynamic attributes (shared with the edit route, #291)
+        attributes = _parse_attribute_rows()
 
         updated_user = User(
             username=username,
@@ -414,6 +400,50 @@ def clients() -> ResponseReturnValue:
         current_user=session.get("user"),
         revision=current_revision(get_yaml_writer().settings_file),
     )
+
+
+def _parse_attribute_rows() -> dict:
+    """Parse the users form's dynamic attr_key[]/attr_value[]/attr_encoding[]
+    rows (#291, reshaped by the #294 review).
+
+    A text box cannot distinguish the STRING '["a"]' from the LIST ["a"]
+    once both are rendered as text, so each row carries an explicit
+    encoding, stamped by the template for prefilled rows and 'auto' for
+    rows typed fresh in the browser:
+
+    - 'string': kept verbatim, even when it looks like JSON - this is what
+      protects a JSON-looking string attribute across an untouched edit.
+    - 'json': the template rendered a container value (list/dict, settable
+      via YAML and MCP) as JSON; parsed back. If the operator edited it
+      into something that no longer parses, it degrades to the literal
+      string rather than erroring, matching the form's permissive style.
+    - 'auto' (or absent - a scripted POST without the hidden field): the
+      convenience heuristic - a value starting with '[' or '{' is tried as
+      JSON, anything else is a string.
+
+    Blank key or value drops the row (blank value = remove the attribute).
+    """
+    keys = request.form.getlist("attr_key[]")
+    values = request.form.getlist("attr_value[]")
+    encodings = request.form.getlist("attr_encoding[]")
+    attributes = {}
+    for index, (key, value) in enumerate(zip(keys, values, strict=False)):
+        key = key.strip()
+        value = value.strip()
+        if not (key and value):
+            continue
+        encoding = encodings[index] if index < len(encodings) else "auto"
+        if encoding == "string":
+            attributes[key] = value
+            continue
+        if encoding == "json" or value[0] in "[{":
+            try:
+                attributes[key] = json.loads(value)
+                continue
+            except ValueError:
+                pass
+        attributes[key] = value
+    return attributes
 
 
 def _parse_textarea_list(form_value: str) -> list[str]:
