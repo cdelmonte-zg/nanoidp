@@ -313,9 +313,12 @@ previous leniency allowed - needs a one-time adjustment.
   (#291): a list- or mapping-valued custom attribute (settable via YAML and
   MCP) rendered in the edit form as its Python repr, so an untouched edit
   round-trip silently replaced `{"teams": ["alpha", "beta"]}` with the
-  string `"['alpha', 'beta']"`. Non-string values now render as JSON and a
-  value starting with `[` or `{` is parsed back as JSON (malformed JSON
-  stays the literal string; plain scalars typed in the UI remain strings).
+  string `"['alpha', 'beta']"`. Each row now carries an explicit
+  `attr_encoding[]` (review round 1): `string` values stay verbatim even
+  when they LOOK like JSON (so the string `'["a"]'` survives an edit as a
+  string), `json` rows (container values rendered as JSON) parse back, and
+  rows typed fresh in the browser use `auto` - the `[`/`{` heuristic, with
+  malformed JSON degrading to the literal string.
   The duplicated attribute-row parser in the create and edit routes is now
   one shared helper, and the user-field parity test recognizes the widget
   explicitly instead of excluding the field.

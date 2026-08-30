@@ -22,6 +22,7 @@ def _resubmit_edit_form_unchanged(client, html, extra=None):
 
     keys = [html_mod.unescape(v) for v in re.findall(r'name="attr_key\[\]" value="([^"]*)"', html)]
     values = [html_mod.unescape(v) for v in re.findall(r'name="attr_value\[\]" value="([^"]*)"', html)]
+    encodings = re.findall(r'name="attr_encoding\[\]" value="([^"]*)"', html)
     md = MultiDict(
         {
             "password": "",
@@ -38,6 +39,8 @@ def _resubmit_edit_form_unchanged(client, html, extra=None):
         md.add("attr_key[]", k)
     for v in values:
         md.add("attr_value[]", v)
+    for e in encodings:
+        md.add("attr_encoding[]", e)
     m = re.search(r'name="expected_revision" value="([^"]*)"', html)
     if m:
         md.add("expected_revision", m.group(1))
@@ -85,7 +88,7 @@ class TestAttributeRoundTrip:
         self._login(client)
         html = client.get("/users/admin/edit").data.decode()
         # Wipe any prefilled attribute rows; submit exactly one typed row.
-        html_no_attrs = re.sub(r'name="attr_(?:key|value)\[\]" value="[^"]*"', "", html)
+        html_no_attrs = re.sub(r'name="attr_(?:key|value|encoding)\[\]" value="[^"]*"', "", html)
         resp = _resubmit_edit_form_unchanged(
             client, html_no_attrs, extra={"attr_key[]": "regions", "attr_value[]": '["eu", "us"]'}
         )
@@ -96,7 +99,7 @@ class TestAttributeRoundTrip:
     def test_malformed_json_container_stays_a_string(self, client, app):
         self._login(client)
         html = client.get("/users/admin/edit").data.decode()
-        html_no_attrs = re.sub(r'name="attr_(?:key|value)\[\]" value="[^"]*"', "", html)
+        html_no_attrs = re.sub(r'name="attr_(?:key|value|encoding)\[\]" value="[^"]*"', "", html)
         resp = _resubmit_edit_form_unchanged(
             client, html_no_attrs, extra={"attr_key[]": "oops", "attr_value[]": "[not json"}
         )
@@ -107,7 +110,7 @@ class TestAttributeRoundTrip:
     def test_plain_string_value_stays_verbatim(self, client, app):
         self._login(client)
         html = client.get("/users/admin/edit").data.decode()
-        html_no_attrs = re.sub(r'name="attr_(?:key|value)\[\]" value="[^"]*"', "", html)
+        html_no_attrs = re.sub(r'name="attr_(?:key|value|encoding)\[\]" value="[^"]*"', "", html)
         resp = _resubmit_edit_form_unchanged(
             client, html_no_attrs, extra={"attr_key[]": "note", "attr_value[]": "123"}
         )
@@ -116,3 +119,31 @@ class TestAttributeRoundTrip:
             # Scalars typed in the UI are strings by design; only [ / { opt
             # into the JSON convention.
             assert get_config().get_user("admin").attributes == {"note": "123"}
+
+
+class TestJsonLookingString:
+    """#294 review round 1: a STRING attribute whose value merely looks like
+    JSON ('["alpha","beta"]' the string) rendered verbatim and was then
+    re-parsed as JSON on submit - an untouched edit silently turned it into
+    a real list. Rows now carry an explicit attr_encoding[] (string/json;
+    'auto' for rows typed fresh in the browser), so the type survives."""
+
+    def _login(self, client):
+        with client.session_transaction() as sess:
+            sess["user"] = "admin"
+
+    def test_json_looking_string_survives_untouched_edit(self, client, app):
+        with app.app_context():
+            get_config().get_user("admin").attributes = {
+                "note": '["alpha", "beta"]',
+                "real": ["alpha", "beta"],
+            }
+        self._login(client)
+
+        html = client.get("/users/admin/edit").data.decode()
+        resp = _resubmit_edit_form_unchanged(client, html)
+        assert resp.status_code == 302
+
+        with app.app_context():
+            stored = get_config().get_user("admin").attributes
+        assert stored == {"note": '["alpha", "beta"]', "real": ["alpha", "beta"]}, stored

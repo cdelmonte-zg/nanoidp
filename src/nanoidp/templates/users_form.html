@@ -108,6 +108,13 @@
                                    output safe and does NOT escape double quotes,
                                    which would break this double-quoted attribute. #}
                                 <input type="text" class="form-control form-control-sm" name="attr_value[]" value="{{ value if value is string else value|tojson|forceescape }}" placeholder="Value">
+                                {# attr_encoding[] (#294 review): the value box has
+                                   no way to distinguish the STRING '["a"]' from the
+                                   LIST ["a"] once both are rendered as text, so each
+                                   row states how its value is encoded. 'auto' (rows
+                                   typed fresh in the browser) keeps the [/{ JSON
+                                   heuristic for operator convenience. #}
+                                <input type="hidden" name="attr_encoding[]" value="{{ 'string' if value is string else 'json' }}">
                             </div>
                             <div class="col-2">
                                 <button type="button" class="btn btn-outline-danger btn-sm w-100" onclick="removeAttribute(this)">
@@ -261,6 +268,7 @@ function addAttribute() {
         </div>
         <div class="col-5">
             <input type="text" class="form-control form-control-sm" name="attr_value[]" placeholder="Value">
+            <input type="hidden" name="attr_encoding[]" value="auto">
         </div>
         <div class="col-2">
             <button type="button" class="btn btn-outline-danger btn-sm w-100" onclick="removeAttribute(this)">

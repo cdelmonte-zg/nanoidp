@@ -403,29 +403,40 @@ def clients() -> ResponseReturnValue:
 
 
 def _parse_attribute_rows() -> dict:
-    """Parse the users form's dynamic attr_key[]/attr_value[] rows (#291).
+    """Parse the users form's dynamic attr_key[]/attr_value[]/attr_encoding[]
+    rows (#291, reshaped by the #294 review).
 
-    Values follow a JSON convention for non-string types: the template
-    renders a container-valued attribute (list/dict, settable via YAML and
-    MCP) as JSON, and a value starting with '[' or '{' is parsed back as
-    JSON here - so a list attribute survives an untouched edit round-trip
-    instead of being stored as its Python repr (the #291 corruption).
-    Anything else stays the literal string the operator typed; a malformed
-    JSON container also stays a string rather than erroring, matching the
-    form's permissive style. Blank key or value drops the row (blank value
-    = remove the attribute).
+    A text box cannot distinguish the STRING '["a"]' from the LIST ["a"]
+    once both are rendered as text, so each row carries an explicit
+    encoding, stamped by the template for prefilled rows and 'auto' for
+    rows typed fresh in the browser:
+
+    - 'string': kept verbatim, even when it looks like JSON - this is what
+      protects a JSON-looking string attribute across an untouched edit.
+    - 'json': the template rendered a container value (list/dict, settable
+      via YAML and MCP) as JSON; parsed back. If the operator edited it
+      into something that no longer parses, it degrades to the literal
+      string rather than erroring, matching the form's permissive style.
+    - 'auto' (or absent - a scripted POST without the hidden field): the
+      convenience heuristic - a value starting with '[' or '{' is tried as
+      JSON, anything else is a string.
+
+    Blank key or value drops the row (blank value = remove the attribute).
     """
+    keys = request.form.getlist("attr_key[]")
+    values = request.form.getlist("attr_value[]")
+    encodings = request.form.getlist("attr_encoding[]")
     attributes = {}
-    for key, value in zip(
-        request.form.getlist("attr_key[]"),
-        request.form.getlist("attr_value[]"),
-        strict=False,
-    ):
+    for index, (key, value) in enumerate(zip(keys, values, strict=False)):
         key = key.strip()
         value = value.strip()
         if not (key and value):
             continue
-        if value[0] in "[{":
+        encoding = encodings[index] if index < len(encodings) else "auto"
+        if encoding == "string":
+            attributes[key] = value
+            continue
+        if encoding == "json" or value[0] in "[{":
             try:
                 attributes[key] = json.loads(value)
                 continue
