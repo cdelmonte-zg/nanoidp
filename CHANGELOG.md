@@ -88,6 +88,20 @@ previous leniency allowed - needs a one-time adjustment.
   it previously claimed "after JWT authentication", which the code never did.
 
 ### Changed
+- **`mcp_server` is a package** (#286): the 2,100-line module is now
+  `mcp_server/` - `schemas.py` (tool declarations and compiled validators),
+  `normalize.py` (argument pre-validation), `serializers.py`,
+  `handlers_users/clients/tokens/config.py` (the 25 tool handlers by
+  domain), with dispatch, the guards, transport bootstrap and the mutable
+  process state in `__init__.py`. The `nanoidp-mcp` entry point and every
+  explicitly re-exported name keep their import paths (`from
+  nanoidp.mcp_server import ...` for everything tests and callers actually
+  use; `python -m nanoidp.mcp_server` now goes through the package's
+  `__main__.py`) - arbitrary internal symbols of the old monolith are not
+  a compatibility surface. `verify_secret` moved to a new framework-free
+  `nanoidp.security` (re-exported from `routes/_auth.py`), so the stdio MCP
+  process no longer imports Flask at all - pinned by a subprocess test.
+  Behavior-preserving: handler bodies and schemas are unchanged.
 - **`/saml/attribute-query` transport errors are SOAP 1.1 Faults** (#287):
   a malformed query (missing AttributeQuery/Subject/NameID) or an internal
   failure now answers with a proper `soap:Fault` (HTTP 500, `faultcode`

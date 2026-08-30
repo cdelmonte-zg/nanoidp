@@ -47,7 +47,7 @@ _SRC = Path(__file__).resolve().parent.parent / "src" / "nanoidp"
 ISSUANCE_SURFACES = {
     "routes/oauth.py::token": "the /token grant funnel",
     "routes/api.py::generate_token": "POST /api/users/<username>/token",
-    "mcp_server.py::_tool_generate_token": "MCP generate_token",
+    "mcp_server/handlers_tokens.py::_tool_generate_token": "MCP generate_token",
 }
 
 POLICIES = ("mint_binding", "scope_ceiling", "resource_ceiling")
@@ -68,9 +68,9 @@ POLICY_STANCE = {
     ("routes/api.py::generate_token", "mint_binding"): "enforced",
     ("routes/api.py::generate_token", "scope_ceiling"): "exempt: the endpoint has no scope parameter at all",
     ("routes/api.py::generate_token", "resource_ceiling"): "exempt: the endpoint has no resource parameter at all",
-    ("mcp_server.py::_tool_generate_token", "mint_binding"): "enforced",
-    ("mcp_server.py::_tool_generate_token", "scope_ceiling"): "exempt: simulation affordance (#279 boundary)",
-    ("mcp_server.py::_tool_generate_token", "resource_ceiling"): "exempt: simulation affordance (#187/#279 boundary)",
+    ("mcp_server/handlers_tokens.py::_tool_generate_token", "mint_binding"): "enforced",
+    ("mcp_server/handlers_tokens.py::_tool_generate_token", "scope_ceiling"): "exempt: simulation affordance (#279 boundary)",
+    ("mcp_server/handlers_tokens.py::_tool_generate_token", "resource_ceiling"): "exempt: simulation affordance (#187/#279 boundary)",
 }
 
 
