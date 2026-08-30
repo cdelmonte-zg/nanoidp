@@ -360,7 +360,12 @@ def _grant_refresh_token(ctx: _GrantContext) -> GrantResult:
         client is not None and client.is_public
     )
     reuse_detected = get_revocation_store().check_and_claim_refresh(
-        jti, refresh_family, rotation_enabled
+        jti,
+        refresh_family,
+        rotation_enabled,
+        # The verified refresh token's own exp: the claimed jti needs
+        # remembering exactly that long (#288).
+        expires_at=payload.get("exp"),
     )
     if reuse_detected:
         audit_event(

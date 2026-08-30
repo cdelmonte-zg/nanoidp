@@ -1299,7 +1299,9 @@ def revoke() -> ResponseReturnValue:
     # one); the audit reflects only what was actually revoked, so a jti-less
     # edge token is not logged as revoked (#254 review, finding 3).
     if jti:
-        get_revocation_store().revoke(jti)
+        # The payload is verified, so its exp is the exact horizon the
+        # revocation needs remembering (#288).
+        get_revocation_store().revoke(jti, expires_at=payload.get("exp"))
         logger.info(f"Token revoked: {jti[:8]}...")
         audit_event(
             "revocation_request",
@@ -1349,10 +1351,16 @@ def end_session() -> ResponseReturnValue:
             payload = pyjwt.decode(id_token_hint, options={"verify_signature": False})
             username = payload.get("sub")
 
-            # Optionally revoke the token
+            # Optionally revoke the token. The hint is decoded UNVERIFIED, so
+            # its exp only narrows retention; the store caps any value at the
+            # bounded default and never extends past it (#288).
             jti = payload.get("jti")
+            exp = payload.get("exp")
             if jti:
-                get_revocation_store().revoke(jti)
+                get_revocation_store().revoke(
+                    jti,
+                    expires_at=exp if isinstance(exp, (int, float)) else None,
+                )
         except Exception:
             pass  # Invalid token, continue anyway
 

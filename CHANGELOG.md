@@ -281,6 +281,14 @@ previous leniency allowed - needs a one-time adjustment.
   (RFC 3986 §3, e.g. `about:`). No audience bypass or escalation.
 
 ### Fixed
+- **`RevocationStore` entries now expire** (#288): revoked jtis and rotation
+  family markers lived in two sets that were never swept - every revocation
+  and every refresh rotation on a long-lived instance was a permanent memory
+  increment. Entries now carry an expiry (the verified token's own `exp`
+  where the caller has it; a bounded 8-day default otherwise - nothing
+  outlives the 7-day refresh JWT) and the store sweeps opportunistically on
+  the mutating paths. An unverified `exp` (the `/logout` id_token_hint) can
+  only narrow retention, never extend it past the bound.
 - **MCP `update_user` can now update custom `attributes`** (#280): the field
   was accepted by `create_user` and returned by every read surface, but the
   `update_user` schema and handler silently lacked it - an agent could set
