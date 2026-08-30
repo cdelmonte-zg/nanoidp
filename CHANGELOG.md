@@ -105,13 +105,14 @@ previous leniency allowed - needs a one-time adjustment.
 
 ### Added
 - **Access-point parity contract for token issuance** (#283,
-  `tests/test_token_issuance_parity.py`): the set of modules calling
-  `TokenService.create_token` must equal a declared registry (AST-checked),
-  and every (surface, policy) pair - client binding, scope ceiling, resource
-  ceiling - must declare `enforced` (behaviorally asserted) or `exempt`
-  (the exemption itself pinned, with its documented reason). A new minting
-  surface fails the suite until it takes a stance; this mechanizes the
-  #269/#272 bug class out of existence.
+  `tests/test_token_issuance_parity.py`): the set of CALL SITES of
+  `TokenService.create_token` (`file::function`, AST-checked) must equal a
+  declared registry, and every (surface, policy) pair - client binding,
+  scope ceiling, resource ceiling - must declare `enforced` (behaviorally
+  asserted) or `exempt` (the exemption itself pinned, with its documented
+  reason). A new minting call site - even a second function in an
+  already-registered module - fails the suite until it takes a stance;
+  this mechanizes the #269/#272 bug class out of existence.
 - **User-field parity test** (#284, `tests/test_user_field_parity.py`):
   the nine user shapes (model, YAML entry, MCP read/create/update surfaces,
   UI form, REST read) are held to field-set equality with documented,

@@ -11,11 +11,14 @@ test_discovery_parity.
 
 Two mechanisms:
 
-1. **Caller registry**: the set of modules that call
-   ``TokenService.create_token`` (found by AST walk, not grep, so comments
-   cannot fool it) must equal ``ISSUANCE_SURFACES``. Adding a fourth minting
-   surface fails this test until the surface is registered AND takes a
-   stance on every policy below.
+1. **Call-site registry**: the set of CALL SITES of
+   ``TokenService.create_token`` - ``file::enclosing_function``, found by
+   AST walk, so comments cannot fool it - must equal ``ISSUANCE_SURFACES``.
+   Registering files alone was not enough (#292 review round 1): a second
+   function minting tokens inside an already-registered module would have
+   stayed invisible, which is precisely the access-point class this file
+   exists to catch. A new minting call site fails this test until it is
+   registered AND takes a stance on every policy below.
 
 2. **Policy stance matrix**: every (surface, policy) pair must be declared
    ``enforced`` or ``exempt`` in ``POLICY_STANCE``. Enforced pairs run a
@@ -36,14 +39,15 @@ import pytest
 
 _SRC = Path(__file__).resolve().parent.parent / "src" / "nanoidp"
 
-# The modules allowed to mint tokens, i.e. to call TokenService.create_token.
-# services/token.py itself (the definition and its internal helpers) is not a
-# caller. If you are here because the caller-registry test failed: register
-# the new surface AND add a row per policy to POLICY_STANCE below.
+# The call sites allowed to mint tokens (file::enclosing_function, dotted for
+# nested functions, <module> for module level). services/token.py itself (the
+# definition and its internal helpers) is not a caller. If you are here
+# because the call-site registry test failed: register the new site AND add a
+# row per policy to POLICY_STANCE below.
 ISSUANCE_SURFACES = {
-    "routes/oauth.py": "the /token grant funnel",
-    "routes/api.py": "POST /api/users/<username>/token",
-    "mcp_server.py": "MCP generate_token",
+    "routes/oauth.py::token": "the /token grant funnel",
+    "routes/api.py::generate_token": "POST /api/users/<username>/token",
+    "mcp_server.py::_tool_generate_token": "MCP generate_token",
 }
 
 POLICIES = ("mint_binding", "scope_ceiling", "resource_ceiling")
@@ -51,16 +55,22 @@ POLICIES = ("mint_binding", "scope_ceiling", "resource_ceiling")
 # enforced -> the behavioral assertion below must hold.
 # exempt:<reason> -> the surface deliberately does not apply the policy, and
 # the exemption itself is pinned.
+# NOTE (#292 review): the stance strings and the behavioral test methods
+# below are linked by convention, not mechanically - each "enforced" pair has
+# a corresponding assertion in the surface's test class, maintained by hand.
+# That is deliberate: nine combinations do not justify a mini-framework. If
+# this matrix ever grows past what a reviewer can eyeball, revisit; do not
+# bolt a runner onto it.
 POLICY_STANCE = {
-    ("routes/oauth.py", "mint_binding"): "enforced",
-    ("routes/oauth.py", "scope_ceiling"): "enforced",
-    ("routes/oauth.py", "resource_ceiling"): "enforced",
-    ("routes/api.py", "mint_binding"): "enforced",
-    ("routes/api.py", "scope_ceiling"): "exempt: the endpoint has no scope parameter at all",
-    ("routes/api.py", "resource_ceiling"): "exempt: the endpoint has no resource parameter at all",
-    ("mcp_server.py", "mint_binding"): "enforced",
-    ("mcp_server.py", "scope_ceiling"): "exempt: simulation affordance (#279 boundary)",
-    ("mcp_server.py", "resource_ceiling"): "exempt: simulation affordance (#187/#279 boundary)",
+    ("routes/oauth.py::token", "mint_binding"): "enforced",
+    ("routes/oauth.py::token", "scope_ceiling"): "enforced",
+    ("routes/oauth.py::token", "resource_ceiling"): "enforced",
+    ("routes/api.py::generate_token", "mint_binding"): "enforced",
+    ("routes/api.py::generate_token", "scope_ceiling"): "exempt: the endpoint has no scope parameter at all",
+    ("routes/api.py::generate_token", "resource_ceiling"): "exempt: the endpoint has no resource parameter at all",
+    ("mcp_server.py::_tool_generate_token", "mint_binding"): "enforced",
+    ("mcp_server.py::_tool_generate_token", "scope_ceiling"): "exempt: simulation affordance (#279 boundary)",
+    ("mcp_server.py::_tool_generate_token", "resource_ceiling"): "exempt: simulation affordance (#187/#279 boundary)",
 }
 
 
@@ -72,36 +82,74 @@ def _basic(client_id: str, secret: str) -> dict:
 SCOPED_AUTH = _basic("scoped-client", "scoped-secret")
 
 
-def _create_token_caller_files() -> set:
-    """Every file under src/nanoidp with a call whose callee is named
-    create_token (attribute or bare), excluding services/token.py."""
-    callers = set()
+def _create_token_call_sites() -> set:
+    """Every ``file::enclosing_function`` under src/nanoidp with a call whose
+    callee is named create_token (attribute or bare), excluding
+    services/token.py. The enclosing name is the dotted chain of
+    FunctionDef/AsyncFunctionDef ancestors (``<module>`` at module level), so
+    a SECOND minting function in an already-registered file is a new entry -
+    files alone would hide it (#292 review round 1)."""
+    sites = set()
     for path in sorted(_SRC.rglob("*.py")):
         rel = path.relative_to(_SRC).as_posix()
         if rel == "services/token.py":
             continue
         tree = ast.parse(path.read_text(), filename=str(path))
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Call):
-                callee = node.func
-                name = (
-                    callee.attr
-                    if isinstance(callee, ast.Attribute)
-                    else callee.id if isinstance(callee, ast.Name) else None
-                )
-                if name == "create_token":
-                    callers.add(rel)
-    return callers
+        _walk_for_create_token(tree, rel, [], sites)
+    return sites
+
+
+def _walk_for_create_token(node, rel: str, stack: list, sites: set) -> None:
+    entered = isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    if entered:
+        stack.append(node.name)
+    if isinstance(node, ast.Call):
+        callee = node.func
+        name = (
+            callee.attr
+            if isinstance(callee, ast.Attribute)
+            else callee.id if isinstance(callee, ast.Name) else None
+        )
+        if name == "create_token":
+            enclosing = ".".join(stack) if stack else "<module>"
+            sites.add(f"{rel}::{enclosing}")
+    for child in ast.iter_child_nodes(node):
+        _walk_for_create_token(child, rel, stack, sites)
+    if entered:
+        stack.pop()
 
 
 class TestCallerRegistry:
-    def test_create_token_callers_match_the_registry(self):
-        found = _create_token_caller_files()
+    def test_create_token_call_sites_match_the_registry(self):
+        found = _create_token_call_sites()
         assert found == set(ISSUANCE_SURFACES), (
-            "Token-issuing surfaces changed. Register the surface in "
+            "Token-minting call sites changed. Register the site in "
             "ISSUANCE_SURFACES and declare its stance on every policy in "
             f"POLICY_STANCE. Found: {sorted(found)}"
         )
+
+    def test_collector_sees_a_new_function_in_a_registered_file(self, tmp_path,
+                                                                monkeypatch):
+        """The tripwire the file-level registry lacked: a SECOND minting
+        function inside an already-registered module must surface as a new
+        registry entry."""
+        import tests.test_token_issuance_parity as mod
+
+        fake = tmp_path / "src"
+        (fake / "routes").mkdir(parents=True)
+        (fake / "routes" / "api.py").write_text(
+            "def generate_token():\n"
+            "    return svc.create_token(user)\n"
+            "\n"
+            "def sneaky_new_endpoint():\n"
+            "    return svc.create_token(user)\n"
+        )
+        monkeypatch.setattr(mod, "_SRC", fake)
+        found = _create_token_call_sites()
+        assert found == {
+            "routes/api.py::generate_token",
+            "routes/api.py::sneaky_new_endpoint",
+        }
 
     def test_every_surface_declares_every_policy(self):
         expected = set(product(ISSUANCE_SURFACES, POLICIES))
