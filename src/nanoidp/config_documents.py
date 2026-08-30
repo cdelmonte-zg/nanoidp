@@ -81,6 +81,8 @@ class ClientEntry(BaseModel):
     token_endpoint_auth_method: Literal[
         "client_secret_basic", "client_secret_post", "none"
     ] = "client_secret_basic"
+    # Same closed-enum reasoning as token_endpoint_auth_method above (#249).
+    layout: Literal["vertical", "horizontal"] = "vertical"
     description: str = ""
     background_color: Optional[str] = None
     header_color: Optional[str] = None
@@ -99,6 +101,7 @@ class ClientEntry(BaseModel):
             # ('none'), rejected by the model for a confidential one (#188).
             client_secret=self.client_secret or None,
             token_endpoint_auth_method=self.token_endpoint_auth_method,
+            layout=self.layout,
             description=self.description,
             background_color=self.background_color,
             header_color=self.header_color,

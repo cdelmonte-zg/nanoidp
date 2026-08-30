@@ -275,6 +275,8 @@ def client_to_yaml(client: OAuthClient) -> Dict[str, Any]:
         entry["client_secret"] = _quoted(client.client_secret)
     if client.token_endpoint_auth_method != "client_secret_basic":
         entry["token_endpoint_auth_method"] = client.token_endpoint_auth_method
+    if client.layout != "vertical":
+        entry["layout"] = client.layout
     entry["description"] = _quoted(client.description)
     if client.background_color:
         entry["background_color"] = client.background_color
@@ -336,6 +338,13 @@ def merge_client_entry(raw_entry: Dict[str, Any], client: OAuthClient) -> Dict[s
             updated["token_endpoint_auth_method"] = client.token_endpoint_auth_method
         else:
             updated.pop("token_endpoint_auth_method", None)
+
+    # Same "default-valued scalar" shape (#249).
+    if not is_unchanged(raw_entry.get("layout"), client.layout):
+        if client.layout != "vertical":
+            updated["layout"] = client.layout
+        else:
+            updated.pop("layout", None)
 
     for field_name, new_bool_value, default_value in (
         ("show_client_id", client.show_client_id, True),

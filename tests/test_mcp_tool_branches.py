@@ -753,6 +753,55 @@ class TestPublicClientTools:
         assert mcp_config.get_client("branch-client").is_public is False
 
 
+class TestClientLayout:
+    """#249: layout is pre-validated before any assignment, same principle
+    as token_endpoint_auth_method in TestPublicClientTools above."""
+
+    @pytest.mark.asyncio
+    async def test_create_with_horizontal_layout(self, mcp_config, mcp_call_tool):
+        payload = _payload(
+            await mcp_call_tool(
+                "create_client",
+                {
+                    "client_id": "layout-mcp",
+                    "client_secret": "layout-secret",
+                    "layout": "horizontal",
+                },
+            )
+        )
+        assert payload["success"] is True
+        assert payload["client"]["layout"] == "horizontal"
+        assert mcp_config.get_client("layout-mcp").layout == "horizontal"
+
+    @pytest.mark.asyncio
+    async def test_update_sets_layout(self, mcp_config, mcp_call_tool):
+        payload = _payload(
+            await mcp_call_tool(
+                "update_client",
+                {"client_id": "branch-client", "layout": "horizontal"},
+            )
+        )
+        assert payload["success"] is True
+        assert mcp_config.get_client("branch-client").layout == "horizontal"
+
+    @pytest.mark.asyncio
+    async def test_invalid_layout_rejects_before_any_mutation(
+        self, mcp_config, mcp_call_tool
+    ):
+        result = await mcp_call_tool(
+            "update_client",
+            {
+                "client_id": "branch-client",
+                "description": "must-not-land",
+                "layout": "diagonal",
+            },
+        )
+        assert result.is_error is True
+        client = mcp_config.get_client("branch-client")
+        assert client.description != "must-not-land"
+        assert client.layout == "vertical"
+
+
 class TestDispatchGuards:
     @pytest.mark.asyncio
     async def test_readonly_mode_rejects_mutating_tool(

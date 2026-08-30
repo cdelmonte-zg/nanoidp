@@ -148,6 +148,15 @@
             "default": null,
             "title": "Header Color"
           },
+          "layout": {
+            "default": "vertical",
+            "enum": [
+              "vertical",
+              "horizontal"
+            ],
+            "title": "Layout",
+            "type": "string"
+          },
           "redirect_uris": {
             "default": null,
             "title": "Redirect Uris"

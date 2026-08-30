@@ -247,6 +247,17 @@ def _normalize_auth_method(value: Any) -> str:
     return str(value)
 
 
+_LAYOUTS = ("vertical", "horizontal")
+
+
+def _normalize_layout(value: Any) -> str:
+    """Pre-validate layout before any assignment (#249), same
+    pre-validation principle as token_endpoint_auth_method above."""
+    if value not in _LAYOUTS:
+        raise ValueError("layout must be one of " + ", ".join(_LAYOUTS))
+    return str(value)
+
+
 def _client_to_dict(client: OAuthClient) -> dict[str, Any]:
     """Convert OAuthClient to dictionary (without secret)."""
     return {
@@ -258,6 +269,7 @@ def _client_to_dict(client: OAuthClient) -> dict[str, Any]:
         "footer_color": client.footer_color,
         "show_client_id": client.show_client_id,
         "show_description": client.show_description,
+        "layout": client.layout,
         "additional_audiences": client.additional_audiences,
         "redirect_uris": client.redirect_uris,
         "allowed_scopes": client.allowed_scopes,
@@ -692,6 +704,11 @@ _TOOLS: list[Tool] = [
                     "type": "boolean",
                     "description": "Show description on the /authorize login page (optional, default false)",
                 },
+                "layout": {
+                    "type": "string",
+                    "enum": ["vertical", "horizontal"],
+                    "description": "/authorize login card composition (#249): 'vertical' (default) is the single-column card; 'horizontal' places the client info and the login form side by side, collapsing back to a single column on narrow viewports (optional, default vertical)",
+                },
                 "additional_audiences": {
                     "type": "array",
                     "items": {"type": "string"},
@@ -764,6 +781,11 @@ _TOOLS: list[Tool] = [
                 "show_description": {
                     "type": "boolean",
                     "description": "Show description on the /authorize login page (optional)",
+                },
+                "layout": {
+                    "type": "string",
+                    "enum": ["vertical", "horizontal"],
+                    "description": "/authorize login card composition (#249): 'horizontal' places the client info and the login form side by side, collapsing back to a single column on narrow viewports (optional)",
                 },
                 "additional_audiences": {
                     "type": "array",
@@ -1475,6 +1497,7 @@ def _tool_create_client(arguments: dict[str, Any], config: ConfigManager) -> dic
         footer_color=_normalize_hex_color(arguments.get("footer_color"), "footer_color"),
         show_client_id=arguments.get("show_client_id", True),
         show_description=arguments.get("show_description", False),
+        layout=_normalize_layout(arguments.get("layout", "vertical")),  # type: ignore[arg-type]
         additional_audiences=_normalize_audiences(arguments.get("additional_audiences")),
         redirect_uris=_normalize_str_list(arguments.get("redirect_uris"), "redirect_uris"),
         allowed_scopes=_normalize_str_list(arguments.get("allowed_scopes"), "allowed_scopes"),
@@ -1512,6 +1535,9 @@ def _tool_update_client(arguments: dict[str, Any], config: ConfigManager) -> dic
         _normalize_str_list(arguments["allowed_resources"], "allowed_resources")
         if "allowed_resources" in arguments
         else None
+    )
+    new_layout = (
+        _normalize_layout(arguments["layout"]) if "layout" in arguments else None
     )
     new_background_color = (
         _normalize_hex_color(arguments["background_color"], "background_color")
@@ -1577,6 +1603,8 @@ def _tool_update_client(arguments: dict[str, Any], config: ConfigManager) -> dic
         client.show_client_id = arguments["show_client_id"]
     if "show_description" in arguments:
         client.show_description = arguments["show_description"]
+    if new_layout is not None:
+        client.layout = new_layout  # type: ignore[assignment]
     if new_audiences is not None:
         client.additional_audiences = new_audiences
     if new_redirect_uris is not None:

@@ -281,6 +281,9 @@ oauth:
       footer_color: "#e8f4f8"      # optional; hex only, the card's footer band
       show_client_id: true         # optional; default true
       show_description: true       # optional; default false
+      layout: "horizontal"         # optional; "vertical" (default) or "horizontal" (#249):
+                                    # horizontal places the client info and login form side by
+                                    # side, collapsing back to a single column on narrow viewports
     - client_id: "scoped-client"
       client_secret: "secret"
       description: "Client restricted to a scope subset"
@@ -476,6 +479,13 @@ or markup, and a logo is a local file, never a remote URL. To add a logo,
 drop an image at `<logos_dir>/<client_id>.{svg,png,jpg,jpeg,webp}` (default
 `logos_dir`: `src/nanoidp/static/logos`, overridable via `oauth.logos_dir`);
 it's picked up by filename, no config entry needed.
+
+`layout` (#249) controls the card's composition: `"vertical"` (default) is
+the single-column card - header, client info, then the login form, footer;
+`"horizontal"` places the client info and the login form side by side, with
+the header and footer still full width, collapsing back to the vertical
+stack on narrow viewports. It's one of exactly two nanoidp-owned layouts,
+not a general styling knob - there's no per-client CSS or column widths.
 
 To preview a client's branded login page, open `/authorize` with its
 `client_id` and a `redirect_uri` (any syntactically valid URL works unless

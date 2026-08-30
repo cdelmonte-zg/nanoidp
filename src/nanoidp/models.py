@@ -232,6 +232,19 @@ class OAuthClient(BaseModel):
             "aud at oauth.audience."
         ),
     )
+    layout: Literal["vertical", "horizontal"] = Field(
+        default="vertical",
+        description=(
+            "/authorize login card composition (issue #249). 'vertical' "
+            "(default) is the single-column card: header, client block "
+            "(logo, client id, description, scope badges), the form, "
+            "footer. 'horizontal' places the client block and the form "
+            "side by side, header and footer still full width; it "
+            "collapses back to the vertical stack on narrow viewports. "
+            "One of two nanoidp-owned layouts - not a general styling "
+            "knob, so there is no per-client CSS or markup here."
+        ),
+    )
 
     @model_validator(mode="after")
     def _confidential_clients_need_a_secret(self) -> "OAuthClient":

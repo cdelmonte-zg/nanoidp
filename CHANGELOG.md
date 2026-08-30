@@ -62,6 +62,15 @@ previous leniency allowed - needs a one-time adjustment.
   hand back one that could not be spent.
 
 ### Added
+- **Horizontal `/authorize` login card composition** (#249). New per-client
+  `layout` field, `"vertical"` (default, unchanged) or `"horizontal"`: the
+  latter places the client info block and the login form side by side in a
+  Bootstrap two-column split, with the header and footer still full width,
+  collapsing back to the single-column stack on narrow viewports. One of
+  exactly two nanoidp-owned layouts - no per-client CSS or column widths.
+  Full support across settings.yaml, the UI client form, and the MCP
+  `create_client`/`update_client` tools; omitted (or `"vertical"`) writes
+  nothing to YAML, matching every other default-valued client field.
 - **Mock protected MCP server as an e2e fixture** (#191). `e2e/mock_mcp_server.py`
   is a minimal MCP Streamable HTTP resource server (the `mcp` SDK's
   resource-server mode) with three scope-gated tools (`read_document` /
