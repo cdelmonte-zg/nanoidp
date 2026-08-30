@@ -56,6 +56,19 @@ def _add_export_attr(attrs: Dict[str, Any], name: str, values: Any) -> None:
         attrs[name] = list(values)
 
 
+def _is_absent(value: Any) -> bool:
+    """True when a custom attribute value carries no fact: None, or an
+    EMPTY collection of any of the shapes YAML can produce (list, tuple,
+    set, dict, string). The #315 review caught that the first predicate
+    listed [] and "" but not {} - which would have been emitted as the
+    literal AttributeValue "{}" while the docs promised omission."""
+    if value is None:
+        return True
+    if isinstance(value, (list, tuple, set, dict, str)) and len(value) == 0:
+        return True
+    return False
+
+
 def resolve_saml_attributes(
     settings: Any, user: Any, *, include_source_acl: bool
 ) -> Dict[str, Any]:
@@ -81,7 +94,7 @@ def resolve_saml_attributes(
         _add_export_attr(attrs, settings.saml_groups_attr_name, user.groups)
     if user.attributes:
         for key, value in user.attributes.items():
-            if value is None or value == [] or value == "":
+            if _is_absent(value):
                 continue
             attrs[key] = value
     return attrs

@@ -180,7 +180,10 @@ they cannot drift silently. Their remaining differences are deliberate:
 | `AudienceRestriction` | pinned to `oauth.audience` | absent | the query requester's audience is unknown (the endpoint is unauthenticated by design) |
 
 Shared rules on both surfaces: an absent or empty fact is an absent
-attribute (no fabricated `email`, no empty `Attribute` elements); a list
-value becomes one `AttributeValue` per entry and a string is never split
-on commas (#134); roles/groups exports are opt-in under their configured
-names, merged on a name collision.
+attribute (no fabricated `email`, no empty `Attribute` elements - None and
+empty list/tuple/set/dict/string alike); a list value becomes one
+`AttributeValue` per entry and a string is never split on commas (#134);
+roles/groups exports are opt-in under their configured names. When the
+roles and groups exports target the SAME configured name, their lists are
+merged (roles first, deduplicated); a collision between an export name and
+a scalar core attribute is not merged - the export list replaces it.

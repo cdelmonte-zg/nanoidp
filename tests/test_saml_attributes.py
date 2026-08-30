@@ -65,12 +65,24 @@ class TestResolver:
         assert "email" not in attrs
 
     def test_empty_collections_are_omitted(self):
+        """Every empty shape YAML can produce - the #315 review caught that
+        the first predicate missed {} (it would have been emitted as the
+        literal AttributeValue "{}")."""
         attrs = resolve_saml_attributes(
             _S(),
-            _U(entitlements=[], attributes={"x": [], "y": "", "z": None}),
+            _U(
+                entitlements=[],
+                attributes={"a": [], "b": "", "c": None, "d": {}, "e": ()},
+            ),
             include_source_acl=True,
         )
         assert attrs == {}
+
+    def test_non_empty_dict_value_is_kept(self):
+        attrs = resolve_saml_attributes(
+            _S(), _U(attributes={"metadata": {"k": "v"}}), include_source_acl=True
+        )
+        assert attrs["metadata"] == {"k": "v"}
 
     def test_custom_list_stays_a_list(self):
         attrs = resolve_saml_attributes(
