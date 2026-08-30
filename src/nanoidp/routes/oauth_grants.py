@@ -28,6 +28,7 @@ from ..services import (
 from ..services.resource import resolve_resources
 from ..services.scope import resolve_scope
 from ._audit import audit_event
+from ._oauth_error import oauth_error as _oauth_error
 
 
 @dataclass
@@ -138,21 +139,6 @@ def _resolve_token_resource(
             400,
         )
     return (result.granted or None), None
-
-
-def _oauth_error(error: str, description: str, status: int = 400) -> GrantResult:
-    """RFC 6749 §5.2 error JSON - the #287 "Error surfaces" shape for every
-    /token error branch (#308: these used to be Werkzeug abort() HTML).
-    Descriptions are FIXED text; library/exception detail belongs in the
-    audit events, never here (the #200/#307 rule). §5.2 semantics used:
-    invalid_request = missing/malformed parameter; invalid_grant = the
-    presented grant (code, refresh token, resource-owner credentials) is
-    invalid, expired, revoked or issued to another client; invalid_client
-    stays with the authentication helpers in oauth.py."""
-    return (
-        jsonify({"error": error, "error_description": description}),
-        status,
-    )
 
 
 def _grant_refresh_token(ctx: _GrantContext) -> GrantResult:

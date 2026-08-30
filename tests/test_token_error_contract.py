@@ -63,6 +63,29 @@ CASES = [
         "unsupported_grant_type",
     ),
     (
+        # #310 review blocker 1: the caller's arbitrary value must NOT be
+        # reflected into error_description (§5.2 restricts it to a narrow
+        # ASCII subset) - this is the case that distinguishes fixed text
+        # from reflection.
+        "unsupported_grant_type_non_ascii",
+        {"grant_type": 'sp\u00e4ce"\U0001f4a5\ntype'},
+        AUTH,
+        400,
+        "unsupported_grant_type",
+    ),
+    (
+        "refresh_token_without_subject",
+        lambda app: {
+            "grant_type": "refresh_token",
+            "refresh_token": _sign(
+                app, {k: v for k, v in _refresh_claims().items() if k != "sub"}
+            ),
+        },
+        AUTH,
+        400,
+        "invalid_grant",
+    ),
+    (
         "exp_not_integer",
         {"grant_type": "client_credentials", "exp": "soon"},
         AUTH,
@@ -183,6 +206,102 @@ class TestTokenErrorContract:
         assert body is not None, f"non-JSON body: {resp.data[:200]!r}"
         assert body["error"] == error
         assert "error_description" in body
+
+    def test_non_ascii_grant_type_is_not_reflected(self, client):
+        """The description is fixed text; the raw value lives in the audit
+        event, not the response (#310 review blocker 1)."""
+        resp = client.post(
+            "/token",
+            data={"grant_type": 'sp\u00e4ce"\U0001f4a5\ntype'},
+            headers=AUTH,
+        )
+        body = resp.get_json()
+        assert body["error_description"] == "The requested grant_type is not supported"
+        assert "\U0001f4a5" not in body["error_description"]
+
+    def test_invalid_client_with_basic_carries_www_authenticate(self, client):
+        """§5.2 MUST (#310 review blocker 2): a client that ATTEMPTED
+        Authorization-header authentication gets 401 with a
+        WWW-Authenticate challenge for the scheme it used."""
+        resp = client.post(
+            "/token",
+            data={"grant_type": "client_credentials"},
+            headers=_basic("demo-client", "wrong-secret"),
+        )
+        assert resp.status_code == 401
+        assert resp.get_json()["error"] == "invalid_client"
+        assert resp.headers.get("WWW-Authenticate", "").startswith("Basic")
+
+    def test_invalid_client_without_auth_header_has_no_challenge(self, client):
+        """The MUST is conditional on the attempt: no Authorization header
+        sent, no WWW-Authenticate issued."""
+        resp = client.post("/token", data={"grant_type": "client_credentials"})
+        assert resp.status_code == 401
+        assert resp.get_json()["error"] == "invalid_client"
+        assert "WWW-Authenticate" not in resp.headers
+
+    def test_client_id_mismatch_is_json_with_challenge(self, client):
+        """Basic for one client plus a contradictory body client_id: 401
+        invalid_client JSON (was HTML) WITH the challenge - Basic was
+        presented by construction."""
+        resp = client.post(
+            "/token",
+            data={
+                "grant_type": "client_credentials",
+                "client_id": "scoped-client",
+            },
+            headers=AUTH,
+        )
+        assert resp.status_code == 401
+        body = resp.get_json()
+        assert body["error"] == "invalid_client"
+        assert resp.headers.get("WWW-Authenticate", "").startswith("Basic")
+
+    def test_password_grant_disabled_by_oauth21_is_unsupported_grant_type(
+        self, client, app
+    ):
+        from nanoidp.config import get_config
+
+        with app.app_context():
+            settings = get_config().settings
+            original = settings.security_profile
+            settings.security_profile = "oauth21"
+        try:
+            resp = client.post(
+                "/token",
+                data={"grant_type": "password", "username": "admin", "password": "admin"},
+                headers=AUTH,
+            )
+            assert resp.status_code == 400
+            body = resp.get_json()
+            assert body["error"] == "unsupported_grant_type"
+            assert "oauth21" in body["error_description"]
+        finally:
+            with app.app_context():
+                get_config().settings.security_profile = original
+
+    def test_code_for_a_deleted_user_is_invalid_grant(self, client, app):
+        """An authorization code whose user vanished between /authorize and
+        redemption: invalid_grant JSON (was a 401 HTML abort)."""
+        from nanoidp.services.auth_code import get_auth_code_store
+
+        with app.app_context():
+            code = get_auth_code_store().create_code(
+                client_id="demo-client",
+                redirect_uri="http://localhost/cb",
+                username="ghost-user-never-existed",
+            )
+        resp = client.post(
+            "/token",
+            data={
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": "http://localhost/cb",
+            },
+            headers=AUTH,
+        )
+        assert resp.status_code == 400
+        assert resp.get_json()["error"] == "invalid_grant"
 
     def test_foreign_client_refresh_is_invalid_grant(self, client, app):
         """A refresh token issued to another client: invalid_grant 400
