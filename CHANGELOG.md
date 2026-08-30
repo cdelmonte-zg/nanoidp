@@ -365,6 +365,22 @@ previous leniency allowed - needs a one-time adjustment.
   forced `rate_limit_enabled: true`, so its instances now really throttle
   `/token` at the configured rate (default 10/minute) - the hardening the
   profile always claimed.
+- **One resolver for SAML attributes; the query surface stops fabricating
+  and mangling values** (#302). The SSO assertion and the attribute-query
+  assertion resolved a user's attributes through two independent
+  implementations that had drifted five ways; both now share
+  `services/saml_attributes.py`, and the emission of the
+  `AttributeStatement` is one helper. Three visible corrections, each
+  finishing an existing rule: the query no longer invents
+  `<user>@example.com` for a user without an email (#275 - an absent fact
+  is an absent attribute); a custom LIST attribute reaches the XML as one
+  `AttributeValue` per entry and a comma-bearing STRING is never split
+  (#134 - the query used to `",".join` lists and re-split any string with
+  a comma); an empty collection no longer emits an empty `Attribute`
+  element. The differences that remain between the two surfaces
+  (`source_acl` only on the query; no AuthnStatement/SubjectConfirmation/
+  AudienceRestriction on the query assertion) are deliberate and now
+  documented in a table in the SAML reference.
 - **`RevocationStore` entries now expire** (#288): revoked jtis and rotation
   family markers lived in two sets that were never swept - every revocation
   and every refresh rotation on a long-lived instance was a permanent memory
