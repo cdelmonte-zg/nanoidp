@@ -2597,66 +2597,82 @@ class NanoIDPTestAgent:
             return self._add_result("SAML SSO (Redirect binding)", TestCategory.SAML, False, str(e))
 
     def test_saml_attribute_query(self) -> TestResult:
-        """SAML Attribute Query endpoint."""
-        try:
-            # Create minimal attribute query
-            attr_query = f"""
-            <samlp:AttributeQuery xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"
-                xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion"
-                ID="_attrquery123" Version="2.0" IssueInstant="2024-01-01T00:00:00Z">
-                <saml:Issuer>test-sp</saml:Issuer>
-                <saml:Subject>
-                    <saml:NameID>{self.username}</saml:NameID>
-                </saml:Subject>
-            </samlp:AttributeQuery>
-            """.strip()
+        """SAML Attribute Query endpoint (SOAP binding).
 
-            response = requests.post(
-                f"{self.base_url}/saml/attribute-query",
-                data=attr_query,
-                headers={"Content-Type": "application/xml"},
-                timeout=5
+        The query is SOAP-enveloped, as the SAML SOAP binding requires and
+        as the route implements: a bare AttributeQuery posted without the
+        envelope is a malformed request (#295 review found this test had
+        ALWAYS sent it bare, always landed in a 400 fallback branch, and
+        never exercised the success path or the #275 unknown-user leg).
+        Three legs: valid query -> attributes; unknown NameID -> SAML
+        Requester/UnknownPrincipal status with no assertion (#275);
+        malformed query (no Subject) -> SOAP 1.1 Fault, HTTP 500,
+        faultcode soap:Client (#287).
+        """
+        def _enveloped(inner: str) -> str:
+            return (
+                '<?xml version="1.0" encoding="UTF-8"?>'
+                '<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">'
+                f"<soap:Body>{inner}</soap:Body></soap:Envelope>"
             )
 
-            # Should return SAML response
-            if response.status_code == 200:
-                is_xml = "xml" in response.headers.get("Content-Type", "") or response.text.strip().startswith("<")
-                has_attributes = "Attribute" in response.text
+        def _query(name_id: str) -> str:
+            return _enveloped(
+                '<samlp:AttributeQuery xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"'
+                ' xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion"'
+                ' ID="_attrquery123" Version="2.0" IssueInstant="2024-01-01T00:00:00Z">'
+                "<saml:Issuer>test-sp</saml:Issuer>"
+                f"<saml:Subject><saml:NameID>{name_id}</saml:NameID></saml:Subject>"
+                "</samlp:AttributeQuery>"
+            )
 
-                # #275 negative: an unknown NameID must get a SAML error
-                # status (Requester/UnknownPrincipal) with NO assertion,
-                # never the old fabricated-attributes fallback.
-                unknown_query = attr_query.replace(
-                    f"<saml:NameID>{self.username}</saml:NameID>",
-                    "<saml:NameID>no-such-user-e2e</saml:NameID>",
-                )
-                unknown_resp = requests.post(
-                    f"{self.base_url}/saml/attribute-query",
-                    data=unknown_query,
-                    headers={"Content-Type": "application/xml"},
-                    timeout=5,
-                )
-                unknown_ok = (
-                    unknown_resp.status_code == 200
-                    and "UnknownPrincipal" in unknown_resp.text
-                    and "Assertion" not in unknown_resp.text
-                )
-                return self._add_result(
-                    "SAML Attribute Query",
-                    TestCategory.SAML,
-                    is_xml and unknown_ok,
-                    f"Response received, has_attributes={has_attributes}; "
-                    f"unknown NameID -> UnknownPrincipal without assertion: {unknown_ok}",
-                    {"has_attributes": has_attributes, "unknown_principal_error": unknown_ok}
-                )
+        try:
+            checks = {}
 
-            # Some implementations might not support this
+            valid = requests.post(
+                f"{self.base_url}/saml/attribute-query",
+                data=_query(self.username),
+                headers={"Content-Type": "text/xml"},
+                timeout=5,
+            )
+            checks["valid_query_200_with_attributes"] = (
+                valid.status_code == 200 and "Attribute" in valid.text
+            )
+
+            unknown = requests.post(
+                f"{self.base_url}/saml/attribute-query",
+                data=_query("no-such-user-e2e"),
+                headers={"Content-Type": "text/xml"},
+                timeout=5,
+            )
+            checks["unknown_nameid_unknownprincipal_no_assertion"] = (
+                unknown.status_code == 200
+                and "UnknownPrincipal" in unknown.text
+                and "Assertion" not in unknown.text
+            )
+
+            malformed = requests.post(
+                f"{self.base_url}/saml/attribute-query",
+                data=_enveloped(
+                    '<samlp:AttributeQuery xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"'
+                    ' ID="_x" Version="2.0" IssueInstant="2024-01-01T00:00:00Z"/>'
+                ),
+                headers={"Content-Type": "text/xml"},
+                timeout=5,
+            )
+            checks["malformed_query_soap_client_fault"] = (
+                malformed.status_code == 500
+                and "soap:Fault" in malformed.text
+                and "soap:Client" in malformed.text
+            )
+
+            success = all(checks.values())
             return self._add_result(
                 "SAML Attribute Query",
                 TestCategory.SAML,
-                response.status_code in [200, 400, 501],
-                f"Status: {response.status_code}",
-                {"status": response.status_code}
+                success,
+                "; ".join(f"{k}={v}" for k, v in checks.items()),
+                checks,
             )
         except Exception as e:
             return self._add_result("SAML Attribute Query", TestCategory.SAML, False, str(e))

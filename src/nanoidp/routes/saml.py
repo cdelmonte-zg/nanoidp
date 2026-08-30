@@ -905,9 +905,16 @@ def attribute_query() -> ResponseReturnValue:
     config = get_config()
 
     try:
-        # Parse SOAP request body (using defusedxml to prevent XXE attacks)
+        # Parse SOAP request body (using defusedxml to prevent XXE attacks).
+        # Syntactically broken XML is the CLIENT's fault (#295 review): catch
+        # it here rather than letting it fall to the catch-all, which answers
+        # soap:Server for nanoidp-side failures.
         soap_body = request.data
-        root = secure_fromstring(soap_body)
+        try:
+            root = secure_fromstring(soap_body)
+        except Exception as parse_error:
+            logger.warning(f"AttributeQuery request is not well-formed XML: {parse_error}")
+            return _soap_fault("Request body is not well-formed XML")
 
         # SAML namespaces
         namespaces = {

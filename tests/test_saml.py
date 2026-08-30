@@ -484,6 +484,19 @@ class TestSAMLAttributeQuery:
         assert b"soap:Client" in response.data
         assert b"Subject not found" in response.data
 
+    def test_attribute_query_broken_xml_is_a_client_fault(self, client):
+        """#295 review: syntactically broken XML is the CLIENT's invalid
+        input, not a nanoidp-side failure - soap:Client, never the
+        catch-all's soap:Server."""
+        response = client.post('/saml/attribute-query',
+            data="<soap:Envelope><not-closed",
+            content_type='text/xml'
+        )
+        assert response.status_code == 500
+        assert b"soap:Fault" in response.data
+        assert b"soap:Client" in response.data
+        assert b"soap:Server" not in response.data
+
     def test_attribute_query_unknown_user_returns_error_status(self, client):
         """#275: an unknown NameID gets a SAML error status
         (Requester/UnknownPrincipal), NOT a signed assertion with fabricated

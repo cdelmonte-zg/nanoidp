@@ -153,11 +153,14 @@ class's shape, never invents a seventh:
   failures on the SOAP endpoint answer with a SOAP 1.1 Fault (HTTP 500,
   `faultcode` Client/Server per SOAP 1.1 §6.2). Browser-facing SSO steps may
   use Werkzeug `abort()` HTML, since the reader is a person mid-redirect.
-- **MCP**: two deliberate layers - dispatch refusals
-  (`{"error", "code", "tool"}`, `is_error=True`, the `MCP_*` code taxonomy)
-  vs domain results (`{"success": False, "error", ...}` plus `kind` for
-  typed conditions), because "not found" is an answer, not a failed call.
-  The layer contract is documented on `_reject` in `mcp_server.py`.
+- **MCP**: two deliberate SHAPES - dispatch refusals
+  (`{"error", "code", "tool"}`, the `MCP_*` code taxonomy) vs domain
+  results (`{"success": False, "error", ...}` plus `kind` for typed
+  conditions). Both come back `is_error=True` (call_tool flags
+  `success is False or "error" in result`); what stays `is_error=False`
+  are the NEGATIVE QUERIES - `found: False`, `valid: False` - because a
+  miss is an answer, not a failed call. The full table lives in the
+  `mcp_server` module docstring; the layer contract on `_reject`.
 
 Typed exceptions are not the error channel: `exceptions.py` deliberately
 holds only what is actually raised (`SAMLSignatureError`); a taxonomy
