@@ -7,12 +7,16 @@ in models.py).
 
 import hashlib
 import hmac
-import secrets
 
 from flask import current_app, jsonify, redirect, request, session, url_for
 from flask.typing import ResponseReturnValue
 
 from ..config import get_config
+
+# Re-exported: verify_secret moved to the framework-free nanoidp.security
+# (#286) so the stdio MCP process stops importing Flask to reach it; this
+# module stays the import path its own callers and tests already use.
+from ..security import verify_secret  # noqa: F401
 
 _SAFE_METHODS = ("GET", "HEAD", "OPTIONS")
 
@@ -59,21 +63,6 @@ def ui_login_required() -> ResponseReturnValue | None:
 def get_management_secret() -> str | None:
     """The configured management_secret, or None when the gate is off."""
     return get_config().settings.management_secret
-
-
-def verify_secret(candidate: object, secret: str | None) -> bool:
-    """Constant-time compare of an arbitrary candidate against a secret.
-
-    False (never raises) when secret is missing/empty, or candidate isn't a
-    non-empty str - covers a non-str MCP argument (e.g. admin_secret: 123)
-    and the fact that secrets.compare_digest requires same-type ASCII-only
-    str, or bytes, operands; comparing as UTF-8 bytes here sidesteps both the
-    type mismatch and the non-ASCII TypeError it otherwise raises (#163
-    review).
-    """
-    if not secret or not isinstance(candidate, str) or not candidate:
-        return False
-    return secrets.compare_digest(candidate.encode("utf-8"), secret.encode("utf-8"))
 
 
 def verify_management_secret(candidate: object) -> bool:
