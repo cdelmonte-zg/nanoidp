@@ -347,6 +347,20 @@ previous leniency allowed - needs a one-time adjustment.
   (RFC 3986 §3, e.g. `about:`). No audience bypass or escalation.
 
 ### Fixed
+- **Rate limiting on `/token` is enforced for real** (#304): the limiter
+  was constructed with no limits and no view was ever decorated, so
+  `rate_limit_enabled: true` logged "Rate limiting: enabled (10/minute on
+  /token)" while enforcing nothing - a "metadata never lies" violation.
+  The configured `rate_limit_token_endpoint` now actually applies to
+  `POST /token` (429 with a JSON body and `Retry-After`/`RateLimit-*`
+  headers; every other endpoint stays unlimited). The two settings are
+  also configurable from YAML at last (`server.rate_limit_enabled`,
+  `server.rate_limit_token_endpoint`) - the fields existed on Settings
+  but no document section carried them, so only the profile could flip
+  them. **Behavior change for `stricter-dev`**: that profile has always
+  forced `rate_limit_enabled: true`, so its instances now really throttle
+  `/token` at the configured rate (default 10/minute) - the hardening the
+  profile always claimed.
 - **`RevocationStore` entries now expire** (#288): revoked jtis and rotation
   family markers lived in two sets that were never swept - every revocation
   and every refresh rotation on a long-lived instance was a permanent memory

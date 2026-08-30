@@ -225,6 +225,10 @@ the SAML `AuthnContextClassRef` detail.
 server:
   host: "127.0.0.1"        # loopback by default; set 0.0.0.0 to expose on a network
   port: 8000
+  rate_limit_enabled: false        # optional; rate-limit POST /token (#304). Enforced
+                                   # for real since 3.0 - it used to log "enabled" while
+                                   # enforcing nothing. stricter-dev forces it on.
+  rate_limit_token_endpoint: "10/minute"  # optional; flask-limiter notation
 
 oauth:
   issuer: "http://localhost:8000"

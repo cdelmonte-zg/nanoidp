@@ -63,6 +63,11 @@ class ServerSection(BaseModel):
     host: str = "127.0.0.1"
     port: int = 8000
     debug: bool = False
+    # Rate limiting on /token (#304): configurable from YAML at last - the
+    # Settings fields existed since early versions but no document section
+    # carried them, so only the stricter-dev profile could ever flip them.
+    rate_limit_enabled: bool = False
+    rate_limit_token_endpoint: str = "10/minute"
 
 
 class ClientEntry(BaseModel):
@@ -346,6 +351,8 @@ class SettingsDocument(BaseModel):
             host=self.server.host,
             port=self.server.port,
             debug=self.server.debug,
+            rate_limit_enabled=self.server.rate_limit_enabled,
+            rate_limit_token_endpoint=self.server.rate_limit_token_endpoint,
             issuer=self.oauth.issuer,
             issuer_from_request=self.oauth.issuer_from_request,
             issuer_allowlist=self.oauth.issuer_allowlist or [],

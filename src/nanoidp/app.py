@@ -7,6 +7,7 @@ import os
 from typing import Optional
 
 from flask import Flask, Response, jsonify
+from flask.typing import ResponseReturnValue
 from flask_cors import CORS
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
@@ -127,6 +128,7 @@ def create_app(
             app=app,
             default_limits=[],  # No default limits
             storage_uri="memory://",
+            headers_enabled=True,  # RateLimit-*/Retry-After on 429 (#304)
         )
         logger.info(f"  - Rate limiting: enabled ({settings.rate_limit_token_endpoint} on /token)")
     else:
@@ -143,6 +145,39 @@ def create_app(
     app.register_blueprint(saml_bp)
     app.register_blueprint(ui_bp)
     app.register_blueprint(api_bp)
+
+    # Actually APPLY the /token rate limit (#304). Until 3.0 the limiter
+    # was created with default_limits=[] and no view ever decorated, so
+    # rate_limit_enabled: true logged "enabled" while enforcing nothing -
+    # a "metadata never lies" violation. The wrap must happen after the
+    # blueprint registration above, which is what puts oauth.token into
+    # app.view_functions.
+    if settings.rate_limit_enabled:
+        # flask-limiter's decorator returns the same callable it received;
+        # the ignore covers werkzeug's wide view-function union.
+        app.view_functions["oauth.token"] = limiter.limit(  # type: ignore[assignment]
+            settings.rate_limit_token_endpoint
+        )(app.view_functions["oauth.token"])
+
+        @app.errorhandler(429)
+        def _rate_limited(e: Exception) -> ResponseReturnValue:
+            # /token is the only limited view, so every 429 is a protocol
+            # response: JSON, never the framework's HTML page. RFC 6749
+            # defines no error code for throttling; flask-limiter's
+            # Retry-After/RateLimit-* headers (headers_enabled above) carry
+            # the machine-readable part.
+            return (
+                jsonify(
+                    {
+                        "error": "rate_limit_exceeded",
+                        "error_description": (
+                            "Too many token requests; retry after the "
+                            "interval in the Retry-After header"
+                        ),
+                    }
+                ),
+                429,
+            )
 
     # Context processor to inject version into all templates
     @app.context_processor
