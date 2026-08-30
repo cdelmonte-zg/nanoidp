@@ -115,3 +115,44 @@ class TestStricterDevProfilePromise:
                 config = get_config()
                 config.settings.rate_limit_token_endpoint = "10/minute"
                 config.save()
+
+
+class TestRateStringValidatedAtTheBoundary:
+    """#314 review blocker: flask-limiter does not raise on a malformed
+    rate string passed to limit() - it logs and falls back to the default
+    limits, which nanoidp sets to []. 'rate_limit_token_endpoint: banana'
+    would therefore silently recreate the enabled-but-unenforced lie #304
+    exists to end. The config boundary rejects it instead; deliberately NO
+    fallback to 10/minute - a default swapped in behind the operator's
+    back is another form of configuration that lies."""
+
+    def test_settings_rejects_unparsable_rate_string(self):
+        import pydantic
+        import pytest as _pytest
+
+        from nanoidp.models import Settings
+
+        with _pytest.raises(pydantic.ValidationError, match="rate limit string"):
+            Settings(rate_limit_token_endpoint="not-a-limit")
+
+    def test_yaml_load_path_rejects_it_too(self):
+        import pydantic
+        import pytest as _pytest
+
+        from nanoidp.config_documents import SettingsDocument
+
+        doc = SettingsDocument.model_validate(
+            {"server": {"rate_limit_enabled": True,
+                        "rate_limit_token_endpoint": "banana"}}
+        )
+        with _pytest.raises(pydantic.ValidationError, match="rate limit string"):
+            doc.to_settings()
+
+    def test_valid_notations_pass(self):
+        from nanoidp.models import Settings
+
+        for notation in ("10/minute", "1 per second", "100/hour"):
+            assert (
+                Settings(rate_limit_token_endpoint=notation).rate_limit_token_endpoint
+                == notation
+            )

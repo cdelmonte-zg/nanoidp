@@ -515,6 +515,27 @@ class Settings(BaseModel):
     cors_allowed_origins: List[str] = Field(default_factory=lambda: ["*"], description="CORS allowed origins")
     rate_limit_enabled: bool = Field(default=False, description="Enable rate limiting")
     rate_limit_token_endpoint: str = Field(default="10/minute", description="Rate limit for /token endpoint")
+
+    @field_validator("rate_limit_token_endpoint")
+    @classmethod
+    def validate_rate_limit_notation(cls, v: str) -> str:
+        """Reject an unparsable rate string at the config boundary (#314
+        review). flask-limiter does NOT raise on a malformed string passed
+        to limit(): it logs and falls back to the defaults - which nanoidp
+        sets to [] - so 'rate_limit_token_endpoint: banana' would silently
+        recreate the exact lie #304 exists to end (enabled-but-unenforced).
+        No fallback either: a default swapped in behind the operator's back
+        is just another form of configuration that lies.
+        """
+        from limits import parse
+
+        try:
+            parse(v)
+        except Exception as e:
+            raise ValueError(
+                f"not a valid rate limit string (e.g. '10/minute'): {v!r}"
+            ) from e
+        return v
     password_hashing: bool = Field(default=False, description="Use bcrypt for password hashing")
     require_pkce: bool = Field(
         default=False,
