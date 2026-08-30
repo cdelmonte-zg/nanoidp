@@ -480,24 +480,77 @@ class TestSAMLAttributeQuery:
 
         assert response.status_code == 400
 
-    def test_attribute_query_unknown_user_returns_defaults(self, client):
-        """Test that AttributeQuery for unknown user returns default attributes."""
+    def test_attribute_query_unknown_user_returns_error_status(self, client):
+        """#275: an unknown NameID gets a SAML error status
+        (Requester/UnknownPrincipal), NOT a signed assertion with fabricated
+        attributes - the SP under test must see the miss, not silently pass
+        on data nanoidp made up."""
         query = self._create_attribute_query(user_id='unknown_user_xyz')
         response = client.post('/saml/attribute-query',
             data=query,
             content_type='text/xml'
         )
 
-        # Should return 200 with default attributes (NanoIDP is permissive)
+        # SAML SOAP binding: protocol errors still ride HTTP 200.
         assert response.status_code == 200
 
         root = etree.fromstring(response.data)
-        attrs = root.findall(".//saml2:Attribute", SAML_NS)
-        attr_names = [a.get("Name") for a in attrs]
+        codes = [
+            el.get("Value")
+            for el in root.findall(".//saml2p:StatusCode", SAML_NS)
+        ]
+        assert "urn:oasis:names:tc:SAML:2.0:status:Requester" in codes
+        assert "urn:oasis:names:tc:SAML:2.0:status:UnknownPrincipal" in codes
+        # No assertion, no attributes - nothing is asserted about a principal
+        # that does not exist.
+        assert root.findall(".//saml2:Assertion", SAML_NS) == []
+        assert root.findall(".//saml2:Attribute", SAML_NS) == []
 
-        # Should have default attributes
-        assert 'email' in attr_names
-        assert 'identity_class' in attr_names
+    def test_attribute_query_error_response_is_signed_when_signing_is_on(self, client):
+        """#289 review: the error response goes through the SAME signing path
+        as the success response. With saml_sign_responses=true an SP
+        validating signatures would otherwise reject (or worse, special-case)
+        the one response shape nanoidp forgot to sign."""
+        from nanoidp.config import get_config
+
+        config = get_config()
+        original = config.settings.saml_sign_responses
+        config.settings.saml_sign_responses = True
+        try:
+            query = self._create_attribute_query(user_id='unknown_user_xyz')
+            response = client.post('/saml/attribute-query',
+                data=query,
+                content_type='text/xml'
+            )
+            assert response.status_code == 200
+            root = etree.fromstring(response.data)
+            codes = [el.get("Value") for el in root.findall(".//saml2p:StatusCode", SAML_NS)]
+            assert "urn:oasis:names:tc:SAML:2.0:status:UnknownPrincipal" in codes
+            assert root.find(".//ds:Signature", SAML_NS) is not None, (
+                "error response must be signed when saml_sign_responses is on"
+            )
+        finally:
+            config.settings.saml_sign_responses = original
+
+    def test_attribute_query_error_response_unsigned_when_signing_is_off(self, client):
+        """The negative: signing off means no signature on the error path
+        either - the flag drives both response shapes symmetrically."""
+        from nanoidp.config import get_config
+
+        config = get_config()
+        original = config.settings.saml_sign_responses
+        config.settings.saml_sign_responses = False
+        try:
+            query = self._create_attribute_query(user_id='unknown_user_xyz')
+            response = client.post('/saml/attribute-query',
+                data=query,
+                content_type='text/xml'
+            )
+            assert response.status_code == 200
+            root = etree.fromstring(response.data)
+            assert root.find(".//ds:Signature", SAML_NS) is None
+        finally:
+            config.settings.saml_sign_responses = original
 
 
 class TestSAMLSigningConfiguration:
@@ -1446,7 +1499,7 @@ class TestSAMLFlowsComprehensive:
         assert email_value.text == "admin@example.org"
 
     def test_attribute_query_unknown_user(self, client):
-        """Test Attribute Query for unknown user returns default/empty attributes."""
+        """Attribute Query for an unknown user returns a SAML error status (#275)."""
         query = """<?xml version="1.0" encoding="UTF-8"?>
 <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
     <soap:Body>
@@ -1469,8 +1522,13 @@ class TestSAMLFlowsComprehensive:
             content_type='text/xml'
         )
 
-        # Should still return 200 with default attributes
+        # #275: still HTTP 200 (SAML SOAP binding), but a SAML error status
+        # instead of the old fabricated-attributes fallback.
         assert response.status_code == 200
+        root = etree.fromstring(response.data)
+        codes = [el.get("Value") for el in root.findall(".//saml2p:StatusCode", SAML_NS)]
+        assert "urn:oasis:names:tc:SAML:2.0:status:UnknownPrincipal" in codes
+        assert root.findall(".//saml2:Assertion", SAML_NS) == []
 
     def test_attribute_query_requires_subject(self, client):
         """Test that Attribute Query without Subject returns error."""

@@ -506,7 +506,16 @@ _TOOLS: list[Tool] = [
     # Token Operations
     Tool(
         name="generate_token",
-        description="Generate an OAuth2 access token for a user",
+        description=(
+            "Generate an OAuth2 access token for a user. Mints the token "
+            "directly (a testing/simulation affordance, not an OAuth grant): "
+            "scope and resource are stamped as given, with no "
+            "scopes_supported vocabulary check and no per-client "
+            "allowed_scopes/allowed_resources ceiling even when client_id is "
+            "supplied - minting an out-of-ceiling token is how you test a "
+            "resource server's rejection path. The ceilings live on the "
+            "grant endpoints (/authorize, /device_authorization, /token)."
+        ),
         input_schema={
             "type": "object",
             "properties": {
@@ -600,7 +609,13 @@ _TOOLS: list[Tool] = [
     ),
     Tool(
         name="verify_token",
-        description="Verify a JWT token's signature and expiration",
+        description=(
+            "Verify a JWT token's signature and expiration. Simulates a "
+            "STATELESS resource server (the #191 model): it does not check "
+            "revocation or the token_use claim, so a revoked access token or "
+            "an ID Token presented as an access token still reports valid. "
+            "Revocation is /introspect's answer, not this tool's."
+        ),
         input_schema={
             "type": "object",
             "properties": {
@@ -1366,15 +1381,21 @@ def _tool_generate_token(arguments: dict[str, Any], config: ConfigManager) -> di
         user=user,
         exp_minutes=arguments.get("expires_in_minutes", config.settings.token_expiry_minutes),
         extra_claims=arguments.get("extra_claims"),
+        # BOUNDARY (#279): like `resource` below, `scope` is passed through
+        # with no scopes_supported vocabulary check and no allowed_scopes
+        # ceiling, even when client_id is given - this tool mints a token
+        # directly (a testing / simulation affordance, not an OAuth grant),
+        # and an out-of-ceiling scope is exactly what testing a resource
+        # server's rejection path needs. The ceiling lives on the grant
+        # endpoints (resolve_scope at /authorize, /device_authorization and
+        # the /token grants), not on this admin tool.
         scope=arguments.get("scope"),
-        # Client binding (#73): with client_id, the token is bound and a
-        # refresh token is issued (spendable by that client). Without it the
-        # token is unbound and NO refresh token is issued at all - a refresh
-        # token with no client_id binding is refused since 3.0, so handing one
-        # back would be a dead credential. The unbound access token is still
-        # fine for a one-shot test.
+        # Client binding (#73): with client_id the token is bound and a
+        # spendable refresh token follows from the binding inside
+        # create_token itself (#278); unbound -> no refresh token (a refresh
+        # token with no client_id binding is refused since 3.0). The unbound
+        # access token is still fine for a one-shot test.
         client_id=client_id,
-        issue_refresh_token=client_id is not None,
         # _execute_tool is also reachable directly (see tests), bypassing
         # call_tool's input_schema validation; reject a non-list with a
         # clean error here too instead of minting a token whose malformed

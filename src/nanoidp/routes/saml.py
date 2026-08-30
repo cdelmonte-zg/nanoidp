@@ -700,6 +700,36 @@ def sso() -> ResponseReturnValue:
     return _sso_success_response(config, user, username, acs_url, in_response_to, relay_state)
 
 
+def _build_attribute_query_error_response(request_id: str, issuer_url: str) -> str:
+    """A SAML error Response for an AttributeQuery naming an unknown principal.
+
+    Top-level status Requester with subordinate UnknownPrincipal (SAML 2.0
+    Core §3.2.2.2), no assertion. Until #275 an unknown NameID got a SIGNED
+    assertion with fabricated attributes (email `<user>@example.org`-style,
+    default entitlements) - a trap for the SP under test, which would pass
+    with data nanoidp made up about a principal that does not exist.
+    """
+    now = datetime.now(timezone.utc)
+    SAML2_NS = "urn:oasis:names:tc:SAML:2.0:assertion"
+    SAML2P_NS = "urn:oasis:names:tc:SAML:2.0:protocol"
+    response = etree.Element(
+        f"{{{SAML2P_NS}}}Response",
+        nsmap={"saml2p": SAML2P_NS, "saml2": SAML2_NS},
+        ID=f"_{uuid.uuid4().hex}",
+        Version="2.0",
+        IssueInstant=now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        InResponseTo=request_id,
+    )
+    issuer_el = etree.SubElement(response, f"{{{SAML2_NS}}}Issuer")
+    issuer_el.text = issuer_url
+    status = etree.SubElement(response, f"{{{SAML2P_NS}}}Status")
+    status_code = etree.SubElement(status, f"{{{SAML2P_NS}}}StatusCode")
+    status_code.set("Value", "urn:oasis:names:tc:SAML:2.0:status:Requester")
+    sub_code = etree.SubElement(status_code, f"{{{SAML2P_NS}}}StatusCode")
+    sub_code.set("Value", "urn:oasis:names:tc:SAML:2.0:status:UnknownPrincipal")
+    return etree.tostring(response, pretty_print=False).decode("utf-8")
+
+
 def _build_attribute_query_response(
     user_id: str, attributes: dict, request_id: str, issuer_url: str
 ) -> str:
@@ -836,10 +866,19 @@ def attribute_query() -> ResponseReturnValue:
     """
     SAML 2.0 AttributeQuery endpoint (Backend-to-Backend).
 
-    This endpoint implements SAML AttributeQuery for backend-to-backend
-    attribute fetching after JWT authentication. It returns user attributes
-    including core fields (identity_class, entitlements, source_acl) and
-    any custom attributes defined in the user configuration.
+    Returns user attributes - core fields (identity_class, entitlements,
+    source_acl) and any custom attributes from the user configuration - for
+    the NameID in the query.
+
+    UNAUTHENTICATED BY DESIGN (#275): this endpoint verifies nothing about
+    the caller - no signature on the query, no JWT, no secret. That follows
+    the same model as the REST read surfaces (reads are never gated, #163):
+    nanoidp is a testing IdP and its user directory is test data. The flip
+    side is real: on a shared instance, anyone who can reach this endpoint
+    can read any configured user's attributes. Deploy accordingly.
+
+    An unknown NameID gets a SAML error status (Requester/UnknownPrincipal),
+    never a fabricated assertion (#275).
     """
     config = get_config()
 
@@ -913,13 +952,34 @@ def attribute_query() -> ResponseReturnValue:
                     else:
                         attributes[key] = value
         else:
-            # Fallback for unknown users - provide default attributes
-            logger.warning(f"User '{user_id}' not found, using default attributes")
-            attributes = {
-                "email": f"{user_id}@example.com",
-                "identity_class": "INTERNAL",
-                "entitlements": "DOCUMENT_READ",
-            }
+            # Unknown principal (#275): a SAML error status, not a signed
+            # assertion full of invented attributes - the SP under test must
+            # see the miss, not silently pass on data nanoidp made up.
+            logger.warning(f"AttributeQuery for unknown user '{user_id}'")
+            error_xml = _build_attribute_query_error_response(
+                request_id=request_id,
+                issuer_url=effective_saml_entity_id(config.settings),
+            )
+            # Same signing path as the success response (#289 review): with
+            # saml_sign_responses on, an SP validating signatures must never
+            # meet the one response shape nanoidp forgot to sign.
+            error_xml = _sign_attribute_query_response(
+                error_xml, config.settings.saml_sign_responses
+            )
+            audit_event(
+                "saml_attribute_query",
+                "failed",
+                endpoint="/saml/attribute-query",
+                username=user_id,
+                details={"reason": "unknown principal"},
+            )
+            soap_error = f"""<?xml version="1.0" encoding="UTF-8"?>
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+    <soap:Body>
+        {error_xml}
+    </soap:Body>
+</soap:Envelope>"""
+            return Response(soap_error, mimetype="text/xml")
 
         # Build SAML Response
         issuer_url = effective_saml_entity_id(config.settings)

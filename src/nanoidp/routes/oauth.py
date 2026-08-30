@@ -654,6 +654,43 @@ def _token_auth_failed(client_id: Optional[str], reason: str) -> ResponseReturnV
     return jsonify({"error": "invalid_client", "error_description": reason}), 401
 
 
+@dataclass(frozen=True)
+class _ClientIdentity:
+    """The client identity one request presents, resolved uniformly (#277)."""
+
+    auth: Optional[Any]
+    client_id: Optional[str]
+    body_client_secret: Optional[str]
+    # True when HTTP Basic and a body client_id name DIFFERENT clients - one
+    # request claiming two identities. Callers reject it as invalid_client.
+    mismatch: bool
+
+
+def _request_client_identity() -> _ClientIdentity:
+    """Resolve which client this request claims to be, one way for all four
+    client-facing endpoints (#277).
+
+    /token has always resolved body-first and rejected a Basic-vs-body
+    client_id mismatch; /introspect, /revoke and /device_authorization used
+    to resolve header-first and check nothing, so the same request meant
+    different things at different endpoints. The precedence is only
+    observable when the two disagree, and that is now uniformly an error -
+    what remains is one rule: a request names one client, through either
+    channel, and _enforce_registered_client_auth decides how it must prove it.
+    """
+    auth = request.authorization
+    body_client_id = request.form.get("client_id")
+    body_client_secret = request.form.get("client_secret") or None
+    client_id = body_client_id or (auth.username if auth else None)
+    mismatch = bool(auth and body_client_id and auth.username != body_client_id)
+    return _ClientIdentity(
+        auth=auth,
+        client_id=client_id,
+        body_client_secret=body_client_secret,
+        mismatch=mismatch,
+    )
+
+
 def _enforce_token_endpoint_auth(
     config: ConfigManager,
     grant_type: str,
@@ -766,15 +803,13 @@ def token() -> ResponseReturnValue:
     """OAuth2 token endpoint: shared validation, then per-grant dispatch."""
     config = get_config()
 
-    auth = request.authorization
     grant_type = request.form.get("grant_type", "client_credentials")
-    body_client_id = request.form.get("client_id")
     # client_secret_post (RFC 6749 §2.3.1, #188): discovery has always
-    # advertised it; the body secret is now actually validated instead of
-    # silently ignored.
-    body_client_secret = request.form.get("client_secret") or None
-    auth_client_id = auth.username if auth else None
-    client_id = body_client_id or auth_client_id
+    # advertised it; the body secret is validated, not silently ignored.
+    identity = _request_client_identity()
+    auth = identity.auth
+    body_client_secret = identity.body_client_secret
+    client_id = identity.client_id
 
     # Reject if client identity cannot be determined at all
     if not client_id:
@@ -787,13 +822,13 @@ def token() -> ResponseReturnValue:
         return abort(401, description="Client authentication required")
 
     # Reject if body client_id conflicts with the authenticated client in the header
-    if auth and body_client_id and auth.username != body_client_id:
+    if identity.mismatch:
         audit_event(
             "token_request",
             "failed",
             endpoint="/token",
-            client_id=auth.username,
-            details={"reason": "client_id mismatch", "body_client_id": body_client_id},
+            client_id=auth.username if auth else None,
+            details={"reason": "client_id mismatch", "body_client_id": client_id},
         )
         return abort(
             401, description="client_id in request body does not match authenticated client"
@@ -1080,13 +1115,17 @@ def introspect() -> ResponseReturnValue:
     # public clients (RFC 7662 §2.1: this endpoint must resist token scanning,
     # a public client_id is identification not authentication, and 'none' is
     # not in introspection_endpoint_auth_methods_supported).
-    auth = request.authorization
-    body_client_id = request.form.get("client_id")
-    body_client_secret = request.form.get("client_secret") or None
-    client_id = (auth.username if auth else None) or body_client_id
+    identity = _request_client_identity()
+    auth = identity.auth
+    body_client_secret = identity.body_client_secret
+    client_id = identity.client_id
     introspect_client = config.get_client(client_id) if client_id else None
-    if introspect_client is not None and introspect_client.is_public:
-        auth_error: Optional[str] = (
+    if identity.mismatch:
+        # One request, two claimed identities (#277) - same rejection as
+        # /token, where this check has always lived.
+        auth_error: Optional[str] = "client_id in request body does not match Basic username"
+    elif introspect_client is not None and introspect_client.is_public:
+        auth_error = (
             "public clients cannot authenticate to the introspection endpoint "
             "(RFC 7662 §2.1)"
         )
@@ -1191,17 +1230,23 @@ def revoke() -> ResponseReturnValue:
     # (token_endpoint_auth_method 'none', #188) is identified by client_id
     # alone, and the ownership check below is what stands in for
     # authentication (RFC 7009 §2.1).
-    auth = request.authorization
-    body_client_id = request.form.get("client_id")
-    body_client_secret = request.form.get("client_secret") or None
-    client_id = (auth.username if auth else None) or body_client_id
+    identity = _request_client_identity()
+    auth = identity.auth
+    body_client_secret = identity.body_client_secret
+    client_id = identity.client_id
     revoking_client = config.get_client(client_id) if client_id else None
     is_public = revoking_client is not None and revoking_client.is_public
 
     # A confidential client authenticates as at the token endpoint (#262):
     # registered method enforced, two auth methods in one request rejected.
-    if not is_public:
-        auth_error = _enforce_registered_client_auth(config, client_id, auth, body_client_secret)
+    # A mismatch between Basic and a body client_id is one request claiming
+    # two identities (#277) - rejected for public and confidential alike.
+    if identity.mismatch or not is_public:
+        auth_error = (
+            "client_id in request body does not match Basic username"
+            if identity.mismatch
+            else _enforce_registered_client_auth(config, client_id, auth, body_client_secret)
+        )
         if auth_error is not None:
             audit_event(
                 "revocation_request",
@@ -1369,18 +1414,22 @@ def device_authorization() -> ResponseReturnValue:
     # issued device_code is bound to that client_id and only it can poll for
     # the token, which is what stands in for client authentication here (the
     # same shape as /revoke's public relaxation).
-    auth = request.authorization
-    body_client_id = request.form.get("client_id")
-    body_client_secret = request.form.get("client_secret") or None
-    resolved_client_id = (auth.username if auth else None) or body_client_id
+    identity = _request_client_identity()
+    auth = identity.auth
+    body_client_secret = identity.body_client_secret
+    resolved_client_id = identity.client_id
     device_client = config.get_client(resolved_client_id) if resolved_client_id else None
-    if device_client is not None and device_client.is_public:
+    if identity.mismatch:
+        # One request, two claimed identities (#277) - same rejection as
+        # /token, for public and confidential clients alike.
+        auth_error: Optional[str] = "client_id in request body does not match Basic username"
+    elif device_client is not None and device_client.is_public:
         # RFC 8628 §3.1: a public client provides its client_id as a parameter,
         # not via HTTP Basic or a client_secret. The client_id is public, so
         # this is about using the right channel (as /token enforces the
         # registered method), not secrecy - presenting either is rejected.
         if auth is not None or body_client_secret is not None:
-            auth_error: Optional[str] = (
+            auth_error = (
                 "a public client presents its client_id as a parameter, without "
                 "HTTP Basic or a client_secret (RFC 8628 §3.1)"
             )

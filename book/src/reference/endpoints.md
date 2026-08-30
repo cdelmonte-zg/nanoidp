@@ -30,10 +30,17 @@ in the tokens - see [Tokens and claims](tokens.md#where-do-the-email--profile-cl
 | `GET /saml/metadata` | IdP Metadata |
 | `GET /saml/cert.pem` | IdP signing certificate (PEM) |
 | `GET/POST /saml/sso` | Single Sign-On (supports both HTTP-POST and HTTP-Redirect bindings) |
-| `POST /saml/attribute-query` | Attribute Query |
+| `POST /saml/attribute-query` | Attribute Query (SOAP, backend-to-backend) |
 
 Bindings, strict-binding mode, response signing, and canonicalization are
 covered in [SAML options](saml.md).
+
+`/saml/attribute-query` is **unauthenticated by design** - the same model as
+the REST read surfaces (reads are never gated): nanoidp is a testing IdP and
+its user directory is test data. On a shared instance, anyone who can reach
+the endpoint can read any configured user's attributes; deploy accordingly.
+An unknown NameID gets a SAML error status (`Requester`/`UnknownPrincipal`),
+never a fabricated assertion.
 
 ## REST API
 

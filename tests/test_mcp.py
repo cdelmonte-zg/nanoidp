@@ -9,6 +9,7 @@ Tests cover:
 
 import json
 
+import jwt as pyjwt
 import pytest
 
 
@@ -1154,3 +1155,58 @@ class TestGenerateTokenClaims:
         )
         assert result["success"] is False
         assert "does-not-exist" in result["error"]
+
+
+class TestSimulationBoundary:
+    """#279: generate_token and verify_token deliberately diverge from the
+    grant endpoints - they simulate, they do not enforce. These pins keep the
+    exemptions EXPLICIT: if one starts enforcing, the boundary documented in
+    the tool descriptions changed and docs/tests must move together."""
+
+    async def _generate(self, arguments):
+        from nanoidp.config import get_config
+        from nanoidp.mcp_server import _execute_tool
+
+        result = await _execute_tool("generate_token", arguments, get_config())
+        assert result["success"] is True, result
+        return result
+
+    @pytest.mark.asyncio
+    async def test_generate_token_scope_has_no_ceiling_even_with_client_id(self, app):
+        """scoped-client's allowed_scopes is [openid, profile] and
+        'custom:everything' is outside the vocabulary too - the grant
+        endpoints reject both, this tool stamps them as asked (minting an
+        out-of-ceiling token is how a resource server's rejection path gets
+        tested)."""
+        result = await self._generate(
+            {
+                "username": "admin",
+                "client_id": "scoped-client",
+                "scope": "email custom:everything",
+            }
+        )
+        payload = pyjwt.decode(result["access_token"], options={"verify_signature": False})
+        assert payload["scope"] == "email custom:everything"
+
+    @pytest.mark.asyncio
+    async def test_verify_token_ignores_revocation_like_a_stateless_rs(self, app, client, auth_header):
+        """verify_token simulates a JWKS-validating resource server (the #191
+        model): revocation is /introspect's answer. A revoked token still
+        verifies here and introspects as inactive there."""
+        from nanoidp.config import get_config
+        from nanoidp.mcp_server import _execute_tool
+        from nanoidp.services.revocation import get_revocation_store
+
+        minted = await self._generate({"username": "admin", "scope": "openid"})
+        token = minted["access_token"]
+        jti = pyjwt.decode(token, options={"verify_signature": False})["jti"]
+        get_revocation_store().revoke(jti)
+        try:
+            verified = await _execute_tool("verify_token", {"token": token}, get_config())
+            assert verified["valid"] is True
+
+            resp = client.post("/introspect", data={"token": token}, headers=auth_header)
+            assert resp.status_code == 200
+            assert json.loads(resp.data)["active"] is False
+        finally:
+            get_revocation_store().clear()

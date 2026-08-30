@@ -126,9 +126,11 @@ class TestTokenServiceFlag:
         assert "refresh_token" not in result
         assert "access_token" in result
 
-    def test_flag_defaults_to_true(self, app, user):
+    def test_flag_defaults_to_issuing_for_a_bound_token(self, app, user):
+        """#278: the default follows the binding - a bound token gets a
+        refresh token without the caller asking, an unbound one gets none."""
         with app.app_context():
-            result = get_token_service().create_token(user)
+            result = get_token_service().create_token(user, client_id="demo-client")
 
         payload = pyjwt.decode(result["refresh_token"], options={"verify_signature": False})
         assert payload["token_use"] == "refresh"

@@ -65,6 +65,43 @@ previous leniency allowed - needs a one-time adjustment.
   `client_id` binds the token, and it no longer returns a `refresh_token` when
   unbound - so all three token minters (a grant, the MCP tool, this endpoint)
   agree.
+- **One request, one client identity** (#277). `/introspect`, `/revoke` and
+  `/device_authorization` now resolve the requesting client exactly as
+  `/token` always has: HTTP Basic naming client A plus `client_id=B` in the
+  body is one request claiming two identities and is rejected with
+  `invalid_client` (previously the Basic username silently won and the body
+  value was ignored). *Migration:* drop the contradictory body `client_id`,
+  or make it match the authenticated client.
+- **The `device_code` grant re-validates the stored scope at redemption**
+  (#276): a scope removed from the client's `allowed_scopes` (or from
+  `scopes_supported`) between `/device_authorization` and the poll now fails
+  the poll with `invalid_scope`, exactly as the `authorization_code` and
+  `refresh_token` grants already re-check theirs. Previously the stale scope
+  was still minted.
+- **`/saml/attribute-query` answers an unknown NameID with a SAML error
+  status** (#275): top-level `Requester` with subordinate `UnknownPrincipal`,
+  no assertion. Previously an unknown user got a **signed assertion with
+  fabricated attributes** (`<user>@example.com`, `identity_class: INTERNAL`,
+  `entitlements: DOCUMENT_READ`) - an SP under test would pass with data
+  nanoidp invented. The endpoint's docs now also state plainly that it is
+  unauthenticated by design (the same read model as the REST API, #163):
+  it previously claimed "after JWT authentication", which the code never did.
+
+### Changed
+- `TokenService.create_token` now owns the #73 mint-side rule (#278):
+  `issue_refresh_token` defaults to "only when the token is bound"
+  (`client_id` given), and asking for a refresh token without a binding
+  raises instead of minting a credential `/token` would reject. The three
+  minting surfaces (grants, MCP `generate_token`,
+  `POST /api/users/<username>/token`) behave as before; the rule just lives
+  in one place.
+- The MCP `generate_token` and `verify_token` tool descriptions now document
+  their simulation boundary (#279): `generate_token` stamps `scope` and
+  `resource` as given with no vocabulary check and no per-client ceiling
+  (minting an out-of-ceiling token is how a resource server's rejection path
+  gets tested), and `verify_token` checks signature/expiry like a stateless
+  resource server - revocation is `/introspect`'s answer. Behavior is
+  unchanged; both exemptions are now pinned by tests.
 
 ### Added
 - **Horizontal `/authorize` login card composition** (#249). New per-client
