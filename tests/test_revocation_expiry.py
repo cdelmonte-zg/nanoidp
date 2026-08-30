@@ -156,3 +156,41 @@ class TestReviewRound1Blockers:
         assert store.is_revoked("jti-twice"), (
             "the 1-hour revocation must survive a later 60-second re-revoke"
         )
+
+
+class TestReviewRound2TrustedNoExp:
+    """#293 review round 2: verify_jwt does not require the exp claim, so a
+    SIGNED token without exp verifies - and such a token never expires. Its
+    revocation (or refresh consumption) must never be forgotten; None from a
+    verified payload means 'no expiry', not 'use the default'."""
+
+    def test_verified_no_exp_revocation_is_indefinite(self, store, monkeypatch):
+        store.revoke("jti-eternal", expires_at=None)
+
+        _advance(monkeypatch, 9 * 24 * 3600)
+        store.revoke("trigger-sweep")
+        assert store.is_revoked("jti-eternal"), (
+            "a verified token without exp never expires - its revocation "
+            "must survive any sweep"
+        )
+
+        _advance(monkeypatch, 10 * 365 * 24 * 3600)
+        store.revoke("trigger-sweep-2")
+        assert store.is_revoked("jti-eternal")
+
+    def test_verified_no_exp_refresh_claim_is_indefinite(self, store, monkeypatch):
+        assert store.check_and_claim_refresh("rt-eternal", "fam-e", True, expires_at=None) is False
+
+        _advance(monkeypatch, 9 * 24 * 3600)
+        store.revoke("trigger-sweep")
+        assert (
+            store.check_and_claim_refresh("rt-eternal", "fam-e", True, expires_at=None) is True
+        ), "a consumed no-exp refresh token must stay consumed forever"
+
+    def test_trusted_exp_is_normalized_to_a_number(self, store):
+        """PyJWT can hand back an exp it merely coerced for its own check;
+        the store normalizes at the boundary so retention math never
+        compares mixed types."""
+        store.revoke("jti-strexp", expires_at="4102444800")
+        assert isinstance(store._revoked_tokens["jti-strexp"], float)
+        assert store._revoked_tokens["jti-strexp"] == 4102444800.0

@@ -17,15 +17,19 @@ it names expires - after ``exp`` the signature check rejects it anyway - so
 every entry carries an expiry and the store sweeps opportunistically on the
 mutating paths (which already serialize under the lock). Before this, both
 sets grew without bound: every revocation and every rotation on a long-lived
-instance was a permanent memory increment. A VERIFIED exp is kept exactly
-(tokens minted via /api or MCP can legitimately outlive any fixed bound);
-callers holding only unverified claims pass no exp at all; and writes are
-monotonic - re-revoking never shortens retention (#293 review round 1).
+instance was a permanent memory increment. The expiry follows a three-state
+trust contract (#293 review rounds 1+2, spelled out on RevocationStore): a
+VERIFIED exp is kept exactly (tokens minted via /api or MCP can outlive any
+fixed bound); a verified payload WITHOUT exp - which verify_jwt accepts -
+gets indefinite retention, because a token that never expires can never
+have its revocation forgotten; callers holding only unverified claims pass
+nothing and get the bounded default. Writes are monotonic - re-revoking
+never shortens retention.
 """
 
 import threading
 import time
-from typing import Dict, Optional
+from typing import Dict, Optional, Union
 
 # The retention when the caller cannot supply a TRUSTED exp: covers the
 # 7-day refresh JWT (services/token.py mints refresh tokens with a fixed
@@ -37,16 +41,37 @@ from typing import Dict, Optional
 _DEFAULT_RETENTION_SECONDS = 8 * 24 * 3600
 
 
+class _Unset:
+    """Sentinel type: the caller has NO trusted expiry to offer (an
+    unverified payload, or no payload at all). Distinct from None, which a
+    verified caller passes when its payload genuinely carries no exp claim
+    (#293 review round 2): verify_jwt does not require exp, so a signed
+    token without one verifies - and such a token NEVER expires, meaning
+    its revocation can never be forgotten either."""
+
+
+_UNSET = _Unset()
+
+_ExpiresAt = Union[float, None, _Unset]
+
+
 class RevocationStore:
     """Revoked token ids (jti or token hash) and revoked rotation families,
     each remembered until its expiry.
 
-    TRUST CONTRACT: ``expires_at`` must come from a VERIFIED payload's
-    ``exp`` (crypto.verify_jwt), and is then kept exactly - however long.
-    A caller holding only unverified claims (e.g. /logout's id_token_hint)
-    passes None and gets the bounded default; the trust decision lives at
-    the call site, not in a store-side cap that would break trusted long
-    expiries.
+    TRUST CONTRACT, three states (#293 review rounds 1+2):
+
+    - ``expires_at`` OMITTED (the ``_UNSET`` default): the caller has no
+      trusted expiry - an unverified payload (/logout's id_token_hint) or
+      none at all. Bounded default retention.
+    - ``expires_at=None`` from a VERIFIED payload: the token carries no exp
+      claim, which verify_jwt accepts - it never expires, so the entry gets
+      INDEFINITE retention (never swept). This is the pre-#288 behavior for
+      exactly the tokens where forgetting would be wrong.
+    - ``expires_at=<number>`` from a VERIFIED payload: kept exactly,
+      however long (no cap - /api and MCP mint arbitrary lifetimes).
+
+    The trust decision lives at the call site, never in a store-side cap.
     """
 
     def __init__(self) -> None:
@@ -55,15 +80,24 @@ class RevocationStore:
         self._lock = threading.Lock()
 
     @staticmethod
-    def _effective_expiry(expires_at: Optional[float]) -> float:
-        """The verified exp when the caller has one, kept exactly; the
-        bounded default otherwise. A past exp still earns a short memory so
-        a just-revoked, just-expired token cannot flicker back before the
-        caller's own exp check catches it."""
+    def _effective_expiry(expires_at: _ExpiresAt) -> float:
+        """Resolve the three-state contract (see the class docstring). A
+        past numeric exp still earns a short memory so a just-revoked,
+        just-expired token cannot flicker back before the caller's own exp
+        check catches it. A trusted exp is normalized to float at this
+        boundary (PyJWT can hand back a value it merely coerced for its own
+        check); a trusted exp that does not coerce fails SAFE, toward
+        indefinite retention - never toward forgetting a revocation."""
         now = time.time()
-        if expires_at is None:
+        if isinstance(expires_at, _Unset):
             return now + _DEFAULT_RETENTION_SECONDS
-        return max(expires_at, now + 60)
+        if expires_at is None:
+            return float("inf")
+        try:
+            numeric = float(expires_at)
+        except (TypeError, ValueError):
+            return float("inf")
+        return max(numeric, now + 60)
 
     def _sweep_locked(self) -> None:
         """Drop expired entries; caller holds the lock."""
@@ -73,10 +107,11 @@ class RevocationStore:
             for key in expired:
                 del entries[key]
 
-    def revoke(self, token_id: str, expires_at: Optional[float] = None) -> None:
-        """Mark a single token id (jti or fallback hash) as revoked until
-        ``expires_at`` (a VERIFIED payload's ``exp``, kept exactly; bounded
-        default when the caller has none - see the class trust contract).
+    def revoke(self, token_id: str, expires_at: _ExpiresAt = _UNSET) -> None:
+        """Mark a single token id (jti or fallback hash) as revoked per the
+        three-state trust contract on the class: omitted = bounded default;
+        None from a verified payload = the token never expires, indefinite
+        retention; a number from a verified payload = kept exactly.
 
         Monotonic: re-revoking an id can only EXTEND its retention, never
         shorten it - the old set.add() was naturally idempotent, and a plain
@@ -103,16 +138,19 @@ class RevocationStore:
         jti: Optional[str],
         family: Optional[str],
         rotate: bool,
-        expires_at: Optional[float] = None,
+        expires_at: _ExpiresAt = _UNSET,
     ) -> bool:
         """Atomic revocation check and (with rotation) consumption of a
         refresh token. Returns True when reuse was detected.
 
-        ``expires_at`` is the presented refresh token's ``exp``: the claimed
-        jti needs remembering exactly that long. A family marker set on reuse
-        detection gets the retention bound instead - descendants minted
-        before detection can outlive the presented ancestor, and the bound
-        covers the longest-lived possible descendant.
+        ``expires_at`` is the presented refresh token's verified ``exp``
+        (three-state contract, see the class docstring): the claimed jti
+        needs remembering exactly that long - indefinitely for a verified
+        token without exp, which never stops being presentable. A family
+        marker set on reuse detection gets the retention bound when the
+        presented ancestor carries an exp (every nanoidp-minted descendant
+        lives at most 7 more days), and indefinite retention when it does
+        not (its descendants may be equally undying).
 
         Must be the LAST validation in the refresh grant: from the moment it
         claims the jti, a rejected request would have consumed the token
@@ -124,7 +162,12 @@ class RevocationStore:
             token_revoked = jti in self._revoked_tokens
             if token_revoked or family_revoked:
                 if rotate and family and not family_revoked:
-                    self._revoked_families[family] = self._effective_expiry(None)
+                    family_retention = (
+                        float("inf") if expires_at is None else _UNSET
+                    )
+                    self._revoked_families[family] = self._effective_expiry(
+                        family_retention
+                    )
                 return True
             if rotate and jti:
                 self._revoked_tokens[jti] = self._effective_expiry(expires_at)

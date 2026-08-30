@@ -288,10 +288,12 @@ previous leniency allowed - needs a one-time adjustment.
   opportunistically on the mutating paths. A VERIFIED token's own `exp` is
   kept exactly - tokens minted via `/api/users/<u>/token` or MCP
   `generate_token` take arbitrary lifetimes, so no fixed cap is safe for
-  them; callers holding only unverified claims (the `/logout`
-  id_token_hint) pass no exp at all and get a bounded 8-day default; and
-  writes are monotonic, so re-revoking a jti can only extend its
-  retention, never shorten it.
+  them; a verified payload WITHOUT an `exp` claim (which `verify_jwt`
+  accepts) gets indefinite retention, since a token that never expires can
+  never have its revocation forgotten; callers holding only unverified
+  claims (the `/logout` id_token_hint) pass nothing and get a bounded
+  8-day default; and writes are monotonic, so re-revoking a jti can only
+  extend its retention, never shorten it.
 - **MCP `update_user` can now update custom `attributes`** (#280): the field
   was accepted by `create_user` and returned by every read surface, but the
   `update_user` schema and handler silently lacked it - an agent could set

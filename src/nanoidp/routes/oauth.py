@@ -1300,7 +1300,9 @@ def revoke() -> ResponseReturnValue:
     # edge token is not logged as revoked (#254 review, finding 3).
     if jti:
         # The payload is verified, so its exp is the exact horizon the
-        # revocation needs remembering (#288).
+        # revocation needs remembering (#288) - and a verified payload
+        # WITHOUT exp names a token that never expires, which the store
+        # remembers indefinitely (three-state contract, #293 round 2).
         get_revocation_store().revoke(jti, expires_at=payload.get("exp"))
         logger.info(f"Token revoked: {jti[:8]}...")
         audit_event(
