@@ -653,8 +653,16 @@ def _basic_attempted() -> bool:
     no-attempt - answering 400 with no challenge where RFC 6749 §5.2's
     401 + WWW-Authenticate MUST covers the attempt. The parsed object
     stays the only source of username/password.
+
+    The SCHEME is compared for equality, not by prefix (#313 review):
+    "BasicFoo xyz" is a different scheme, not a Basic attempt. A bare
+    "Basic" with no credentials still counts - the scheme was named.
     """
-    return request.headers.get("Authorization", "").lstrip().lower().startswith("basic")
+    raw = request.headers.get("Authorization", "").lstrip()
+    if not raw:
+        return False
+    scheme = raw.split(maxsplit=1)[0]
+    return scheme.casefold() == "basic"
 
 
 def _token_auth_failed(

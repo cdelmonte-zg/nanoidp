@@ -398,6 +398,29 @@ class TestBrokenBasicHeaderIsStillAnAttempt:
         assert resp.get_json()["error"] == "invalid_client"
         assert resp.headers.get("WWW-Authenticate", "").startswith("Basic")
 
+    def test_basicfoo_scheme_is_not_a_basic_attempt(self, client):
+        """#313 review: the scheme is compared for EQUALITY, not by prefix -
+        'BasicFoo' is a different scheme."""
+        resp = client.post(
+            "/token",
+            data={"grant_type": "client_credentials"},
+            headers={"Authorization": "BasicFoo whatever"},
+        )
+        assert resp.status_code == 400
+        assert resp.get_json()["error"] == "invalid_client"
+        assert "WWW-Authenticate" not in resp.headers
+
+    def test_bare_basic_scheme_alone_is_an_attempt(self, client):
+        """'Authorization: Basic' with no credentials named the scheme:
+        still an attempt - 401 + challenge."""
+        resp = client.post(
+            "/token",
+            data={"grant_type": "client_credentials"},
+            headers={"Authorization": "Basic"},
+        )
+        assert resp.status_code == 401
+        assert resp.headers.get("WWW-Authenticate", "").startswith("Basic")
+
     def test_bearer_header_is_not_a_basic_attempt(self, client):
         """A different scheme is not a Basic attempt: no Basic challenge,
         400 per the §5.2 default."""
