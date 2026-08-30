@@ -88,6 +88,18 @@ previous leniency allowed - needs a one-time adjustment.
   it previously claimed "after JWT authentication", which the code never did.
 
 ### Changed
+- **`/saml/attribute-query` transport errors are SOAP 1.1 Faults** (#287):
+  a malformed query (missing AttributeQuery/Subject/NameID) or an internal
+  failure now answers with a proper `soap:Fault` (HTTP 500, `faultcode`
+  Client/Server per SOAP 1.1 §6.2) instead of bare plain text with a 400 -
+  a shape no SOAP stack could parse. Protocol-level conditions (unknown
+  principal) keep answering inside the SAML Response as before.
+- **The dead exception hierarchy is gone** (#287): `exceptions.py` declared
+  20 classes of which exactly one was ever raised; only `SAMLSignatureError`
+  remains (now a plain `Exception` subclass). Errors are shaped per surface
+  - the model is written down in CONTRIBUTING ("Error surfaces"), including
+  the deliberate two-layer MCP contract (dispatch refusals vs domain
+  results), now documented where the shapes are defined.
 - `TokenService.create_token` now owns the #73 mint-side rule (#278):
   `issue_refresh_token` defaults to "only when the token is bound"
   (`client_id` given), and asking for a refresh token without a binding

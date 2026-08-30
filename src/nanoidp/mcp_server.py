@@ -1206,6 +1206,27 @@ def _reject(name: str, code: str, message: str) -> CallToolResult:
     missing/invalid admin secret, unknown tool, bad arguments), which had
     drifted from each other - e.g. the admin-secret audit entry used to omit
     `tool`.
+
+    THE MCP ERROR MODEL IS TWO DELIBERATE LAYERS (#287), not one shape:
+
+    - DISPATCH refusals (this function): the call never reached a tool -
+      ``{"error", "code", "tool"}`` with ``is_error=True``. The ``code``
+      taxonomy (MCP_READONLY_MODE, MCP_ADMIN_SECRET_REQUIRED, MCP_UNKNOWN_TOOL,
+      MCP_INVALID_ARGUMENTS, MCP_INTERNAL_ERROR) is transport-level.
+    - DOMAIN results (the handlers): the tool ran and answered -
+      ``{"success": False, "error", ...}`` (plus ``kind`` where a typed
+      condition exists: conflict, hook policy). These DO come back with
+      ``is_error=True`` as well: call_tool flags
+      ``result.get("success") is False or "error" in result`` (the
+      module-docstring isError contract). The "an answer, not an error"
+      cases are the NEGATIVE QUERIES - ``found: False`` (get_user/
+      get_client miss) and ``valid: False`` (verify_token) - which carry
+      no ``success``/``error`` key and stay ``is_error=False``.
+
+    Collapsing the two SHAPES into one would break every MCP consumer for
+    a cosmetic gain; what matters is that each layer has exactly one
+    shape, which this function, the handlers' conventions and the
+    module-docstring table keep true. See CONTRIBUTING, "Error surfaces".
     """
     _log_mcp_tool(name, success=False, details={"error": code, "tool": name})
     return _text_result({"error": message, "code": code, "tool": name}, is_error=True)

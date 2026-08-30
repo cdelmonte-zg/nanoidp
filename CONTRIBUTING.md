@@ -137,6 +137,35 @@ constraint comments teach the next contributor a wrong module graph. The one
 real import constraint is the `serialization` contract above; everything
 else imports normally at module top.
 
+### Error surfaces (#287)
+
+Each surface class has ONE error shape; a new endpoint or tool uses its
+class's shape, never invents a seventh:
+
+- **OAuth/OIDC protocol endpoints**: RFC 6749 §5.2 JSON
+  (`error`/`error_description`), except `/authorize` errors after
+  `redirect_uri` validation, which redirect with `error`, `state` and `iss`
+  (RFC 6749 §4.1.2.1, RFC 9207). Never HTML, never bare text.
+- **Browser/UI pages**: `flash(message, "error")` + redirect; conflict and
+  hook conditions render their message through the shared helpers.
+- **SAML**: protocol-level failures answer IN the protocol - a SAML `Status`
+  (e.g. `Requester`/`UnknownPrincipal`) inside a Response; transport-level
+  failures on the SOAP endpoint answer with a SOAP 1.1 Fault (HTTP 500,
+  `faultcode` Client/Server per SOAP 1.1 §6.2). Browser-facing SSO steps may
+  use Werkzeug `abort()` HTML, since the reader is a person mid-redirect.
+- **MCP**: two deliberate SHAPES - dispatch refusals
+  (`{"error", "code", "tool"}`, the `MCP_*` code taxonomy) vs domain
+  results (`{"success": False, "error", ...}` plus `kind` for typed
+  conditions). Both come back `is_error=True` (call_tool flags
+  `success is False or "error" in result`); what stays `is_error=False`
+  are the NEGATIVE QUERIES - `found: False`, `valid: False` - because a
+  miss is an answer, not a failed call. The full table lives in the
+  `mcp_server` module docstring; the layer contract on `_reject`.
+
+Typed exceptions are not the error channel: `exceptions.py` deliberately
+holds only what is actually raised (`SAMLSignatureError`); a taxonomy
+nothing raises is documentation that lies.
+
 ## Code Style
 
 - Follow PEP 8 (enforced by Black and Ruff)

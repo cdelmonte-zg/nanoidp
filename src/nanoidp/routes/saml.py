@@ -861,6 +861,28 @@ def _sign_attribute_query_response(response_xml: str, sign: bool = True) -> str:
         return response_xml
 
 
+def _soap_fault(message: str, *, client_fault: bool = True) -> "ResponseReturnValue":
+    """A SOAP 1.1 Fault for the attribute-query endpoint (#287).
+
+    SOAP 1.1 §6.2: a SOAP error MUST be issued as HTTP 500, with faultcode
+    Client vs Server saying whose fault it is - the previous bare
+    ``return "text", 400`` answered a SOAP caller in a shape no SOAP stack
+    parses. Message content stays operator-facing plain text inside
+    faultstring.
+    """
+    code = "soap:Client" if client_fault else "soap:Server"
+    body = f"""<?xml version="1.0" encoding="UTF-8"?>
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+    <soap:Body>
+        <soap:Fault>
+            <faultcode>{code}</faultcode>
+            <faultstring>{message}</faultstring>
+        </soap:Fault>
+    </soap:Body>
+</soap:Envelope>"""
+    return Response(body, status=500, mimetype="text/xml")
+
+
 @saml_bp.route("/attribute-query", methods=["POST"])
 def attribute_query() -> ResponseReturnValue:
     """
@@ -883,9 +905,16 @@ def attribute_query() -> ResponseReturnValue:
     config = get_config()
 
     try:
-        # Parse SOAP request body (using defusedxml to prevent XXE attacks)
+        # Parse SOAP request body (using defusedxml to prevent XXE attacks).
+        # Syntactically broken XML is the CLIENT's fault (#295 review): catch
+        # it here rather than letting it fall to the catch-all, which answers
+        # soap:Server for nanoidp-side failures.
         soap_body = request.data
-        root = secure_fromstring(soap_body)
+        try:
+            root = secure_fromstring(soap_body)
+        except Exception as parse_error:
+            logger.warning(f"AttributeQuery request is not well-formed XML: {parse_error}")
+            return _soap_fault("Request body is not well-formed XML")
 
         # SAML namespaces
         namespaces = {
@@ -898,18 +927,18 @@ def attribute_query() -> ResponseReturnValue:
         attr_query = root.find(".//saml2p:AttributeQuery", namespaces)
         if attr_query is None:
             logger.warning("Invalid AttributeQuery: AttributeQuery element not found")
-            return "Invalid AttributeQuery: AttributeQuery element not found", 400
+            return _soap_fault("Invalid AttributeQuery: AttributeQuery element not found")
 
         # Extract Subject/NameID (user identifier)
         subject = attr_query.find(".//saml2:Subject", namespaces)
         if subject is None:
             logger.warning("Invalid AttributeQuery: Subject not found")
-            return "Invalid AttributeQuery: Subject not found", 400
+            return _soap_fault("Invalid AttributeQuery: Subject not found")
 
         name_id_el = subject.find(".//saml2:NameID", namespaces)
         if name_id_el is None:
             logger.warning("Invalid AttributeQuery: NameID not found")
-            return "Invalid AttributeQuery: NameID not found", 400
+            return _soap_fault("Invalid AttributeQuery: NameID not found")
 
         user_id = name_id_el.text
         request_id = attr_query.get("ID", "_unknown")
@@ -1018,10 +1047,7 @@ def attribute_query() -> ResponseReturnValue:
         return Response(soap_response, mimetype="text/xml")
 
     except Exception as e:
-        logger.error(f"AttributeQuery error: {e}")
-        import traceback
-
-        traceback.print_exc()
+        logger.exception(f"AttributeQuery error: {e}")
 
         audit_event(
             "saml_attribute_query",
@@ -1030,4 +1056,4 @@ def attribute_query() -> ResponseReturnValue:
             details={"error": str(e)},
         )
 
-        return "AttributeQuery failed", 500
+        return _soap_fault("AttributeQuery failed", client_fault=False)
