@@ -143,10 +143,25 @@ previous leniency allowed - needs a one-time adjustment.
   newly required.
 - **An unverifiable refresh token now answers RFC 6749 §5.2 JSON**
   (`invalid_grant`, HTTP 400) instead of a Werkzeug 401 HTML page, per
-  the "Error surfaces" rule (#287). Other /token error branches still
-  answer Werkzeug HTML; converting them is tracked separately.
-  *Migration:* read `error` from the JSON body; the status moves from 401
-  to 400.
+  the "Error surfaces" rule (#287).
+- **Every `/token` error branch now answers RFC 6749 §5.2 JSON** (#308):
+  roughly twenty conditions across the endpoint shell and all five grant
+  handlers used to answer Werkzeug HTML via `abort()`. Now: missing or
+  malformed parameters are `invalid_request` (400); a bad, expired,
+  revoked or foreign code/refresh-token - and invalid resource-owner
+  credentials on the password grant - are `invalid_grant` (400); an
+  unknown or profile-disabled grant type is `unsupported_grant_type`
+  (400); client-authentication failures are `invalid_client` - 401 with
+  the `WWW-Authenticate: Basic` challenge when the client attempted HTTP
+  Basic (the §5.2 MUST), 400 otherwise (§5.2's default; RFC 9110 §11.6.1
+  forbids a challenge-less 401, and a Basic challenge would be wrong for
+  a `client_secret_post` client anyway). Descriptions are fixed text (no library
+  detail and no reflected caller input - the unsupported grant type's raw
+  value lives in the audit event, not the response). *Migration:* branches that used to answer 401 for GRANT problems
+  (revoked/foreign refresh token, unknown user, wrong password) now
+  answer 400 with `error: invalid_grant` - §5.2 reserves 401 for client
+  authentication; read `error` from the JSON body instead of matching
+  HTML.
 
 ### Added
 - **Access-point parity contract for token issuance** (#283,

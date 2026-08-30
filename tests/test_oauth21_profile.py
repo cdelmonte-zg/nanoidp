@@ -108,7 +108,9 @@ class TestTokenEndpoint:
             },
         )
         assert response.status_code == 400
-        assert b"disabled by the oauth21 profile" in response.data
+        body = response.get_json()
+        assert body["error"] == "unsupported_grant_type"
+        assert "disabled by the oauth21 profile" in body["error_description"]
 
     def test_client_credentials_still_works_under_oauth21(self, client, oauth21):
         response = client.post(

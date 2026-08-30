@@ -60,7 +60,10 @@ class TestInvalidClientError:
             'grant_type': 'client_credentials'
         })
 
-        assert response.status_code == 401
+        # 400 since #310: no Authorization header attempted, and RFC 9110
+        # forbids a challenge-less 401.
+        assert response.status_code == 400
+        assert response.get_json()["error"] == "invalid_client"
 
     def test_wrong_client_secret_returns_error(self, client):
         """Test that wrong client secret returns error."""

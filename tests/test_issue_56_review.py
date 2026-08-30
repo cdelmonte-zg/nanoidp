@@ -50,8 +50,11 @@ class TestRefreshTokenClientBinding:
     ):
         tokens = _password_grant(client, auth_header)  # issued to demo-client
         resp = _refresh(client, test_auth_header, tokens["refresh_token"])
-        assert resp.status_code == 401
-        assert b"not issued to this client" in resp.data
+        # invalid_grant JSON since #308 (was a 401 HTML abort): §5.2 keeps
+        # 401 for client authentication, not grant validity.
+        assert resp.status_code == 400
+        assert resp.get_json()["error"] == "invalid_grant"
+        assert "not issued to this client" in resp.get_json()["error_description"]
 
     def test_issuing_client_can_refresh_and_aud_is_preserved(self, client, auth_header):
         import jwt as pyjwt
@@ -202,7 +205,7 @@ class TestAtomicRotationAndFamilies:
             f"{statuses.count(200)} concurrent refreshes rotated the same token; "
             "atomic consumption requires exactly 1"
         )
-        assert statuses.count(401) == n - 1
+        assert statuses.count(400) == n - 1  # invalid_grant (#308)
 
     def test_reuse_revokes_the_whole_family(self, client, auth_header):
         """RFC 9700 §4.14.2: reusing a consumed token must also kill the
@@ -212,10 +215,10 @@ class TestAtomicRotationAndFamilies:
 
         rotated = json.loads(_refresh(client, auth_header, old).data)["refresh_token"]
 
-        # Attacker replays the consumed token...
-        assert _refresh(client, auth_header, old).status_code == 401
+        # Attacker replays the consumed token... (invalid_grant 400, #308)
+        assert _refresh(client, auth_header, old).status_code == 400
         # ...and the live descendant is now dead too.
-        assert _refresh(client, auth_header, rotated).status_code == 401
+        assert _refresh(client, auth_header, rotated).status_code == 400
 
     def test_separate_grants_are_separate_families(self, client, auth_header):
         """Reuse in one family must not affect tokens from other grants."""
@@ -223,7 +226,7 @@ class TestAtomicRotationAndFamilies:
         family_b = _password_grant(client, auth_header)["refresh_token"]
 
         _refresh(client, auth_header, family_a)               # rotate A
-        assert _refresh(client, auth_header, family_a).status_code == 401  # reuse A
+        assert _refresh(client, auth_header, family_a).status_code == 400  # reuse A (#308)
 
         assert _refresh(client, auth_header, family_b).status_code == 200  # B unaffected
 

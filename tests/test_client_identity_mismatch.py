@@ -58,7 +58,11 @@ class TestMismatchRejectedEverywhere:
             },
             headers=DEMO_AUTH,
         )
+        # §5.2 JSON with the Basic challenge since #310 (the old
+        # status-only assertion was exactly the kind of pin #308 blamed).
         assert resp.status_code == 401
+        assert resp.get_json()["error"] == "invalid_client"
+        assert resp.headers.get("WWW-Authenticate", "").startswith("Basic")
 
     def test_introspect_mismatch_rejected(self, client):
         token = _mint_token(client)

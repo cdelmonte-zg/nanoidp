@@ -72,7 +72,9 @@ class TestClientCredentialsResponse:
         )
 
         assert response.status_code == 400
-        assert b"Invalid token type" in response.data
+        body = response.get_json()
+        assert body["error"] == "invalid_grant"
+        assert "not a refresh token" in body["error_description"]
 
     def test_grant_outcome_defaults_to_issuing_a_refresh_token(self):
         """Only client_credentials opts out; a new handler gets a refresh token

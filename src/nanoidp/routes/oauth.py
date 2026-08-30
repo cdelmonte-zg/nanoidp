@@ -50,6 +50,7 @@ from ..services.scope import resolve_scope
 from ..services.token import resolve_user_claim, sanitize_claim_names
 from ._audit import audit_event
 from ._issuer import effective_issuer
+from ._oauth_error import invalid_client_error, oauth_error
 from .oauth_grants import _GRANT_HANDLERS, _GrantContext, _GrantOutcome
 
 logger = logging.getLogger(__name__)
@@ -643,7 +644,9 @@ def client_logo(client_id: str) -> ResponseReturnValue:
 # ============================================================================
 
 
-def _token_auth_failed(client_id: Optional[str], reason: str) -> ResponseReturnValue:
+def _token_auth_failed(
+    client_id: Optional[str], reason: str, *, basic_attempted: bool
+) -> ResponseReturnValue:
     audit_event(
         "token_request",
         "failed",
@@ -651,7 +654,9 @@ def _token_auth_failed(client_id: Optional[str], reason: str) -> ResponseReturnV
         client_id=client_id,
         details={"reason": reason},
     )
-    return jsonify({"error": "invalid_client", "error_description": reason}), 401
+    # WWW-Authenticate on an attempted-Basic failure is a §5.2 MUST
+    # (#310 review); see invalid_client_error.
+    return invalid_client_error(reason, basic_attempted=basic_attempted)
 
 
 @dataclass(frozen=True)
@@ -739,7 +744,11 @@ def _enforce_token_endpoint_auth(
         return None
 
     reason = _enforce_registered_client_auth(config, client_id, auth, body_client_secret)
-    return _token_auth_failed(client_id, reason) if reason is not None else None
+    return (
+        _token_auth_failed(client_id, reason, basic_attempted=auth is not None)
+        if reason is not None
+        else None
+    )
 
 
 def _enforce_registered_client_auth(
@@ -819,7 +828,9 @@ def token() -> ResponseReturnValue:
             endpoint="/token",
             details={"reason": "Client authentication required", "grant_type": grant_type},
         )
-        return abort(401, description="Client authentication required")
+        return invalid_client_error(
+            "Client authentication required", basic_attempted=auth is not None
+        )
 
     # Reject if body client_id conflicts with the authenticated client in the header
     if identity.mismatch:
@@ -830,8 +841,11 @@ def token() -> ResponseReturnValue:
             client_id=auth.username if auth else None,
             details={"reason": "client_id mismatch", "body_client_id": client_id},
         )
-        return abort(
-            401, description="client_id in request body does not match authenticated client"
+        # identity.mismatch implies Basic was presented, so the §5.2
+        # WWW-Authenticate MUST applies (#310 review).
+        return invalid_client_error(
+            "client_id in request body does not match authenticated client",
+            basic_attempted=True,
         )
 
     # One client-authentication boundary for every grant (#188, #254
@@ -861,7 +875,7 @@ def token() -> ResponseReturnValue:
             client_id=client_id,
             details={"reason": "Invalid 'exp' parameter", "grant_type": grant_type},
         )
-        return abort(400, description="'exp' must be an integer number of minutes")
+        return oauth_error("invalid_request", "'exp' must be an integer number of minutes")
     # Same bounds the Settings model enforces for token_expiry_minutes
     if not 1 <= exp_minutes <= 1440:
         audit_event(
@@ -871,7 +885,7 @@ def token() -> ResponseReturnValue:
             client_id=client_id,
             details={"reason": "'exp' out of range", "grant_type": grant_type},
         )
-        return abort(400, description="'exp' must be between 1 and 1440 minutes")
+        return oauth_error("invalid_request", "'exp' must be between 1 and 1440 minutes")
 
     extra_claims = None
     extra_raw = request.form.get("extra")
@@ -886,7 +900,7 @@ def token() -> ResponseReturnValue:
                 client_id=client_id,
                 details={"reason": "Invalid JSON in 'extra'", "grant_type": grant_type},
             )
-            return abort(400, description="Invalid JSON in 'extra'")
+            return oauth_error("invalid_request", "Invalid JSON in 'extra'")
         # Any JSON scalar/array parses fine but is not a claims mapping
         if not isinstance(parsed_extra, dict):
             audit_event(
@@ -896,7 +910,7 @@ def token() -> ResponseReturnValue:
                 client_id=client_id,
                 details={"reason": "'extra' is not a JSON object", "grant_type": grant_type},
             )
-            return abort(400, description="'extra' must be a JSON object")
+            return oauth_error("invalid_request", "'extra' must be a JSON object")
         extra_claims = parsed_extra
 
     # Per-grant dispatch
@@ -909,7 +923,13 @@ def token() -> ResponseReturnValue:
             client_id=client_id,
             details={"reason": f"Unsupported grant type: {grant_type}", "grant_type": grant_type},
         )
-        return abort(400, description=f"Unsupported grant_type: {grant_type}")
+        # FIXED text (#310 review, blocker 1): §5.2 restricts
+        # error_description to a narrow ASCII subset, so the caller's
+        # arbitrary grant_type value (emoji, quotes, newlines) must not be
+        # reflected here - it is already recorded in the audit event above.
+        return oauth_error(
+            "unsupported_grant_type", "The requested grant_type is not supported"
+        )
 
     ctx = _GrantContext(
         config=config,
