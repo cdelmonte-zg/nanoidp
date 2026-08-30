@@ -644,6 +644,27 @@ def client_logo(client_id: str) -> ResponseReturnValue:
 # ============================================================================
 
 
+def _basic_attempted() -> bool:
+    """True when the request ATTEMPTED HTTP Basic authentication (#311).
+
+    Read from the RAW Authorization header, not werkzeug's parsed
+    ``request.authorization``: werkzeug returns None for a syntactically
+    broken Basic header, which would misclassify a botched attempt as
+    no-attempt - answering 400 with no challenge where RFC 6749 §5.2's
+    401 + WWW-Authenticate MUST covers the attempt. The parsed object
+    stays the only source of username/password.
+
+    The SCHEME is compared for equality, not by prefix (#313 review):
+    "BasicFoo xyz" is a different scheme, not a Basic attempt. A bare
+    "Basic" with no credentials still counts - the scheme was named.
+    """
+    raw = request.headers.get("Authorization", "").lstrip()
+    if not raw:
+        return False
+    scheme = raw.split(maxsplit=1)[0]
+    return scheme.casefold() == "basic"
+
+
 def _token_auth_failed(
     client_id: Optional[str], reason: str, *, basic_attempted: bool
 ) -> ResponseReturnValue:
@@ -745,7 +766,7 @@ def _enforce_token_endpoint_auth(
 
     reason = _enforce_registered_client_auth(config, client_id, auth, body_client_secret)
     return (
-        _token_auth_failed(client_id, reason, basic_attempted=auth is not None)
+        _token_auth_failed(client_id, reason, basic_attempted=_basic_attempted())
         if reason is not None
         else None
     )
@@ -829,7 +850,7 @@ def token() -> ResponseReturnValue:
             details={"reason": "Client authentication required", "grant_type": grant_type},
         )
         return invalid_client_error(
-            "Client authentication required", basic_attempted=auth is not None
+            "Client authentication required", basic_attempted=_basic_attempted()
         )
 
     # Reject if body client_id conflicts with the authenticated client in the header
