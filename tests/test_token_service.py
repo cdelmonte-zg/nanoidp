@@ -46,7 +46,10 @@ class TestTokenCreation:
         assert "access_token" in result
         assert "token_type" in result
         assert "expires_in" in result
-        assert "refresh_token" in result
+        # No client_id -> unbound token -> NO refresh token (#73/#278): a
+        # refresh token without a client_id binding is refused at /token, so
+        # minting one here would be a dead credential.
+        assert "refresh_token" not in result
         # scope reports what was actually granted (RFC 6749 §5.1, #56):
         # no scope requested → omitted (it used to be hardcoded to "openid")
         assert "scope" not in result
@@ -159,14 +162,14 @@ class TestTokenCreation:
     def test_refresh_token_is_different(self, token_service, basic_user, app):
         """Test that refresh token is different from access token."""
         with app.app_context():
-            result = token_service.create_token(basic_user)
+            result = token_service.create_token(basic_user, client_id="demo-client")
 
         assert result["access_token"] != result["refresh_token"]
 
     def test_refresh_token_has_token_type(self, token_service, basic_user, app):
         """Test that refresh token has token_type claim."""
         with app.app_context():
-            result = token_service.create_token(basic_user)
+            result = token_service.create_token(basic_user, client_id="demo-client")
 
         decoded = pyjwt.decode(
             result["refresh_token"],
@@ -428,3 +431,44 @@ class TestGlobalTokenService:
             service = get_token_service()
 
         assert isinstance(service, TokenService)
+
+
+class TestRefreshTokenBindingInvariant:
+    """#278: the service owns the #73 mint-side rule. issue_refresh_token
+    defaults to 'only when the token is bound' (client_id is not None), and
+    an explicit True without a binding raises instead of minting a refresh
+    token that /token would unconditionally reject."""
+
+    @pytest.fixture
+    def token_service(self, app):
+        with app.app_context():
+            return get_token_service()
+
+    @pytest.fixture
+    def basic_user(self):
+        return User(username="testuser", password="testpass", email="t@example.org")
+
+    def test_bound_token_gets_refresh_token_by_default(self, token_service, basic_user, app):
+        with app.app_context():
+            result = token_service.create_token(basic_user, client_id="demo-client")
+        assert "refresh_token" in result
+        claims = pyjwt.decode(result["refresh_token"], options={"verify_signature": False})
+        assert claims["client_id"] == "demo-client"
+
+    def test_unbound_token_gets_no_refresh_token_by_default(self, token_service, basic_user, app):
+        with app.app_context():
+            result = token_service.create_token(basic_user)
+        assert "refresh_token" not in result
+
+    def test_explicit_true_without_client_id_raises(self, token_service, basic_user, app):
+        with app.app_context():
+            with pytest.raises(ValueError, match="client_id"):
+                token_service.create_token(basic_user, issue_refresh_token=True)
+
+    def test_explicit_false_with_client_id_mints_none(self, token_service, basic_user, app):
+        """client_credentials shape (#239): bound but deliberately refresh-less."""
+        with app.app_context():
+            result = token_service.create_token(
+                basic_user, client_id="demo-client", issue_refresh_token=False
+            )
+        assert "refresh_token" not in result

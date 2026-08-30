@@ -83,11 +83,9 @@ def generate_token(username: str) -> ResponseReturnValue:
     exp_minutes = body.get("exp_minutes", config.settings.token_expiry_minutes)
 
     # Optional client binding (#73), mirroring the MCP generate_token tool: a
-    # given client_id (which must name a real client) binds the token and issues
-    # a spendable refresh token; without it the token is unbound and NO refresh
-    # token is issued - since 3.0 a refresh token with no client_id binding is
-    # refused, so returning one from this testing endpoint would be a dead
-    # credential.
+    # given client_id must name a real client. Whether a refresh token is
+    # issued follows from the binding inside create_token itself (#278):
+    # bound token -> spendable refresh token, unbound -> none.
     client_id = body.get("client_id")
     if client_id is not None and config.get_client(client_id) is None:
         return jsonify({"error": f"Client '{client_id}' not found"}), 400
@@ -101,7 +99,6 @@ def generate_token(username: str) -> ResponseReturnValue:
         exp_minutes=exp_minutes,
         issuer=effective_issuer(config.settings),
         client_id=client_id,
-        issue_refresh_token=client_id is not None,
     )
 
     return jsonify(token_response)

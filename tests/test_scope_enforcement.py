@@ -331,6 +331,69 @@ class TestDeviceAuthorizationScopeEnforcement:
         assert "device_code" in json.loads(response.data)
 
 
+class TestDeviceCodeRedemptionScopeReValidation:
+    """#276: the device grant redeems a prior authorization exactly like
+    authorization_code and refresh do, so it must re-validate the stored
+    scope against the CURRENT vocabulary/allowed_scopes at the poll - both
+    may have changed between /device_authorization and redemption."""
+
+    @pytest.fixture(autouse=True)
+    def _cleanup_device_codes(self):
+        yield
+        from nanoidp.services.device_code import get_device_code_store
+
+        get_device_code_store().clear()
+
+    def _device_flow_authorized(self, client, scope):
+        resp = client.post(
+            "/device_authorization", data={"scope": scope}, headers=SCOPED_AUTH
+        )
+        assert resp.status_code == 200
+        data = json.loads(resp.data)
+        authorize = client.post(
+            "/device",
+            data={
+                "user_code": data["user_code"],
+                "username": "admin",
+                "password": "admin",
+                "action": "authorize",
+            },
+        )
+        assert authorize.status_code == 200
+        return data["device_code"]
+
+    def _poll(self, client, device_code):
+        return client.post(
+            "/token",
+            data={
+                "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+                "device_code": device_code,
+            },
+            headers=SCOPED_AUTH,
+        )
+
+    def test_scope_still_allowed_redeems_with_it(self, client):
+        device_code = self._device_flow_authorized(client, "openid profile")
+        resp = self._poll(client, device_code)
+        assert resp.status_code == 200
+        assert json.loads(resp.data)["scope"] == "openid profile"
+
+    def test_scope_revoked_between_authorization_and_poll_is_rejected(self, client, app):
+        """The grant was valid when authorized; allowed_scopes shrank since
+        (an operator edit) - the poll must catch it, same as the refresh
+        grant's re-check does."""
+        device_code = self._device_flow_authorized(client, "openid profile")
+
+        with app.app_context():
+            get_config().get_client("scoped-client").allowed_scopes = ["openid"]
+
+        resp = self._poll(client, device_code)
+        assert resp.status_code == 400
+        data = json.loads(resp.data)
+        assert data["error"] == "invalid_scope"
+        assert "profile" in data["error_description"]
+
+
 class TestClientCredentialsOpenidNeverMintsIdToken:
     """#186 review: create_token()'s ID Token issuance is grant-agnostic
     (any grant with 'openid' in scope gets one), but client_credentials has

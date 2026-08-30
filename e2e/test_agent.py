@@ -1938,11 +1938,22 @@ class NanoIDPTestAgent:
                 active = data.get("active", False)
                 username = data.get("username", "?")
                 scope = data.get("scope", "?")
+                # #277 negative: Basic for this client plus a CONTRADICTORY
+                # body client_id is one request claiming two identities and
+                # must be invalid_client, not silently processed as the
+                # Basic identity (the pre-3.0 behavior).
+                mismatch = self.session.post(
+                    f"{self.base_url}/introspect",
+                    data={"token": self.access_token, "client_id": "not-this-client"},
+                    timeout=5,
+                )
+                mismatch_rejected = mismatch.status_code == 401
                 return self._add_result(
                     "Token Introspection",
                     TestCategory.OAUTH,
-                    active,
-                    f"active={active}, user={username}, scope={scope}",
+                    active and mismatch_rejected,
+                    f"active={active}, user={username}, scope={scope}; "
+                    f"contradictory body client_id rejected: {mismatch_rejected}",
                     data
                 )
             return self._add_result(
@@ -2611,12 +2622,32 @@ class NanoIDPTestAgent:
             if response.status_code == 200:
                 is_xml = "xml" in response.headers.get("Content-Type", "") or response.text.strip().startswith("<")
                 has_attributes = "Attribute" in response.text
+
+                # #275 negative: an unknown NameID must get a SAML error
+                # status (Requester/UnknownPrincipal) with NO assertion,
+                # never the old fabricated-attributes fallback.
+                unknown_query = attr_query.replace(
+                    f"<saml:NameID>{self.username}</saml:NameID>",
+                    "<saml:NameID>no-such-user-e2e</saml:NameID>",
+                )
+                unknown_resp = requests.post(
+                    f"{self.base_url}/saml/attribute-query",
+                    data=unknown_query,
+                    headers={"Content-Type": "application/xml"},
+                    timeout=5,
+                )
+                unknown_ok = (
+                    unknown_resp.status_code == 200
+                    and "UnknownPrincipal" in unknown_resp.text
+                    and "Assertion" not in unknown_resp.text
+                )
                 return self._add_result(
                     "SAML Attribute Query",
                     TestCategory.SAML,
-                    is_xml,
-                    f"Response received, has_attributes={has_attributes}",
-                    {"has_attributes": has_attributes}
+                    is_xml and unknown_ok,
+                    f"Response received, has_attributes={has_attributes}; "
+                    f"unknown NameID -> UnknownPrincipal without assertion: {unknown_ok}",
+                    {"has_attributes": has_attributes, "unknown_principal_error": unknown_ok}
                 )
 
             # Some implementations might not support this

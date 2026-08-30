@@ -775,6 +775,46 @@ def _grant_device_code(ctx: _GrantContext) -> GrantResult:
         # The device flow authenticates an end-user, so honour the requested
         # scope and emit an ID Token when 'openid' was asked for (issue #36).
         # The user authenticated at /device, not at this poll (#42).
+        #
+        # Re-validate the stored scope against the CURRENT vocabulary and
+        # this client's allowed_scopes (#276): both may have changed between
+        # /device_authorization and this poll, exactly as they may change
+        # between /authorize and code redemption - the authorization_code and
+        # refresh grants both re-check for that reason, and this grant redeems
+        # a prior authorization the same way. validate_only=True: an absent
+        # stored scope stays absent, never defaulted (#186 review, B1).
+        device_scope: Optional[str] = grant.scope
+        device_client = ctx.config.get_client(ctx.client_id)
+        if device_client is not None:
+            scope_result = resolve_scope(
+                device_scope,
+                device_client,
+                ctx.config.settings.scopes_supported,
+                ctx.config.settings.scope_enforcement_active,
+                validate_only=True,
+            )
+            if not scope_result.ok:
+                audit_event(
+                    "token_request",
+                    "failed",
+                    endpoint="/token",
+                    username=user.username,
+                    client_id=ctx.client_id,
+                    details={
+                        "reason": scope_result.error_description,
+                        "grant_type": ctx.grant_type,
+                    },
+                )
+                return (
+                    jsonify(
+                        {
+                            "error": "invalid_scope",
+                            "error_description": scope_result.error_description,
+                        }
+                    ),
+                    400,
+                )
+            device_scope = scope_result.granted
         resource, resource_error = _resolve_token_resource(
             ctx, ctx.config.get_client(ctx.client_id), grant.resource or []
         )
@@ -783,7 +823,7 @@ def _grant_device_code(ctx: _GrantContext) -> GrantResult:
         return _GrantOutcome(
             user=user,
             username=user.username,
-            scope=grant.scope,
+            scope=device_scope,
             auth_time=grant.auth_time,
             resource=resource,
             # Full original grant on the refresh token (RFC 8707 §2.2).

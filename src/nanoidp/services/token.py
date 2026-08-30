@@ -217,7 +217,7 @@ class TokenService:
         id_token_claims: Optional[List[str]] = None,
         userinfo_claims: Optional[List[str]] = None,
         issuer: Optional[str] = None,
-        issue_refresh_token: bool = True,
+        issue_refresh_token: Optional[bool] = None,
         resource: Optional[List[str]] = None,
         refresh_resource: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
@@ -242,13 +242,23 @@ class TokenService:
         - a token whose ``iss`` doesn't match what discovery said is rejected by
         any spec-compliant client.
 
-        ``issue_refresh_token`` is False for grants without an end user
-        (client_credentials, RFC 6749 §4.4.3: "A refresh token SHOULD NOT be
-        included", #239): the client authenticates itself on every call, so a
-        refresh token would only be a second, long-lived credential bound to a
-        user the grant never involved. When False no refresh JWT is minted and
-        the response carries no ``refresh_token`` key at all.
+        ``issue_refresh_token`` defaults to "only when the token is bound":
+        a refresh token without a ``client_id`` binding is refused by /token
+        since 3.0 (#73), so minting one for an unbound token would hand back a
+        dead credential - this service owns that invariant (#278), not its
+        callers. Pass False for grants that bind a client but must not issue
+        one (client_credentials, RFC 6749 §4.4.3: "A refresh token SHOULD NOT
+        be included", #239). Passing True without ``client_id`` raises
+        ``ValueError``. When no refresh JWT is minted the response carries no
+        ``refresh_token`` key at all.
         """
+        if issue_refresh_token and not client_id:
+            raise ValueError(
+                "issue_refresh_token=True requires client_id: a refresh token "
+                "without a client_id binding is refused at /token (#73)"
+            )
+        if issue_refresh_token is None:
+            issue_refresh_token = client_id is not None
         settings = self.config.settings
         effective_issuer = issuer or settings.issuer
 
