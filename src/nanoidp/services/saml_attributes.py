@@ -108,6 +108,11 @@ def append_attribute_statement(
     per entry, anything else ONE value via str() - never comma-split (the
     #134 rule; the query builder used to split comma-bearing strings).
     Emits nothing at all when ``attributes`` is empty.
+
+    EXPECTS RESOLVED ATTRIBUTES (#315 review): the empty-fact filtering
+    lives in resolve_saml_attributes, not here - calling this directly
+    with ``{"x": []}`` emits an empty Attribute element. Both surfaces go
+    through the resolver first; a future caller must too.
     """
     if not attributes:
         return
