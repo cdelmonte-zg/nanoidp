@@ -184,6 +184,19 @@
                         <label class="form-check-label" for="show_description">Show description on login page</label>
                     </div>
 
+                    <div class="mb-3">
+                        <label for="layout" class="form-label">Login Page Layout</label>
+                        <select class="form-select" id="layout" name="layout">
+                            {% set current_layout = client.layout if client else 'vertical' %}
+                            <option value="vertical" {% if current_layout == 'vertical' %}selected{% endif %}>Vertical (single column)</option>
+                            <option value="horizontal" {% if current_layout == 'horizontal' %}selected{% endif %}>Horizontal (client info beside the form)</option>
+                        </select>
+                        <div class="form-text">
+                            Horizontal places the client info and the login form side by side; it collapses
+                            back to a single column on narrow screens.
+                        </div>
+                    </div>
+
                     <div class="alert alert-info" role="alert">
                         <i class="bi bi-info-circle me-2"></i>
                         <strong>Logo:</strong> To add a client logo to the login page, place an image file at

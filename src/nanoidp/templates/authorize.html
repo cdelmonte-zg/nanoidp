@@ -22,6 +22,12 @@
             border-radius: 1rem;
             box-shadow: 0 10px 40px rgba(0,0,0,0.3);
         }
+        /* Horizontal composition (issue #249): wider card so the two
+           Bootstrap columns below have room; col-md-6 already collapses
+           back to a single stacked column under the md breakpoint. */
+        .authorize-card.authorize-card-horizontal {
+            max-width: 760px;
+        }
         .authorize-header {
             background: {% if client and client.header_color %}{{ client.header_color }}{% else %}linear-gradient(135deg, #0d6efd 0%, #6610f2 100%){% endif %};
             color: #fff;
@@ -32,6 +38,20 @@
         .authorize-header i {
             font-size: 3rem;
             margin-bottom: 0.5rem;
+        }
+        /* Horizontal composition (#249): the stacked 3-line header (icon,
+           title, subtitle) is too tall next to the wider two-column body,
+           so it collapses to one row here instead. */
+        .authorize-card-horizontal .authorize-header {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.6rem;
+            padding: 1rem 2rem;
+        }
+        .authorize-card-horizontal .authorize-header i {
+            font-size: 1.75rem;
+            margin-bottom: 0;
         }
         .authorize-body {
             padding: 2rem;
@@ -57,21 +77,7 @@
         }
     </style>
 </head>
-<body>
-    <div class="authorize-card">
-        <div class="authorize-header">
-            <i class="bi bi-shield-check"></i>
-            <h3 class="mb-0">NanoIDP</h3>
-            <small class="opacity-75">Authorization Request</small>
-        </div>
-        <div class="authorize-body">
-            {% if error %}
-            <div class="alert alert-danger alert-dismissible fade show" role="alert">
-                <i class="bi bi-exclamation-triangle me-2"></i>{{ error }}
-                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
-            </div>
-            {% endif %}
-
+{% macro client_info_block() %}
             <div class="client-info">
                 <div class="d-flex align-items-center mb-2">
                     {% if logo_url %}
@@ -107,7 +113,9 @@
                     </div>
                 </div>
             </div>
+{% endmacro %}
 
+{% macro login_form_block() %}
             {% if persona_mode %}
             <form method="POST">
                 {{ macros.persona_picker(users, "Persona login - select a user to authorize.") }}
@@ -128,6 +136,37 @@
                     <i class="bi bi-check-circle me-2"></i>Authorize
                 </button>
             </form>
+            {% endif %}
+{% endmacro %}
+
+{% set horizontal = client and client.layout == 'horizontal' %}
+<body>
+    <div class="authorize-card{% if horizontal %} authorize-card-horizontal{% endif %}">
+        <div class="authorize-header">
+            <i class="bi bi-shield-check"></i>
+            <h3 class="mb-0">NanoIDP</h3>
+            <small class="opacity-75">Authorization Request</small>
+        </div>
+        <div class="authorize-body">
+            {% if error %}
+            <div class="alert alert-danger alert-dismissible fade show" role="alert">
+                <i class="bi bi-exclamation-triangle me-2"></i>{{ error }}
+                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+            </div>
+            {% endif %}
+
+            {% if horizontal %}
+            <div class="row g-4 align-items-center">
+                <div class="col-md-6">
+                    {{ client_info_block() }}
+                </div>
+                <div class="col-md-6">
+                    {{ login_form_block() }}
+                </div>
+            </div>
+            {% else %}
+            {{ client_info_block() }}
+            {{ login_form_block() }}
             {% endif %}
 
             <div class="authorize-footer text-center mt-3">

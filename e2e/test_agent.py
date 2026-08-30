@@ -1468,7 +1468,60 @@ class NanoIDPTestAgent:
                 "footer_color": "#654321" in html,
                 "client_id_shown": test_client_id in html,
                 "description_shown": test_description in html,
+                # #249: the default ("vertical") layout must not render the
+                # horizontal two-column markup. The CSS selector for that
+                # class lives in every page's <style> block regardless of
+                # layout, so this checks the rendered class attribute, not
+                # a bare substring match.
+                "vertical_has_no_horizontal_markup": (
+                    'class="authorize-card authorize-card-horizontal"' not in html
+                ),
             }
+
+            # #249: a client with layout=horizontal renders the two-column
+            # composition. Same create/authorize/delete shape as above, kept
+            # as a second client so the default-layout assertion above stays
+            # a clean negative check.
+            horizontal_client_id = f"branding-horizontal-{secrets.token_hex(4)}"
+            try:
+                create_h = self.session.post(
+                    f"{self.base_url}/clients/create",
+                    data={
+                        "client_id": horizontal_client_id,
+                        "client_secret": "branding-test-secret",
+                        "layout": "horizontal",
+                    },
+                    allow_redirects=False,
+                    timeout=5,
+                )
+                created_h = (
+                    create_h.status_code in (302, 303)
+                    and create_h.headers.get("Location", "").rstrip("/").endswith("/clients")
+                )
+                checks["horizontal_client_created"] = created_h
+                if created_h:
+                    authorize_h = requests.get(
+                        f"{self.base_url}/authorize",
+                        params={
+                            "response_type": "code",
+                            "client_id": horizontal_client_id,
+                            "redirect_uri": "http://localhost:3000/callback",
+                        },
+                        timeout=5,
+                    )
+                    html_h = authorize_h.text
+                    checks["horizontal_has_two_column_markup"] = (
+                        authorize_h.status_code == 200
+                        and 'class="authorize-card authorize-card-horizontal"' in html_h
+                        and "col-md-6" in html_h
+                    )
+                else:
+                    checks["horizontal_has_two_column_markup"] = False
+            finally:
+                self.session.post(
+                    f"{self.base_url}/clients/{horizontal_client_id}/delete", timeout=5
+                )
+
             success = authorize.status_code == 200 and all(checks.values())
             return self._add_result(
                 "Client Branding", TestCategory.OAUTH, success,

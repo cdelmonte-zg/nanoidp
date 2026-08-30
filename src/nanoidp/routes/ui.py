@@ -463,6 +463,7 @@ def client_create() -> ResponseReturnValue:
             client_id=client_id,
             client_secret=client_secret,
             token_endpoint_auth_method=auth_method,  # type: ignore[arg-type]
+            layout=request.form.get("layout", "vertical"),  # type: ignore[arg-type]
             description=request.form.get("description", ""),
             background_color=request.form.get("background_color") or None,
             header_color=request.form.get("header_color") or None,
@@ -546,6 +547,7 @@ def client_edit(client_id: str) -> ResponseReturnValue:
             client_id=client_id,
             client_secret=client_secret,
             token_endpoint_auth_method=auth_method,  # type: ignore[arg-type]
+            layout=request.form.get("layout", client.layout),  # type: ignore[arg-type]
             description=request.form.get("description", ""),
             background_color=request.form.get("background_color") or None,
             header_color=request.form.get("header_color") or None,
