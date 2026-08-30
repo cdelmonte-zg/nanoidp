@@ -9,6 +9,8 @@ from datetime import datetime, timezone
 from threading import Lock
 from typing import Any, Dict, List, Optional
 
+from ..config import get_config_if_loaded
+
 logger = logging.getLogger(__name__)
 
 
@@ -89,11 +91,12 @@ class AuditLog:
             self._entries.append(entry)
             self._update_stats(event_type, status)
 
-        # Verbose logging controlled by settings (late import to avoid circular dependency)
-        # Never construct the configuration from a log call: an audit event
-        # logged while the singleton is being built (a plugin's on_before_load)
-        # would block on the non-reentrant init lock (review before 2.7.0rc4).
-        from ..config import get_config_if_loaded
+        # Verbose logging controlled by settings. No cycle (#285: config
+        # never imports services; the old comment claimed one). What DOES
+        # matter is never constructing the configuration from a log call: an
+        # audit event logged while the singleton is being built (a plugin's
+        # on_before_load) would block on the non-reentrant init lock (review
+        # before 2.7.0rc4) - hence get_config_if_loaded, never get_config.
         loaded = get_config_if_loaded()
         verbose = loaded.settings.verbose_logging if loaded is not None else True
 

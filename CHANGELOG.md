@@ -104,6 +104,24 @@ previous leniency allowed - needs a one-time adjustment.
   unchanged; both exemptions are now pinned by tests.
 
 ### Added
+- **Access-point parity contract for token issuance** (#283,
+  `tests/test_token_issuance_parity.py`): the set of modules calling
+  `TokenService.create_token` must equal a declared registry (AST-checked),
+  and every (surface, policy) pair - client binding, scope ceiling, resource
+  ceiling - must declare `enforced` (behaviorally asserted) or `exempt`
+  (the exemption itself pinned, with its documented reason). A new minting
+  surface fails the suite until it takes a stance; this mechanizes the
+  #269/#272 bug class out of existence.
+- **User-field parity test** (#284, `tests/test_user_field_parity.py`):
+  the nine user shapes (model, YAML entry, MCP read/create/update surfaces,
+  UI form, REST read) are held to field-set equality with documented,
+  asserted exclusions - the guard whose absence let #280 drift silently.
+  Found and recorded #291 (the UI users form has no `attributes` input).
+- **"Domain invariants have one home" review rule** (#285) in CONTRIBUTING,
+  echoed from VISION principle 4; five deferred imports claiming
+  nonexistent circular dependencies hoisted to module top, and the one
+  legitimately special case (`services/audit.py`) now documents its real
+  reason (never construct config from a log path).
 - **Horizontal `/authorize` login card composition** (#249). New per-client
   `layout` field, `"vertical"` (default, unchanged) or `"horizontal"`: the
   latter places the client info block and the login form side by side in a

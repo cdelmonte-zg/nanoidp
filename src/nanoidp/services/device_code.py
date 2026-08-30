@@ -23,7 +23,10 @@ from enum import Enum
 from typing import TYPE_CHECKING, Callable, Dict, Optional, Tuple
 
 if TYPE_CHECKING:
-    from ..config import User
+    # From the model's real home (#285): config only re-exports it for
+    # compatibility, and importing through the facade teaches a dependency
+    # that does not need to exist.
+    from ..models import User
 
 logger = logging.getLogger(__name__)
 

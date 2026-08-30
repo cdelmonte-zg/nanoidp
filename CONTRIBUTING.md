@@ -117,6 +117,26 @@ what lets `config.py` import it without a cycle). The contracts live in
 count. If a change needs a new edge between layers, adjust the contract in the
 same PR and say why.
 
+### Domain invariants have one home (#285)
+
+OAuth/OIDC/SAML policy belongs in services and domain logic; routes and the
+MCP server are adapters and must not independently reinterpret the same rule.
+If a PR implements the same policy separately at two surfaces - say, a check
+written once in `/token` and again, slightly differently, in an MCP tool -
+that is an architectural smell to flag in review: extract the rule to one
+place (or delegate to the existing one) instead of keeping the copies in
+sync by hand. The bug class this prevents is real and recurring here: a
+capability exposed by N entry points with a rule updated at N-1 of them
+(#269/#272). `tests/test_token_issuance_parity.py` enforces it mechanically
+for token issuance: a new surface that mints tokens fails the suite until it
+is registered and declares a stance on every policy.
+
+A related rule for comments: never claim a "circular dependency" (or any
+structural constraint) a deferred import does not actually avoid - false
+constraint comments teach the next contributor a wrong module graph. The one
+real import constraint is the `serialization` contract above; everything
+else imports normally at module top.
+
 ## Code Style
 
 - Follow PEP 8 (enforced by Black and Ruff)

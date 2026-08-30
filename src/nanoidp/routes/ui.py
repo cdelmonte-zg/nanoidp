@@ -5,8 +5,11 @@ Web UI routes for the NanoIDP dashboard.
 import csv
 import json
 import logging
+import os
 import secrets
+from datetime import datetime
 from io import StringIO
+from pathlib import Path
 
 from flask import (
     Blueprint,
@@ -25,7 +28,7 @@ from ..branding import effective_logos_dir
 from ..config import OAuthClient, User, get_config
 from ..config_writer import ConflictError, current_revision
 from ..hooks import HookError
-from ..services import get_audit_log, get_token_service, get_yaml_writer
+from ..services import get_audit_log, get_crypto_service, get_token_service, get_yaml_writer
 from ._audit import audit_event
 from ._auth import (
     management_secret_required_for_ui,
@@ -775,12 +778,7 @@ def settings() -> ResponseReturnValue:
 @ui_bp.route("/keys")
 def keys() -> ResponseReturnValue:
     """Keys and certificates management page."""
-    import os
-    from datetime import datetime
-    from pathlib import Path
     config = get_config()
-    from ..services import get_crypto_service
-
     crypto = get_crypto_service(config.settings.keys_dir)
 
     # Get key file modification time as proxy for creation date
@@ -816,8 +814,6 @@ def keys() -> ResponseReturnValue:
 def keys_regenerate() -> ResponseReturnValue:
     """Regenerate RSA keys and certificate."""
     config = get_config()
-    from ..services import get_crypto_service
-
     try:
         crypto = get_crypto_service(config.settings.keys_dir)
         crypto.regenerate_keys()
@@ -835,8 +831,6 @@ def keys_regenerate() -> ResponseReturnValue:
 def keys_download(key_type: str) -> ResponseReturnValue:
     """Download key or certificate."""
     config = get_config()
-    from ..services import get_crypto_service
-
     crypto = get_crypto_service(config.settings.keys_dir)
 
     if key_type == "public_key":
