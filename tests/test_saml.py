@@ -506,6 +506,52 @@ class TestSAMLAttributeQuery:
         assert root.findall(".//saml2:Assertion", SAML_NS) == []
         assert root.findall(".//saml2:Attribute", SAML_NS) == []
 
+    def test_attribute_query_error_response_is_signed_when_signing_is_on(self, client):
+        """#289 review: the error response goes through the SAME signing path
+        as the success response. With saml_sign_responses=true an SP
+        validating signatures would otherwise reject (or worse, special-case)
+        the one response shape nanoidp forgot to sign."""
+        from nanoidp.config import get_config
+
+        config = get_config()
+        original = config.settings.saml_sign_responses
+        config.settings.saml_sign_responses = True
+        try:
+            query = self._create_attribute_query(user_id='unknown_user_xyz')
+            response = client.post('/saml/attribute-query',
+                data=query,
+                content_type='text/xml'
+            )
+            assert response.status_code == 200
+            root = etree.fromstring(response.data)
+            codes = [el.get("Value") for el in root.findall(".//saml2p:StatusCode", SAML_NS)]
+            assert "urn:oasis:names:tc:SAML:2.0:status:UnknownPrincipal" in codes
+            assert root.find(".//ds:Signature", SAML_NS) is not None, (
+                "error response must be signed when saml_sign_responses is on"
+            )
+        finally:
+            config.settings.saml_sign_responses = original
+
+    def test_attribute_query_error_response_unsigned_when_signing_is_off(self, client):
+        """The negative: signing off means no signature on the error path
+        either - the flag drives both response shapes symmetrically."""
+        from nanoidp.config import get_config
+
+        config = get_config()
+        original = config.settings.saml_sign_responses
+        config.settings.saml_sign_responses = False
+        try:
+            query = self._create_attribute_query(user_id='unknown_user_xyz')
+            response = client.post('/saml/attribute-query',
+                data=query,
+                content_type='text/xml'
+            )
+            assert response.status_code == 200
+            root = etree.fromstring(response.data)
+            assert root.find(".//ds:Signature", SAML_NS) is None
+        finally:
+            config.settings.saml_sign_responses = original
+
 
 class TestSAMLSigningConfiguration:
     """Tests for configurable SAML response signing."""

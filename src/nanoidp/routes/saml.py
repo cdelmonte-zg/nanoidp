@@ -960,6 +960,12 @@ def attribute_query() -> ResponseReturnValue:
                 request_id=request_id,
                 issuer_url=effective_saml_entity_id(config.settings),
             )
+            # Same signing path as the success response (#289 review): with
+            # saml_sign_responses on, an SP validating signatures must never
+            # meet the one response shape nanoidp forgot to sign.
+            error_xml = _sign_attribute_query_response(
+                error_xml, config.settings.saml_sign_responses
+            )
             audit_event(
                 "saml_attribute_query",
                 "failed",
