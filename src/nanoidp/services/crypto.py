@@ -73,6 +73,12 @@ class CryptoService:
 
         self._ensure_keys()
 
+    @property
+    def uses_external_keys(self) -> bool:
+        """True when this service signs with operator-provided PEM keys
+        (loaded by init_crypto_service) rather than keys_dir-generated ones."""
+        return bool(self._external_private_key and self._external_public_key)
+
     def _ensure_keys(self) -> None:
         """Ensure RSA keys and certificate exist."""
         self.keys_dir.mkdir(parents=True, exist_ok=True)
@@ -475,13 +481,30 @@ _crypto_service_lock = threading.Lock()
 
 
 def get_crypto_service(keys_dir: str = "./keys") -> CryptoService:
-    """Get or create the global crypto service (thread-safe lazy init, #43)."""
+    """Get or create the global crypto service (thread-safe lazy init, #43).
+
+    The requested ``keys_dir`` is honoured on EVERY call, not only the first
+    (#281): when a config reload changes ``keys_dir``, the next call recreates
+    the service for the new directory instead of silently signing and serving
+    JWKS from the old one. External keys are the exception - they are loaded
+    from their own PEM paths by ``init_crypto_service`` and merely hosted
+    alongside ``keys_dir``, so an externally-keyed service is never discarded
+    over a ``keys_dir`` change (init stays authoritative).
+    """
     global _crypto_service
-    if _crypto_service is None:
-        with _crypto_service_lock:
-            if _crypto_service is None:
-                _crypto_service = CryptoService(keys_dir)
-    return _crypto_service
+    service = _crypto_service
+    if service is not None and (
+        service.keys_dir == Path(keys_dir) or service.uses_external_keys
+    ):
+        return service
+    with _crypto_service_lock:
+        service = _crypto_service
+        if service is None or (
+            service.keys_dir != Path(keys_dir) and not service.uses_external_keys
+        ):
+            service = CryptoService(keys_dir)
+            _crypto_service = service
+        return service
 
 
 def init_crypto_service(

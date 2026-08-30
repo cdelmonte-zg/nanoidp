@@ -864,6 +864,36 @@ class TestMCPUserDescription:
         assert config.get_user("carol").description == "Updated note"
 
     @pytest.mark.asyncio
+    async def test_update_user_updates_attributes(self, tmp_path):
+        """#280: create_user accepted custom attributes from day one, but
+        update_user's schema and handler silently lacked the field - an agent
+        could set attributes at creation and never change them again."""
+        from nanoidp.mcp_server import _execute_tool
+        config = self._config(tmp_path)
+        await _execute_tool(
+            "create_user",
+            {"username": "erin", "password": "pw", "attributes": {"dept": "eng"}},
+            config,
+        )
+
+        result = await _execute_tool(
+            "update_user",
+            {"username": "erin", "attributes": {"dept": "sales", "region": "emea"}},
+            config,
+        )
+
+        assert result["success"] is True
+        assert result["user"]["attributes"] == {"dept": "sales", "region": "emea"}
+        assert config.get_user("erin").attributes == {"dept": "sales", "region": "emea"}
+
+    @pytest.mark.asyncio
+    async def test_update_user_schema_includes_attributes(self, mcp_list_tools):
+        """#280: the schema half of the same gap."""
+        tools = await mcp_list_tools()
+        update_user = next(t for t in tools if t.name == "update_user")
+        assert "attributes" in update_user.input_schema["properties"]
+
+    @pytest.mark.asyncio
     async def test_get_user_returns_description(self, tmp_path):
         from nanoidp.mcp_server import _execute_tool
         config = self._config(tmp_path)

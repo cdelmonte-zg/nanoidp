@@ -159,3 +159,45 @@ class TestPromptHelpers:
         monkeypatch.setattr("getpass.getpass", broken)
         feed(["visible"])
         assert wizard._prompt_password("Password") == "visible"
+
+
+class TestValidateAndWrite:
+    """#282: the wizard used to write raw f-strings with open() - no
+    validation, no atomicity. _validate_and_write validates through the
+    document models BEFORE anything touches disk and then writes through
+    the shared temp-then-replace primitive."""
+
+    def test_valid_settings_template_lands_and_loads(self, tmp_path):
+        from nanoidp.wizard import _validate_and_write
+
+        text = 'config_version: 1\noauth:\n  issuer: "http://localhost:1234"\n'
+        target = tmp_path / "settings.yaml"
+        _validate_and_write(str(target), text, kind="settings")
+        # Byte-exact: no re-serialization of the template.
+        assert target.read_text() == text
+
+    def test_invalid_template_raises_and_writes_nothing(self, tmp_path):
+        import pydantic
+        import pytest as _pytest
+
+        from nanoidp.wizard import _validate_and_write
+
+        target = tmp_path / "settings.yaml"
+        with _pytest.raises(pydantic.ValidationError):
+            _validate_and_write(
+                str(target), "config_version: 1\noauth: not-a-mapping\n", kind="settings"
+            )
+        assert not target.exists()
+
+    def test_invalid_users_template_raises(self, tmp_path):
+        import pydantic
+        import pytest as _pytest
+
+        from nanoidp.wizard import _validate_and_write
+
+        target = tmp_path / "users.yaml"
+        with _pytest.raises(pydantic.ValidationError):
+            _validate_and_write(
+                str(target), "config_version: 1\nusers: not-a-mapping\n", kind="users"
+            )
+        assert not target.exists()

@@ -499,6 +499,13 @@ _TOOLS: list[Tool] = [
                     "items": {"type": "string"},
                     "description": "New source ACL entries (optional)",
                 },
+                "attributes": {
+                    "type": "object",
+                    "description": (
+                        "New custom key-value attributes (optional; replaces the "
+                        "whole mapping, like every other field here - #280)"
+                    ),
+                },
             },
             "required": ["username"],
         },
@@ -1341,6 +1348,10 @@ def _tool_update_user(arguments: dict[str, Any], config: ConfigManager) -> dict[
         candidate.entitlements = arguments["entitlements"]
     if "source_acl" in arguments:
         candidate.source_acl = arguments["source_acl"]
+    if "attributes" in arguments:
+        # create_user accepted this from day one; update_user silently lacked
+        # it (#280) - the parity drift the user-field audit found.
+        candidate.attributes = arguments["attributes"]
     user = config.users[username] = candidate
 
     return {"success": True, "user": _user_to_dict(user)}
