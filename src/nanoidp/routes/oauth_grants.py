@@ -169,7 +169,25 @@ def _grant_refresh_token(ctx: _GrantContext) -> GrantResult:
                 "grant_type": ctx.grant_type,
             },
         )
-        return abort(401, description=f"Invalid refresh token: {str(e)}")
+        # RFC 6749 §5.2 JSON, not Werkzeug HTML (#306 review, per the #287
+        # "Error surfaces" rule: protocol endpoints never answer HTML). An
+        # unverifiable refresh token - bad signature, expired, or missing
+        # the exp the nanoidp token profile requires - is invalid_grant.
+        # The description is FIXED text (CodeQL on this PR, same rule as
+        # the #200 review): the underlying library's exception message goes
+        # to the audit trail above, never to the external caller.
+        return (
+            jsonify(
+                {
+                    "error": "invalid_grant",
+                    "error_description": (
+                        "Refresh token is invalid: bad signature, expired, "
+                        "or not acceptable under the nanoidp token profile"
+                    ),
+                }
+            ),
+            400,
+        )
 
     # Check if it's actually a refresh token
     if payload.get("token_type") != "refresh":

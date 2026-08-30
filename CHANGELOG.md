@@ -129,6 +129,25 @@ previous leniency allowed - needs a one-time adjustment.
   resource server - revocation is `/introspect`'s answer. Behavior is
   unchanged; both exemptions are now pinned by tests.
 
+- **The `exp` claim is required on every token nanoidp accepts** (#306).
+  `verify_jwt` now enforces `require: ["exp"]` - a correctly signed JWT
+  WITHOUT an expiry is rejected everywhere (`/userinfo`, `/introspect`,
+  `/revoke`, the refresh grant, MCP `verify_token`). This is nanoidp's
+  token-profile policy, not a JWT-spec rule (RFC 7519 leaves `exp`
+  optional; OIDC Core and RFC 9068 require it on the profiles that
+  matter): a token accepted by an IdP should have a finite lifetime, and
+  an eternal bearer token would let an integration test pass here and
+  fail against any real IdP. Everything nanoidp mints has always carried
+  `exp`; only hand-crafted tokens signed with the nanoidp key are
+  affected. *Migration:* add an `exp` to such fixtures. No other claim is
+  newly required.
+- **An unverifiable refresh token now answers RFC 6749 §5.2 JSON**
+  (`invalid_grant`, HTTP 400) instead of a Werkzeug 401 HTML page, per
+  the "Error surfaces" rule (#287). Other /token error branches still
+  answer Werkzeug HTML; converting them is tracked separately.
+  *Migration:* read `error` from the JSON body; the status moves from 401
+  to 400.
+
 ### Added
 - **Access-point parity contract for token issuance** (#283,
   `tests/test_token_issuance_parity.py`): the set of CALL SITES of
