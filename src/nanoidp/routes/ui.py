@@ -239,15 +239,8 @@ def user_create() -> ResponseReturnValue:
         entitlements = [e.strip() for e in request.form.get("entitlements", "").split("\n") if e.strip()]
         source_acl = [a.strip() for a in request.form.get("source_acl", "").split("\n") if a.strip()]
 
-        # Parse dynamic attributes
-        attr_keys = request.form.getlist("attr_key[]")
-        attr_values = request.form.getlist("attr_value[]")
-        attributes = {}
-        for key, value in zip(attr_keys, attr_values, strict=False):
-            key = key.strip()
-            value = value.strip()
-            if key and value:
-                attributes[key] = value
+        # Parse dynamic attributes (shared with the edit route, #291)
+        attributes = _parse_attribute_rows()
 
         user = User(
             username=username,
@@ -340,15 +333,8 @@ def user_edit(username: str) -> ResponseReturnValue:
         entitlements = [e.strip() for e in request.form.get("entitlements", "").split("\n") if e.strip()]
         source_acl = [a.strip() for a in request.form.get("source_acl", "").split("\n") if a.strip()]
 
-        # Parse dynamic attributes
-        attr_keys = request.form.getlist("attr_key[]")
-        attr_values = request.form.getlist("attr_value[]")
-        attributes = {}
-        for key, value in zip(attr_keys, attr_values, strict=False):
-            key = key.strip()
-            value = value.strip()
-            if key and value:
-                attributes[key] = value
+        # Parse dynamic attributes (shared with the edit route, #291)
+        attributes = _parse_attribute_rows()
 
         updated_user = User(
             username=username,
@@ -414,6 +400,39 @@ def clients() -> ResponseReturnValue:
         current_user=session.get("user"),
         revision=current_revision(get_yaml_writer().settings_file),
     )
+
+
+def _parse_attribute_rows() -> dict:
+    """Parse the users form's dynamic attr_key[]/attr_value[] rows (#291).
+
+    Values follow a JSON convention for non-string types: the template
+    renders a container-valued attribute (list/dict, settable via YAML and
+    MCP) as JSON, and a value starting with '[' or '{' is parsed back as
+    JSON here - so a list attribute survives an untouched edit round-trip
+    instead of being stored as its Python repr (the #291 corruption).
+    Anything else stays the literal string the operator typed; a malformed
+    JSON container also stays a string rather than erroring, matching the
+    form's permissive style. Blank key or value drops the row (blank value
+    = remove the attribute).
+    """
+    attributes = {}
+    for key, value in zip(
+        request.form.getlist("attr_key[]"),
+        request.form.getlist("attr_value[]"),
+        strict=False,
+    ):
+        key = key.strip()
+        value = value.strip()
+        if not (key and value):
+            continue
+        if value[0] in "[{":
+            try:
+                attributes[key] = json.loads(value)
+                continue
+            except ValueError:
+                pass
+        attributes[key] = value
+    return attributes
 
 
 def _parse_textarea_list(form_value: str) -> list[str]:

@@ -99,7 +99,15 @@
                                 <input type="text" class="form-control form-control-sm" name="attr_key[]" value="{{ key }}" placeholder="Key">
                             </div>
                             <div class="col-5">
-                                <input type="text" class="form-control form-control-sm" name="attr_value[]" value="{{ value }}" placeholder="Value">
+                                {# Non-string values (a list/dict attribute set via
+                                   YAML or MCP) render as JSON so an untouched edit
+                                   round-trip preserves them; the route parses a
+                                   value starting with [ or { back as JSON (#291).
+                                   Plain strings stay verbatim. #}
+                                {# |forceescape after |tojson: tojson marks its
+                                   output safe and does NOT escape double quotes,
+                                   which would break this double-quoted attribute. #}
+                                <input type="text" class="form-control form-control-sm" name="attr_value[]" value="{{ value if value is string else value|tojson|forceescape }}" placeholder="Value">
                             </div>
                             <div class="col-2">
                                 <button type="button" class="btn btn-outline-danger btn-sm w-100" onclick="removeAttribute(this)">
