@@ -2667,11 +2667,21 @@ class NanoIDPTestAgent:
             )
 
             success = all(checks.values())
+            message = "; ".join(f"{k}={v}" for k, v in checks.items())
+            if not success:
+                # Flake forensics (#309): on failure, capture what the agent
+                # actually SAW - statuses and body prefixes - since the
+                # server log cannot show response bodies.
+                message += (
+                    f" | valid: {valid.status_code} {valid.text[:160]!r}"
+                    f" | unknown: {unknown.status_code} {unknown.text[:160]!r}"
+                    f" | malformed: {malformed.status_code} {malformed.text[:160]!r}"
+                )
             return self._add_result(
                 "SAML Attribute Query",
                 TestCategory.SAML,
                 success,
-                "; ".join(f"{k}={v}" for k, v in checks.items()),
+                message,
                 checks,
             )
         except Exception as e:

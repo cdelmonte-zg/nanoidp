@@ -73,7 +73,9 @@ class TestRotationEnabled:
         assert first.status_code == 200
 
         reuse = _refresh(client, auth_header, tokens["refresh_token"])
-        assert reuse.status_code == 401
+        # invalid_grant JSON since #308 (was a 401 HTML abort).
+        assert reuse.status_code == 400
+        assert reuse.get_json()["error"] == "invalid_grant"
 
     def test_rotated_replacement_works(self, client, auth_header):
         tokens = _password_grant(client, auth_header)

@@ -348,7 +348,10 @@ class TestPasswordGrant:
             'password': 'wrong-password'
         }, headers=auth_header)
 
-        assert response.status_code == 401
+        # invalid_grant JSON since #308 (was a 401 HTML abort): §5.2 keeps
+        # 401 for client authentication, not resource-owner credentials.
+        assert response.status_code == 400
+        assert response.get_json()["error"] == "invalid_grant"
 
     def test_password_grant_missing_username(self, client, auth_header):
         """Test password grant without username."""

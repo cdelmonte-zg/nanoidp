@@ -819,7 +819,15 @@ def token() -> ResponseReturnValue:
             endpoint="/token",
             details={"reason": "Client authentication required", "grant_type": grant_type},
         )
-        return abort(401, description="Client authentication required")
+        return (
+            jsonify(
+                {
+                    "error": "invalid_client",
+                    "error_description": "Client authentication required",
+                }
+            ),
+            401,
+        )
 
     # Reject if body client_id conflicts with the authenticated client in the header
     if identity.mismatch:
@@ -830,8 +838,16 @@ def token() -> ResponseReturnValue:
             client_id=auth.username if auth else None,
             details={"reason": "client_id mismatch", "body_client_id": client_id},
         )
-        return abort(
-            401, description="client_id in request body does not match authenticated client"
+        return (
+            jsonify(
+                {
+                    "error": "invalid_client",
+                    "error_description": (
+                        "client_id in request body does not match authenticated client"
+                    ),
+                }
+            ),
+            401,
         )
 
     # One client-authentication boundary for every grant (#188, #254
@@ -861,7 +877,15 @@ def token() -> ResponseReturnValue:
             client_id=client_id,
             details={"reason": "Invalid 'exp' parameter", "grant_type": grant_type},
         )
-        return abort(400, description="'exp' must be an integer number of minutes")
+        return (
+            jsonify(
+                {
+                    "error": "invalid_request",
+                    "error_description": "'exp' must be an integer number of minutes",
+                }
+            ),
+            400,
+        )
     # Same bounds the Settings model enforces for token_expiry_minutes
     if not 1 <= exp_minutes <= 1440:
         audit_event(
@@ -871,7 +895,15 @@ def token() -> ResponseReturnValue:
             client_id=client_id,
             details={"reason": "'exp' out of range", "grant_type": grant_type},
         )
-        return abort(400, description="'exp' must be between 1 and 1440 minutes")
+        return (
+            jsonify(
+                {
+                    "error": "invalid_request",
+                    "error_description": "'exp' must be between 1 and 1440 minutes",
+                }
+            ),
+            400,
+        )
 
     extra_claims = None
     extra_raw = request.form.get("extra")
@@ -886,7 +918,15 @@ def token() -> ResponseReturnValue:
                 client_id=client_id,
                 details={"reason": "Invalid JSON in 'extra'", "grant_type": grant_type},
             )
-            return abort(400, description="Invalid JSON in 'extra'")
+            return (
+                jsonify(
+                    {
+                        "error": "invalid_request",
+                        "error_description": "Invalid JSON in 'extra'",
+                    }
+                ),
+                400,
+            )
         # Any JSON scalar/array parses fine but is not a claims mapping
         if not isinstance(parsed_extra, dict):
             audit_event(
@@ -896,7 +936,15 @@ def token() -> ResponseReturnValue:
                 client_id=client_id,
                 details={"reason": "'extra' is not a JSON object", "grant_type": grant_type},
             )
-            return abort(400, description="'extra' must be a JSON object")
+            return (
+                jsonify(
+                    {
+                        "error": "invalid_request",
+                        "error_description": "'extra' must be a JSON object",
+                    }
+                ),
+                400,
+            )
         extra_claims = parsed_extra
 
     # Per-grant dispatch
@@ -909,7 +957,17 @@ def token() -> ResponseReturnValue:
             client_id=client_id,
             details={"reason": f"Unsupported grant type: {grant_type}", "grant_type": grant_type},
         )
-        return abort(400, description=f"Unsupported grant_type: {grant_type}")
+        # The echoed value is the caller's own request parameter, not
+        # internal detail - fine in a JSON body (#308).
+        return (
+            jsonify(
+                {
+                    "error": "unsupported_grant_type",
+                    "error_description": f"Unsupported grant_type: {grant_type}",
+                }
+            ),
+            400,
+        )
 
     ctx = _GrantContext(
         config=config,

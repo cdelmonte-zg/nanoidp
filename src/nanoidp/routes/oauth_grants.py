@@ -12,7 +12,6 @@ from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Tuple, Union
 
 from flask import (
-    abort,
     jsonify,
     request,
 )
@@ -141,6 +140,21 @@ def _resolve_token_resource(
     return (result.granted or None), None
 
 
+def _oauth_error(error: str, description: str, status: int = 400) -> GrantResult:
+    """RFC 6749 §5.2 error JSON - the #287 "Error surfaces" shape for every
+    /token error branch (#308: these used to be Werkzeug abort() HTML).
+    Descriptions are FIXED text; library/exception detail belongs in the
+    audit events, never here (the #200/#307 rule). §5.2 semantics used:
+    invalid_request = missing/malformed parameter; invalid_grant = the
+    presented grant (code, refresh token, resource-owner credentials) is
+    invalid, expired, revoked or issued to another client; invalid_client
+    stays with the authentication helpers in oauth.py."""
+    return (
+        jsonify({"error": error, "error_description": description}),
+        status,
+    )
+
+
 def _grant_refresh_token(ctx: _GrantContext) -> GrantResult:
     """refresh_token grant (RFC 6749 §6; rotation per RFC 9700 §4.14)."""
     refresh_token = request.form.get("refresh_token", "")
@@ -152,7 +166,7 @@ def _grant_refresh_token(ctx: _GrantContext) -> GrantResult:
             client_id=ctx.client_id,
             details={"reason": "Missing refresh_token", "grant_type": ctx.grant_type},
         )
-        return abort(400, description="refresh_token is required")
+        return _oauth_error("invalid_request", "refresh_token is required")
 
     # Verify and decode refresh token
     crypto = get_crypto_service(ctx.config.settings.keys_dir)
@@ -198,7 +212,7 @@ def _grant_refresh_token(ctx: _GrantContext) -> GrantResult:
             client_id=ctx.client_id,
             details={"reason": "Not a refresh token", "grant_type": ctx.grant_type},
         )
-        return abort(400, description="Invalid token type")
+        return _oauth_error("invalid_grant", "The presented token is not a refresh token")
 
     # A refresh token may only be spent by the client it was issued to
     # (RFC 9700 §4.14, #56). Since 3.0 the binding claim is MANDATORY (#73):
@@ -241,12 +255,12 @@ def _grant_refresh_token(ctx: _GrantContext) -> GrantResult:
                 "bound_client": bound_client,
             },
         )
-        return abort(401, description="Refresh token was not issued to this client")
+        return _oauth_error("invalid_grant", "Refresh token was not issued to this client")
 
     # Extract username and get user data
     username = payload.get("sub")
     if not username:
-        return abort(400, description="Invalid token: missing subject")
+        return _oauth_error("invalid_grant", "Refresh token carries no subject")
 
     user = ctx.config.get_user(username)
     if not user:
@@ -258,7 +272,7 @@ def _grant_refresh_token(ctx: _GrantContext) -> GrantResult:
             client_id=ctx.client_id,
             details={"reason": "User not found", "grant_type": ctx.grant_type},
         )
-        return abort(401, description="User not found")
+        return _oauth_error("invalid_grant", "The user this grant was issued for no longer exists")
 
     # Recover the originally granted scope persisted in the refresh token
     # so an ID Token is re-issued when 'openid' was granted (OIDC Core
@@ -397,7 +411,7 @@ def _grant_refresh_token(ctx: _GrantContext) -> GrantResult:
                 "grant_type": ctx.grant_type,
             },
         )
-        return abort(401, description="Refresh token has been revoked")
+        return _oauth_error("invalid_grant", "Refresh token has been revoked")
 
     # Resource indicators (#187): the refresh may narrow the bound resources
     # to a subset of what the refresh token remembers, never widen them - a
@@ -439,10 +453,9 @@ def _grant_password(ctx: _GrantContext) -> GrantResult:
                 "grant_type": ctx.grant_type,
             },
         )
-        return abort(
-            400,
-            description="Unsupported grant_type: the password grant is "
-            "disabled by the oauth21 profile",
+        return _oauth_error(
+            "unsupported_grant_type",
+            "The password grant is disabled by the oauth21 profile",
         )
 
     username = request.form.get("username", "").strip()
@@ -459,7 +472,7 @@ def _grant_password(ctx: _GrantContext) -> GrantResult:
                 "grant_type": ctx.grant_type,
             },
         )
-        return abort(400, description="username and password required for password grant")
+        return _oauth_error("invalid_request", "username and password are required for the password grant")
 
     user = ctx.config.authenticate(username, password)
     if not user:
@@ -471,7 +484,7 @@ def _grant_password(ctx: _GrantContext) -> GrantResult:
             client_id=ctx.client_id,
             details={"reason": "Invalid credentials", "grant_type": ctx.grant_type},
         )
-        return abort(401, description="Invalid credentials")
+        return _oauth_error("invalid_grant", "Invalid resource owner credentials")
 
     # Scope validation (issue #186), same rule as every other grant.
     client = ctx.config.get_client(ctx.client_id)
@@ -533,7 +546,7 @@ def _grant_authorization_code(ctx: _GrantContext) -> GrantResult:
             client_id=ctx.client_id,
             details={"reason": "Missing authorization code", "grant_type": ctx.grant_type},
         )
-        return abort(400, description="code is required")
+        return _oauth_error("invalid_request", "code is required")
 
     if not redirect_uri:
         audit_event(
@@ -543,7 +556,7 @@ def _grant_authorization_code(ctx: _GrantContext) -> GrantResult:
             client_id=ctx.client_id,
             details={"reason": "Missing redirect_uri", "grant_type": ctx.grant_type},
         )
-        return abort(400, description="redirect_uri is required")
+        return _oauth_error("invalid_request", "redirect_uri is required")
 
     # Consume the authorization code
     auth_code_store = get_auth_code_store()
@@ -565,7 +578,7 @@ def _grant_authorization_code(ctx: _GrantContext) -> GrantResult:
                 "grant_type": ctx.grant_type,
             },
         )
-        return abort(400, description="Invalid or expired authorization code")
+        return _oauth_error("invalid_grant", "Invalid or expired authorization code")
 
     # Get the user from the authorization code
     username = auth_code.username
@@ -579,7 +592,7 @@ def _grant_authorization_code(ctx: _GrantContext) -> GrantResult:
             client_id=ctx.client_id,
             details={"reason": "User not found", "grant_type": ctx.grant_type},
         )
-        return abort(401, description="User not found")
+        return _oauth_error("invalid_grant", "The user this grant was issued for no longer exists")
 
     # Re-validate against the vocabulary and this client's allowed_scopes
     # (issue #186): both may have changed between /authorize issuing the
