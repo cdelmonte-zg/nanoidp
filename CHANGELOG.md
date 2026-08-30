@@ -224,8 +224,6 @@ previous leniency allowed - needs a one-time adjustment.
   opt-in feature; it also stops rejecting a valid path-empty absolute URI
   (RFC 3986 §3, e.g. `about:`). No audience bypass or escalation.
 
-## [2.8.0] - 2026-08-29
-
 ### Fixed
 - **MCP `update_user` can now update custom `attributes`** (#280): the field
   was accepted by `create_user` and returned by every read surface, but the
@@ -243,6 +241,10 @@ previous leniency allowed - needs a one-time adjustment.
   temp-then-replace primitive every other config writer uses - a crash could
   leave a torn file, and a template error reached disk unvalidated. Both now
   validate through the document models before anything touches disk.
+
+## [2.8.0] - 2026-08-29
+
+### Fixed
 - **`client_credentials` no longer returns a refresh token** (#239). RFC
   6749 §4.4.3: "A refresh token SHOULD NOT be included" - the client
   authenticates itself on every request, and the token handed out was a
