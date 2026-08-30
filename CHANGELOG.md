@@ -39,9 +39,10 @@ previous leniency allowed - needs a one-time adjustment.
   - **Two authentication methods in one request are rejected** (HTTP Basic and a
     body `client_secret` together, RFC 6749 §2.3) - Basic no longer silently
     wins. *Migration:* send credentials one way only.
-  - Public-client policy is unchanged: `/introspect` and `/device_authorization`
-    still refuse public clients; `/revoke` keeps its RFC 7009 §2.1 ownership
-    relaxation.
+  - Public-client policy: `/introspect` refuses public clients (RFC 7662),
+    `/revoke` keeps its RFC 7009 §2.1 ownership relaxation, and
+    `/device_authorization` now accepts a public client by client_id alone
+    (RFC 8628, see the device-flow entry below).
 - **`/authorize` reports errors after `redirect_uri` validation by redirecting
   to the client** (#189, RFC 6749 §4.1.2.1 / RFC 9207): `unsupported_response_type`,
   `invalid_scope`, PKCE errors and `invalid_target` are now `302` redirects
@@ -59,7 +60,11 @@ previous leniency allowed - needs a one-time adjustment.
   tool gains an optional `client_id` (which must name a real client) that binds
   the minted token and issues a refresh token spendable by it; without it the
   tool mints an unbound access token with no refresh token at all, rather than
-  hand back one that could not be spent.
+  hand back one that could not be spent. The HTTP testing endpoint
+  `POST /api/users/<username>/token` gets the same treatment - a new optional
+  `client_id` binds the token, and it no longer returns a `refresh_token` when
+  unbound - so all three token minters (a grant, the MCP tool, this endpoint)
+  agree.
 
 ### Added
 - **Horizontal `/authorize` login card composition** (#249). New per-client
@@ -71,6 +76,20 @@ previous leniency allowed - needs a one-time adjustment.
   Full support across settings.yaml, the UI client form, and the MCP
   `create_client`/`update_client` tools; omitted (or `"vertical"`) writes
   nothing to YAML, matching every other default-valued client field.
+- **Public clients on the device flow** (#255, RFC 8628). A public client
+  (`token_endpoint_auth_method: "none"`) can now use the device authorization
+  grant: it presents its `client_id` alone at `/device_authorization` (§3.1)
+  and again when polling `/token` (§3.4), with no secret. The issued
+  `device_code` is bound to that `client_id` and only it can redeem it, which
+  stands in for client authentication (it presents client_id as a parameter,
+  not via HTTP Basic or a secret, RFC 8628 §3.1; both are rejected). Confidential
+  clients still authenticate as before; #188 shipped public clients for
+  authorization_code + PKCE, and this completes the pair for CLI/TV/IoT-style
+  clients. Because an unauthenticated device authorization request is cheaper to
+  spam, the in-memory device-code store is now capacity-bounded: at the cap it
+  returns a plain `503` (with `Retry-After`) rather than growing without bound or
+  evicting a live authorization - not an OAuth error code, since RFC 6749 §5.2
+  has no registered code for server saturation.
 - **Mock protected MCP server as an e2e fixture** (#191). `e2e/mock_mcp_server.py`
   is a minimal MCP Streamable HTTP resource server (the `mcp` SDK's
   resource-server mode) with three scope-gated tools (`read_document` /

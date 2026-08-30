@@ -670,9 +670,12 @@ class TestNonTokenEndpointAuthEnforcement:
         )
         assert resp.status_code == 401
 
-    def test_device_public_client_rejected(self, client, public_client):
+    def test_device_public_client_accepted(self, client, public_client):
+        # #255: a public client presents client_id alone at the device
+        # authorization endpoint (RFC 8628 §3.1), no secret.
         resp = client.post("/device_authorization", data={"client_id": PUBLIC_ID})
-        assert resp.status_code == 401
+        assert resp.status_code == 200
+        assert "device_code" in json.loads(resp.data)
 
     # positive: a client_secret_post client authenticates over the BODY (the
     # channel its registered method names) at each endpoint.
@@ -718,3 +721,62 @@ class TestNonTokenEndpointAuthEnforcement:
         )
         assert resp.status_code == 200
         assert "device_code" in json.loads(resp.data)
+
+
+class TestPublicClientDeviceFlow:
+    """#255: a public client completes the device flow end to end (RFC 8628),
+    presenting client_id alone at the device authorization endpoint (§3.1) and
+    at the token endpoint (§3.4) - no secret anywhere. The device_code is bound
+    to that client_id, which is what stands in for client authentication."""
+
+    _GRANT = "urn:ietf:params:oauth:grant-type:device_code"
+
+    def _authorize(self, client, user_code):
+        return client.post(
+            "/device",
+            data={
+                "user_code": user_code,
+                "username": "admin",
+                "password": "admin",
+                "action": "authorize",
+            },
+        )
+
+    def test_public_client_completes_the_device_flow(self, client, public_client):
+        # 1. device authorization with client_id alone
+        resp = client.post("/device_authorization", data={"client_id": PUBLIC_ID})
+        assert resp.status_code == 200, resp.data
+        data = json.loads(resp.data)
+        # 2. user approves
+        assert self._authorize(client, data["user_code"]).status_code == 200
+        # 3. poll the token endpoint with client_id alone, no secret
+        resp = client.post(
+            "/token",
+            data={"grant_type": self._GRANT, "device_code": data["device_code"], "client_id": PUBLIC_ID},
+        )
+        assert resp.status_code == 200, resp.data
+        assert "access_token" in json.loads(resp.data)
+
+    def test_device_code_is_bound_to_the_issuing_public_client(self, client, public_client):
+        # a device_code issued to the public client cannot be polled by another
+        resp = client.post("/device_authorization", data={"client_id": PUBLIC_ID})
+        data = json.loads(resp.data)
+        self._authorize(client, data["user_code"])
+        resp = client.post(
+            "/token",
+            data={"grant_type": self._GRANT, "device_code": data["device_code"]},
+            headers=_basic("demo-client", "demo-secret"),
+        )
+        assert resp.status_code == 400
+        assert json.loads(resp.data)["error"] == "invalid_grant"
+
+    def test_public_client_basic_header_is_rejected(self, client, public_client):
+        # RFC 8628 §3.1: a public client uses the client_id parameter, not Basic.
+        resp = client.post("/device_authorization", headers=_basic(PUBLIC_ID, "anything"))
+        assert resp.status_code == 401
+
+    def test_public_client_body_secret_is_rejected(self, client, public_client):
+        resp = client.post(
+            "/device_authorization", data={"client_id": PUBLIC_ID, "client_secret": "x"}
+        )
+        assert resp.status_code == 401

@@ -34,7 +34,11 @@ from ..services import (
     get_revocation_store,
     get_token_service,
 )
-from ..services.device_code import DEVICE_CODE_EXPIRES_IN, DEVICE_POLL_INTERVAL
+from ..services.device_code import (
+    DEVICE_CODE_EXPIRES_IN,
+    DEVICE_POLL_INTERVAL,
+    DeviceCodeStoreFull,
+)
 from ..services.discovery import issuer_qualifies_for_iss_parameter
 from ..services.redirect_uri import (
     append_authorization_params,
@@ -1348,28 +1352,40 @@ def device_authorization() -> ResponseReturnValue:
     Device Authorization endpoint (RFC 8628).
     Initiates the device flow by returning device_code and user_code.
 
-    Required:
-    - Client authentication (Basic auth)
+    Client identification:
+    - A confidential client authenticates with its registered method.
+    - A public client (token_endpoint_auth_method 'none') presents its
+      client_id alone, no secret (RFC 8628 §3.1, #255).
 
     Optional:
     - scope: Requested scopes
     """
     config = get_config()
 
-    # Client authentication, enforced as at the token endpoint (#262):
-    # registered method enforced, two auth methods in one request rejected.
-    # Public clients are NOT supported on the device flow yet (#255 tracks
-    # that decision; today a public client uses authorization_code + PKCE).
+    # Client authentication. A confidential client authenticates as at the
+    # token endpoint (#262): registered method enforced, two auth methods in
+    # one request rejected. A PUBLIC client (token_endpoint_auth_method 'none')
+    # presents its client_id alone with no secret (RFC 8628 §3.1, #255): the
+    # issued device_code is bound to that client_id and only it can poll for
+    # the token, which is what stands in for client authentication here (the
+    # same shape as /revoke's public relaxation).
     auth = request.authorization
     body_client_id = request.form.get("client_id")
     body_client_secret = request.form.get("client_secret") or None
     resolved_client_id = (auth.username if auth else None) or body_client_id
     device_client = config.get_client(resolved_client_id) if resolved_client_id else None
     if device_client is not None and device_client.is_public:
-        auth_error: Optional[str] = (
-            "public clients are not supported on the device flow yet (#255); "
-            "this client's token_endpoint_auth_method is 'none'"
-        )
+        # RFC 8628 §3.1: a public client provides its client_id as a parameter,
+        # not via HTTP Basic or a client_secret. The client_id is public, so
+        # this is about using the right channel (as /token enforces the
+        # registered method), not secrecy - presenting either is rejected.
+        if auth is not None or body_client_secret is not None:
+            auth_error: Optional[str] = (
+                "a public client presents its client_id as a parameter, without "
+                "HTTP Basic or a client_secret (RFC 8628 §3.1)"
+            )
+        else:
+            auth_error = None
     else:
         auth_error = _enforce_registered_client_auth(
             config, resolved_client_id, auth, body_client_secret
@@ -1447,9 +1463,32 @@ def device_authorization() -> ResponseReturnValue:
 
     # Create the device authorization; the store prunes stale entries and
     # keeps the user-code index internally (#84, previously module globals).
-    device_code, user_code = get_device_code_store().create(
-        client_id, scope, resource=validated_resources
-    )
+    # A hard cap bounds the in-memory store, which matters now that a public
+    # client can create entries with its client_id alone (#255): at capacity,
+    # refuse new authorizations rather than grow without bound or evict a live
+    # one. Deliberately NOT an OAuth error code: RFC 8628 §3.2 says the device
+    # authorization response's errors take the RFC 6749 §5.2 (token endpoint)
+    # form, and §5.2 has no registered code for server saturation (server_error
+    # is registered for the authorization endpoint only, and slow_down is the
+    # token endpoint's POLLING signal, §3.5). So this is a plain HTTP 503 - the
+    # correct semantics for a temporary capacity exhaustion - with a message and
+    # a Retry-After hint, not a fabricated OAuth token error.
+    try:
+        device_code, user_code = get_device_code_store().create(
+            client_id, scope, resource=validated_resources
+        )
+    except DeviceCodeStoreFull:
+        audit_event(
+            "device_authorization_request",
+            "failed",
+            endpoint="/device_authorization",
+            client_id=client_id,
+            details={"reason": "device code store at capacity"},
+        )
+        response = jsonify({"message": "Too many pending device authorizations; retry later"})
+        response.status_code = 503
+        response.headers["Retry-After"] = str(DEVICE_POLL_INTERVAL)
+        return response
 
     audit_event(
         "device_authorization_request",

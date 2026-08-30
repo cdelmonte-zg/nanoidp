@@ -375,3 +375,34 @@ class TestDeviceAuthorizationResponse:
 
         # Should be at least 1 second and at most 60 seconds
         assert 1 <= interval <= 60
+
+
+class TestDeviceCodeStoreCapacity:
+    """#255: the in-memory device code store is capacity-bounded, so a public
+    client (client_id alone, no credential) cannot grow it without bound."""
+
+    def test_store_raises_when_full(self, monkeypatch):
+        from nanoidp.services import device_code as dc
+
+        monkeypatch.setattr(dc, "MAX_PENDING_DEVICE_CODES", 2)
+        store = dc.DeviceCodeStore()
+        store.create("demo-client", "openid")
+        store.create("demo-client", "openid")
+        with pytest.raises(dc.DeviceCodeStoreFull):
+            store.create("demo-client", "openid")
+
+    def test_endpoint_returns_plain_503_at_capacity(self, client, auth_header, monkeypatch):
+        # A plain HTTP 503 (with a message + Retry-After), NOT a fabricated OAuth
+        # error: RFC 8628 §3.2 takes the RFC 6749 §5.2 error form, which has no
+        # registered code for saturation (server_error is authorization-endpoint
+        # only; slow_down is the token endpoint's polling signal, §3.5).
+        from nanoidp.services import device_code as dc
+
+        monkeypatch.setattr(dc, "MAX_PENDING_DEVICE_CODES", 1)
+        assert client.post("/device_authorization", headers=auth_header).status_code == 200
+        resp = client.post("/device_authorization", headers=auth_header)
+        assert resp.status_code == 503
+        body = json.loads(resp.data)
+        assert "error" not in body  # not a fake OAuth token error
+        assert "message" in body
+        assert resp.headers.get("Retry-After")
