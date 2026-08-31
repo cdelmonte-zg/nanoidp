@@ -336,3 +336,81 @@ to confirm or override.
    next save. Shipping `auto_login` there without its sibling `login_mode`
    would repeat that exact bug, so the assumption is to add both. Worth
    flagging as a deliberate small scope expansion, not an oversight.
+
+## Review Round 1 (head `c4c71ff`)
+
+All four `#250-assumption` call-outs above were accepted as-is. Two
+blocking findings, both reproduced live; the rest are pre-merge polish.
+
+### Blocking
+
+1. **A stale session `login_hint` triggers auto-login on requests that
+   never sent one.** `_read_authorize_params()` gives `login_hint` the same
+   session-fallback-and-store treatment as the other nine `/authorize`
+   parameters, but unlike them it decides *who gets authenticated*, and the
+   stored hint survives every leg that doesn't end in a successful code
+   issuance (`_authorize_error_redirect` and an abandoned picker clear
+   nothing). Two measured consequences: (a) an unknown-persona probe
+   "poisons" the session - every subsequent `/authorize` in that browser,
+   even with no `login_hint` at all, keeps hitting the error redirect
+   instead of the picker, until cookies are cleared; (b) a picker selection
+   can be silently overridden - hint stored while the flag was off, flag
+   then enabled, and the next POST's explicit `username=bob` loses to the
+   session's leftover `alice` hint, since the auto-login check (which never
+   renders a form) runs before `_handle_authorize_login` reads the POST
+   body. Fix: act only on a `login_hint` present in the **current**
+   request (`request.args`/`request.form` directly, not the session
+   fallback `_read_authorize_params()` uses for the other params) - the
+   auto-login branch never has a POST leg of its own, so it never needed
+   the session fallback in the first place. Needs tests for both measured
+   cases.
+2. **`tests/test_config.py`: `TestAutoLogin` swallowed the
+   `class TestUsersYamlPasswordOptional:` header.** Root cause identified
+   (own editing mistake, not a recurring tool bug): the original insertion
+   used that class header as trailing anchor context in the edit's "find"
+   text to place `TestAutoLogin` immediately before it, but the
+   replacement text never repeated the header - the edit tool did exactly
+   what was asked, replacing text that included the header with text that
+   didn't, silently deleting it. Its docstring became a stray string
+   literal as `TestAutoLogin`'s last statement, and every
+   `TestUsersYamlPasswordOptional` method quietly became a `TestAutoLogin`
+   method instead (collection count unaffected: 68 -> 73, nothing lost,
+   nothing failed - exactly why it needed a human review to catch).
+   **Fixed**: header restored above the docstring;
+   `pytest -k TestUsersYamlPasswordOptional` selects its own test again.
+   Noted in memory to catch this shape of mistake earlier next time
+   (verify a class/def count, or diff the hunk, after any insertion
+   anchored on a following line).
+
+### Non-blocking (before merge / optional)
+
+- Pass the attempted username into the failed auto-login audit event, not
+  just inside `reason`'s free text - `_handle_authorize_login`'s failed
+  picker/password attempts already audit a `username` field; the auto-login
+  error redirect should too, so a consumer filtering failed
+  `authorization_request` events by `username` doesn't see every
+  `persona-auto-login:<name>` probe as anonymous.
+- Drop `docs/plans/auto-login.md` before merge, per the #247 precedent and
+  its own header - fold the four `#250-assumption` call-outs into the PR
+  description (where they were always meant to live) first.
+- Add one sentence to the new `docs/SECURITY.md` section: with
+  `auto_login` on and a client with no registered `redirect_uris` (the
+  permissive dev default), a plain GET mints a code for any persona to any
+  `redirect_uri` with zero interaction (measured live). Pre-existing and
+  out of scope, but auto-login removes the one human click persona mode
+  still required, so recommend registering `redirect_uris` for any client
+  used with auto-login.
+- Optional cleanups (none gate the merge): share `document_defaults()`
+  between `update_login_settings`/`update_settings_form` instead of two
+  near-identical mutate pairs each rebuilding a full `SettingsDocument`
+  twice; drop `update_login_settings`'s now-redundant early no-op branch;
+  de-duplicate `AUTO_LOGIN_QS`/`_enable_auto_login`/`_base_form` from their
+  `login_mode`-only counterparts in the test files; drop the stale
+  parameter count from `_AuthorizeParams`' docstring ("the ten" - already
+  eleven fields, and was already wrong at "nine" before this PR) rather
+  than keep maintaining a number.
+
+CHANGELOG: leaving it to the maintainer per the persona-login-mode
+precedent confirmed fine - the draft above is good as-is, milestone
+decision (3.0.0-in-rc vs 3.1) resolved at merge time.
+
