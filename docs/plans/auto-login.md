@@ -221,14 +221,25 @@ the PR description for the maintainer to confirm or override after the fact.
 
 
 ### 6. E2E coverage
-- [ ] [`e2e/test_agent.py`](../../e2e/test_agent.py): extend
-      `test_persona_login_mode()` (or add a new `test_auto_login()` under
-      `TestCategory.PERSONA`) - toggle `auto_login: true` via `/settings`,
-      drive `/authorize` with `login_hint=persona-auto-login:<user>` and
-      assert a redirect straight to the client with a code (no HTML), then
-      the two negatives: unknown persona -> error redirect with `state`
-      preserved, flag off -> picker shown. Restore settings + delete any
-      temp user in a `finally`.
+- [x] [`e2e/test_agent.py`](../../e2e/test_agent.py): new `test_auto_login()`
+      under `TestCategory.PERSONA`, registered alongside
+      `test_persona_login_mode` - enables persona mode, creates a
+      password-less test user, then checks in order: the prefixed hint is
+      inert while `auto_login` is off (picker still shown, same as any
+      other `login_hint`); with the flag on, a known persona logs in
+      directly via `GET /authorize` (a 302 straight to the client with a
+      code, no HTML, exchanged for a real token); an unknown persona
+      reports through the ordinary OAuth error redirect
+      (`error=invalid_request`, `state` preserved, target is the client's
+      `redirect_uri` - never a bare 400). Restores `login_mode`/`auto_login`
+      and deletes the test user in a `finally`. Verified live against
+      `nanoidp --debug` on port 8899 (this machine's port 8000 collides
+      with a VS Code helper process): 62/62 e2e checks pass, including both
+      `Persona Login Mode` and the new `Auto-Login Personas`. The run's
+      only side effect was `config/users.yaml` picking up the YAML writer's
+      own re-indentation style on the unrelated pre-existing seed users (a
+      known side effect of any write through it, not something this
+      feature introduced) - reverted rather than committed.
 
 ### 7. Docs (last)
 - [ ] `book/src/reference/configuration.md` - new "Auto-login" subsection
