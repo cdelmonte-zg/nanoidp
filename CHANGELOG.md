@@ -167,6 +167,23 @@ previous leniency allowed - needs a one-time adjustment.
   HTML.
 
 ### Added
+- **Auto-login personas** (#250, opt-in, off by default): with
+  `login.mode: persona`, a new `login.auto_login: true` lets an OIDC
+  `/authorize` request log a configured user in directly - no picker, no
+  HTML - by sending `login_hint: persona-auto-login:USERNAME`, for driving a
+  real OIDC client library in automated integration tests. Any other
+  `login_hint` is passed through unchanged, and with the flag off a
+  prefixed hint is inert too, so the picker still shows exactly as before.
+  An unknown persona reports through the standard OAuth error redirect
+  (`error=invalid_request`, `state` preserved), never a bare `400`. First
+  implementation surface is OIDC `/authorize` only; the device flow and
+  SAML have no defined transport for the hint yet. Ships with settings UI
+  and MCP (`get_settings`/`update_settings`) exposure, an `/api/config`
+  `login` block (which also picked up the pre-existing `login_mode` field
+  it was missing since persona mode shipped), and an
+  `examples/persona-login` walkthrough. Like the rest of NanoIDP, a local
+  development/testing convenience only - not an authentication mode for
+  deployed environments.
 - **Access-point parity contract for token issuance** (#283,
   `tests/test_token_issuance_parity.py`): the set of CALL SITES of
   `TokenService.create_token` (`file::function`, AST-checked) must equal a
