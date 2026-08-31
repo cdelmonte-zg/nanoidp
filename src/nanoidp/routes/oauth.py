@@ -112,7 +112,7 @@ def jwks() -> ResponseReturnValue:
 
 @dataclass
 class _AuthorizeParams:
-    """The ten /authorize request parameters, read once per request.
+    """The /authorize request parameters, read once per request.
 
     On GET they come from the query string; on the login-form POST leg they
     come from the form with the session as fallback (the GET leg stored them
@@ -133,7 +133,7 @@ class _AuthorizeParams:
     # OIDC Core 3.1.2.1 (#250): read from the CURRENT request only, never the
     # session fallback the other params use - unlike them, login_hint decides
     # WHO gets authenticated, and the auto-login branch it feeds never has a
-    # POST leg of its own to need that fallback for (#250 review round 1,
+    # POST leg of its own to need that fallback for (#318 review round 1,
     # blocking 1). Ignored unless it carries the reserved
     # 'persona-auto-login:' prefix - see _try_persona_auto_login.
     login_hint: str
@@ -162,7 +162,7 @@ def _read_authorize_params() -> _AuthorizeParams:
         claims_param=params.get("claims", session.get("oauth_claims", "")),
         # RFC 8707 resource is repeatable (#187): read every value, not one.
         resources=params.getlist("resource") or session.get("oauth_resources", []),
-        # No session fallback (#250 review round 1, blocking 1): a stale
+        # No session fallback (#318 review round 1, blocking 1): a stale
         # login_hint left over from an earlier request in this browser
         # session must never resurrect auto-login (or override an explicit
         # picker selection) on a request that didn't send one.
@@ -206,7 +206,13 @@ def _authorize_reject(
 
 
 def _authorize_error_redirect(
-    config: ConfigManager, p: _AuthorizeParams, error: str, description: str, reason: str
+    config: ConfigManager,
+    p: _AuthorizeParams,
+    error: str,
+    description: str,
+    reason: str,
+    *,
+    username: Optional[str] = None,
 ) -> ResponseReturnValue:
     """Deliver an authorization error to the client through the ALREADY
     VALIDATED redirect_uri (RFC 6749 §4.1.2.1), carrying iss so the client
@@ -214,12 +220,19 @@ def _authorize_error_redirect(
     9207 §2: iss appears on error responses too). Only reachable after
     _validate_authorize_redirect_uri has run, so this never redirects to an
     unvalidated URI - errors before that stay local (see _authorize_reject).
+
+    ``username`` (#318 review round 1) is the attempted username, when one
+    exists - e.g. an unknown persona in an auto-login hint - so a consumer
+    filtering failed ``authorization_request`` events by ``username`` sees
+    it structured, not only inside ``reason``'s free text. ``None`` for
+    every other caller, exactly as before.
     """
     audit_event(
         "authorization_request",
         "failed",
         endpoint="/authorize",
         client_id=p.client_id,
+        username=username,
         details={"reason": reason},
     )
     params = {"error": error, "error_description": description}
@@ -575,6 +588,7 @@ def _try_persona_auto_login(
             "invalid_request",
             "Unknown persona for auto-login",
             f"auto-login: unknown persona {username!r}",
+            username=username,
         )
 
     return _issue_authorization_code(config, p, user.username, auto_login=True)

@@ -27,6 +27,29 @@ def _enable_persona_mode(app) -> None:
         get_config().settings.login_mode = "persona"
 
 
+def _login_as_admin(client) -> None:
+    with client.session_transaction() as sess:
+        sess["user"] = "admin"
+
+
+def _settings_base_form(settings) -> dict:
+    """Minimal '/settings' form: every other field is 'absent = unchanged'
+    (#131) for text/select fields, so only fields relevant to a given test
+    need to be included. Shared by TestSettingsUiLoginMode and
+    TestSettingsUiAutoLogin (#318 review round 1) so the two can't drift on
+    what a real settings-form submission looks like.
+    """
+    return {
+        "issuer": settings.issuer,
+        "audience": settings.audience,
+        "token_expiry_minutes": settings.token_expiry_minutes,
+        "saml_entity_id": settings.saml_entity_id,
+        "saml_sso_url": settings.saml_sso_url,
+        "default_acs_url": settings.default_acs_url,
+        "allowed_identity_classes": "",
+    }
+
+
 class TestPasswordModeUnchanged:
     """Regression: default 'password' mode behaves exactly as before."""
 
@@ -336,22 +359,10 @@ class TestSettingsUiLoginMode:
     field, following the same omit-at-default convention as security_profile."""
 
     def _login_as_admin(self, client) -> None:
-        with client.session_transaction() as sess:
-            sess["user"] = "admin"
+        _login_as_admin(client)
 
     def _base_form(self, settings) -> dict:
-        """Minimal settings form: every other field is 'absent = unchanged'
-        (#131) for text/select fields, so only fields relevant to this test
-        need to be included."""
-        return {
-            "issuer": settings.issuer,
-            "audience": settings.audience,
-            "token_expiry_minutes": settings.token_expiry_minutes,
-            "saml_entity_id": settings.saml_entity_id,
-            "saml_sso_url": settings.saml_sso_url,
-            "default_acs_url": settings.default_acs_url,
-            "allowed_identity_classes": "",
-        }
+        return _settings_base_form(settings)
 
     def test_settings_page_shows_login_mode_select(self, client):
         self._login_as_admin(client)
@@ -456,19 +467,10 @@ class TestSettingsUiAutoLogin:
     the other checkboxes on this page."""
 
     def _login_as_admin(self, client) -> None:
-        with client.session_transaction() as sess:
-            sess["user"] = "admin"
+        _login_as_admin(client)
 
     def _base_form(self, settings) -> dict:
-        return {
-            "issuer": settings.issuer,
-            "audience": settings.audience,
-            "token_expiry_minutes": settings.token_expiry_minutes,
-            "saml_entity_id": settings.saml_entity_id,
-            "saml_sso_url": settings.saml_sso_url,
-            "default_acs_url": settings.default_acs_url,
-            "allowed_identity_classes": "",
-        }
+        return _settings_base_form(settings)
 
     def test_settings_page_shows_auto_login_checkbox(self, client):
         self._login_as_admin(client)

@@ -81,6 +81,15 @@ def _mutate_auto_login(document: Dict[str, Any], auto_login: bool, auto_login_de
     merge_optional_nested_field(document, "login", "auto_login", auto_login, auto_login_default)
 
 
+def _login_settings_defaults() -> tuple[str, bool]:
+    """``(login.mode default, login.auto_login default)`` from one
+    ``document_defaults()`` call, shared by ``update_login_settings`` and
+    ``update_settings_form`` instead of each rebuilding a full
+    ``SettingsDocument`` twice for the same two values."""
+    defaults = document_defaults()
+    return defaults["login.mode"], defaults["login.auto_login"]
+
+
 class YamlWriter:
     """Service for safely writing YAML configuration files."""
 
@@ -418,11 +427,7 @@ class YamlWriter:
         """
         if mode:
             Settings.validate_login_mode(mode)
-        if not mode and auto_login is None:
-            return self._atomic_write(self.settings_file, lambda data: None, expected_revision)
-
-        login_mode_default = document_defaults()["login.mode"]
-        auto_login_default = document_defaults()["login.auto_login"]
+        login_mode_default, auto_login_default = _login_settings_defaults()
 
         def mutate(data: Dict[str, Any]) -> None:
             if mode:
@@ -475,8 +480,7 @@ class YamlWriter:
         """
         if login_mode:
             Settings.validate_login_mode(login_mode)
-        login_mode_default = document_defaults()["login.mode"]
-        auto_login_default = document_defaults()["login.auto_login"]
+        login_mode_default, auto_login_default = _login_settings_defaults()
 
         def mutate(data: Dict[str, Any]) -> None:
             _mutate_settings_section(data, "oauth", oauth_fields)

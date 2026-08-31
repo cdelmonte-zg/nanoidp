@@ -149,16 +149,12 @@ class TestPersonaModeOrthogonalToOauth21:
                 get_config().settings.security_profile = "dev"
 
 
-AUTO_LOGIN_QS = (
-    "response_type=code&client_id=demo-client"
-    "&redirect_uri=http://localhost:3000/callback&scope=openid&state=xyz"
-    "&login_hint=persona-auto-login:admin"
-)
+AUTO_LOGIN_QS = AUTHORIZE_QS + "&login_hint=persona-auto-login:admin"
 
 
 def _enable_auto_login(app) -> None:
+    _enable_persona_mode(app)
     with app.app_context():
-        get_config().settings.login_mode = "persona"
         get_config().settings.auto_login = True
 
 
@@ -187,6 +183,21 @@ class TestAuthorizeAutoLogin:
         assert location.startswith("http://localhost:3000/callback?")
         assert "error=invalid_request" in location
         assert "state=xyz" in location
+
+    def test_unknown_persona_audits_the_attempted_username(self, app, client):
+        """#318 review round 1, non-blocking: the attempted name must be a
+        structured `username` field, not only inside `reason`'s free text -
+        same as a failed picker/password attempt already gets."""
+        from nanoidp.services import get_audit_log
+
+        _enable_auto_login(app)
+        qs = AUTO_LOGIN_QS.replace("persona-auto-login:admin", "persona-auto-login:nonexistent")
+
+        client.get(f"/authorize?{qs}", follow_redirects=False)
+
+        with app.app_context():
+            entries = get_audit_log().get_entries(limit=5, event_type="authorization_request")
+        assert entries[0]["username"] == "nonexistent"
 
     def test_flag_off_prefixed_hint_falls_through_to_picker(self, app, client):
         with app.app_context():
@@ -241,7 +252,7 @@ class TestAuthorizeAutoLogin:
         assert entries[0]["details"].get("auto_login") is None
 
     def test_stale_session_login_hint_does_not_poison_later_requests(self, app, client):
-        """Review round 1, blocking 1: an unknown-persona probe must not
+        """#318 review round 1, blocking 1: an unknown-persona probe must not
         leave the session in a state where a later /authorize with NO
         login_hint at all keeps hitting the error redirect instead of the
         picker."""
@@ -257,7 +268,7 @@ class TestAuthorizeAutoLogin:
         assert b"admin" in response.data
 
     def test_stale_session_login_hint_does_not_override_picker_selection(self, app, client):
-        """Review round 1, blocking 1: a login_hint stored while the flag
+        """#318 review round 1, blocking 1: a login_hint stored while the flag
         was off must not resurrect on the picker's own POST leg and
         override an explicit selection once the flag is turned on."""
         with app.app_context():

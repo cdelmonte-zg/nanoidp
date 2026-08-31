@@ -337,7 +337,7 @@ to confirm or override.
    would repeat that exact bug, so the assumption is to add both. Worth
    flagging as a deliberate small scope expansion, not an oversight.
 
-## Review Round 1 (head `c4c71ff`)
+## Review Round 1 (PR #318, head `c4c71ff`)
 
 All four `#250-assumption` call-outs above were accepted as-is. Two
 blocking findings, both reproduced live; the rest are pre-merge polish.
@@ -397,9 +397,16 @@ blocking findings, both reproduced live; the rest are pre-merge polish.
   error redirect should too, so a consumer filtering failed
   `authorization_request` events by `username` doesn't see every
   `persona-auto-login:<name>` probe as anonymous.
+  **Done**: `_authorize_error_redirect()` takes an optional keyword-only
+  `username`, passed through from the unknown-persona auto-login call site;
+  every other caller is unaffected (defaults to `None`, same as before).
+  New test: `test_unknown_persona_audits_the_attempted_username`.
 - Drop `docs/plans/auto-login.md` before merge, per the #247 precedent and
   its own header - fold the four `#250-assumption` call-outs into the PR
   description (where they were always meant to live) first.
+  **Deferred deliberately** to its own explicit final commit, not bundled
+  with this round's fixes - this file is still the active tracking scratch
+  pad for as long as review is ongoing.
 - Add one sentence to the new `docs/SECURITY.md` section: with
   `auto_login` on and a client with no registered `redirect_uris` (the
   permissive dev default), a plain GET mints a code for any persona to any
@@ -409,15 +416,17 @@ blocking findings, both reproduced live; the rest are pre-merge polish.
   used with auto-login.
   **Done**: one sentence added at the end of the "Auto-Login (automated
   testing)" section.
-- Optional cleanups (none gate the merge): share `document_defaults()`
-  between `update_login_settings`/`update_settings_form` instead of two
-  near-identical mutate pairs each rebuilding a full `SettingsDocument`
-  twice; drop `update_login_settings`'s now-redundant early no-op branch;
-  de-duplicate `AUTO_LOGIN_QS`/`_enable_auto_login`/`_base_form` from their
-  `login_mode`-only counterparts in the test files; drop the stale
-  parameter count from `_AuthorizeParams`' docstring ("the ten" - already
-  eleven fields, and was already wrong at "nine" before this PR) rather
-  than keep maintaining a number.
+- Optional cleanups, all **done**: `_login_settings_defaults()` in
+  `yaml_writer.py` shares one `document_defaults()` lookup between
+  `update_login_settings`/`update_settings_form` instead of each rebuilding
+  a full `SettingsDocument` twice; `update_login_settings`'s now-redundant
+  early no-op branch removed (the `mutate` closure was already a no-op for
+  the same inputs); `AUTO_LOGIN_QS` now derives from `AUTHORIZE_QS`,
+  `_enable_auto_login` calls `_enable_persona_mode`, and
+  `TestSettingsUiLoginMode`/`TestSettingsUiAutoLogin`'s `_base_form`/
+  `_login_as_admin` both delegate to shared module-level functions instead
+  of three independent copies; `_AuthorizeParams`' docstring no longer
+  states a parameter count.
 
 CHANGELOG: leaving it to the maintainer per the persona-login-mode
 precedent confirmed fine - the draft above is good as-is, milestone
