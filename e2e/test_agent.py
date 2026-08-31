@@ -3624,6 +3624,142 @@ class NanoIDPTestAgent:
             checks
         )
 
+    def test_auto_login(self) -> TestResult:
+        """#250: OIDC /authorize login_hint=persona-auto-login:USERNAME, gated
+        by 'auto_login' (only active with 'login_mode: persona').
+
+        Enables persona mode, creates a password-less test user, then checks
+        three states in order: the hint is inert while auto_login is off
+        (picker shown, same as any other login_hint); with auto_login on, a
+        known persona is logged in directly - no picker, no HTML - straight
+        to a valid code; an unknown persona reports through the ordinary
+        OAuth error redirect (error=invalid_request, state preserved), never
+        a bare 400. Restores login_mode/auto_login and removes the test user
+        afterward, regardless of how far the checks got.
+        """
+        auto_login_user = "e2e-auto-login-user"
+        checks: Dict[str, bool] = {}
+
+        state = secrets.token_urlsafe(16)
+        redirect_uri = "http://localhost:3000/callback"
+        auth_params = {
+            "response_type": "code",
+            "client_id": self.client_id,
+            "redirect_uri": redirect_uri,
+            "scope": "openid",
+            "state": state,
+        }
+
+        try:
+            # Step 1: enable persona mode (auto_login starts unset/False -
+            # #250-assumption 1, so the flag-off check below needs no
+            # separate settings call) and create a password-less test user.
+            resp = self.session.post(
+                f"{self.base_url}/settings",
+                data={"login_mode": "persona"},
+                timeout=10
+            )
+            checks["enabled_persona_mode"] = resp.status_code == 200
+
+            resp = self.session.post(
+                f"{self.base_url}/users/create",
+                data={"username": auto_login_user, "email": "e2e-auto-login@example.org"},
+                timeout=10
+            )
+            checks["created_passwordless_user"] = resp.status_code in (200, 302)
+
+            hint_params = {**auth_params, "login_hint": f"persona-auto-login:{auto_login_user}"}
+
+            # Step 2: flag off - the prefixed hint is inert, same as any
+            # other login_hint; the picker still shows.
+            flag_off_resp = requests.get(
+                f"{self.base_url}/authorize",
+                params=hint_params,
+                allow_redirects=False,
+                timeout=5
+            )
+            checks["flag_off_shows_picker"] = (
+                flag_off_resp.status_code == 200
+                and 'name="password"' not in flag_off_resp.text
+            )
+
+            # Step 3: enable auto_login.
+            resp = self.session.post(
+                f"{self.base_url}/settings",
+                data={"auto_login": "true"},
+                timeout=10
+            )
+            checks["enabled_auto_login"] = resp.status_code == 200
+
+            # Step 4: known persona - a code straight back, no HTML.
+            auto_login_ok = False
+            authorize_resp = requests.get(
+                f"{self.base_url}/authorize",
+                params=hint_params,
+                allow_redirects=False,
+                timeout=5
+            )
+            if authorize_resp.status_code == 302:
+                location = authorize_resp.headers.get("Location", "")
+                params = parse_qs(urlparse(location).query)
+                if params.get("state", [None])[0] == state and "code" in params:
+                    token_resp = self.session.post(
+                        f"{self.base_url}/token",
+                        data={
+                            "grant_type": "authorization_code",
+                            "code": params["code"][0],
+                            "redirect_uri": redirect_uri,
+                        },
+                        timeout=5
+                    )
+                    auto_login_ok = (
+                        token_resp.status_code == 200
+                        and "access_token" in token_resp.json()
+                    )
+            checks["known_persona_issues_code_directly"] = auto_login_ok
+
+            # Step 5: unknown persona - the ordinary OAuth error redirect
+            # (state preserved), never a bare 400.
+            unknown_state = secrets.token_urlsafe(16)
+            unknown_params = {
+                **auth_params,
+                "state": unknown_state,
+                "login_hint": "persona-auto-login:e2e-nonexistent-persona",
+            }
+            unknown_resp = requests.get(
+                f"{self.base_url}/authorize",
+                params=unknown_params,
+                allow_redirects=False,
+                timeout=5
+            )
+            unknown_ok = False
+            if unknown_resp.status_code == 302:
+                location = urlparse(unknown_resp.headers.get("Location", ""))
+                params = parse_qs(location.query)
+                unknown_ok = (
+                    location.scheme and location.netloc  # went to the client, not a local page
+                    and params.get("error", [None])[0] == "invalid_request"
+                    and params.get("state", [None])[0] == unknown_state
+                )
+            checks["unknown_persona_error_redirect"] = unknown_ok
+        finally:
+            # Cleanup runs regardless of how far the checks above got.
+            self.session.post(f"{self.base_url}/users/{auto_login_user}/delete", timeout=5)
+            self.session.post(
+                f"{self.base_url}/settings",
+                data={"login_mode": "password", "auto_login": "false"},
+                timeout=10
+            )
+
+        all_ok = all(checks.values())
+        return self._add_result(
+            "Auto-Login Personas",
+            TestCategory.PERSONA,
+            all_ok,
+            ", ".join(f"{k}={'OK' if v else 'FAIL'}" for k, v in checks.items()),
+            checks
+        )
+
     # =========================================================================
     # KEY MANAGEMENT TESTS
     # =========================================================================
@@ -5057,6 +5193,7 @@ class NanoIDPTestAgent:
             ]),
             (TestCategory.PERSONA, "Persona Login Mode", [
                 self.test_persona_login_mode,
+                self.test_auto_login,
             ]),
             (TestCategory.KEYS, "Key Management", [
                 self.test_key_info,

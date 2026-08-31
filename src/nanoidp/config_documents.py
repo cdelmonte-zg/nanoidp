@@ -214,6 +214,7 @@ class LoginSection(BaseModel):
     model_config = _FORBID
 
     mode: str = "password"
+    auto_login: bool = False
 
 
 class HooksSection(BaseModel):
@@ -387,6 +388,7 @@ class SettingsDocument(BaseModel):
             jwt_algorithm=self.jwt.algorithm,
             keys_dir=self.jwt.keys_dir,
             login_mode=self.login.mode,
+            auto_login=self.login.auto_login,
             security_profile=self.security_profile,
             authority_prefixes=self.authority_prefixes,
             allowed_identity_classes=self.allowed_identity_classes,

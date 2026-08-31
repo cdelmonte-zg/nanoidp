@@ -781,6 +781,7 @@ def settings() -> ResponseReturnValue:
             },
             allowed_identity_classes=identity_classes or None,
             login_mode=_form_text("login_mode"),
+            auto_login=_form_bool("auto_login"),
             expected_revision=_expected_revision_from_form(),
         )
 

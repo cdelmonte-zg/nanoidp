@@ -317,6 +317,24 @@ never part of a token, and never treated as a custom attribute.
 
 Like the rest of NanoIDP, this is a local development/testing convenience - it is never intended as an authentication mode for a deployed environment.
 
+### Auto-Login (automated testing)
+
+A further opt-in on top of persona mode, for driving a real OIDC client library in automated integration tests - no username/password entry, no HTTP calls of your own into nanoidp's login form:
+
+```yaml
+login:
+  mode: persona
+  auto_login: true   # default: false; has no effect unless mode is persona
+```
+
+With both set, an OIDC `/authorize` request whose `login_hint` is exactly `persona-auto-login:USERNAME` authenticates that user directly and issues the authorization code - no picker, no HTML page in the way. Any other `login_hint` is an ordinary hint outside this feature and is passed through unchanged; with the flag off, a prefixed hint is inert too, so the picker still shows exactly as before.
+
+An unknown username in the hint reports through the same channel every other post-`redirect_uri` `/authorize` error uses: a redirect to the client with `error=invalid_request` and `state` preserved, never a bare `400` - a test asserting on a failed authorization sees the failure the same way any other rejected request does.
+
+First implementation surface is OIDC `/authorize` only; the device flow and SAML have no defined transport for the hint today.
+
+Auto-login removes the one human click persona mode still required, so for any client used with it, register its `redirect_uris` rather than relying on the permissive dev default that accepts any `redirect_uri` - otherwise a plain GET link mints a code for any configured persona to anywhere.
+
 ---
 
 ## Key Management

@@ -441,6 +441,7 @@ def user_to_yaml(user: User) -> Dict[str, Any]:
 _FALLBACK_DEFAULTS: Dict[str, Any] = {
     "security_profile": "dev",
     "login.mode": "password",
+    "login.auto_login": False,
 }
 
 
@@ -536,9 +537,9 @@ def apply_settings_document(
     differs from the new one (#127), so untouched ``${VAR}`` placeholders,
     comments and quote style survive a save that changed something else.
 
-    The per-field encodings live on ``OWNED_SETTINGS`` (#214); only the two
-    defaults-dependent keys (``security_profile``, ``login.mode``) are
-    handled explicitly below.
+    The per-field encodings live on ``OWNED_SETTINGS`` (#214); the
+    defaults-dependent keys (``security_profile``, ``login.mode``,
+    ``login.auto_login``) are handled explicitly below.
     """
     for field in OWNED_SETTINGS:
         target = document if not field.section else document.setdefault(field.section, {})
@@ -580,6 +581,9 @@ def apply_settings_document(
 
     login_mode_default = resolved_defaults["login.mode"]
     merge_optional_nested_field(document, "login", "mode", settings.login_mode, login_mode_default)
+
+    auto_login_default = resolved_defaults["login.auto_login"]
+    merge_optional_nested_field(document, "login", "auto_login", settings.auto_login, auto_login_default)
 
     return document
 

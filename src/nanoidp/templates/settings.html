@@ -22,6 +22,7 @@
     <input type="hidden" name="saml_want_authn_requests_signed__on_form" value="1">
     <input type="hidden" name="saml_export_roles__on_form" value="1">
     <input type="hidden" name="saml_export_groups__on_form" value="1">
+    <input type="hidden" name="auto_login__on_form" value="1">
     <div class="row g-4">
         <!-- OAuth Settings -->
         <div class="col-md-6">
@@ -249,6 +250,15 @@
                         </select>
                         <div class="form-text">"Password" requires the configured password on /login, /authorize, /saml/sso and the device flow. "Persona" lists the configured users and logs in by selecting one instead - a local development/testing convenience, off by default, not intended for deployed environments. Unrelated to the OAuth password grant, which always still requires a password.</div>
                     </div>
+                    <div class="mb-3">
+                        <div class="form-check form-switch">
+                            <input class="form-check-input" type="checkbox" role="switch"
+                                   id="auto_login" name="auto_login" value="true"
+                                   {% if settings.auto_login %}checked{% endif %}>
+                            <label class="form-check-label" for="auto_login">Auto-Login (persona mode only)</label>
+                        </div>
+                        <div class="form-text">With Login Mode above set to "Persona", an OIDC <code>/authorize</code> request whose <code>login_hint</code> is <code>persona-auto-login:USERNAME</code> logs that user in directly - no picker, no HTML - for driving a real OIDC client library in automated integration tests. Opt-in, off by default; has no effect while Login Mode is "Password".</div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -413,7 +423,8 @@ function updatePreview() {
             .map(s => s.trim())
             .filter(s => s),
         login: {
-            mode: document.getElementById('login_mode').value
+            mode: document.getElementById('login_mode').value,
+            auto_login: document.getElementById('auto_login').checked
         }
     };
 

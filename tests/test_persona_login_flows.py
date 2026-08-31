@@ -149,6 +149,157 @@ class TestPersonaModeOrthogonalToOauth21:
                 get_config().settings.security_profile = "dev"
 
 
+AUTO_LOGIN_QS = AUTHORIZE_QS + "&login_hint=persona-auto-login:admin"
+
+
+def _enable_auto_login(app) -> None:
+    _enable_persona_mode(app)
+    with app.app_context():
+        get_config().settings.auto_login = True
+
+
+class TestAuthorizeAutoLogin:
+    """#250: login_hint=persona-auto-login:USERNAME on /authorize, gated by
+    login.auto_login (only active with login.mode: persona)."""
+
+    def test_known_persona_issues_code_directly_no_picker(self, app, client):
+        _enable_auto_login(app)
+
+        response = client.get(f"/authorize?{AUTO_LOGIN_QS}", follow_redirects=False)
+
+        assert response.status_code == 302
+        location = response.headers["Location"]
+        assert location.startswith("http://localhost:3000/callback?code=")
+        assert "state=xyz" in location
+
+    def test_unknown_persona_redirects_error_with_state_preserved(self, app, client):
+        _enable_auto_login(app)
+        qs = AUTO_LOGIN_QS.replace("persona-auto-login:admin", "persona-auto-login:nonexistent")
+
+        response = client.get(f"/authorize?{qs}", follow_redirects=False)
+
+        assert response.status_code == 302
+        location = response.headers["Location"]
+        assert location.startswith("http://localhost:3000/callback?")
+        assert "error=invalid_request" in location
+        assert "state=xyz" in location
+
+    def test_unknown_persona_audits_the_attempted_username(self, app, client):
+        """#318 review round 1, non-blocking: the attempted name must be a
+        structured `username` field, not only inside `reason`'s free text -
+        same as a failed picker/password attempt already gets."""
+        from nanoidp.services import get_audit_log
+
+        _enable_auto_login(app)
+        qs = AUTO_LOGIN_QS.replace("persona-auto-login:admin", "persona-auto-login:nonexistent")
+
+        client.get(f"/authorize?{qs}", follow_redirects=False)
+
+        with app.app_context():
+            entries = get_audit_log().get_entries(limit=5, event_type="authorization_request")
+        assert entries[0]["username"] == "nonexistent"
+
+    def test_flag_off_prefixed_hint_falls_through_to_picker(self, app, client):
+        with app.app_context():
+            get_config().settings.login_mode = "persona"
+            get_config().settings.auto_login = False
+
+        response = client.get(f"/authorize?{AUTO_LOGIN_QS}")
+
+        assert response.status_code == 200
+        assert b'name="password"' not in response.data
+        assert b"admin" in response.data
+
+    def test_password_mode_ignores_auto_login_flag(self, app, client):
+        """auto_login: true without login.mode: persona is inert
+        (#250-assumption 1), not rejected - the ordinary password form
+        still shows."""
+        with app.app_context():
+            get_config().settings.auto_login = True
+
+        response = client.get(f"/authorize?{AUTO_LOGIN_QS}")
+
+        assert response.status_code == 200
+        assert b'name="password"' in response.data
+
+    def test_ordinary_login_hint_is_unaffected(self, app, client):
+        """A login_hint without the reserved prefix is an ordinary hint,
+        outside this feature - falls through to the picker unchanged."""
+        _enable_auto_login(app)
+        qs = AUTO_LOGIN_QS.replace("login_hint=persona-auto-login:admin", "login_hint=admin@example.org")
+
+        response = client.get(f"/authorize?{qs}")
+
+        assert response.status_code == 200
+        assert b"admin" in response.data
+
+    def test_audit_distinguishes_auto_login_from_picker_selection(self, app, client):
+        from nanoidp.services import get_audit_log
+
+        _enable_auto_login(app)
+        client.get(f"/authorize?{AUTO_LOGIN_QS}", follow_redirects=False)
+
+        with app.app_context():
+            entries = get_audit_log().get_entries(limit=5, event_type="authorization_request")
+        assert entries[0]["details"].get("auto_login") is True
+
+        # A regular persona picker selection must NOT carry the flag.
+        client.get(f"/authorize?{AUTHORIZE_QS}")
+        client.post("/authorize", data={"username": "admin"}, follow_redirects=False)
+
+        with app.app_context():
+            entries = get_audit_log().get_entries(limit=5, event_type="authorization_request")
+        assert entries[0]["details"].get("auto_login") is None
+
+    def test_stale_session_login_hint_does_not_poison_later_requests(self, app, client):
+        """#318 review round 1, blocking 1: an unknown-persona probe must not
+        leave the session in a state where a later /authorize with NO
+        login_hint at all keeps hitting the error redirect instead of the
+        picker."""
+        _enable_auto_login(app)
+        unknown_qs = AUTO_LOGIN_QS.replace(
+            "persona-auto-login:admin", "persona-auto-login:nonexistent"
+        )
+        client.get(f"/authorize?{unknown_qs}", follow_redirects=False)
+
+        response = client.get(f"/authorize?{AUTHORIZE_QS}")
+
+        assert response.status_code == 200
+        assert b"admin" in response.data
+
+    def test_stale_session_login_hint_does_not_override_picker_selection(self, app, client):
+        """#318 review round 1, blocking 1: a login_hint stored while the flag
+        was off must not resurrect on the picker's own POST leg and
+        override an explicit selection once the flag is turned on."""
+        with app.app_context():
+            get_config().settings.login_mode = "persona"
+            get_config().settings.auto_login = False
+            get_config().users["persona-bob"] = get_config().users["admin"].model_copy(
+                update={"username": "persona-bob"}
+            )
+        # Flag off: the hint is inert, but the buggy code still stored it
+        # in the session on this GET leg regardless.
+        client.get(f"/authorize?{AUTO_LOGIN_QS}")
+
+        with app.app_context():
+            get_config().settings.auto_login = True
+        # A fresh GET leg (no login_hint) followed by an explicit picker
+        # selection of a DIFFERENT user than the stale hint named.
+        client.get(f"/authorize?{AUTHORIZE_QS}")
+        response = client.post(
+            "/authorize", data={"username": "persona-bob"}, follow_redirects=False
+        )
+
+        assert response.status_code == 302
+        from nanoidp.services.auth_code import get_auth_code_store
+
+        location = response.headers["Location"]
+        code = location.split("code=")[1].split("&")[0]
+        with app.app_context():
+            info = get_auth_code_store().get_code_info(code)
+        assert info is not None and info.username == "persona-bob"
+
+
 class TestSamlSsoPersonaMode:
     """SAML /saml/sso inline login and AuthnContextClassRef."""
 

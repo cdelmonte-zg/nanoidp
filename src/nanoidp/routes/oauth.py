@@ -112,7 +112,7 @@ def jwks() -> ResponseReturnValue:
 
 @dataclass
 class _AuthorizeParams:
-    """The nine /authorize request parameters, read once per request.
+    """The /authorize request parameters, read once per request.
 
     On GET they come from the query string; on the login-form POST leg they
     come from the form with the session as fallback (the GET leg stored them
@@ -130,6 +130,13 @@ class _AuthorizeParams:
     nonce: str
     claims_param: str
     resources: List[str]
+    # OIDC Core 3.1.2.1 (#250): read from the CURRENT request only, never the
+    # session fallback the other params use - unlike them, login_hint decides
+    # WHO gets authenticated, and the auto-login branch it feeds never has a
+    # POST leg of its own to need that fallback for (#318 review round 1,
+    # blocking 1). Ignored unless it carries the reserved
+    # 'persona-auto-login:' prefix - see _try_persona_auto_login.
+    login_hint: str
 
 
 def _read_authorize_params() -> _AuthorizeParams:
@@ -155,6 +162,11 @@ def _read_authorize_params() -> _AuthorizeParams:
         claims_param=params.get("claims", session.get("oauth_claims", "")),
         # RFC 8707 resource is repeatable (#187): read every value, not one.
         resources=params.getlist("resource") or session.get("oauth_resources", []),
+        # No session fallback (#318 review round 1, blocking 1): a stale
+        # login_hint left over from an earlier request in this browser
+        # session must never resurrect auto-login (or override an explicit
+        # picker selection) on a request that didn't send one.
+        login_hint=params.get("login_hint", ""),
     )
 
     if request.method == "GET":
@@ -168,6 +180,8 @@ def _read_authorize_params() -> _AuthorizeParams:
         session["oauth_nonce"] = p.nonce
         session["oauth_claims"] = p.claims_param
         session["oauth_resources"] = p.resources
+        # login_hint is deliberately NOT stored here - see the field's own
+        # comment on _AuthorizeParams.
 
     return p
 
@@ -192,7 +206,13 @@ def _authorize_reject(
 
 
 def _authorize_error_redirect(
-    config: ConfigManager, p: _AuthorizeParams, error: str, description: str, reason: str
+    config: ConfigManager,
+    p: _AuthorizeParams,
+    error: str,
+    description: str,
+    reason: str,
+    *,
+    username: Optional[str] = None,
 ) -> ResponseReturnValue:
     """Deliver an authorization error to the client through the ALREADY
     VALIDATED redirect_uri (RFC 6749 §4.1.2.1), carrying iss so the client
@@ -200,12 +220,19 @@ def _authorize_error_redirect(
     9207 §2: iss appears on error responses too). Only reachable after
     _validate_authorize_redirect_uri has run, so this never redirects to an
     unvalidated URI - errors before that stay local (see _authorize_reject).
+
+    ``username`` (#318 review round 1) is the attempted username, when one
+    exists - e.g. an unknown persona in an auto-login hint - so a consumer
+    filtering failed ``authorization_request`` events by ``username`` sees
+    it structured, not only inside ``reason``'s free text. ``None`` for
+    every other caller, exactly as before.
     """
     audit_event(
         "authorization_request",
         "failed",
         endpoint="/authorize",
         client_id=p.client_id,
+        username=username,
         details={"reason": reason},
     )
     params = {"error": error, "error_description": description}
@@ -449,6 +476,124 @@ def _validate_authorize_resources(
     return None
 
 
+def _issue_authorization_code(
+    config: ConfigManager, p: _AuthorizeParams, username: str, *, auto_login: bool = False
+) -> ResponseReturnValue:
+    """Mint the code, clear the oauth_ session scratch data, audit success
+    and redirect to the client - shared by a normal inline login
+    (``_handle_authorize_login``) and #250's persona auto-login
+    (``_try_persona_auto_login``), which are otherwise indistinguishable on
+    the wire once a persona is known. ``auto_login`` only affects the audit
+    record and log line.
+    """
+    auth_code_store = get_auth_code_store()
+    code = auth_code_store.create_code(
+        client_id=p.client_id,
+        redirect_uri=p.redirect_uri,
+        username=username,
+        scope=p.scope,
+        code_challenge=p.code_challenge if p.code_challenge else None,
+        code_challenge_method=p.code_challenge_method if p.code_challenge_method else None,
+        nonce=p.nonce if p.nonce else None,
+        state=p.state if p.state else None,
+        claims=_parse_claims_parameter(p.claims_param),
+        resource=list(p.resources) if p.resources else None,
+    )
+
+    # Clear OAuth session data
+    for key in list(session.keys()):
+        if key.startswith("oauth_"):
+            session.pop(key, None)
+
+    # Build redirect URL with code
+    redirect_params = {"code": code}
+    if p.state:
+        redirect_params["state"] = p.state
+    # RFC 9207 (#189): return the effective issuer so the client can
+    # detect an authorization-server mix-up. Sent exactly when it is
+    # advertised as supported in discovery (#258 review): a single
+    # predicate drives both, so a client never sees iss without the
+    # metadata promising it, or vice versa. The value is the per-request
+    # effective issuer, so it stays correct under issuer_from_request
+    # (#126).
+    issuer = effective_issuer(config.settings)
+    if issuer_qualifies_for_iss_parameter(issuer):
+        redirect_params["iss"] = issuer
+
+    callback_url = append_authorization_params(p.redirect_uri, redirect_params)
+
+    audit_event(
+        "authorization_request",
+        "success",
+        endpoint="/authorize",
+        username=username,
+        client_id=p.client_id,
+        details={
+            "scope": p.scope,
+            "pkce": bool(p.code_challenge),
+            # Distinguishes a persona-picker/password login from a
+            # login_hint-triggered auto-login (#250 design contract point 4).
+            **({"auto_login": True} if auto_login else {}),
+        },
+    )
+
+    if config.settings.verbose_logging:
+        logger.info(
+            f"Authorization code issued for user '{username}', client '{p.client_id}'"
+            + (" via auto-login" if auto_login else "")
+        )
+    else:
+        logger.info("Authorization code issued")
+
+    return redirect(callback_url)
+
+
+# OIDC Core 3.1.2.1 (#250): the reserved login_hint prefix that opts an
+# /authorize request into persona auto-login. Any other login_hint value is
+# an ordinary hint outside this feature and is left untouched.
+_AUTO_LOGIN_HINT_PREFIX = "persona-auto-login:"
+
+
+def _try_persona_auto_login(
+    config: ConfigManager, p: _AuthorizeParams
+) -> Optional[ResponseReturnValue]:
+    """#250: with ``login.auto_login`` and a ``login_hint`` carrying the
+    reserved ``persona-auto-login:`` prefix, authenticate the named persona
+    directly - no picker, no HTML - by issuing the authorization code
+    exactly as a successful inline login would.
+
+    Returns ``None`` when inert: the flag is off, ``login.mode`` isn't
+    ``persona`` (``auto_login_enabled`` covers both, #250-assumption 1), or
+    ``login_hint`` is absent/unprefixed (an OP may ignore a ``login_hint`` it
+    does not recognize, OIDC Core 3.1.2.1) - the caller then falls through
+    to the ordinary login page/picker, unchanged.
+
+    Called after every other ``/authorize`` validator has passed, so an
+    unknown persona is reported through ``_authorize_error_redirect`` with
+    the fully resolved scope/PKCE/resource state, the same post-redirect_uri
+    error channel every other validation failure already uses (contract
+    point 3) - never a bare 400.
+    """
+    if not config.settings.auto_login_enabled:
+        return None
+    if not p.login_hint.startswith(_AUTO_LOGIN_HINT_PREFIX):
+        return None
+
+    username = p.login_hint[len(_AUTO_LOGIN_HINT_PREFIX) :]
+    user = config.interactive_authenticate(username, "")
+    if user is None:
+        return _authorize_error_redirect(
+            config,
+            p,
+            "invalid_request",
+            "Unknown persona for auto-login",
+            f"auto-login: unknown persona {username!r}",
+            username=username,
+        )
+
+    return _issue_authorization_code(config, p, user.username, auto_login=True)
+
+
 def _handle_authorize_login(
     config: ConfigManager, p: _AuthorizeParams
 ) -> Tuple[Optional[str], Optional[ResponseReturnValue]]:
@@ -461,63 +606,7 @@ def _handle_authorize_login(
     user = config.interactive_authenticate(username, password)
 
     if user:
-        # Authentication successful - generate authorization code
-        auth_code_store = get_auth_code_store()
-        code = auth_code_store.create_code(
-            client_id=p.client_id,
-            redirect_uri=p.redirect_uri,
-            username=user.username,
-            scope=p.scope,
-            code_challenge=p.code_challenge if p.code_challenge else None,
-            code_challenge_method=p.code_challenge_method if p.code_challenge_method else None,
-            nonce=p.nonce if p.nonce else None,
-            state=p.state if p.state else None,
-            claims=_parse_claims_parameter(p.claims_param),
-            resource=list(p.resources) if p.resources else None,
-        )
-
-        # Clear OAuth session data
-        for key in list(session.keys()):
-            if key.startswith("oauth_"):
-                session.pop(key, None)
-
-        # Build redirect URL with code
-        redirect_params = {"code": code}
-        if p.state:
-            redirect_params["state"] = p.state
-        # RFC 9207 (#189): return the effective issuer so the client can
-        # detect an authorization-server mix-up. Sent exactly when it is
-        # advertised as supported in discovery (#258 review): a single
-        # predicate drives both, so a client never sees iss without the
-        # metadata promising it, or vice versa. The value is the per-request
-        # effective issuer, so it stays correct under issuer_from_request
-        # (#126).
-        issuer = effective_issuer(config.settings)
-        if issuer_qualifies_for_iss_parameter(issuer):
-            redirect_params["iss"] = issuer
-
-        callback_url = append_authorization_params(p.redirect_uri, redirect_params)
-
-        audit_event(
-            "authorization_request",
-            "success",
-            endpoint="/authorize",
-            username=user.username,
-            client_id=p.client_id,
-            details={
-                "scope": p.scope,
-                "pkce": bool(p.code_challenge),
-            },
-        )
-
-        if config.settings.verbose_logging:
-            logger.info(
-                f"Authorization code issued for user '{user.username}', client '{p.client_id}'"
-            )
-        else:
-            logger.info("Authorization code issued")
-
-        return None, redirect(callback_url)
+        return None, _issue_authorization_code(config, p, user.username)
 
     if (persona_mode and username) or (not persona_mode and username and password):
         # A real (failed) selection/login attempt, not just missing input
@@ -610,6 +699,13 @@ def authorize() -> ResponseReturnValue:
     error = _validate_authorize_resources(config, p, client)
     if error is not None:
         return error
+
+    # #250: a login_hint carrying the reserved auto-login prefix bypasses
+    # the login page/picker entirely - inert (returns None) unless
+    # login.auto_login and login.mode: persona are both active.
+    auto_login_response = _try_persona_auto_login(config, p)
+    if auto_login_response is not None:
+        return auto_login_response
 
     error_msg = None
     if request.method == "POST":

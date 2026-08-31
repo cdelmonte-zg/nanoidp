@@ -198,6 +198,16 @@ def get_configuration() -> ResponseReturnValue:
         "logging": {
             "verbose_logging": settings.verbose_logging,
         },
+        # Pre-existing gap from the persona-login-mode feature, closed here
+        # (#250): the settings page/e2e agent rebuild their form FROM this
+        # endpoint, and a field missing here gets posted back blank, which
+        # the "blank = clear" contract (#131/#165) then silently wipes from
+        # settings.yaml - so login_mode ships alongside its new sibling
+        # rather than auto_login alone repeating that bug.
+        "login": {
+            "mode": settings.login_mode,
+            "auto_login": settings.auto_login,
+        },
         "authority_prefixes": settings.authority_prefixes,
         "allowed_identity_classes": settings.allowed_identity_classes,
         # Effective profile, i.e. after the CLI --profile override and the

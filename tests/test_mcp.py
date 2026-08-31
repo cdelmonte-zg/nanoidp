@@ -1026,6 +1026,60 @@ class TestMCPUserDescription:
         assert payload["code"] == "MCP_INVALID_ARGUMENTS"
         assert "login_mode" in payload["error"]
 
+    @pytest.mark.asyncio
+    async def test_get_settings_includes_auto_login(self, tmp_path):
+        """#250: default off, alongside login_mode."""
+        from nanoidp.mcp_server import _execute_tool
+        config = self._config(tmp_path)
+
+        result = await _execute_tool("get_settings", {}, config)
+
+        assert result["auto_login"] is False
+
+    @pytest.mark.asyncio
+    async def test_update_settings_can_enable_auto_login(self, tmp_path):
+        from nanoidp.mcp_server import _execute_tool
+        config = self._config(tmp_path)
+
+        result = await _execute_tool(
+            "update_settings", {"login_mode": "persona", "auto_login": True}, config
+        )
+
+        assert result["success"] is True
+        assert "auto_login" in result["updated_fields"]
+        assert result["current_settings"]["auto_login"] is True
+        assert config.settings.auto_login is True
+        assert config.settings.auto_login_enabled is True
+
+    @pytest.mark.asyncio
+    async def test_update_settings_auto_login_without_persona_mode_is_inert(self, tmp_path):
+        """#250-assumption 1: accepted, not rejected - just has no effect
+        until login_mode is also 'persona'."""
+        from nanoidp.mcp_server import _execute_tool
+        config = self._config(tmp_path)
+
+        result = await _execute_tool("update_settings", {"auto_login": True}, config)
+
+        assert result["success"] is True
+        assert config.settings.auto_login is True
+        assert config.settings.auto_login_enabled is False
+
+    @pytest.mark.asyncio
+    async def test_update_settings_rejects_non_bool_auto_login(self, monkeypatch, mcp_call_tool, tmp_path):
+        """Caught by the schema's "type": "boolean" constraint before dispatch."""
+        import nanoidp.mcp_server as mcp
+
+        monkeypatch.setattr(mcp, "_config", self._config(tmp_path))
+        monkeypatch.setattr(mcp, "_readonly_mode", False)
+        monkeypatch.delenv("NANOIDP_MCP_ADMIN_SECRET", raising=False)
+
+        result = await mcp_call_tool("update_settings", {"auto_login": "yes"})
+
+        assert result.is_error is True
+        payload = json.loads(result.content[0].text)
+        assert payload["code"] == "MCP_INVALID_ARGUMENTS"
+        assert "auto_login" in payload["error"]
+
 
 class TestGenerateTokenClaims:
     """MCP ``generate_token`` claims arguments (#104/#113, parity #112).

@@ -721,6 +721,16 @@ _TOOLS: list[Tool] = [
                     "environments. Orthogonal to 'security_profile' and to the "
                     "OAuth password grant, which is unaffected either way.",
                 },
+                "auto_login": {
+                    "type": "boolean",
+                    "description": "With login_mode: persona, OIDC /authorize "
+                    "accepts login_hint values prefixed "
+                    "'persona-auto-login:USERNAME' and logs that user in "
+                    "directly, no picker (#250) - for driving a real OIDC "
+                    "client library in automated integration tests. Opt-in, "
+                    "off by default; inert unless login_mode is also "
+                    "'persona'.",
+                },
             },
             "required": [],
         },

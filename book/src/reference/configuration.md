@@ -219,6 +219,30 @@ See the [Security guide](../guides/SECURITY.md#persona-login-mode) for the
 full contract, including why the OAuth `password` grant is unaffected and
 the SAML `AuthnContextClassRef` detail.
 
+### Auto-login
+
+`login.auto_login` (default `false`) is a further opt-in on top of persona
+mode, for driving a real OIDC client library in automated integration tests
+(#250) - no username/password entry, no HTTP calls of your own into
+nanoidp's login form:
+
+```yaml
+# settings.yaml
+login:
+  mode: persona
+  auto_login: true   # default: false; has no effect unless mode is persona
+```
+
+With both set, an OIDC `/authorize` request whose `login_hint` is exactly
+`persona-auto-login:USERNAME` logs that user in directly - no picker, no
+HTML - straight to an authorization code. Any other `login_hint` is an
+ordinary hint outside this feature and is left untouched, and with the flag
+off a prefixed hint is inert too, so the picker still shows. An unknown
+persona reports through the standard OAuth error redirect
+(`error=invalid_request`, `state` preserved), never a bare `400`. First
+implementation surface is OIDC `/authorize` only - the device flow and SAML
+have no equivalent transport for the hint today.
+
 ## Settings (`config/settings.yaml`)
 
 ```yaml
@@ -336,7 +360,8 @@ saml:
 
 # Optional; local dev/testing convenience, off by default - see "Login mode" above
 # login:
-#   mode: persona   # password (default) | persona
+#   mode: persona     # password (default) | persona
+#   auto_login: true  # default: false; requires mode: persona - see "Auto-login" above
 
 # Optional; how an unknown key is reported - see "Validating your configuration"
 # below. Also settable at startup with --strict-config, which wins over this

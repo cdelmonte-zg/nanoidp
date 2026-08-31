@@ -164,6 +164,45 @@ class TestSaveIsNotLossy:
         doc = _read(config_dir / "settings.yaml")
         assert doc["login"]["mode"] == "persona"
 
+    def test_auto_login_persisted_when_non_default(self, tmp_path):
+        config_dir = _seed(tmp_path, BASE_SETTINGS + "login:\n  mode: persona\n")
+        manager = ConfigManager(str(config_dir))
+        manager.settings.auto_login = True
+        manager.save()
+
+        doc = _read(config_dir / "settings.yaml")
+        assert doc["login"] == {"mode": "persona", "auto_login": True}
+
+    def test_auto_login_section_omitted_at_default(self, tmp_path):
+        config_dir = _seed(tmp_path, BASE_SETTINGS)
+        manager = ConfigManager(str(config_dir))
+        manager.save()
+
+        doc = _read(config_dir / "settings.yaml")
+        assert "login" not in doc
+
+    def test_auto_login_cleared_back_to_default_leaves_sibling_mode(self, tmp_path):
+        config_dir = _seed(
+            tmp_path, BASE_SETTINGS + "login:\n  mode: persona\n  auto_login: true\n"
+        )
+        manager = ConfigManager(str(config_dir))
+        manager.settings.auto_login = False
+        manager.save()
+
+        doc = _read(config_dir / "settings.yaml")
+        assert doc["login"] == {"mode": "persona"}
+
+    def test_auto_login_via_yaml_writer_update_login_settings(self, tmp_path):
+        """YamlWriter.update_login_settings's own auto_login param (#250),
+        independent of mode - the checkbox convention (None = unchanged)."""
+        config_dir = _seed(tmp_path, BASE_SETTINGS + "login:\n  mode: persona\n")
+        ConfigManager(str(config_dir))
+        writer = YamlWriter(str(config_dir))
+        writer.update_login_settings(auto_login=True)
+
+        doc = _read(config_dir / "settings.yaml")
+        assert doc["login"] == {"mode": "persona", "auto_login": True}
+
     def test_require_ui_login_survives_save(self, tmp_path):
         """require_ui_login in session: section passes through untouched."""
         config_dir = _seed(

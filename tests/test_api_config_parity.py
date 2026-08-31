@@ -52,3 +52,51 @@ class TestApiConfigSamlParity:
 
         with app.app_context():
             assert get_config().settings.default_acs_url == original
+
+
+class TestApiConfigLoginParity:
+    """#250: /api/config never carried login_mode at all (a pre-existing
+    gap from the persona-login-mode feature, closed as part of the
+    auto_login work rather than left half-fixed - shipping auto_login alone
+    would repeat the exact #165 bug this file guards against)."""
+
+    def test_login_mode_and_auto_login_exposed(self, client):
+        resp = client.get("/api/config")
+        assert resp.status_code == 200
+        login = resp.get_json()["login"]
+        assert login == {"mode": "password", "auto_login": False}
+
+    def test_e2e_round_trip_preserves_auto_login(self, client, app, preserve_config_files):
+        """Replaying the settings-form round-trip (form rebuilt from
+        /api/config, posted back unchanged) must not clear auto_login."""
+        from nanoidp.config import get_config
+
+        with app.app_context():
+            get_config().settings.login_mode = "persona"
+            get_config().settings.auto_login = True
+            get_config().save()
+
+        doc = client.get("/api/config").get_json()
+        login = doc["login"]
+        oauth = doc["oauth"]
+        assert login == {"mode": "persona", "auto_login": True}
+
+        resp = client.post(
+            "/settings",
+            data={
+                "issuer": oauth["issuer"],
+                "audience": oauth["audience"],
+                "token_expiry_minutes": oauth["token_expiry_minutes"],
+                "allowed_identity_classes": "\n".join(doc["allowed_identity_classes"]),
+                "login_mode": login["mode"],
+                "auto_login": "true" if login["auto_login"] else "",
+                "auto_login__on_form": "1",
+            },
+            follow_redirects=False,
+        )
+        assert resp.status_code == 302
+
+        with app.app_context():
+            config = get_config()
+            assert config.settings.login_mode == "persona"
+            assert config.settings.auto_login is True

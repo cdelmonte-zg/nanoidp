@@ -42,6 +42,24 @@ handles a mix of described and undescribed users.
   governs OAuth protocol strictness, not how the resource owner
   authenticates interactively.
 
+## Auto-login for automated tests (#250)
+
+A further opt-in on top of persona mode, for driving a real OIDC client
+library in automated integration tests - uncomment `auto_login: true` in
+`settings.yaml` (has no effect unless `login.mode` is also `persona`), then
+send a `login_hint` prefixed `persona-auto-login:USERNAME` to `/authorize`:
+
+```bash
+curl -i "http://localhost:8000/authorize?response_type=code&client_id=demo-client&redirect_uri=http://localhost:3000/callback&scope=openid&login_hint=persona-auto-login:alice"
+```
+
+That returns a `302` straight to `redirect_uri` with a `code` - no picker,
+no HTML page in between. A `login_hint` naming an unknown user reports
+through the ordinary OAuth error redirect (`error=invalid_request`, `state`
+preserved), never a bare `400`; any other `login_hint` value is passed
+through unchanged, and with `auto_login` left off, a prefixed hint is inert
+too - the picker shows exactly as in the rest of this example.
+
 ## Reverting
 
 Set `login.mode: password` (or delete the `login:` section) and restart -
