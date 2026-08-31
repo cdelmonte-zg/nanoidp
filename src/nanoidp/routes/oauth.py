@@ -130,8 +130,12 @@ class _AuthorizeParams:
     nonce: str
     claims_param: str
     resources: List[str]
-    # OIDC Core 3.1.2.1 (#250): read but otherwise ignored unless it carries
-    # the reserved 'persona-auto-login:' prefix - see _try_persona_auto_login.
+    # OIDC Core 3.1.2.1 (#250): read from the CURRENT request only, never the
+    # session fallback the other params use - unlike them, login_hint decides
+    # WHO gets authenticated, and the auto-login branch it feeds never has a
+    # POST leg of its own to need that fallback for (#250 review round 1,
+    # blocking 1). Ignored unless it carries the reserved
+    # 'persona-auto-login:' prefix - see _try_persona_auto_login.
     login_hint: str
 
 
@@ -158,7 +162,11 @@ def _read_authorize_params() -> _AuthorizeParams:
         claims_param=params.get("claims", session.get("oauth_claims", "")),
         # RFC 8707 resource is repeatable (#187): read every value, not one.
         resources=params.getlist("resource") or session.get("oauth_resources", []),
-        login_hint=params.get("login_hint", session.get("oauth_login_hint", "")),
+        # No session fallback (#250 review round 1, blocking 1): a stale
+        # login_hint left over from an earlier request in this browser
+        # session must never resurrect auto-login (or override an explicit
+        # picker selection) on a request that didn't send one.
+        login_hint=params.get("login_hint", ""),
     )
 
     if request.method == "GET":
@@ -172,7 +180,8 @@ def _read_authorize_params() -> _AuthorizeParams:
         session["oauth_nonce"] = p.nonce
         session["oauth_claims"] = p.claims_param
         session["oauth_resources"] = p.resources
-        session["oauth_login_hint"] = p.login_hint
+        # login_hint is deliberately NOT stored here - see the field's own
+        # comment on _AuthorizeParams.
 
     return p
 

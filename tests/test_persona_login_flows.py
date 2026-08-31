@@ -240,6 +240,54 @@ class TestAuthorizeAutoLogin:
             entries = get_audit_log().get_entries(limit=5, event_type="authorization_request")
         assert entries[0]["details"].get("auto_login") is None
 
+    def test_stale_session_login_hint_does_not_poison_later_requests(self, app, client):
+        """Review round 1, blocking 1: an unknown-persona probe must not
+        leave the session in a state where a later /authorize with NO
+        login_hint at all keeps hitting the error redirect instead of the
+        picker."""
+        _enable_auto_login(app)
+        unknown_qs = AUTO_LOGIN_QS.replace(
+            "persona-auto-login:admin", "persona-auto-login:nonexistent"
+        )
+        client.get(f"/authorize?{unknown_qs}", follow_redirects=False)
+
+        response = client.get(f"/authorize?{AUTHORIZE_QS}")
+
+        assert response.status_code == 200
+        assert b"admin" in response.data
+
+    def test_stale_session_login_hint_does_not_override_picker_selection(self, app, client):
+        """Review round 1, blocking 1: a login_hint stored while the flag
+        was off must not resurrect on the picker's own POST leg and
+        override an explicit selection once the flag is turned on."""
+        with app.app_context():
+            get_config().settings.login_mode = "persona"
+            get_config().settings.auto_login = False
+            get_config().users["persona-bob"] = get_config().users["admin"].model_copy(
+                update={"username": "persona-bob"}
+            )
+        # Flag off: the hint is inert, but the buggy code still stored it
+        # in the session on this GET leg regardless.
+        client.get(f"/authorize?{AUTO_LOGIN_QS}")
+
+        with app.app_context():
+            get_config().settings.auto_login = True
+        # A fresh GET leg (no login_hint) followed by an explicit picker
+        # selection of a DIFFERENT user than the stale hint named.
+        client.get(f"/authorize?{AUTHORIZE_QS}")
+        response = client.post(
+            "/authorize", data={"username": "persona-bob"}, follow_redirects=False
+        )
+
+        assert response.status_code == 302
+        from nanoidp.services.auth_code import get_auth_code_store
+
+        location = response.headers["Location"]
+        code = location.split("code=")[1].split("&")[0]
+        with app.app_context():
+            info = get_auth_code_store().get_code_info(code)
+        assert info is not None and info.username == "persona-bob"
+
 
 class TestSamlSsoPersonaMode:
     """SAML /saml/sso inline login and AuthnContextClassRef."""

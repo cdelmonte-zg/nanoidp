@@ -333,6 +333,8 @@ An unknown username in the hint reports through the same channel every other pos
 
 First implementation surface is OIDC `/authorize` only; the device flow and SAML have no defined transport for the hint today.
 
+Auto-login removes the one human click persona mode still required, so for any client used with it, register its `redirect_uris` rather than relying on the permissive dev default that accepts any `redirect_uri` - otherwise a plain GET link mints a code for any configured persona to anywhere.
+
 ---
 
 ## Key Management

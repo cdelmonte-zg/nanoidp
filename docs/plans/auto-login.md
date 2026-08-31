@@ -342,7 +342,7 @@ to confirm or override.
 All four `#250-assumption` call-outs above were accepted as-is. Two
 blocking findings, both reproduced live; the rest are pre-merge polish.
 
-### Blocking
+### Blocking - both fixed
 
 1. **A stale session `login_hint` triggers auto-login on requests that
    never sent one.** `_read_authorize_params()` gives `login_hint` the same
@@ -364,6 +364,13 @@ blocking findings, both reproduced live; the rest are pre-merge polish.
    auto-login branch never has a POST leg of its own, so it never needed
    the session fallback in the first place. Needs tests for both measured
    cases.
+   **Fixed**: `login_hint` is now read from `params.get("login_hint", "")`
+   only (no `session.get(...)` fallback) and is deliberately never stored
+   in the session on the GET leg. Two new regression tests in
+   `TestAuthorizeAutoLogin` (`tests/test_persona_login_flows.py`)
+   reproduce both measured consequences verbatim - confirmed to fail
+   against the pre-fix code (302 instead of 200 for (a); 400 instead of a
+   302 carrying the right user for (b)) and pass with the fix.
 2. **`tests/test_config.py`: `TestAutoLogin` swallowed the
    `class TestUsersYamlPasswordOptional:` header.** Root cause identified
    (own editing mistake, not a recurring tool bug): the original insertion
@@ -400,6 +407,8 @@ blocking findings, both reproduced live; the rest are pre-merge polish.
   out of scope, but auto-login removes the one human click persona mode
   still required, so recommend registering `redirect_uris` for any client
   used with auto-login.
+  **Done**: one sentence added at the end of the "Auto-Login (automated
+  testing)" section.
 - Optional cleanups (none gate the merge): share `document_defaults()`
   between `update_login_settings`/`update_settings_form` instead of two
   near-identical mutate pairs each rebuilding a full `SettingsDocument`
