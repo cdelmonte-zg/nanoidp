@@ -179,14 +179,22 @@ the PR description for the maintainer to confirm or override after the fact.
       inspection; not re-verified against a live stdio server.
 
 ### 5. Settings UI persistence + `/api/config` exposure
-- [ ] [`templates/settings.html`](../../src/nanoidp/templates/settings.html):
-      new "Auto-Login" toggle next to the "Login Mode" select, disabled/
-      hidden unless `login_mode == persona` (follow whatever pattern already
-      conditions persona-only UI elements).
-- [ ] [`routes/ui.py`](../../src/nanoidp/routes/ui.py) `settings()`: wire the
-      form's `auto_login` checkbox (absent = unchanged, same convention as
-      `login_mode`) to `update_login_settings()`.
-- [ ] **Pre-existing gap found while planning, fixed here rather than left
+- [x] [`templates/settings.html`](../../src/nanoidp/templates/settings.html):
+      new "Auto-Login" checkbox in the existing "Login Mode" card, next to
+      the select. **Revised while implementing**: no JS show/hide toggle
+      gated on `login_mode == persona` - this template has no precedent for
+      conditionally hiding one field based on another (`require_pkce`,
+      `refresh_token_rotation` etc. are always visible regardless of
+      `security_profile` too), so the checkbox is always visible with help
+      text stating it has no effect outside persona mode, consistent with
+      `#250-assumption` 1's "inert, not rejected" choice. Wired into the
+      existing `updatePreview()` JS and the `__on_form` hidden-marker block
+      (#131 "absent = unchanged" convention) like every other checkbox here.
+- [x] [`routes/ui.py`](../../src/nanoidp/routes/ui.py) `settings()`: wire the
+      form's `auto_login` checkbox (via `_form_bool`, absent = unchanged) to
+      `update_settings_form()`'s new `auto_login` parameter (added in step 1),
+      alongside the existing `login_mode=_form_text("login_mode")` line.
+- [x] **Pre-existing gap found while planning, fixed here rather than left
       behind**: [`routes/api.py`](../../src/nanoidp/routes/api.py)
       `get_configuration()` (`/api/config`, line ~139-213) never gained a
       `login` section when persona mode shipped - `login_mode` is absent
@@ -199,14 +207,18 @@ the PR description for the maintainer to confirm or override after the fact.
       that exact bug, so add both: a `"login": {"mode": ...,
       "auto_login": ...}` block, same style as the neighboring `saml`/
       `logging` blocks.
-- [ ] Tests: extend the settings-UI test class in
-      `tests/test_persona_login_flows.py` (or wherever
-      `TestSettingsUiLoginMode` lives) - toggle persists, omitted at
-      default, and (per `#250-assumption` 1) still saves fine outside
-      persona mode without erroring. Extend
-      `tests/test_api_config_parity.py` for the new `login` block, following
-      its existing SAML-parity pattern (field present, then a settings-form
-      round-trip through `/api/config` doesn't clear it).
+- [x] Tests: `TestSettingsUiAutoLogin` in `tests/test_persona_login.py`
+      (mirroring `TestSettingsUiLoginMode` in the same file, the actual
+      home of the login-mode UI tests) - checkbox rendered, enabling
+      persists alongside `login_mode: persona`, enabling without persona
+      mode still saves (`#250-assumption` 1), unchecking persists and
+      leaves the sibling `mode` key alone, and the `__on_form` marker's
+      absent-vs-unchecked distinction. New `TestApiConfigLoginParity` in
+      `tests/test_api_config_parity.py`, mirroring the existing SAML-parity
+      class - both fields exposed, and a settings-form round-trip rebuilt
+      from `/api/config` (the e2e agent's own pattern) doesn't clear
+      `auto_login`.
+
 
 ### 6. E2E coverage
 - [ ] [`e2e/test_agent.py`](../../e2e/test_agent.py): extend
