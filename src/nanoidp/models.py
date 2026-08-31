@@ -507,6 +507,15 @@ class Settings(BaseModel):
         "deployed environments. Orthogonal to 'security_profile' and to the "
         "OAuth password grant, which is unaffected either way.",
     )
+    auto_login: bool = Field(
+        default=False,
+        description="With login_mode: persona, OIDC /authorize accepts "
+        "login_hint values prefixed 'persona-auto-login:USERNAME' and logs "
+        "that user in directly, no picker (#250) - for driving a real OIDC "
+        "client library in automated integration tests. Opt-in, off by "
+        "default; inert unless login_mode is also 'persona'. A prefixed "
+        "login_hint is otherwise ignored, same as an unset flag.",
+    )
 
     # Security (stricter-dev profile)
     security_profile: str = Field(
@@ -632,6 +641,13 @@ class Settings(BaseModel):
         (local dev/testing convenience only; unrelated to 'security_profile'
         and to the OAuth password grant - see 'login_mode' above)."""
         return self.login_mode == "persona"
+
+    @property
+    def auto_login_enabled(self) -> bool:
+        """'auto_login' only takes effect together with persona mode (#250);
+        set without it, it is inert rather than rejected - orthogonal
+        composition, same as 'persona_mode_enabled' above."""
+        return self.persona_mode_enabled and self.auto_login
 
     @property
     def scope_enforcement_active(self) -> bool:

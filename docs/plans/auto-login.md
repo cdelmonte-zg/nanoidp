@@ -56,29 +56,30 @@ the PR description for the maintainer to confirm or override after the fact.
 ## Breakdown into commits (single feature branch / PR)
 
 ### 1. Data model + config plumbing (no behavior change)
-- [ ] [`models.py`](../../src/nanoidp/models.py): `Settings.auto_login: bool =
+- [x] [`models.py`](../../src/nanoidp/models.py): `Settings.auto_login: bool =
       False` - no validator rejecting it without `login_mode: persona`
       (`#250-assumption` 1, see below); derived property alongside
       `persona_mode_enabled`, e.g. `auto_login_enabled = persona_mode_enabled
       and self.auto_login`, following the `login_mode` field's
       docstring style near line 500-634.
-- [ ] [`config_documents.py`](../../src/nanoidp/config_documents.py):
+- [x] [`config_documents.py`](../../src/nanoidp/config_documents.py):
       `LoginSection.auto_login: bool = False` (next to `mode`, line ~213-216).
-- [ ] [`config.py`](../../src/nanoidp/config.py): load `login.auto_login` the
-      same way `login.mode` is loaded today; normalize a bare `login:` /
-      `login: {mode: ...}` document without `auto_login` to the default
-      (reuse whatever null-section guard already exists for `login.mode`).
-- [ ] No manual schema edit needed: [`config_schema.py`](../../src/nanoidp/config_schema.py)
+- [x] `config.py` needed no change: it never reads `login.mode` directly
+      either, only through `SettingsDocument(...).to_settings()`
+      (`config_documents.py`), which now passes `auto_login` through too -
+      the bare-`login:`/null-section guard already lives there
+      (`_bare_login_is_empty`) and covers the sibling field for free.
+- [x] No manual schema edit needed: [`config_schema.py`](../../src/nanoidp/config_schema.py)
       renders [`docs/schema/config.v1.json`](../../docs/schema/config.v1.json)
       straight from `config_documents.py`'s pydantic models ("cannot become a
       seventh restatement of the contract", #174) - just regenerate with
       `nanoidp config-schema --write` once `LoginSection.auto_login` exists,
       and a test fails if the committed artifact and the live models diverge.
-- [ ] [`services/yaml_writer.py`](../../src/nanoidp/services/yaml_writer.py):
+- [x] [`services/yaml_writer.py`](../../src/nanoidp/services/yaml_writer.py):
       extend `update_login_settings()` / `_mutate_login_mode()` (line
       ~68-410) to round-trip `auto_login`, omitted at the `False` default,
       same convention as `login.mode`.
-- [ ] Tests: extend `tests/test_config.py`, `tests/test_config_schema.py`,
+- [x] Tests: extend `tests/test_config.py`, `tests/test_config_schema.py`,
       `tests/test_config_documents.py`, `tests/test_persistence_unification.py`.
       Cover: default off, on+persona round-trips, on without persona mode
       (loads fine, `auto_login_enabled` is `False` - `#250-assumption` 1),

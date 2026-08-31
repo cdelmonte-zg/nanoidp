@@ -438,7 +438,59 @@ class TestLoginMode:
         assert manager.settings.login_mode == "password"
 
 
-class TestUsersYamlPasswordOptional:
+class TestAutoLogin:
+    """Tests for the auto_login setting (#250: automated persona login)."""
+
+    def test_default_auto_login_is_false(self):
+        assert Settings().auto_login is False
+
+    def test_auto_login_enabled_requires_persona_mode(self):
+        """auto_login is inert without login_mode: persona, not rejected -
+        orthogonal composition, same as persona_mode_enabled itself."""
+        assert Settings(login_mode="password", auto_login=True).auto_login_enabled is False
+        assert Settings(login_mode="persona", auto_login=True).auto_login_enabled is True
+        assert Settings(login_mode="persona", auto_login=False).auto_login_enabled is False
+
+    def test_auto_login_loaded_from_settings_yaml(self, tmp_path):
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        (config_dir / "settings.yaml").write_text(
+            "login:\n  mode: persona\n  auto_login: true\n"
+        )
+        (config_dir / "users.yaml").write_text(
+            'users:\n  admin:\n    password: "admin"\ndefault_user: admin\n'
+        )
+
+        manager = ConfigManager(str(config_dir))
+
+        assert manager.settings.auto_login is True
+        assert manager.settings.auto_login_enabled is True
+
+    def test_auto_login_defaults_when_section_absent(self, tmp_path):
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        (config_dir / "settings.yaml").write_text("oauth:\n  issuer: http://localhost:8000\n")
+        (config_dir / "users.yaml").write_text(
+            'users:\n  admin:\n    password: "admin"\ndefault_user: admin\n'
+        )
+
+        manager = ConfigManager(str(config_dir))
+
+        assert manager.settings.auto_login is False
+
+    def test_bare_login_section_does_not_crash(self, tmp_path):
+        """Same bare-'login:' regression as TestLoginMode above, covering
+        the sibling field."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        (config_dir / "settings.yaml").write_text("login:\n")
+        (config_dir / "users.yaml").write_text(
+            'users:\n  admin:\n    password: "admin"\ndefault_user: admin\n'
+        )
+
+        manager = ConfigManager(str(config_dir))
+
+        assert manager.settings.auto_login is False
     """Tests for loading users without a password from users.yaml."""
 
     def test_user_missing_password_key_loads_as_none(self, tmp_path):

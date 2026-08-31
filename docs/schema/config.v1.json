@@ -291,6 +291,11 @@
       "LoginSection": {
         "additionalProperties": false,
         "properties": {
+          "auto_login": {
+            "default": false,
+            "title": "Auto Login",
+            "type": "boolean"
+          },
           "mode": {
             "default": "password",
             "title": "Mode",

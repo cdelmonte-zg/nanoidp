@@ -83,6 +83,7 @@ class TestDefaultsMatchTheOldLoaderLiterals:
         assert d.logging.log_saml_requests is True
         assert d.logging.verbose_logging is True
         assert d.login.mode == "password"
+        assert d.login.auto_login is False
         assert d.security_profile == "dev"
         assert d.authority_prefixes == {}
         assert d.allowed_identity_classes == []
@@ -109,6 +110,7 @@ class TestDefaultsMatchTheOldLoaderLiterals:
         defaults = document_defaults()
         assert defaults["security_profile"] == "dev"
         assert defaults["login.mode"] == "password"
+        assert defaults["login.auto_login"] is False
         assert defaults["saml.default_acs_url"] == SettingsDocument().saml.default_acs_url
         assert defaults["server.port"] == 8000
 
@@ -346,6 +348,24 @@ class TestWriterUsesDocumentDefaults:
         assert "security_profile" not in doc and "login" not in doc
         apply_settings_document(doc, Settings(security_profile="oauth21", login_mode="persona"), defaults=document_defaults())
         assert doc["security_profile"] == "oauth21" and doc["login"]["mode"] == "persona"
+
+    def test_auto_login_omitted_at_default_and_persisted_alongside_mode(self):
+        """#250: auto_login shares the 'login' section with mode - both
+        round-trip, and clearing back to the default (False) leaves only
+        the sibling key behind rather than dropping the whole section."""
+        doc = {}
+        apply_settings_document(
+            doc,
+            Settings(login_mode="persona", auto_login=True),
+            defaults=document_defaults(),
+        )
+        assert doc["login"] == {"mode": "persona", "auto_login": True}
+        apply_settings_document(
+            doc,
+            Settings(login_mode="persona", auto_login=False),
+            defaults=document_defaults(),
+        )
+        assert doc["login"] == {"mode": "persona"}
 
     def test_fallback_without_defaults_still_works(self):
         doc = {}
