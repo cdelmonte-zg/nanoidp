@@ -153,17 +153,30 @@ the PR description for the maintainer to confirm or override after the fact.
       work would need this analysis redone.
 
 ### 4. MCP exposure
-- [ ] [`mcp_server/handlers_config.py`](../../src/nanoidp/mcp_server/handlers_config.py):
+- [x] [`mcp_server/handlers_config.py`](../../src/nanoidp/mcp_server/handlers_config.py):
       expose `auto_login` next to `login_mode` in `get_settings`/
       `update_settings` (line ~54, ~148), enum/bool-validated by the tool's
       `input_schema` so an invalid combination never reaches the handler.
-- [ ] [`mcp_server/schemas.py`](../../src/nanoidp/mcp_server/schemas.py):
-      add `auto_login` to the relevant tool input schema(s).
-- [ ] Tests: extend `tests/test_mcp.py` / `tests/test_mcp_tool_branches.py`
-      for the new field; check whether `tests/test_mcp_security.py`'s
-      mutating-tool count or `examples/mcp_smoke_test.py`'s `EXPECTED_TOOLS`
-      need bumping (likely not - no new tool, just a new field on existing
-      ones, but verify against the live stdio server).
+- [x] [`mcp_server/normalize.py`](../../src/nanoidp/mcp_server/normalize.py):
+      `auto_login` added to `_UPDATE_SETTINGS_FIELDS` (its presence there is
+      what makes `update_settings` accept and `setattr` it - no normalizer
+      needed, a plain bool).
+- [x] [`mcp_server/schemas.py`](../../src/nanoidp/mcp_server/schemas.py):
+      `auto_login` (boolean) added to `update_settings`' input schema, next
+      to `login_mode`.
+- [x] Tests: extended `tests/test_mcp.py` (`TestMCPUserDescription`, where
+      the pre-existing `login_mode` MCP tests already live, a pre-existing
+      misplacement left alone rather than fixed here) - `get_settings`
+      includes `auto_login`, `update_settings` can enable it alongside
+      `login_mode: persona`, it is accepted-but-inert without persona mode
+      (`#250-assumption` 1), and a non-boolean value is rejected by the
+      schema before dispatch. `test_settings_plumbing_parity.py`'s
+      `_UPDATE_SETTINGS_FIELDS`-vs-schema parity test needed no change -
+      it already asserts the two stay in sync generically. No new tool was
+      added (just a field on two existing ones), so
+      `tests/test_mcp_security.py`'s mutating-tool count and
+      `e2e/mcp_smoke_test.py`'s `EXPECTED_TOOLS` are unaffected by
+      inspection; not re-verified against a live stdio server.
 
 ### 5. Settings UI persistence + `/api/config` exposure
 - [ ] [`templates/settings.html`](../../src/nanoidp/templates/settings.html):

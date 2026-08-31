@@ -112,6 +112,7 @@ _UPDATE_SETTINGS_FIELDS: tuple[str, ...] = (
     "refresh_token_rotation",
     "require_pkce",
     "login_mode",
+    "auto_login",
 )
 
 _UPDATE_SETTINGS_NORMALIZERS: dict[str, Callable[[str, Any], Any]] = {
