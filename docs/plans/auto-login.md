@@ -242,18 +242,51 @@ the PR description for the maintainer to confirm or override after the fact.
       feature introduced) - reverted rather than committed.
 
 ### 7. Docs (last)
-- [ ] `book/src/reference/configuration.md` - new "Auto-login" subsection
+- [x] `book/src/reference/configuration.md` - new "Auto-login" subsection
       under the existing "Login mode (persona login)" section, plus a
-      commented `auto_login: false` line in the settings.yaml example.
-- [ ] `docs/SECURITY.md` (symlinked as `book/src/guides/SECURITY.md`) - short
-      note alongside the existing persona-login security section: auto-login
-      is a further-opt-in, local dev/testing convenience only.
-- [ ] `examples/persona-login/README.md` - mention `auto_login` and the
-      `persona-auto-login:` hint prefix, since that example already
-      demonstrates persona mode.
+      commented `auto_login: true` line (mirroring `login.mode`'s own
+      comment style) in the settings.yaml example.
+- [x] `docs/SECURITY.md` (symlinked as `book/src/guides/SECURITY.md` - one
+      edit covers both) - new "Auto-Login (automated testing)" subsection
+      right after "Persona Login Mode": the config, the `login_hint`
+      contract, the error-redirect behavior, and the "OIDC `/authorize`
+      only for now" scope note.
+- [x] `examples/persona-login/README.md` - new "Auto-login for automated
+      tests" section with a working `curl` example against this preset;
+      `examples/persona-login/settings.yaml` gets a commented
+      `# auto_login: true` line next to `mode: persona` (left commented,
+      not enabled, so the example's own "Open the login page" walkthrough
+      still shows the picker as documented). Verified with
+      `nanoidp validate-config --config examples/persona-login --strict`:
+      no findings.
 - [ ] `CHANGELOG.md` - left to the maintainer, per the persona-login-mode
-      precedent; draft an entry here once behavior is finalized instead of
-      committing it directly.
+      precedent; draft entry below instead of committing it directly.
+
+## Proposed CHANGELOG entry (for the maintainer)
+
+Drafted to fit the existing `[Unreleased]` / `### Added` format and tone,
+then deliberately **not** committed to `CHANGELOG.md` - left for the
+maintainer to add on their own terms, per the persona-login-mode precedent:
+
+```markdown
+- **Auto-login personas** (#250, opt-in, off by default): with
+  `login.mode: persona`, a new `login.auto_login: true` lets an OIDC
+  `/authorize` request log a configured user in directly - no picker, no
+  HTML - by sending `login_hint: persona-auto-login:USERNAME`, for driving a
+  real OIDC client library in automated integration tests. Any other
+  `login_hint` is passed through unchanged, and with the flag off a
+  prefixed hint is inert too, so the picker still shows exactly as before.
+  An unknown persona reports through the standard OAuth error redirect
+  (`error=invalid_request`, `state` preserved), never a bare `400`. First
+  implementation surface is OIDC `/authorize` only; the device flow and
+  SAML have no defined transport for the hint yet. Ships with settings UI
+  and MCP (`get_settings`/`update_settings`) exposure, an `/api/config`
+  `login` block (which also picked up the pre-existing `login_mode` field
+  it was missing since persona mode shipped), and an
+  `examples/persona-login` walkthrough. Like the rest of NanoIDP, a local
+  development/testing convenience only - not an authentication mode for
+  deployed environments.
+```
 
 ## Assumptions and defaults (`#250-assumption`, documented for maintainer review - not blocking)
 

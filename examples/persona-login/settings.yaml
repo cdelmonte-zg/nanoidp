@@ -23,6 +23,7 @@ oauth:
 # unaffected either way.
 login:
   mode: persona
+  # auto_login: true  # further opt-in for automated tests (#250) - see README
 
 authority_prefixes:
   roles: "ROLE_"
