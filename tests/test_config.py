@@ -491,6 +491,9 @@ class TestAutoLogin:
         manager = ConfigManager(str(config_dir))
 
         assert manager.settings.auto_login is False
+
+
+class TestUsersYamlPasswordOptional:
     """Tests for loading users without a password from users.yaml."""
 
     def test_user_missing_password_key_loads_as_none(self, tmp_path):
