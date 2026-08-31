@@ -86,65 +86,71 @@ the PR description for the maintainer to confirm or override after the fact.
       bare `login:\n` / `login: {mode: persona}\n` still loads.
 
 ### 2. OIDC `/authorize`: recognize the hint, authenticate, distinguish auth_method
-- [ ] [`routes/oauth.py`](../../src/nanoidp/routes/oauth.py) `_AuthorizeParams`
+- [x] [`routes/oauth.py`](../../src/nanoidp/routes/oauth.py) `_AuthorizeParams`
       (line ~114-130) and `_read_authorize_params()` (line ~135): add a
       `login_hint` field - it is not read at all today, ordinary or
       prefixed, so it needs plumbing through the same GET-query /
       session-fallback pattern as the other nine params before anything can
       act on it.
-- [ ] `authorize()`: new validation step after `_validate_authorize_redirect_uri()`
+- [x] `authorize()`: new validation step after `_validate_authorize_redirect_uri()`
       (line ~598) and before `_render_authorize_login()` - detect
       `login_hint.startswith("persona-auto-login:")` when
       `config.settings.auto_login_enabled`, extract the username, look it up
       via the same accessor `interactive_authenticate`/`get_user` persona
       login already uses.
-- [ ] On a known persona: set `session["user"]`, a **distinct**
-      `session["auth_method"]` value (`"persona_auto"`, not `"persona"` -
-      `#250-assumption`, see below) per contract point 4, `session.permanent
-      = True`, then continue the normal authorize flow (skip
-      `_render_authorize_login()` entirely - no HTML, no picker).
-- [ ] On an unknown persona: redirect to the client via
+- [x] **Revised while implementing (`#250-assumption` 2, see below): no
+      session/`auth_method` change needed.** `_handle_authorize_login()`'s
+      success branch never set `session["user"]`/`session["auth_method"]` -
+      /authorize's inline login (password or persona picker) has always
+      gone straight from credentials to the auth-code redirect, unlike
+      `/login` and `/saml/sso`, which do establish a session. Auto-login
+      does the same: on a known persona it calls the same code-issuance
+      path (extracted into `_issue_authorization_code()`, shared with the
+      regular success branch) with no session write, `session.permanent`
+      or otherwise. `state`/`iss` are preserved exactly as the normal path
+      already does.
+- [x] On an unknown persona: redirect to the client via
       [`_authorize_error_redirect()`](../../src/nanoidp/routes/oauth.py) (line
       ~194 - the same helper `_validate_authorize_response_type`/
       `_validate_authorize_scope`/`_validate_authorize_pkce` already use),
       `error=invalid_request`, descriptive `error_description`, `state`
       preserved and `iss` attached automatically by that helper.
-- [ ] With the flag off, or `login.mode != persona` (`#250-assumption`, see
+- [x] With the flag off, or `login.mode != persona` (`#250-assumption`, see
       below): the prefixed hint must be inert - falls through to the
       ordinary login page/picker unchanged, same as any other `login_hint`.
-- [ ] Audit: new distinct event (or a `details`/`method` field on the
-      existing `login` event) that lets audits tell a picker selection apart
-      from an auto-login - check [`services/audit.py`](../../src/nanoidp/services/audit.py)
-      for the existing `audit_event("login", "success", ...)` shape used by
-      `routes/ui.py`/`routes/saml.py` and extend consistently.
-- [ ] Tests: new `tests/test_auto_login.py` (or extend
-      `tests/test_persona_login_flows.py`) - happy path, unknown persona
-      error redirect (assert `state` is preserved and the redirect target is
-      the client's `redirect_uri`, not a bare 400), flag off + prefixed hint
+- [x] Audit: `_issue_authorization_code()`'s `details` dict carries
+      `"auto_login": True` only on the auto-login path, so the existing
+      `authorization_request`/`success` event (not a new event type) lets
+      audits tell a picker selection apart from an auto-login - the
+      distinguishability contract point 4 actually asks for, now that no
+      session value needs distinguishing (see above).
+- [x] Tests: `TestAuthorizeAutoLogin` in `tests/test_persona_login_flows.py`
+      - happy path (known persona issues a code directly, no picker),
+      unknown persona error redirect (`state` preserved, target is the
+      client's `redirect_uri`, not a bare 400), flag off + prefixed hint
       falls through to the picker, mode `password` + flag on is a no-op,
-      ordinary non-prefixed `login_hint` is unaffected.
+      ordinary non-prefixed `login_hint` is unaffected, and the audit
+      `details.auto_login` distinction itself.
 
-### 3. SAML `auth_method` regression guard (NOT SAML auto-login - out of scope per contract point 5)
-- [ ] This step does **not** add a SAML-side auto-login trigger (no
-      `<saml:Subject>`/`login_hint` equivalent for SAML - stays out of scope,
-      "can be designed separately if there is demand"). It only guards an
-      *existing* SAML code path against a regression the new `auth_method`
-      value would otherwise cause on session reuse.
-- [ ] [`routes/saml.py`](../../src/nanoidp/routes/saml.py) `_sso_authenticate_inline()`
-      returns early on an already-set `session["user"]` (line ~439-442)
-      without touching `auth_method`, so a session established a moment
-      earlier via OIDC `/authorize` auto-login and then reused by
-      `/saml/sso` keeps whatever `auth_method` step 2 set. The response
-      builder's `authn_context` selection (line ~538-543) currently does a
-      literal `session.get("auth_method", "password") == "persona"` - with
-      the new distinct value that literal check would fall through to
-      `PasswordProtectedTransport`, exactly the false claim the persona-mode
-      contract already ruled out. Widen the check to treat every
-      non-password auth method as `unspecified`, e.g. `session.get("auth_method",
-      "password") != "password"` (only three values exist today: `password`,
-      `persona`, and the new one from step 2).
-- [ ] Test: session created via `/authorize` auto-login, then reused for
-      `/saml/sso` - assert `unspecified`, not `PasswordProtectedTransport`.
+### 3. SAML `auth_method` regression guard - NOT NEEDED (found while implementing step 2)
+- [x] **No code change required.** The plan assumed OIDC auto-login would
+      establish a session SAML could later reuse, the way `/login` and
+      `/saml/sso`'s own inline login do; step 2 found that `/authorize`'s
+      inline login (password or persona, before or after this feature)
+      never touches `session["user"]`/`session["auth_method"]` at all - it
+      is a one-shot code issuance, not a session establishment. With no new
+      value ever reaching `session["auth_method"]` from this surface,
+      `routes/saml.py`'s `_sso_authenticate_inline()`/`authn_context`
+      literal `== "persona"` check (line ~439-442, ~538-543) has nothing to
+      regress against; it is untouched, unlike this plan originally
+      assumed (`#250-assumption` 2, see below).
+- [x] Test (defensive, proves the above rather than guards a fix):
+      `test_known_persona_issues_code_directly_no_picker` in step 2's
+      `TestAuthorizeAutoLogin` already exercises the auto-login path
+      end-to-end; no session-reuse-by-SAML test is meaningful here since
+      there is no session to reuse. If a future SAML-side `login_hint`
+      equivalent is ever added (out of scope, contract point 5), *that*
+      work would need this analysis redone.
 
 ### 4. MCP exposure
 - [ ] [`mcp_server/handlers_config.py`](../../src/nanoidp/mcp_server/handlers_config.py):
@@ -231,13 +237,19 @@ to confirm or override.
    (no cross-field rejection precedent), and avoids a config load ever
    failing on account of a field that is merely inactive rather than
    contradictory.
-2. **Exact new `auth_method` value: `\"persona_auto\"`.** Distinct from
-   `\"persona\"` and `\"password\"`, snake_case to match the existing two.
-   `routes/saml.py`'s `authn_context` selection (step 3) is widened from an
-   `== \"persona\"` literal to `!= \"password\"` so it does not need to
-   enumerate every non-password value by name going forward - resolves the
-   distinguishability requirement (contract point 4) without a second
-   literal to keep in sync.
+2. **No new `auth_method` value was needed, and `routes/saml.py` is
+   untouched (revised while implementing step 2).** The contract's concern
+   (SAML's literal `== "persona"` check misreporting a reused auto-login
+   session) presumed OIDC auto-login would establish a session the way
+   `/login`/`/saml/sso` do. Implementing step 2 found that `/authorize`'s
+   inline login - password, persona picker, or now auto-login - never
+   writes `session["user"]`/`session["auth_method"]` at all; it is a
+   one-shot code issuance. With nothing new ever reaching that session key
+   from this surface, there is no regression to guard against, and
+   `routes/saml.py` needed no change. Contract point 4's audit
+   distinguishability is instead satisfied by a `details.auto_login: True`
+   flag on the existing `authorization_request`/`success` audit event
+   (`_issue_authorization_code()`), not a new event type or session value.
 3. **Redirect-error helper: already resolved by inspection, not an
    assumption.** [`_authorize_error_redirect()`](../../src/nanoidp/routes/oauth.py)
    (line ~194) is the existing helper `_validate_authorize_response_type`,

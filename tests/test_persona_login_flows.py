@@ -149,6 +149,98 @@ class TestPersonaModeOrthogonalToOauth21:
                 get_config().settings.security_profile = "dev"
 
 
+AUTO_LOGIN_QS = (
+    "response_type=code&client_id=demo-client"
+    "&redirect_uri=http://localhost:3000/callback&scope=openid&state=xyz"
+    "&login_hint=persona-auto-login:admin"
+)
+
+
+def _enable_auto_login(app) -> None:
+    with app.app_context():
+        get_config().settings.login_mode = "persona"
+        get_config().settings.auto_login = True
+
+
+class TestAuthorizeAutoLogin:
+    """#250: login_hint=persona-auto-login:USERNAME on /authorize, gated by
+    login.auto_login (only active with login.mode: persona)."""
+
+    def test_known_persona_issues_code_directly_no_picker(self, app, client):
+        _enable_auto_login(app)
+
+        response = client.get(f"/authorize?{AUTO_LOGIN_QS}", follow_redirects=False)
+
+        assert response.status_code == 302
+        location = response.headers["Location"]
+        assert location.startswith("http://localhost:3000/callback?code=")
+        assert "state=xyz" in location
+
+    def test_unknown_persona_redirects_error_with_state_preserved(self, app, client):
+        _enable_auto_login(app)
+        qs = AUTO_LOGIN_QS.replace("persona-auto-login:admin", "persona-auto-login:nonexistent")
+
+        response = client.get(f"/authorize?{qs}", follow_redirects=False)
+
+        assert response.status_code == 302
+        location = response.headers["Location"]
+        assert location.startswith("http://localhost:3000/callback?")
+        assert "error=invalid_request" in location
+        assert "state=xyz" in location
+
+    def test_flag_off_prefixed_hint_falls_through_to_picker(self, app, client):
+        with app.app_context():
+            get_config().settings.login_mode = "persona"
+            get_config().settings.auto_login = False
+
+        response = client.get(f"/authorize?{AUTO_LOGIN_QS}")
+
+        assert response.status_code == 200
+        assert b'name="password"' not in response.data
+        assert b"admin" in response.data
+
+    def test_password_mode_ignores_auto_login_flag(self, app, client):
+        """auto_login: true without login.mode: persona is inert
+        (#250-assumption 1), not rejected - the ordinary password form
+        still shows."""
+        with app.app_context():
+            get_config().settings.auto_login = True
+
+        response = client.get(f"/authorize?{AUTO_LOGIN_QS}")
+
+        assert response.status_code == 200
+        assert b'name="password"' in response.data
+
+    def test_ordinary_login_hint_is_unaffected(self, app, client):
+        """A login_hint without the reserved prefix is an ordinary hint,
+        outside this feature - falls through to the picker unchanged."""
+        _enable_auto_login(app)
+        qs = AUTO_LOGIN_QS.replace("login_hint=persona-auto-login:admin", "login_hint=admin@example.org")
+
+        response = client.get(f"/authorize?{qs}")
+
+        assert response.status_code == 200
+        assert b"admin" in response.data
+
+    def test_audit_distinguishes_auto_login_from_picker_selection(self, app, client):
+        from nanoidp.services import get_audit_log
+
+        _enable_auto_login(app)
+        client.get(f"/authorize?{AUTO_LOGIN_QS}", follow_redirects=False)
+
+        with app.app_context():
+            entries = get_audit_log().get_entries(limit=5, event_type="authorization_request")
+        assert entries[0]["details"].get("auto_login") is True
+
+        # A regular persona picker selection must NOT carry the flag.
+        client.get(f"/authorize?{AUTHORIZE_QS}")
+        client.post("/authorize", data={"username": "admin"}, follow_redirects=False)
+
+        with app.app_context():
+            entries = get_audit_log().get_entries(limit=5, event_type="authorization_request")
+        assert entries[0]["details"].get("auto_login") is None
+
+
 class TestSamlSsoPersonaMode:
     """SAML /saml/sso inline login and AuthnContextClassRef."""
 
