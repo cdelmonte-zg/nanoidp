@@ -1492,6 +1492,22 @@ class NanoIDPTestAgent:
                 username_step.status_code == 200
                 and 'name="username"' not in username_step.text
                 and 'name="password"' in username_step.text
+                and "Change username" in username_step.text
+            )
+            change_username = self.session.post(
+                f"{self.base_url}/authorize",
+                data={"login_step": "change_username"},
+                timeout=5,
+            )
+            checks["two_step_can_change_username"] = (
+                change_username.status_code == 200
+                and 'name="username"' in change_username.text
+                and 'name="password"' not in change_username.text
+            )
+            self.session.post(
+                f"{self.base_url}/authorize",
+                data={"login_step": "username", "username": self.username},
+                timeout=5,
             )
             password_step = self.session.post(
                 f"{self.base_url}/authorize",

@@ -71,6 +71,27 @@ class TestTwoStepAuthorize:
         assert b'name="password"' in response.data
         assert b"admin" in response.data
 
+    def test_change_username_returns_to_first_step_and_preserves_request(self, app, client):
+        _enable_two_step_login(app)
+        client.get(f"/authorize?{AUTHORIZE_QS}")
+        client.post("/authorize", data={"login_step": "username", "username": "wrong"})
+
+        response = client.post("/authorize", data={"login_step": "change_username"})
+
+        assert response.status_code == 200
+        assert b'name="username"' in response.data
+        assert b'name="password"' not in response.data
+        assert b"wrong" not in response.data
+
+        client.post("/authorize", data={"login_step": "username", "username": "admin"})
+        response = client.post(
+            "/authorize",
+            data={"login_step": "password", "password": "admin"},
+            follow_redirects=False,
+        )
+        assert response.status_code == 302
+        assert "state=two-step" in response.headers["Location"]
+
     def test_new_authorize_request_resets_captured_username(self, app, client):
         _enable_two_step_login(app)
         client.get(f"/authorize?{AUTHORIZE_QS}")

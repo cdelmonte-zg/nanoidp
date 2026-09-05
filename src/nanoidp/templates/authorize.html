@@ -149,6 +149,10 @@
                     <i class="bi bi-check-circle me-2"></i>Authorize
                 </button>
             </form>
+            <form method="POST" class="text-center mt-3">
+                <input type="hidden" name="login_step" value="change_username">
+                <button type="submit" class="btn btn-link p-0">Change username</button>
+            </form>
             {% else %}
             <form method="POST">
                 <div class="form-floating mb-3">

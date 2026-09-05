@@ -608,6 +608,9 @@ def _handle_authorize_login(
     two_step_login = client.two_step_login and not persona_mode
 
     if two_step_login:
+        if request.form.get("login_step") == "change_username":
+            session.pop("oauth_login_username", None)
+            return None, None
         if request.form.get("login_step") != "password":
             if not username:
                 return "Username is required", None
