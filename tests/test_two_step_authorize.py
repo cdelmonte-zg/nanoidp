@@ -40,6 +40,9 @@ class TestTwoStepAuthorize:
         assert b'name="password"' in response.data
         assert b"Signing in as" in response.data
         assert b"admin" in response.data
+        assert response.data.index(b"Signing in as") < response.data.index(
+            b'class="client-info"'
+        )
 
     def test_password_step_issues_code_and_preserves_state(self, app, client):
         _enable_two_step_login(app)

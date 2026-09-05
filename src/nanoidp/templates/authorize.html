@@ -78,6 +78,12 @@
     </style>
 </head>
 {% macro client_info_block() %}
+            {% if two_step_login and login_username %}
+            <div class="mb-3">
+                <small class="text-muted">Signing in as</small>
+                <div class="fw-semibold">{{ login_username }}</div>
+            </div>
+            {% endif %}
             <div class="client-info">
                 <div class="d-flex align-items-center mb-2">
                     {% if logo_url %}
@@ -135,11 +141,6 @@
             {% elif two_step_login %}
             <form method="POST">
                 <input type="hidden" name="login_step" value="password">
-                <div class="mb-3">
-                    <small class="text-muted">Signing in as</small>
-                    <div class="fw-semibold">{{ login_username }}</div>
-                </div>
-
                 <div class="form-floating mb-4">
                     <input type="password" class="form-control" id="password" name="password" placeholder="Password" required autofocus autocomplete="current-password">
                     <label for="password"><i class="bi bi-key me-2"></i>Password</label>
