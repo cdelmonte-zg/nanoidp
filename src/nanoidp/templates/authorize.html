@@ -78,12 +78,6 @@
     </style>
 </head>
 {% macro client_info_block() %}
-            {% if two_step_login and login_username %}
-            <div class="mb-3">
-                <small class="text-muted">Signing in as</small>
-                <div class="fw-semibold">{{ login_username }}</div>
-            </div>
-            {% endif %}
             <div class="client-info">
                 <div class="d-flex align-items-center mb-2">
                     {% if logo_url %}
@@ -189,8 +183,15 @@
             </div>
             {% endif %}
 
+            {% if two_step_login and login_username %}
+            <div class="mb-3">
+                <small class="text-muted">Signing in as</small>
+                <span class="fw-semibold">{{ login_username }}</span>
+            </div>
+            {% endif %}
+
             {% if horizontal %}
-            <div class="row g-4 align-items-center">
+            <div class="row g-4 align-items-start">
                 <div class="col-md-6">
                     {{ client_info_block() }}
                 </div>
