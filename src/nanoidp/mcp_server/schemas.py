@@ -426,6 +426,10 @@ _TOOLS: list[Tool] = [
                     "type": "boolean",
                     "description": "Show description on the /authorize login page (optional, default false)",
                 },
+                "two_step_login": {
+                    "type": "boolean",
+                    "description": "Collect username and password on separate /authorize screens (optional, default false)",
+                },
                 "layout": {
                     "type": "string",
                     "enum": ["vertical", "horizontal"],
@@ -503,6 +507,10 @@ _TOOLS: list[Tool] = [
                 "show_description": {
                     "type": "boolean",
                     "description": "Show description on the /authorize login page (optional)",
+                },
+                "two_step_login": {
+                    "type": "boolean",
+                    "description": "Collect username and password on separate /authorize screens (optional)",
                 },
                 "layout": {
                     "type": "string",

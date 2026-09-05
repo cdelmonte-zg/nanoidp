@@ -120,6 +120,35 @@
             <form method="POST">
                 {{ macros.persona_picker(users, "Persona login - select a user to authorize.") }}
             </form>
+            {% elif two_step_login and not login_username %}
+            <form method="POST">
+                <input type="hidden" name="login_step" value="username">
+                <div class="form-floating mb-4">
+                    <input type="text" class="form-control" id="username" name="username" placeholder="Username" required autofocus autocomplete="username">
+                    <label for="username"><i class="bi bi-person me-2"></i>Username</label>
+                </div>
+
+                <button type="submit" class="btn btn-primary w-100 py-2">
+                    Next <i class="bi bi-arrow-right ms-2"></i>
+                </button>
+            </form>
+            {% elif two_step_login %}
+            <form method="POST">
+                <input type="hidden" name="login_step" value="password">
+                <div class="mb-3">
+                    <small class="text-muted">Signing in as</small>
+                    <div class="fw-semibold">{{ login_username }}</div>
+                </div>
+
+                <div class="form-floating mb-4">
+                    <input type="password" class="form-control" id="password" name="password" placeholder="Password" required autofocus autocomplete="current-password">
+                    <label for="password"><i class="bi bi-key me-2"></i>Password</label>
+                </div>
+
+                <button type="submit" class="btn btn-primary w-100 py-2">
+                    <i class="bi bi-check-circle me-2"></i>Authorize
+                </button>
+            </form>
             {% else %}
             <form method="POST">
                 <div class="form-floating mb-3">

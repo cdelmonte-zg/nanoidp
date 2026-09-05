@@ -180,6 +180,11 @@
             ],
             "title": "Token Endpoint Auth Method",
             "type": "string"
+          },
+          "two_step_login": {
+            "default": false,
+            "title": "Two Step Login",
+            "type": "boolean"
           }
         },
         "title": "ClientEntry",

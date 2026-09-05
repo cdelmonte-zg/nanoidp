@@ -503,6 +503,7 @@ def client_create() -> ResponseReturnValue:
             footer_color=request.form.get("footer_color") or None,
             show_client_id=bool(request.form.get("show_client_id")),
             show_description=bool(request.form.get("show_description")),
+            two_step_login=bool(request.form.get("two_step_login")),
             additional_audiences=_parse_textarea_list(
                 request.form.get("additional_audiences", "")
             ),
@@ -587,6 +588,7 @@ def client_edit(client_id: str) -> ResponseReturnValue:
             footer_color=request.form.get("footer_color") or None,
             show_client_id=bool(request.form.get("show_client_id")),
             show_description=bool(request.form.get("show_description")),
+            two_step_login=bool(request.form.get("two_step_login")),
             additional_audiences=_parse_textarea_list(
                 request.form.get("additional_audiences", "")
             ),

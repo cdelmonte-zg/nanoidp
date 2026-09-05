@@ -170,6 +170,9 @@ def _read_authorize_params() -> _AuthorizeParams:
     )
 
     if request.method == "GET":
+        # A new authorization request always starts at the username screen;
+        # never carry a captured identity across clients or browser tabs.
+        session.pop("oauth_login_username", None)
         session["oauth_response_type"] = p.response_type
         session["oauth_client_id"] = p.client_id
         session["oauth_redirect_uri"] = p.redirect_uri
@@ -595,13 +598,25 @@ def _try_persona_auto_login(
 
 
 def _handle_authorize_login(
-    config: ConfigManager, p: _AuthorizeParams
+    config: ConfigManager, p: _AuthorizeParams, client: OAuthClient
 ) -> Tuple[Optional[str], Optional[ResponseReturnValue]]:
     """The POST login leg: (None, redirect) on success, (error_msg, None) to
     fall through to the login page (failed or incomplete credentials)."""
     username = request.form.get("username", "").strip()
     password = request.form.get("password", "")
     persona_mode = config.settings.persona_mode_enabled
+    two_step_login = client.two_step_login and not persona_mode
+
+    if two_step_login:
+        if request.form.get("login_step") != "password":
+            if not username:
+                return "Username is required", None
+            session["oauth_login_username"] = username
+            return None, None
+
+        username = session.get("oauth_login_username", "")
+        if not username:
+            return "Username is required", None
 
     user = config.interactive_authenticate(username, password)
 
@@ -620,7 +635,11 @@ def _handle_authorize_login(
         )
         return "Invalid username or password", None
 
-    return ("Select a user" if persona_mode else "Username and password are required"), None
+    if persona_mode:
+        return "Select a user", None
+    if two_step_login:
+        return "Password is required", None
+    return "Username and password are required", None
 
 
 def _render_authorize_login(
@@ -644,6 +663,9 @@ def _render_authorize_login(
         scope=p.scope,
         error=error_msg,
         persona_mode=config.settings.persona_mode_enabled,
+        two_step_login=bool(client and client.two_step_login)
+        and not config.settings.persona_mode_enabled,
+        login_username=session.get("oauth_login_username", ""),
         users=config.persona_picker_entries(),
     )
 
@@ -709,7 +731,7 @@ def authorize() -> ResponseReturnValue:
 
     error_msg = None
     if request.method == "POST":
-        error_msg, response = _handle_authorize_login(config, p)
+        error_msg, response = _handle_authorize_login(config, p, client)
         if response is not None:
             return response
 

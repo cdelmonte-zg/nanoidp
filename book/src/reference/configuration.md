@@ -309,6 +309,7 @@ oauth:
       footer_color: "#e8f4f8"      # optional; hex only, the card's footer band
       show_client_id: true         # optional; default true
       show_description: true       # optional; default false
+      two_step_login: true         # optional; default false; collect username, then password
       layout: "horizontal"         # optional; "vertical" (default) or "horizontal" (#249):
                                     # horizontal places the client info and login form side by
                                     # side, collapsing back to a single column on narrow viewports

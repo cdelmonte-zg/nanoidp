@@ -187,6 +187,10 @@ class OAuthClient(BaseModel):
     )
     show_client_id: bool = Field(default=True, description="Show client_id on the /authorize login page")
     show_description: bool = Field(default=False, description="Show description on the /authorize login page")
+    two_step_login: bool = Field(
+        default=False,
+        description="Collect username and password on separate /authorize screens",
+    )
     additional_audiences: List[str] = Field(
         default_factory=list,
         description="Extra audiences added to the ID Token 'aud' alongside the client_id",

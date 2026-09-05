@@ -94,6 +94,7 @@ class ClientEntry(BaseModel):
     footer_color: Optional[str] = None
     show_client_id: bool = True
     show_description: bool = False
+    two_step_login: bool = False
     additional_audiences: Any = None
     redirect_uris: Any = None
     allowed_scopes: Any = None
@@ -113,6 +114,7 @@ class ClientEntry(BaseModel):
             footer_color=self.footer_color,
             show_client_id=self.show_client_id,
             show_description=self.show_description,
+            two_step_login=self.two_step_login,
             additional_audiences=_coerce_additional_audiences(
                 self.additional_audiences, self.client_id
             ),

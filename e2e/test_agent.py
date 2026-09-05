@@ -1413,11 +1413,12 @@ class NanoIDPTestAgent:
             )
 
     def test_client_branding(self) -> TestResult:
-        """Per-client login page branding is created and rendered end-to-end (#150).
+        """Per-client login presentation is created and rendered end-to-end (#150/#322).
 
         Creates a client with colors and the id/description toggles via the
         clients UI form, then checks that /authorize's login page reflects
-        every one of them, and cleans the client up afterwards.
+        every one of them and uses its two-step login, then cleans the client
+        up afterwards.
         """
         test_client_id = f"branding-test-{secrets.token_hex(4)}"
         test_description = "Branding e2e test client"
@@ -1437,6 +1438,7 @@ class NanoIDPTestAgent:
                     "footer_color": "#654321",
                     "show_client_id": "on",
                     "show_description": "on",
+                    "two_step_login": "on",
                 },
                 allow_redirects=False,
                 timeout=5,
@@ -1452,7 +1454,7 @@ class NanoIDPTestAgent:
                     f"location={create.headers.get('Location')}",
                 )
 
-            authorize = requests.get(
+            authorize = self.session.get(
                 f"{self.base_url}/authorize",
                 params={
                     "response_type": "code",
@@ -1468,6 +1470,9 @@ class NanoIDPTestAgent:
                 "footer_color": "#654321" in html,
                 "client_id_shown": test_client_id in html,
                 "description_shown": test_description in html,
+                "two_step_starts_with_username": (
+                    'name="username"' in html and 'name="password"' not in html
+                ),
                 # #249: the default ("vertical") layout must not render the
                 # horizontal two-column markup. The CSS selector for that
                 # class lives in every page's <style> block regardless of
@@ -1477,6 +1482,27 @@ class NanoIDPTestAgent:
                     'class="authorize-card authorize-card-horizontal"' not in html
                 ),
             }
+
+            username_step = self.session.post(
+                f"{self.base_url}/authorize",
+                data={"login_step": "username", "username": self.username},
+                timeout=5,
+            )
+            checks["two_step_asks_for_password"] = (
+                username_step.status_code == 200
+                and 'name="username"' not in username_step.text
+                and 'name="password"' in username_step.text
+            )
+            password_step = self.session.post(
+                f"{self.base_url}/authorize",
+                data={"login_step": "password", "password": self.password},
+                allow_redirects=False,
+                timeout=5,
+            )
+            checks["two_step_issues_code"] = (
+                password_step.status_code in (302, 303)
+                and "code=" in password_step.headers.get("Location", "")
+            )
 
             # #249: a client with layout=horizontal renders the two-column
             # composition. Same create/authorize/delete shape as above, kept

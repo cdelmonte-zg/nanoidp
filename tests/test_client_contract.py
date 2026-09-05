@@ -47,6 +47,7 @@ FULL_A = OAuthClient(
     footer_color="#778899",
     show_client_id=False,
     show_description=True,
+    two_step_login=True,
     additional_audiences=["aud-a1", "aud-a2"],
     redirect_uris=["https://a.example/cb", "http://127.0.0.1:7001/cb"],
     allowed_scopes=["openid", "profile"],
@@ -67,6 +68,7 @@ FULL_B = OAuthClient(
     footer_color="#001122",
     show_client_id=False,
     show_description=True,
+    two_step_login=True,
     additional_audiences=["aud-b1"],
     redirect_uris=["https://b.example/cb"],
     allowed_scopes=["openid", "email", "groups"],
@@ -152,7 +154,10 @@ class TestFixturesCoverTheModel:
         # Unchecked boxes are absent from a real browser POST: FULL_A/FULL_B
         # uncheck show_client_id, DEFAULTS leaves show_description unchecked.
         assert set(_as_form(FULL_A)) == set(OAuthClient.model_fields) - {"show_client_id"}
-        assert set(_as_form(DEFAULTS)) == set(OAuthClient.model_fields) - {"show_description"}
+        assert set(_as_form(DEFAULTS)) == set(OAuthClient.model_fields) - {
+            "show_description",
+            "two_step_login",
+        }
 
     def test_mcp_encoding_carries_every_field(self):
         for fixture in (FULL_A, FULL_B, DEFAULTS):

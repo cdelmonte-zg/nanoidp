@@ -288,6 +288,8 @@ def client_to_yaml(client: OAuthClient) -> Dict[str, Any]:
         entry["show_client_id"] = False
     if client.show_description:
         entry["show_description"] = True
+    if client.two_step_login:
+        entry["two_step_login"] = True
     if client.additional_audiences:
         entry["additional_audiences"] = client.additional_audiences
     if client.redirect_uris:
@@ -349,6 +351,7 @@ def merge_client_entry(raw_entry: Dict[str, Any], client: OAuthClient) -> Dict[s
     for field_name, new_bool_value, default_value in (
         ("show_client_id", client.show_client_id, True),
         ("show_description", client.show_description, False),
+        ("two_step_login", client.two_step_login, False),
     ):
         if not is_unchanged(raw_entry.get(field_name), new_bool_value):
             if new_bool_value != default_value:
