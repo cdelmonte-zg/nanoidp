@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-09-06
+
 ### Breaking Changes
 
 This release tightens and unifies nanoidp's OAuth **client-authentication
@@ -16,7 +18,7 @@ authenticated over a different channel at one of these endpoints - which the
 previous leniency allowed - needs a one-time adjustment.
 
 - **The registered `token_endpoint_auth_method` is now enforced at every
-  client-authenticated endpoint** (#188, #262): `/token`, `/introspect`,
+  client-authenticated endpoint** (#188, #259, #262): `/token`, `/introspect`,
   `/revoke` and `/device_authorization`.
   - A **confidential client must authenticate on `authorization_code`** too -
     the code exchange no longer has a client-authentication exemption (RFC 6749
@@ -87,6 +89,43 @@ previous leniency allowed - needs a one-time adjustment.
   unauthenticated by design (the same read model as the REST API, #163):
   it previously claimed "after JWT authentication", which the code never did.
 
+- **The `exp` claim is required on every token nanoidp accepts** (#306).
+  `verify_jwt` now enforces `require: ["exp"]` - a correctly signed JWT
+  WITHOUT an expiry is rejected everywhere (`/userinfo`, `/introspect`,
+  `/revoke`, the refresh grant, MCP `verify_token`). This is nanoidp's
+  token-profile policy, not a JWT-spec rule (RFC 7519 leaves `exp`
+  optional; OIDC Core and RFC 9068 require it on the profiles that
+  matter): a token accepted by an IdP should have a finite lifetime, and
+  an eternal bearer token would let an integration test pass here and
+  fail against any real IdP. Everything nanoidp mints has always carried
+  `exp`; only hand-crafted tokens signed with the nanoidp key are
+  affected. *Migration:* add an `exp` to such fixtures. No other claim is
+  newly required.
+- **An unverifiable refresh token now answers RFC 6749 §5.2 JSON**
+  (`invalid_grant`, HTTP 400) instead of a Werkzeug 401 HTML page, per
+  the "Error surfaces" rule (#287).
+- **Every `/token` error branch now answers RFC 6749 §5.2 JSON** (#308):
+  roughly twenty conditions across the endpoint shell and all five grant
+  handlers used to answer Werkzeug HTML via `abort()`. Now: missing or
+  malformed parameters are `invalid_request` (400); a bad, expired,
+  revoked or foreign code/refresh-token - and invalid resource-owner
+  credentials on the password grant - are `invalid_grant` (400); an
+  unknown or profile-disabled grant type is `unsupported_grant_type`
+  (400); client-authentication failures are `invalid_client` - 401 with
+  the `WWW-Authenticate: Basic` challenge when the client attempted HTTP
+  Basic (the §5.2 MUST), 400 otherwise (§5.2's default; RFC 9110 §11.6.1
+  forbids a challenge-less 401, and a Basic challenge would be wrong for
+  a `client_secret_post` client anyway). The attempt is detected from the
+  raw `Authorization` header (#311): a syntactically broken Basic header -
+  which werkzeug parses to nothing - still counts as an attempted Basic
+  and gets the 401 + challenge. Descriptions are fixed text (no library
+  detail and no reflected caller input - the unsupported grant type's raw
+  value lives in the audit event, not the response). *Migration:* branches that used to answer 401 for GRANT problems
+  (revoked/foreign refresh token, unknown user, wrong password) now
+  answer 400 with `error: invalid_grant` - §5.2 reserves 401 for client
+  authentication; read `error` from the JSON body instead of matching
+  HTML.
+
 ### Changed
 - **`mcp_server` is a package** (#286): the 2,100-line module is now
   `mcp_server/` - `schemas.py` (tool declarations and compiled validators),
@@ -128,43 +167,24 @@ previous leniency allowed - needs a one-time adjustment.
   gets tested), and `verify_token` checks signature/expiry like a stateless
   resource server - revocation is `/introspect`'s answer. Behavior is
   unchanged; both exemptions are now pinned by tests.
-
-- **The `exp` claim is required on every token nanoidp accepts** (#306).
-  `verify_jwt` now enforces `require: ["exp"]` - a correctly signed JWT
-  WITHOUT an expiry is rejected everywhere (`/userinfo`, `/introspect`,
-  `/revoke`, the refresh grant, MCP `verify_token`). This is nanoidp's
-  token-profile policy, not a JWT-spec rule (RFC 7519 leaves `exp`
-  optional; OIDC Core and RFC 9068 require it on the profiles that
-  matter): a token accepted by an IdP should have a finite lifetime, and
-  an eternal bearer token would let an integration test pass here and
-  fail against any real IdP. Everything nanoidp mints has always carried
-  `exp`; only hand-crafted tokens signed with the nanoidp key are
-  affected. *Migration:* add an `exp` to such fixtures. No other claim is
-  newly required.
-- **An unverifiable refresh token now answers RFC 6749 §5.2 JSON**
-  (`invalid_grant`, HTTP 400) instead of a Werkzeug 401 HTML page, per
-  the "Error surfaces" rule (#287).
-- **Every `/token` error branch now answers RFC 6749 §5.2 JSON** (#308):
-  roughly twenty conditions across the endpoint shell and all five grant
-  handlers used to answer Werkzeug HTML via `abort()`. Now: missing or
-  malformed parameters are `invalid_request` (400); a bad, expired,
-  revoked or foreign code/refresh-token - and invalid resource-owner
-  credentials on the password grant - are `invalid_grant` (400); an
-  unknown or profile-disabled grant type is `unsupported_grant_type`
-  (400); client-authentication failures are `invalid_client` - 401 with
-  the `WWW-Authenticate: Basic` challenge when the client attempted HTTP
-  Basic (the §5.2 MUST), 400 otherwise (§5.2's default; RFC 9110 §11.6.1
-  forbids a challenge-less 401, and a Basic challenge would be wrong for
-  a `client_secret_post` client anyway). The attempt is detected from the
-  raw `Authorization` header (#311): a syntactically broken Basic header -
-  which werkzeug parses to nothing - still counts as an attempted Basic
-  and gets the 401 + challenge. Descriptions are fixed text (no library
-  detail and no reflected caller input - the unsupported grant type's raw
-  value lives in the audit event, not the response). *Migration:* branches that used to answer 401 for GRANT problems
-  (revoked/foreign refresh token, unknown user, wrong password) now
-  answer 400 with `error: invalid_grant` - §5.2 reserves 401 for client
-  authentication; read `error` from the JSON body instead of matching
-  HTML.
+- **The end-to-end test harness moved from `examples/` to a dedicated `e2e/`
+  directory.** `test_agent.py`, `mock_mcp_server.py`, `mcp_smoke_test.py` and
+  `gen_sp_keypair.py` now live under `e2e/`; `examples/` keeps only the real
+  usage examples (client integrations, plugins). The harness was never a
+  usage example - it is the CI end-to-end suite - and mixing the two made the
+  repository harder to read. Invocations change from `python examples/...` to
+  `python e2e/...` (CI, CONTRIBUTING and the docs are updated); no behaviour
+  and no packaged code changed.
+- **Resource indicators are validated per RFC 3986 component, not by a single
+  character whitelist** (#257). A `resource` is still an absolute URI without a
+  fragment (RFC 8707 §2), but each component is now checked against its own
+  ABNF: `[`/`]` are accepted only inside an IP-literal host (so
+  `https://host/a[b]` is rejected where it used to pass), a port is `*DIGIT`
+  (no numeric-range limit, matching RFC 3986 §3.2.3), and IPv6 host literals
+  are validated (a scoped `[fe80::1%eth0]` is rejected: RFC 3986 IPv6address
+  has no ZoneID, per RFC 9844). Mostly a tightening on malformed input to an
+  opt-in feature; it also stops rejecting a valid path-empty absolute URI
+  (RFC 3986 §3, e.g. `about:`). No audience bypass or escalation.
 
 ### Added
 - **Auto-login personas** (#250, opt-in, off by default): with
@@ -333,8 +353,8 @@ previous leniency allowed - needs a one-time adjustment.
   rejected with `invalid_client`. `client_secret_post` is now validated
   at `/token`, `/introspect`, `/revoke` and `/device_authorization`;
   discovery had advertised it forever while the body secret was silently
-  ignored. (The three non-token endpoints accept a confidential secret
-  over either channel; only `/token` enforces the registered method.)
+  ignored. (The registered method is enforced at all four endpoints -
+  see Breaking Changes, #262.)
   Confidential clients now authenticate on **every** grant, including
   `authorization_code` (RFC 6749 §3.2.1): the code exchange no longer had
   a client-authentication exemption - a confidential client doing
@@ -342,26 +362,6 @@ previous leniency allowed - needs a one-time adjustment.
   re-registered as `token_endpoint_auth_method: none`. And **access
   tokens carry a `client_id` claim** (RFC 9068 §2.2) binding them to the
   client they were issued to, as refresh tokens have since 2.2.0.
-
-### Changed
-- **The end-to-end test harness moved from `examples/` to a dedicated `e2e/`
-  directory.** `test_agent.py`, `mock_mcp_server.py`, `mcp_smoke_test.py` and
-  `gen_sp_keypair.py` now live under `e2e/`; `examples/` keeps only the real
-  usage examples (client integrations, plugins). The harness was never a
-  usage example - it is the CI end-to-end suite - and mixing the two made the
-  repository harder to read. Invocations change from `python examples/...` to
-  `python e2e/...` (CI, CONTRIBUTING and the docs are updated); no behaviour
-  and no packaged code changed.
-- **Resource indicators are validated per RFC 3986 component, not by a single
-  character whitelist** (#257). A `resource` is still an absolute URI without a
-  fragment (RFC 8707 §2), but each component is now checked against its own
-  ABNF: `[`/`]` are accepted only inside an IP-literal host (so
-  `https://host/a[b]` is rejected where it used to pass), a port is `*DIGIT`
-  (no numeric-range limit, matching RFC 3986 §3.2.3), and IPv6 host literals
-  are validated (a scoped `[fe80::1%eth0]` is rejected: RFC 3986 IPv6address
-  has no ZoneID, per RFC 9844). Mostly a tightening on malformed input to an
-  opt-in feature; it also stops rejecting a valid path-empty absolute URI
-  (RFC 3986 §3, e.g. `about:`). No audience bypass or escalation.
 
 ### Fixed
 - **Rate limiting on `/token` is enforced for real** (#304): the limiter
@@ -1551,6 +1551,7 @@ previous leniency allowed - needs a one-time adjustment.
 - Key rotation with JWKS support for multiple keys
 - External key import support
 
+[3.0.0]: https://github.com/cdelmonte-zg/nanoidp/compare/v2.8.0...v3.0.0
 [2.8.0]: https://github.com/cdelmonte-zg/nanoidp/compare/v2.7.0...v2.8.0
 [2.7.0]: https://github.com/cdelmonte-zg/nanoidp/compare/v2.6.0...v2.7.0
 [2.6.0]: https://github.com/cdelmonte-zg/nanoidp/compare/v2.5.0...v2.6.0
