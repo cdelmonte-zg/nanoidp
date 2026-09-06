@@ -31,8 +31,10 @@ from ..hooks import HookError
 from ..services import get_audit_log, get_crypto_service, get_token_service, get_yaml_writer
 from ._audit import audit_event
 from ._auth import (
+    TwoStepPhase,
     management_secret_required_for_ui,
     mark_management_verified,
+    two_step_phase,
     ui_login_required,
     verify_management_secret,
 )
@@ -92,23 +94,57 @@ def login() -> ResponseReturnValue:
     """
     config = get_config()
     persona_mode = config.settings.persona_mode_enabled
+    two_step_login = config.settings.two_step_login_active
 
-    if request.method == "GET":
-        error = request.args.get("error")
+    def render_login(error: str | None, login_username: str) -> ResponseReturnValue:
         return render_template(
             "login.html",
             error=error,
             users=config.persona_picker_entries(),
             persona_mode=persona_mode,
+            two_step_login=two_step_login,
+            login_username=login_username,
             management_secret_configured=bool(config.settings.management_secret),
         )
 
+    if request.method == "GET":
+        return render_login(request.args.get("error"), "")
+
     # POST: persona mode selects a user by identity, no password prompt;
-    # password mode is unchanged.
+    # password mode is unchanged. Two-step (#322/#323) collects username
+    # and password on separate screens, stateless the same way /authorize's
+    # _handle_authorize_login is - the username travels as a plain form
+    # field, carried forward as a hidden input on the password screen. Step
+    # detection is shared with every other password-form surface (#323
+    # review round 2, before-merge 5).
     username = request.form.get("username", "").strip()
+    password_submitted = "password" in request.form
     password = request.form.get("password", "")
 
-    if (persona_mode and not username) or (not persona_mode and (not username or not password)):
+    phase = two_step_phase(
+        two_step_active=two_step_login,
+        username=username,
+        password=password,
+        password_submitted=password_submitted,
+    )
+    if phase is TwoStepPhase.USERNAME_REQUIRED:
+        return render_login("Username is required", "")
+    if phase is TwoStepPhase.PASSWORD_REQUIRED:
+        # The password screen was resubmitted with a blank password.
+        return render_login("Password is required", username)
+    if phase is TwoStepPhase.USERNAME_STEP:
+        # Nothing to authenticate yet, render the password screen next
+        # with this username carried forward.
+        return render_login(None, username)
+
+    # Reached only for the combined form (two_step_login is False): a
+    # two-step tampered submission (a cleared hidden username alongside a
+    # password) no longer reaches this point at all - two_step_phase
+    # answers USERNAME_REQUIRED for it above, before this legacy redirect
+    # (#322/#323 review round 3, before-merge 1).
+    if not two_step_login and (
+        (persona_mode and not username) or (not persona_mode and (not username or not password))
+    ):
         error = "Select a user" if persona_mode else "Username and password required"
         return redirect(url_for("ui.login", error=error))
 
@@ -122,6 +158,8 @@ def login() -> ResponseReturnValue:
             username=username,
             details={"reason": "Invalid credentials"},
         )
+        if two_step_login:
+            return render_login("Invalid credentials", username)
         return redirect(url_for("ui.login", error="Invalid credentials"))
 
     # Create session
@@ -782,6 +820,7 @@ def settings() -> ResponseReturnValue:
             allowed_identity_classes=identity_classes or None,
             login_mode=_form_text("login_mode"),
             auto_login=_form_bool("auto_login"),
+            two_step=_form_bool("two_step"),
             expected_revision=_expected_revision_from_form(),
         )
 

@@ -49,6 +49,7 @@ from ..services.resource import resolve_resources
 from ..services.scope import resolve_scope
 from ..services.token import resolve_user_claim, sanitize_claim_names
 from ._audit import audit_event
+from ._auth import TwoStepPhase, two_step_phase
 from ._issuer import effective_issuer
 from ._oauth_error import invalid_client_error, oauth_error
 from .oauth_grants import _GRANT_HANDLERS, _GrantContext, _GrantOutcome
@@ -598,17 +599,53 @@ def _handle_authorize_login(
     config: ConfigManager, p: _AuthorizeParams
 ) -> Tuple[Optional[str], Optional[ResponseReturnValue]]:
     """The POST login leg: (None, redirect) on success, (error_msg, None) to
-    fall through to the login page (failed or incomplete credentials)."""
+    fall through to the login page (failed, or the password not yet
+    submitted).
+
+    Stateless (#323 review round 1): the step is derived from what THIS
+    request submits, not a login_step/session sentinel. A POST that carries
+    a password always attempts a real login - whether it's the two-step
+    flow's second screen or a combined-form POST that skips straight past
+    the username-only step (#323 review round 1, blocking 1: a request
+    carrying full credentials must authenticate or be refused, never be
+    half-consumed). And nothing here can leak a captured identity across
+    clients (#323 review round 1, blocking 2), because nothing captures
+    one: the password screen re-submits the username as a plain form field,
+    exactly like the combined form always has.
+
+    ``login.two_step`` (#322/#323 review round 2) is a global setting, not
+    per-client - ``client`` only feeds the branding shown alongside it. The
+    step-detection rule itself lives in ``_auth.two_step_phase`` (#323
+    review round 2, before-merge 5), shared by every password-form surface.
+    """
     username = request.form.get("username", "").strip()
+    password_submitted = "password" in request.form
     password = request.form.get("password", "")
     persona_mode = config.settings.persona_mode_enabled
+
+    phase = two_step_phase(
+        two_step_active=config.settings.two_step_login_active,
+        username=username,
+        password=password,
+        password_submitted=password_submitted,
+    )
+    if phase is TwoStepPhase.USERNAME_REQUIRED:
+        return "Username is required", None
+    if phase is TwoStepPhase.PASSWORD_REQUIRED:
+        # The password screen was resubmitted with a blank password.
+        return "Password is required", None
+    if phase is TwoStepPhase.USERNAME_STEP:
+        # Nothing to authenticate yet - step 1 never verifies the username
+        # exists - fall through to render the password screen with this
+        # username carried forward.
+        return None, None
 
     user = config.interactive_authenticate(username, password)
 
     if user:
         return None, _issue_authorization_code(config, p, user.username)
 
-    if (persona_mode and username) or (not persona_mode and username and password):
+    if (persona_mode and username) or (username and password):
         # A real (failed) selection/login attempt, not just missing input
         audit_event(
             "authorization_request",
@@ -620,7 +657,40 @@ def _handle_authorize_login(
         )
         return "Invalid username or password", None
 
-    return ("Select a user" if persona_mode else "Username and password are required"), None
+    if persona_mode:
+        return "Select a user", None
+    return "Username and password are required", None
+
+
+def _authorize_query_params(p: _AuthorizeParams) -> Dict[str, Any]:
+    """This request's /authorize parameters as a query-string dict, non-empty
+    ones only - for a self-contained "Change username" link (#323 review
+    round 2) that works regardless of what the session still holds.
+
+    A bare ``url_for("oauth.authorize")`` relies on the session's oauth_*
+    scratch keys as a fallback (see _read_authorize_params) - but those are
+    cleared the moment ANY /authorize login succeeds, anywhere, including a
+    different tab mid this same two-step flow (_issue_authorization_code
+    clears every oauth_ key on success). Once that happens the bare link
+    400s with "client_id is required" instead of returning to the username
+    step. Carrying every parameter explicitly makes the link independent of
+    session state, exactly like the original request that produced it.
+    """
+    params: Dict[str, Any] = {
+        "response_type": p.response_type,
+        "client_id": p.client_id,
+        "redirect_uri": p.redirect_uri,
+        "scope": p.scope,
+        "state": p.state,
+        "code_challenge": p.code_challenge,
+        "code_challenge_method": p.code_challenge_method,
+        "nonce": p.nonce,
+        "claims": p.claims_param,
+    }
+    non_empty = {k: v for k, v in params.items() if v}
+    if p.resources:
+        non_empty["resource"] = p.resources
+    return non_empty
 
 
 def _render_authorize_login(
@@ -628,8 +698,14 @@ def _render_authorize_login(
     p: _AuthorizeParams,
     client: Optional[OAuthClient],
     error_msg: Optional[str],
+    login_username: str = "",
 ) -> ResponseReturnValue:
-    """The login page (GET, or a POST that did not authenticate)."""
+    """The login page (GET, or a POST that did not authenticate).
+
+    ``login_username`` is this request's username field, not a value
+    remembered from a previous one (#323 review round 1) - "" on a GET,
+    the just-submitted value on a POST.
+    """
     logo_url = None
     if client:
         logos_dir = effective_logos_dir(config.settings.logos_dir, current_app.static_folder)
@@ -644,6 +720,9 @@ def _render_authorize_login(
         scope=p.scope,
         error=error_msg,
         persona_mode=config.settings.persona_mode_enabled,
+        two_step_login=config.settings.two_step_login_active,
+        login_username=login_username,
+        change_username_url=url_for("oauth.authorize", **_authorize_query_params(p)),
         users=config.persona_picker_entries(),
     )
 
@@ -708,12 +787,14 @@ def authorize() -> ResponseReturnValue:
         return auto_login_response
 
     error_msg = None
+    login_username = ""
     if request.method == "POST":
+        login_username = request.form.get("username", "").strip()
         error_msg, response = _handle_authorize_login(config, p)
         if response is not None:
             return response
 
-    return _render_authorize_login(config, p, client, error_msg)
+    return _render_authorize_login(config, p, client, error_msg, login_username)
 
 
 @oauth_bp.route("/client-logos/<client_id>")
@@ -1726,16 +1807,57 @@ def device_verify() -> ResponseReturnValue:
     """
     config = get_config()
     persona_mode = config.settings.persona_mode_enabled
+    two_step_login = config.settings.two_step_login_active
 
     error_msg = None
     success_msg = None
     user_code = request.args.get("user_code", "")
+    login_username = ""
 
     if request.method == "POST":
         user_code = request.form.get("user_code", "").upper().strip()
         username = request.form.get("username", "").strip()
+        password_submitted = "password" in request.form
         password = request.form.get("password", "")
         action = request.form.get("action", "authorize")
+        login_username = username
+
+        # Step detection is shared with every other password-form surface
+        # (#323 review round 2, before-merge 5); "deny" needs no
+        # credentials at all (services/device_code.py checks it first, on
+        # its own), so it folds into the caller's own gate here rather than
+        # two_step_phase needing to know about device-specific actions.
+        phase = two_step_phase(
+            two_step_active=two_step_login and action != "deny",
+            username=username,
+            password=password,
+            password_submitted=password_submitted,
+        )
+        if phase is not TwoStepPhase.ATTEMPT:
+            # Username-only step (#322/#323): nothing to authenticate yet,
+            # so this must never reach the device-code store - .verify()
+            # below is the atomic check-status + transition (#43), and a
+            # username-only submission has no business touching a pending
+            # code's status. Deliberate trade-off, not an oversight (#323
+            # review round 2, nit): the store has no non-mutating "peek at
+            # this code's status" lookup, only the atomic verify() that
+            # also transitions it - so an invalid or expired user_code is
+            # only reported once the password step actually calls verify(),
+            # one screen later than the combined form would report it.
+            if phase is TwoStepPhase.USERNAME_REQUIRED:
+                error_msg = "Username is required"
+            elif phase is TwoStepPhase.PASSWORD_REQUIRED:
+                error_msg = "Password is required"
+            return render_template(
+                "device.html",
+                user_code=user_code,
+                error=error_msg,
+                success=None,
+                persona_mode=persona_mode,
+                two_step_login=two_step_login,
+                login_username=login_username,
+                users=config.persona_picker_entries(),
+            )
 
         # Message-only: whether this is a "nothing filled in" attempt rather
         # than a wrong selection/credential, so the two outcomes get distinct
@@ -1802,5 +1924,7 @@ def device_verify() -> ResponseReturnValue:
         error=error_msg,
         success=success_msg,
         persona_mode=persona_mode,
+        two_step_login=two_step_login,
+        login_username=login_username,
         users=config.persona_picker_entries(),
     )

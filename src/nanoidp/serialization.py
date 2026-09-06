@@ -442,6 +442,7 @@ _FALLBACK_DEFAULTS: Dict[str, Any] = {
     "security_profile": "dev",
     "login.mode": "password",
     "login.auto_login": False,
+    "login.two_step": False,
 }
 
 
@@ -539,7 +540,7 @@ def apply_settings_document(
 
     The per-field encodings live on ``OWNED_SETTINGS`` (#214); the
     defaults-dependent keys (``security_profile``, ``login.mode``,
-    ``login.auto_login``) are handled explicitly below.
+    ``login.auto_login``, ``login.two_step``) are handled explicitly below.
     """
     for field in OWNED_SETTINGS:
         target = document if not field.section else document.setdefault(field.section, {})
@@ -584,6 +585,9 @@ def apply_settings_document(
 
     auto_login_default = resolved_defaults["login.auto_login"]
     merge_optional_nested_field(document, "login", "auto_login", settings.auto_login, auto_login_default)
+
+    two_step_default = resolved_defaults["login.two_step"]
+    merge_optional_nested_field(document, "login", "two_step", settings.two_step, two_step_default)
 
     return document
 

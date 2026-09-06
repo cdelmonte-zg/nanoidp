@@ -243,6 +243,31 @@ persona reports through the standard OAuth error redirect
 implementation surface is OIDC `/authorize` only - the device flow and SAML
 have no equivalent transport for the hint today.
 
+### Two-step login
+
+`login.two_step` (default `false`, #322/#323) collects the username on one
+screen and the password on the next, for every interactive surface that
+renders the combined form - `/authorize`, `/login`, `/saml/sso` and the
+device flow's `/device`:
+
+```yaml
+# settings.yaml
+login:
+  two_step: true   # default: false
+```
+
+A global setting, not a per-client one - it applies the same way to every
+client. Inert under `login.mode: persona` above, which is passwordless and
+has no password screen to split off. The step is stateless: the username
+travels as a plain form field, carried forward as a hidden input on the
+password screen, and whether a submission is the username-only step or a
+real login attempt is derived from whether it carries a password - a
+request that already has both authenticates directly, so a client written
+against the combined form keeps working unchanged. "Change username"
+returns to the first screen everywhere, including `/saml/sso` - which has
+no GET to link back to, so it resubmits the in-progress SP request's
+hidden fields instead.
+
 ## Settings (`config/settings.yaml`)
 
 ```yaml
@@ -362,6 +387,7 @@ saml:
 # login:
 #   mode: persona     # password (default) | persona
 #   auto_login: true  # default: false; requires mode: persona - see "Auto-login" above
+#   two_step: true    # default: false; see "Two-step login" above
 
 # Optional; how an unknown key is reported - see "Validating your configuration"
 # below. Also settable at startup with --strict-config, which wins over this
@@ -530,6 +556,10 @@ the single-column card - header, client info, then the login form, footer;
 the header and footer still full width, collapsing back to the vertical
 stack on narrow viewports. It's one of exactly two nanoidp-owned layouts,
 not a general styling knob - there's no per-client CSS or column widths.
+
+Two-step login (splitting the password form into a username screen and a
+password screen) is a global `login.two_step` setting, not part of a
+client's branding - see "Two-step login" above.
 
 To preview a client's branded login page, open `/authorize` with its
 `client_id` and a `redirect_uri` (any syntactically valid URL works unless

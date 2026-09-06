@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Two-step login** (#322/#323, opt-in, off by default): `login.two_step:
+  true` collects the username first and the password on a second screen,
+  across every interactive login surface - `/authorize`, `/login`,
+  `/saml/sso` and the device flow's `/device`. A global setting alongside
+  `login.mode`/`login.auto_login`, not a per-client one; inert under
+  `login.mode: persona`, which is passwordless and has no password screen
+  to split off. The step is stateless: the username travels as a plain
+  form field, carried forward as a hidden input on the password screen -
+  a request that already carries both authenticates directly, so anything
+  written against the combined form keeps working unchanged. Configurable
+  through YAML, the Settings UI, and the MCP settings tools.
+
 ## [3.0.0] - 2026-09-06
 
 ### Breaking Changes

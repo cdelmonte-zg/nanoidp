@@ -300,6 +300,11 @@
             "default": "password",
             "title": "Mode",
             "type": "string"
+          },
+          "two_step": {
+            "default": false,
+            "title": "Two Step",
+            "type": "boolean"
           }
         },
         "title": "LoginSection",

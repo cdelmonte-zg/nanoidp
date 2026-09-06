@@ -65,6 +65,13 @@
             </div>
             {% endif %}
 
+            {% if two_step_login and login_username %}
+            <div class="mb-3">
+                <small class="text-muted">Signing in as</small>
+                <span class="fw-semibold">{{ login_username }}</span>
+            </div>
+            {% endif %}
+
             {% if persona_mode %}
             <form method="POST">
                 {% if saml_request %}
@@ -77,6 +84,79 @@
 
                 {{ macros.persona_picker(users, "Persona login - select a user to sign in.") }}
             </form>
+            {% elif two_step_login and not login_username %}
+            <form method="POST">
+                {% if saml_request %}
+                <input type="hidden" name="SAMLRequest" value="{{ saml_request|e }}">
+                <input type="hidden" name="saml_original_verb" value="{{ original_verb|e }}">
+                {% endif %}
+                {% if relay_state %}
+                <input type="hidden" name="RelayState" value="{{ relay_state|e }}">
+                {% endif %}
+
+                <div class="form-floating mb-4">
+                    <input type="text" class="form-control" id="username" name="username" placeholder="Username" required autofocus autocomplete="username">
+                    <label for="username"><i class="bi bi-person me-2"></i>Username</label>
+                </div>
+
+                <button type="submit" class="btn btn-primary w-100 py-2">
+                    Next <i class="bi bi-arrow-right ms-2"></i>
+                </button>
+            </form>
+
+            {% if users %}
+            <div class="quick-login">
+                <small class="text-muted d-block mb-2">Quick fill username</small>
+                <div class="d-flex flex-wrap gap-2">
+                    {% for username, description in users[:6] %}
+                    <button type="button" class="btn btn-outline-secondary quick-login-btn"
+                            onclick='fillUsername({{ username|tojson }})' title="Fill username">
+                        {{ username }}
+                    </button>
+                    {% endfor %}
+                </div>
+            </div>
+            {% endif %}
+            {% elif two_step_login %}
+            <form method="POST">
+                {% if saml_request %}
+                <input type="hidden" name="SAMLRequest" value="{{ saml_request|e }}">
+                <input type="hidden" name="saml_original_verb" value="{{ original_verb|e }}">
+                {% endif %}
+                {% if relay_state %}
+                <input type="hidden" name="RelayState" value="{{ relay_state|e }}">
+                {% endif %}
+                <input type="hidden" name="username" value="{{ login_username }}">
+
+                <div class="form-floating mb-4">
+                    <input type="password" class="form-control" id="password" name="password" placeholder="Password" required autofocus autocomplete="current-password">
+                    <label for="password"><i class="bi bi-key me-2"></i>Password</label>
+                </div>
+
+                <button type="submit" class="btn btn-primary w-100 py-2">
+                    <i class="bi bi-box-arrow-in-right me-2"></i>Sign In
+                </button>
+            </form>
+            {% if saml_request %}
+            {# SAML's inline login has no GET to link back to (the
+               SAMLRequest is a POST body, not stored anywhere), so this
+               resubmits the same hidden fields with no username instead -
+               _sso_authenticate_inline already renders the blank username
+               screen for a POST that carries none (#323 review round 2,
+               before-merge 3). #}
+            <form method="POST" class="text-center mt-3">
+                <input type="hidden" name="SAMLRequest" value="{{ saml_request|e }}">
+                <input type="hidden" name="saml_original_verb" value="{{ original_verb|e }}">
+                {% if relay_state %}
+                <input type="hidden" name="RelayState" value="{{ relay_state|e }}">
+                {% endif %}
+                <button type="submit" class="btn btn-link p-0">Change username</button>
+            </form>
+            {% else %}
+            <div class="text-center mt-3">
+                <a href="{{ url_for('ui.login') }}" class="btn btn-link p-0">Change username</a>
+            </div>
+            {% endif %}
             {% else %}
             <form method="POST">
                 {% if saml_request %}
@@ -139,7 +219,12 @@
     <script>
         function fillUsername(username) {
             document.getElementById('username').value = username;
-            document.getElementById('password').focus();
+            // Two-step's username-only screen (#323 review round 2,
+            // before-merge 4) has no password field to focus yet.
+            var password = document.getElementById('password');
+            if (password) {
+                password.focus();
+            }
         }
     </script>
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>

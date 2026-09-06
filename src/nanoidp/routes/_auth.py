@@ -1,12 +1,14 @@
 """
 Login-gate helper for ui_bp (opt-in, off by default - see require_ui_login
-in models.py) and the management_secret mutation gate shared by ui_bp,
-api_bp and the MCP server (opt-in, off by default - see management_secret
-in models.py).
+in models.py), the management_secret mutation gate shared by ui_bp, api_bp
+and the MCP server (opt-in, off by default - see management_secret in
+models.py), and the two-step login phase shared by every interactive
+password-form surface (#322/#323 review round 2).
 """
 
 import hashlib
 import hmac
+from enum import Enum
 
 from flask import current_app, jsonify, redirect, request, session, url_for
 from flask.typing import ResponseReturnValue
@@ -17,6 +19,71 @@ from ..config import get_config
 # (#286) so the stdio MCP process stops importing Flask to reach it; this
 # module stays the import path its own callers and tests already use.
 from ..security import verify_secret  # noqa: F401
+
+
+class TwoStepPhase(str, Enum):
+    """Where a login submission stands under two-step (#322/#323 review
+    round 2, before-merge 5): derived purely from what THIS request's form
+    carries, never from session state - the single home every password-form
+    surface (/authorize, /login, /saml/sso, /device) shares, so they cannot
+    independently drift on the rule. Round 1's half-consumed combined POST
+    was exactly the kind of drift a fifth hand-written copy would risk
+    again.
+    """
+
+    ATTEMPT = "attempt"  # a password was submitted: authenticate now
+    USERNAME_REQUIRED = "username_required"  # the username-only step was resubmitted blank
+    PASSWORD_REQUIRED = "password_required"  # the password step was resubmitted blank
+    USERNAME_STEP = "username_step"  # nothing to authenticate yet: render the next screen
+
+
+def two_step_phase(
+    *,
+    two_step_active: bool,
+    username: str,
+    password: str,
+    password_submitted: bool,
+    username_submitted: bool = True,
+) -> TwoStepPhase:
+    """Classify a login submission under two-step; each caller keeps its
+    own transport (render vs. redirect, which fields it reads).
+
+    ``two_step_active`` is the caller's own gate - already combining
+    ``Settings.two_step_login_active`` with anything surface-specific (the
+    device flow's "deny needs no credentials" carve-out). When it's False
+    the answer is always ATTEMPT, unconditionally - true for the combined
+    form too, which makes this safe to call regardless of what the request
+    carries.
+
+    A blank username is rejected before a submitted password is even
+    considered: a tampered POST that pairs an empty username with a
+    password would otherwise short-circuit straight to ATTEMPT and
+    authenticate (or audit a failed login) against username='' instead of
+    answering USERNAME_REQUIRED like every other blank-username submission
+    (#322/#323 review round 3, before-merge 1). Only once a username is
+    present does a submitted password mean ATTEMPT: a request that already
+    carries both fields authenticates directly rather than being
+    half-consumed as the username-only step (#323 review round 1,
+    blocking 1).
+
+    ``username_submitted`` defaults to True: every caller but one only ever
+    reaches this function from a POST whose username-only form always
+    carries the field (even blank), so "blank" and "absent" are the same
+    thing there. SAML's inline login is the exception - it serves a fresh,
+    field-less SAMLRequest through this same code path (GET or POST binding
+    both lack a username field entirely), and passes ``"username" in
+    request.form`` explicitly so a genuinely fresh request renders the
+    blank username screen instead of a spurious "Username is required".
+    """
+    if not two_step_active:
+        return TwoStepPhase.ATTEMPT
+    if username_submitted and not username:
+        return TwoStepPhase.USERNAME_REQUIRED
+    if password:
+        return TwoStepPhase.ATTEMPT
+    if password_submitted:
+        return TwoStepPhase.PASSWORD_REQUIRED
+    return TwoStepPhase.USERNAME_STEP
 
 _SAFE_METHODS = ("GET", "HEAD", "OPTIONS")
 

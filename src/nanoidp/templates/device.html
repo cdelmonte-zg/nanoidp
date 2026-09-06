@@ -89,18 +89,55 @@
                 <form method="POST">
                     <div class="form-floating mb-3">
                         <input type="text" class="form-control user-code-input" id="user_code" name="user_code"
-                               placeholder="XXXX-XXXX" value="{{ user_code }}" required autofocus
+                               placeholder="XXXX-XXXX" value="{{ user_code }}" required
+                               {% if not two_step_login %}autofocus{% endif %}
                                maxlength="8" pattern="[A-Za-z0-9]{8}">
                         <label for="user_code"><i class="bi bi-upc me-2"></i>Device Code</label>
                     </div>
 
                     <hr class="my-4">
 
+                    {% if two_step_login and login_username %}
+                    <div class="mb-3">
+                        <small class="text-muted">Signing in as</small>
+                        <span class="fw-semibold">{{ login_username }}</span>
+                    </div>
+                    {% endif %}
+
                     {% if persona_mode %}
                     {{ macros.persona_picker(users, "Persona login - select a user to authorize this device.", js_submit=true) }}
 
                     <div class="d-grid">
                         <button type="submit" name="action" value="deny" class="btn btn-outline-danger py-2">
+                            <i class="bi bi-x-circle me-2"></i>Deny
+                        </button>
+                    </div>
+                    {% elif two_step_login and not login_username %}
+                    <div class="form-floating mb-4">
+                        <input type="text" class="form-control" id="username" name="username" placeholder="Username" required autofocus autocomplete="username">
+                        <label for="username"><i class="bi bi-person me-2"></i>Username</label>
+                    </div>
+
+                    <div class="d-grid gap-2">
+                        <button type="submit" name="action" value="authorize" class="btn btn-primary py-2">
+                            Next <i class="bi bi-arrow-right ms-2"></i>
+                        </button>
+                        <button type="submit" name="action" value="deny" formnovalidate class="btn btn-outline-danger py-2">
+                            <i class="bi bi-x-circle me-2"></i>Deny
+                        </button>
+                    </div>
+                    {% elif two_step_login %}
+                    <input type="hidden" name="username" value="{{ login_username }}">
+                    <div class="form-floating mb-4">
+                        <input type="password" class="form-control" id="password" name="password" placeholder="Password" required autofocus autocomplete="current-password">
+                        <label for="password"><i class="bi bi-key me-2"></i>Password</label>
+                    </div>
+
+                    <div class="d-grid gap-2">
+                        <button type="submit" name="action" value="authorize" class="btn btn-primary py-2">
+                            <i class="bi bi-check-circle me-2"></i>Authorize Device
+                        </button>
+                        <button type="submit" name="action" value="deny" formnovalidate class="btn btn-outline-danger py-2">
                             <i class="bi bi-x-circle me-2"></i>Deny
                         </button>
                     </div>
@@ -119,12 +156,18 @@
                         <button type="submit" name="action" value="authorize" class="btn btn-primary py-2">
                             <i class="bi bi-check-circle me-2"></i>Authorize Device
                         </button>
-                        <button type="submit" name="action" value="deny" class="btn btn-outline-danger py-2">
+                        <button type="submit" name="action" value="deny" formnovalidate class="btn btn-outline-danger py-2">
                             <i class="bi bi-x-circle me-2"></i>Deny
                         </button>
                     </div>
                     {% endif %}
                 </form>
+
+                {% if two_step_login and login_username %}
+                <div class="text-center mt-3">
+                    <a href="{{ url_for('oauth.device_verify', user_code=user_code) }}" class="btn btn-link p-0">Change username</a>
+                </div>
+                {% endif %}
 
                 <div class="text-center mt-3">
                     <small class="text-muted">

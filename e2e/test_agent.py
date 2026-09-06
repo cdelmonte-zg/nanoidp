@@ -48,6 +48,7 @@ Uso:
 
 import base64
 import hashlib
+import html
 import json
 import os
 import re
@@ -1413,11 +1414,14 @@ class NanoIDPTestAgent:
             )
 
     def test_client_branding(self) -> TestResult:
-        """Per-client login page branding is created and rendered end-to-end (#150).
+        """Per-client login presentation is created and rendered end-to-end (#150).
 
         Creates a client with colors and the id/description toggles via the
         clients UI form, then checks that /authorize's login page reflects
-        every one of them, and cleans the client up afterwards.
+        every one of them, then cleans the client up afterwards. Two-step
+        login has its own dedicated test_two_step_login (#323 review round
+        1, non-blocking): folding it in here made a password-step regression
+        report as a branding failure.
         """
         test_client_id = f"branding-test-{secrets.token_hex(4)}"
         test_description = "Branding e2e test client"
@@ -1452,6 +1456,8 @@ class NanoIDPTestAgent:
                     f"location={create.headers.get('Location')}",
                 )
 
+            # Bare requests, not self.session: this is a plain GET, no
+            # cookie-carried state to preserve (#323 review round 1).
             authorize = requests.get(
                 f"{self.base_url}/authorize",
                 params={
@@ -1535,6 +1541,184 @@ class NanoIDPTestAgent:
         finally:
             self.session.post(
                 f"{self.base_url}/clients/{test_client_id}/delete", timeout=5
+            )
+
+    def test_two_step_login(self) -> TestResult:
+        """Two-step login (#322/#323 review round 2: a global `login.two_step`
+        setting, not a per-client field), end-to-end via /authorize and
+        /login, exercised through fresh requests.Session()s - not
+        self.session - so this never shares cookie state with another test.
+        Split out of test_client_branding (#323 review round 1,
+        non-blocking) so a regression here reads as what it is, not a
+        branding failure. Reads the setting's original value first and
+        restores exactly that (#323 review round 2, nit) rather than
+        assuming it started off - the same pattern test_saml_exclusive_c14n
+        uses, so a run against a server that already has it enabled doesn't
+        leave it disabled afterward.
+        """
+        redirect_uri = "http://localhost:3000/callback"
+        auth_params = {
+            "response_type": "code",
+            "client_id": self.client_id,
+            "redirect_uri": redirect_uri,
+        }
+        original_two_step = False
+        try:
+            config_response = self.session.get(f"{self.base_url}/api/config", timeout=5)
+            if config_response.status_code == 200:
+                original_two_step = bool(
+                    config_response.json().get("login", {}).get("two_step", False)
+                )
+
+            # self.session (not bare requests) so this rides the same
+            # unlocked management_secret cookie as _unlock_management_secret
+            # set up (#163 review) - only relevant when a secret is
+            # configured; a no-op otherwise. Every other settings field
+            # follows the "absent = unchanged" contract (#131), so only
+            # two_step needs to be sent.
+            enable = self.session.post(
+                f"{self.base_url}/settings", data={"two_step": "true"}, timeout=10
+            )
+            if enable.status_code != 200:
+                return self._add_result(
+                    "Two-Step Login", TestCategory.OAUTH, False,
+                    f"Enabling login.two_step failed: status={enable.status_code}",
+                )
+
+            checks = {}
+            sess = requests.Session()
+
+            first_screen = sess.get(f"{self.base_url}/authorize", params=auth_params, timeout=5)
+            checks["starts_with_username"] = (
+                first_screen.status_code == 200
+                and 'id="username"' in first_screen.text
+                and 'id="password"' not in first_screen.text
+            )
+
+            # A wrong username must not leak onto the password screen or
+            # survive "Change username" (#323 review round 1 test list).
+            sess.post(f"{self.base_url}/authorize", data={"username": "wrong-user"}, timeout=5)
+            change_username = sess.get(f"{self.base_url}/authorize", timeout=5)
+            checks["change_username_returns_to_first_screen"] = (
+                change_username.status_code == 200
+                and 'id="username"' in change_username.text
+                and "wrong-user" not in change_username.text
+            )
+
+            username_step = sess.post(
+                f"{self.base_url}/authorize", data={"username": self.username}, timeout=5
+            )
+            checks["asks_for_password_with_identity_shown"] = (
+                username_step.status_code == 200
+                and 'id="username"' not in username_step.text
+                and 'id="password"' in username_step.text
+                and "Signing in as" in username_step.text
+                and self.username in username_step.text
+                and "Change username" in username_step.text
+            )
+
+            password_step = sess.post(
+                f"{self.base_url}/authorize",
+                data={"username": self.username, "password": self.password},
+                allow_redirects=False,
+                timeout=5,
+            )
+            checks["password_step_issues_code"] = (
+                password_step.status_code in (302, 303)
+                and "code=" in password_step.headers.get("Location", "")
+            )
+
+            # #323 review round 1, blocking 1: a POST carrying full
+            # credentials while two-step is on authenticates directly,
+            # rather than being half-consumed as the username-only step -
+            # this is the exact shape _run_auth_code_flow sends.
+            combined_sess = requests.Session()
+            combined_sess.get(f"{self.base_url}/authorize", params=auth_params, timeout=5)
+            combined_post = combined_sess.post(
+                f"{self.base_url}/authorize",
+                data={**auth_params, "username": self.username, "password": self.password},
+                allow_redirects=False,
+                timeout=5,
+            )
+            checks["combined_post_authenticates_directly"] = (
+                combined_post.status_code in (302, 303)
+                and "code=" in combined_post.headers.get("Location", "")
+            )
+
+            # #323 review round 2: a bare url_for('oauth.authorize') relies
+            # on the session's oauth_* fallback, which is cleared the
+            # moment any /authorize login completes - reproduced here as a
+            # second, unrelated completed login sharing the same cookie jar
+            # ("another tab"). The captured link must carry its own
+            # parameters and keep working regardless.
+            link_sess = requests.Session()
+            link_sess.get(f"{self.base_url}/authorize", params=auth_params, timeout=5)
+            link_first = link_sess.post(
+                f"{self.base_url}/authorize", data={"username": self.username}, timeout=5
+            )
+            match = re.search(r'href="([^"]+)"[^>]*>Change username', link_first.text)
+            change_username_href = html.unescape(match.group(1)) if match else None
+
+            link_sess.get(f"{self.base_url}/authorize", params=auth_params, timeout=5)
+            link_sess.post(f"{self.base_url}/authorize", data={"username": self.username}, timeout=5)
+            link_sess.post(
+                f"{self.base_url}/authorize",
+                data={"username": self.username, "password": self.password},
+                allow_redirects=False,
+                timeout=5,
+            )
+            change_username_response = (
+                link_sess.get(f"{self.base_url}{change_username_href}", timeout=5)
+                if change_username_href
+                else None
+            )
+            checks["change_username_link_survives_a_cleared_session"] = (
+                change_username_href is not None
+                and change_username_response is not None
+                and change_username_response.status_code == 200
+                and 'id="username"' in change_username_response.text
+            )
+
+            # #323 review round 2: two_step is global, so it also applies
+            # to the dashboard's /login, not just /authorize.
+            login_sess = requests.Session()
+            login_first = login_sess.get(f"{self.base_url}/login", timeout=5)
+            checks["login_starts_with_username"] = (
+                login_first.status_code == 200
+                and 'id="username"' in login_first.text
+                and 'id="password"' not in login_first.text
+            )
+            login_username_step = login_sess.post(
+                f"{self.base_url}/login", data={"username": self.username}, timeout=5
+            )
+            checks["login_asks_for_password_with_identity_shown"] = (
+                login_username_step.status_code == 200
+                and 'id="password"' in login_username_step.text
+                and "Signing in as" in login_username_step.text
+            )
+            login_password_step = login_sess.post(
+                f"{self.base_url}/login",
+                data={"username": self.username, "password": self.password},
+                allow_redirects=False,
+                timeout=5,
+            )
+            checks["login_password_step_signs_in"] = login_password_step.status_code in (302, 303)
+
+            success = all(checks.values())
+            return self._add_result(
+                "Two-Step Login", TestCategory.OAUTH, success,
+                f"checks={checks}",
+                checks,
+            )
+        except Exception as e:
+            return self._add_result(
+                "Two-Step Login", TestCategory.OAUTH, False, f"Error: {e}"
+            )
+        finally:
+            self.session.post(
+                f"{self.base_url}/settings",
+                data={"two_step": "true" if original_two_step else "false"},
+                timeout=10,
             )
 
     def test_id_token_audience(self) -> TestResult:
@@ -5159,6 +5343,7 @@ class NanoIDPTestAgent:
                 self.test_native_app_redirect_uris,
                 self.test_scope_enforcement,
                 self.test_client_branding,
+                self.test_two_step_login,
                 self.test_id_token_audience,
                 self.test_id_token_time_claims,
                 self.test_id_token_audience_array,

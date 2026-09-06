@@ -215,6 +215,7 @@ class LoginSection(BaseModel):
 
     mode: str = "password"
     auto_login: bool = False
+    two_step: bool = False
 
 
 class HooksSection(BaseModel):
@@ -389,6 +390,7 @@ class SettingsDocument(BaseModel):
             keys_dir=self.jwt.keys_dir,
             login_mode=self.login.mode,
             auto_login=self.login.auto_login,
+            two_step=self.login.two_step,
             security_profile=self.security_profile,
             authority_prefixes=self.authority_prefixes,
             allowed_identity_classes=self.allowed_identity_classes,

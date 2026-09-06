@@ -1404,6 +1404,127 @@ class TestSAMLFlowsComprehensive:
         finally:
             config.settings.strict_saml_binding = original_strict
 
+    def test_strict_mode_two_step_login_preserves_redirect_binding(self, client):
+        """#322/#323 review round 2, blocking: the two-step username-only
+        screen must forward the ORIGINAL entry verb to the password screen
+        it renders in turn, not the verb of the POST that rendered it.
+
+        Without the fix, the username-only POST (verb=POST) re-renders the
+        password screen with saml_original_verb=POST, so the final POST
+        that completes login tells the strict parser to expect raw
+        HTTP-POST-binding XML - but the SAMLRequest is still the deflated
+        HTTP-Redirect-binding value from the very first GET. Reproduced
+        live: strict mode then fails to parse it ("Start tag expected, '<'
+        not found"), and the response is auto-posted to the configured
+        default ACS instead of the AuthnRequest's own, with InResponseTo
+        lost.
+        """
+        from nanoidp.config import get_config
+        config = get_config()
+        original_strict = config.settings.strict_saml_binding
+        original_two_step = config.settings.two_step
+
+        try:
+            config.settings.strict_saml_binding = True
+            config.settings.two_step = True
+
+            request_id = "_strict_two_step_redirect"
+            acs_url = "http://sp.example.com/acs/strict-two-step"
+            # The two-step flow must reach the AuthnRequest's OWN acs_url,
+            # not this one, proving default_acs_url was never used as a
+            # fallback because parsing succeeded.
+            assert config.settings.default_acs_url != acs_url
+
+            # Create COMPRESSED SAMLRequest (HTTP-Redirect binding)
+            saml_request = self._create_authn_request(
+                request_id=request_id, acs_url=acs_url, compress=True
+            )
+
+            # Step 1: GET - username-only screen, original_verb=GET
+            response = client.get(
+                "/saml/sso",
+                query_string={"SAMLRequest": saml_request, "RelayState": "test-two-step-redirect"},
+            )
+            assert response.status_code == 200
+            assert b'name="saml_original_verb" value="GET"' in response.data
+            assert b'name="password"' not in response.data
+
+            # Step 2: username-only POST - must render the password screen
+            # still carrying original_verb=GET, not POST.
+            response = client.post(
+                "/saml/sso",
+                data={
+                    "SAMLRequest": saml_request,
+                    "RelayState": "test-two-step-redirect",
+                    "saml_original_verb": "GET",
+                    "username": "admin",
+                },
+            )
+            assert response.status_code == 200
+            assert b'name="password"' in response.data
+            assert b'name="saml_original_verb" value="GET"' in response.data
+
+            # Step 3: password POST - completes the flow.
+            response = client.post(
+                "/saml/sso",
+                data={
+                    "SAMLRequest": saml_request,
+                    "RelayState": "test-two-step-redirect",
+                    "saml_original_verb": "GET",
+                    "username": "admin",
+                    "password": "admin",
+                },
+            )
+            assert response.status_code == 200
+            response_text = response.data.decode("utf-8")
+
+            import re
+            match = re.search(r'name="SAMLResponse"\s+value="([^"]+)"', response_text)
+            assert match, "SAMLResponse not found - strict mode failed the two-step flow"
+
+            saml_response_xml = base64.b64decode(match.group(1))
+            root = etree.fromstring(saml_response_xml)
+
+            assert root.get("InResponseTo") == request_id
+            assert acs_url in response_text
+        finally:
+            config.settings.strict_saml_binding = original_strict
+            config.settings.two_step = original_two_step
+
+    def test_two_step_login_rejects_tampered_original_verb_at_username_step(self, client):
+        """#322/#323 review round 3, before-merge 5: a junk saml_original_verb
+        must be rejected as soon as render_login's closure reads it, not left
+        to ride along through the username-only screen and only be caught
+        once _sso_parse_request runs after the user has typed credentials."""
+        from nanoidp.config import get_config
+        config = get_config()
+        original_two_step = config.settings.two_step
+
+        try:
+            config.settings.two_step = True
+
+            saml_request = self._create_authn_request(
+                request_id="_tampered_verb_two_step", compress=True
+            )
+
+            client.get(
+                "/saml/sso",
+                query_string={"SAMLRequest": saml_request, "RelayState": "test-tampered-verb"},
+            )
+
+            response = client.post(
+                "/saml/sso",
+                data={
+                    "SAMLRequest": saml_request,
+                    "RelayState": "test-tampered-verb",
+                    "saml_original_verb": "PUT",
+                    "username": "admin",
+                },
+            )
+            assert response.status_code == 400
+        finally:
+            config.settings.two_step = original_two_step
+
     def test_idp_initiated_sso_not_supported(self, client):
         """Test that IdP-initiated SSO (no SAMLRequest) is NOT supported.
 
