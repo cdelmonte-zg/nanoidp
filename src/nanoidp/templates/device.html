@@ -89,7 +89,8 @@
                 <form method="POST">
                     <div class="form-floating mb-3">
                         <input type="text" class="form-control user-code-input" id="user_code" name="user_code"
-                               placeholder="XXXX-XXXX" value="{{ user_code }}" required autofocus
+                               placeholder="XXXX-XXXX" value="{{ user_code }}" required
+                               {% if not (two_step_login and login_username) %}autofocus{% endif %}
                                maxlength="8" pattern="[A-Za-z0-9]{8}">
                         <label for="user_code"><i class="bi bi-upc me-2"></i>Device Code</label>
                     </div>

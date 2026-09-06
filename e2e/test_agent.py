@@ -1550,7 +1550,11 @@ class NanoIDPTestAgent:
         self.session - so this never shares cookie state with another test.
         Split out of test_client_branding (#323 review round 1,
         non-blocking) so a regression here reads as what it is, not a
-        branding failure. Restores the setting afterward.
+        branding failure. Reads the setting's original value first and
+        restores exactly that (#323 review round 2, nit) rather than
+        assuming it started off - the same pattern test_saml_exclusive_c14n
+        uses, so a run against a server that already has it enabled doesn't
+        leave it disabled afterward.
         """
         redirect_uri = "http://localhost:3000/callback"
         auth_params = {
@@ -1558,7 +1562,14 @@ class NanoIDPTestAgent:
             "client_id": self.client_id,
             "redirect_uri": redirect_uri,
         }
+        original_two_step = False
         try:
+            config_response = self.session.get(f"{self.base_url}/api/config", timeout=5)
+            if config_response.status_code == 200:
+                original_two_step = bool(
+                    config_response.json().get("login", {}).get("two_step", False)
+                )
+
             # self.session (not bare requests) so this rides the same
             # unlocked management_secret cookie as _unlock_management_secret
             # set up (#163 review) - only relevant when a secret is
@@ -1705,7 +1716,9 @@ class NanoIDPTestAgent:
             )
         finally:
             self.session.post(
-                f"{self.base_url}/settings", data={"two_step": "false"}, timeout=10
+                f"{self.base_url}/settings",
+                data={"two_step": "true" if original_two_step else "false"},
+                timeout=10,
             )
 
     def test_id_token_audience(self) -> TestResult:

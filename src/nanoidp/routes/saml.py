@@ -27,6 +27,7 @@ from ..services.saml_verification import (
     verify_redirect_signature,
 )
 from ._audit import audit_event
+from ._auth import TwoStepPhase, two_step_phase
 from ._issuer import effective_saml_entity_id, effective_saml_sso_url
 
 # Create secure XML parser (XXE protection without deprecated defusedxml.lxml)
@@ -457,27 +458,46 @@ def _sso_authenticate_inline(
     form_password = request.form.get("password", "")
 
     def render_login(error: Optional[str], login_username: str) -> ResponseReturnValue:
-        # Pass the original HTTP verb to the template for strict mode
-        # parsing after inline login (POST with compressed SAMLRequest from
-        # an original GET needs to decompress).
+        # The screen must carry the verb of the request that ENTERED the
+        # flow, not the verb of the request that is rendering it (#323
+        # review round 2, blocking): a GET's compressed SAMLRequest is
+        # still compressed on the username-only step's POST and on the
+        # password screen it renders in turn - only the very first render
+        # of this flow has request.method equal to that original verb, so
+        # every subsequent render must forward the value the prior screen
+        # already carried, exactly like saml_request and relay_state do.
+        # _sso_parse_request re-validates this value before trusting it.
+        original_verb = request.form.get("saml_original_verb") or request.method
         return render_template(
             "login.html",
             error=error,
             saml_request=saml_request_b64,
             relay_state=relay_state,
-            original_verb=request.method,
+            original_verb=original_verb,
             users=config.persona_picker_entries(),
             persona_mode=persona_mode,
             two_step_login=two_step_login,
             login_username=login_username,
         )
 
-    if two_step_login and not form_password:
-        if username_submitted and not form_username:
-            return None, render_login("Username is required", "")
-        if password_submitted:
-            # The password screen was resubmitted with a blank password.
-            return None, render_login("Password is required", form_username)
+    # Step detection is shared with every other password-form surface
+    # (#323 review round 2, before-merge 5); username_submitted is what
+    # distinguishes a fresh, field-less SAMLRequest (GET or POST binding)
+    # from a resubmission of nanoidp's own login form - see
+    # two_step_phase's docstring.
+    phase = two_step_phase(
+        two_step_active=two_step_login,
+        username=form_username,
+        password=form_password,
+        password_submitted=password_submitted,
+        username_submitted=username_submitted,
+    )
+    if phase is TwoStepPhase.USERNAME_REQUIRED:
+        return None, render_login("Username is required", "")
+    if phase is TwoStepPhase.PASSWORD_REQUIRED:
+        # The password screen was resubmitted with a blank password.
+        return None, render_login("Password is required", form_username)
+    if phase is TwoStepPhase.USERNAME_STEP:
         # Either a fresh SAMLRequest (nothing submitted yet) or the
         # username-only step just completed: either way, nothing to
         # authenticate, render the next screen with no error.

@@ -49,6 +49,7 @@ from ..services.resource import resolve_resources
 from ..services.scope import resolve_scope
 from ..services.token import resolve_user_claim, sanitize_claim_names
 from ._audit import audit_event
+from ._auth import TwoStepPhase, two_step_phase
 from ._issuer import effective_issuer
 from ._oauth_error import invalid_client_error, oauth_error
 from .oauth_grants import _GRANT_HANDLERS, _GrantContext, _GrantOutcome
@@ -613,23 +614,30 @@ def _handle_authorize_login(
     exactly like the combined form always has.
 
     ``login.two_step`` (#322/#323 review round 2) is a global setting, not
-    per-client - ``client`` only feeds the branding shown alongside it.
+    per-client - ``client`` only feeds the branding shown alongside it. The
+    step-detection rule itself lives in ``_auth.two_step_phase`` (#323
+    review round 2, before-merge 5), shared by every password-form surface.
     """
     username = request.form.get("username", "").strip()
     password_submitted = "password" in request.form
     password = request.form.get("password", "")
     persona_mode = config.settings.persona_mode_enabled
-    two_step_login = config.settings.two_step_login_active
 
-    if two_step_login and not password:
-        if not username:
-            return "Username is required", None
-        if password_submitted:
-            # The password screen was resubmitted with a blank password.
-            return "Password is required", None
-        # Username-only step: nothing to authenticate yet - step 1 never
-        # verifies the username exists - fall through to render the
-        # password screen with this username carried forward.
+    phase = two_step_phase(
+        two_step_active=config.settings.two_step_login_active,
+        username=username,
+        password=password,
+        password_submitted=password_submitted,
+    )
+    if phase is TwoStepPhase.USERNAME_REQUIRED:
+        return "Username is required", None
+    if phase is TwoStepPhase.PASSWORD_REQUIRED:
+        # The password screen was resubmitted with a blank password.
+        return "Password is required", None
+    if phase is TwoStepPhase.USERNAME_STEP:
+        # Nothing to authenticate yet - step 1 never verifies the username
+        # exists - fall through to render the password screen with this
+        # username carried forward.
         return None, None
 
     user = config.interactive_authenticate(username, password)
@@ -1814,15 +1822,31 @@ def device_verify() -> ResponseReturnValue:
         action = request.form.get("action", "authorize")
         login_username = username
 
-        if two_step_login and action != "deny" and not password:
+        # Step detection is shared with every other password-form surface
+        # (#323 review round 2, before-merge 5); "deny" needs no
+        # credentials at all (services/device_code.py checks it first, on
+        # its own), so it folds into the caller's own gate here rather than
+        # two_step_phase needing to know about device-specific actions.
+        phase = two_step_phase(
+            two_step_active=two_step_login and action != "deny",
+            username=username,
+            password=password,
+            password_submitted=password_submitted,
+        )
+        if phase is not TwoStepPhase.ATTEMPT:
             # Username-only step (#322/#323): nothing to authenticate yet,
             # so this must never reach the device-code store - .verify()
             # below is the atomic check-status + transition (#43), and a
             # username-only submission has no business touching a pending
-            # code's status.
-            if not username:
+            # code's status. Deliberate trade-off, not an oversight (#323
+            # review round 2, nit): the store has no non-mutating "peek at
+            # this code's status" lookup, only the atomic verify() that
+            # also transitions it - so an invalid or expired user_code is
+            # only reported once the password step actually calls verify(),
+            # one screen later than the combined form would report it.
+            if phase is TwoStepPhase.USERNAME_REQUIRED:
                 error_msg = "Username is required"
-            elif password_submitted:
+            elif phase is TwoStepPhase.PASSWORD_REQUIRED:
                 error_msg = "Password is required"
             return render_template(
                 "device.html",

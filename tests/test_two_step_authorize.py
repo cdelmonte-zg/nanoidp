@@ -146,14 +146,20 @@ class TestTwoStepAuthorize:
         assert b'name="username"' in response.data
         assert b'name="password"' not in response.data
 
-    def test_password_step_ignores_client_swap_via_form_body(self, app, client):
-        """#323 review round 1, blocking 2: a password-step POST that also
-        retargets client_id/redirect_uri/state must not silently issue a
-        code for the swapped-in client without that client's own login
-        page ever being shown for this username - closed by never
-        capturing the username server-side in the first place. two_step is
-        global (#322/#323 review round 2), so this reproduces just as well
-        swapping to any other registered client."""
+    def test_password_step_does_not_resurrect_a_stale_username(self, app, client):
+        """#323 review round 1, blocking 2 (closed): the username used to
+        authenticate is exactly what THIS request submitted, never a value
+        captured from an earlier one. A password-step POST that also
+        retargets client_id/redirect_uri/state via the form body still
+        authenticates - and issues the code for - the username THIS POST
+        carries, "admin", not anything a previous request might have left
+        behind.
+
+        That form-body retarget itself (a POST can redirect the issued code
+        to a different client_id/redirect_uri than the GET that started the
+        flow) is pre-existing, out-of-scope behavior - tracked separately as
+        #325 - so this test does not pin where the redirect goes, only who
+        the code was issued to."""
         _enable_two_step(app)
         client.get(f"/authorize?{AUTHORIZE_QS}")
         client.post("/authorize", data={"username": "admin"})
@@ -170,12 +176,17 @@ class TestTwoStepAuthorize:
             follow_redirects=False,
         )
 
-        # Retargeting the client via the form body is pre-existing,
-        # out-of-scope behavior (the review round 1 note): the point here is
-        # only that the username is exactly what THIS request submitted, not
-        # a value resurrected from an earlier request for a different client.
         assert response.status_code == 302
-        assert response.headers["Location"].startswith("http://localhost:4000/callback")
+        location = response.headers["Location"]
+        assert "code=" in location
+        code = location.split("code=")[1].split("&")[0]
+
+        from nanoidp.services.auth_code import get_auth_code_store
+
+        with app.app_context():
+            info = get_auth_code_store().get_code_info(code)
+        assert info is not None
+        assert info.username == "admin"
 
     def test_change_username_link_survives_a_cleared_session(self, app, client):
         """A bare url_for('oauth.authorize') relies on the session's oauth_*

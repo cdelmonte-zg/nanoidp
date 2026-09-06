@@ -31,8 +31,10 @@ from ..hooks import HookError
 from ..services import get_audit_log, get_crypto_service, get_token_service, get_yaml_writer
 from ._audit import audit_event
 from ._auth import (
+    TwoStepPhase,
     management_secret_required_for_ui,
     mark_management_verified,
+    two_step_phase,
     ui_login_required,
     verify_management_secret,
 )
@@ -112,22 +114,37 @@ def login() -> ResponseReturnValue:
     # password mode is unchanged. Two-step (#322/#323) collects username
     # and password on separate screens, stateless the same way /authorize's
     # _handle_authorize_login is - the username travels as a plain form
-    # field, carried forward as a hidden input on the password screen.
+    # field, carried forward as a hidden input on the password screen. Step
+    # detection is shared with every other password-form surface (#323
+    # review round 2, before-merge 5).
     username = request.form.get("username", "").strip()
     password_submitted = "password" in request.form
     password = request.form.get("password", "")
 
-    if two_step_login and not password:
-        if not username:
-            return render_login("Username is required", "")
-        if password_submitted:
-            # The password screen was resubmitted with a blank password.
-            return render_login("Password is required", username)
-        # Username-only step: nothing to authenticate yet, render the
-        # password screen next with this username carried forward.
+    phase = two_step_phase(
+        two_step_active=two_step_login,
+        username=username,
+        password=password,
+        password_submitted=password_submitted,
+    )
+    if phase is TwoStepPhase.USERNAME_REQUIRED:
+        return render_login("Username is required", "")
+    if phase is TwoStepPhase.PASSWORD_REQUIRED:
+        # The password screen was resubmitted with a blank password.
+        return render_login("Password is required", username)
+    if phase is TwoStepPhase.USERNAME_STEP:
+        # Nothing to authenticate yet, render the password screen next
+        # with this username carried forward.
         return render_login(None, username)
 
-    if (persona_mode and not username) or (not persona_mode and (not username or not password)):
+    # Reached only for the combined form (two_step_login is False) or a
+    # tampered two-step submission (a cleared hidden username alongside a
+    # password) - the latter falls through to interactive_authenticate
+    # below instead of this legacy redirect, one message and one render
+    # transport for every two-step failure (#323 review round 2, nit).
+    if not two_step_login and (
+        (persona_mode and not username) or (not persona_mode and (not username or not password))
+    ):
         error = "Select a user" if persona_mode else "Username and password required"
         return redirect(url_for("ui.login", error=error))
 

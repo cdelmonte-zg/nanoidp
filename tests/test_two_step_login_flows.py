@@ -12,6 +12,7 @@ login_step sentinel.
 
 import base64
 import json
+import re
 
 import pytest
 
@@ -50,6 +51,10 @@ class TestLoginTwoStep:
         assert response.status_code == 200
         assert b'name="username"' in response.data
         assert b'name="password"' not in response.data
+        # #323 review round 2, before-merge 4: "Quick fill username" must
+        # not disappear just because two_step is on - it belongs on the
+        # username-only screen now, not just the combined form.
+        assert b"Quick fill username" in response.data
 
         response = client.post("/login", data={"username": "admin"})
         assert response.status_code == 200
@@ -117,9 +122,10 @@ class TestLoginTwoStep:
 
 
 class TestSamlSsoTwoStep:
-    """SAML /saml/sso inline login - reuses login.html, no session to fall
-    back to, so there is no "change username" affordance on this surface
-    (#323 review round 2)."""
+    """SAML /saml/sso inline login - reuses login.html. No GET to link back
+    to (the SAMLRequest is a POST body, not stored anywhere), so "Change
+    username" here resubmits the in-progress request's hidden fields
+    instead of linking (#323 review round 2, before-merge 3)."""
 
     def _authn_request(self, request_id="_two_step_test", acs_url="http://sp.example.com/acs"):
         xml = f"""<?xml version="1.0" encoding="UTF-8"?>
@@ -203,6 +209,37 @@ class TestSamlSsoTwoStep:
         assert response.status_code == 200
         assert b"SAMLResponse" in response.data
 
+    def test_change_username_returns_to_first_step(self, app, client):
+        """#323 review round 2, before-merge 3: a mistyped username must not
+        be a dead end - resubmitting the hidden SAMLRequest/RelayState/
+        original_verb fields with no username resets to the username
+        screen, same request in progress."""
+        _enable_two_step(app)
+        saml_request = self._authn_request()
+
+        username_step = client.post(
+            "/saml/sso", data={"SAMLRequest": saml_request, "username": "wrong"}
+        )
+        assert b"Change username" in username_step.data
+
+        match = re.search(
+            rb'name="saml_original_verb" value="([^"]+)"', username_step.data
+        )
+        assert match
+
+        response = client.post(
+            "/saml/sso",
+            data={
+                "SAMLRequest": saml_request,
+                "saml_original_verb": match.group(1).decode(),
+            },
+        )
+
+        assert response.status_code == 200
+        assert b'name="username"' in response.data
+        assert b'name="password"' not in response.data
+        assert b"wrong" not in response.data
+
 
 class TestDeviceTwoStep:
     """Device authorization flow's /device verification page."""
@@ -229,6 +266,14 @@ class TestDeviceTwoStep:
         assert b'name="username" value="admin"' in response.data
         assert b'name="password"' in response.data
         assert b"Signing in as" in response.data
+
+        # #323 review round 2, before-merge 2: the pre-filled user_code
+        # field must not keep 'autofocus' on the password screen, or typed
+        # password characters land in (and overwrite) the code instead.
+        match = re.search(rb'<input[^>]*id="user_code"[^>]*>', response.data)
+        assert match and b"autofocus" not in match.group(0)
+        match = re.search(rb'<input[^>]*id="password"[^>]*>', response.data)
+        assert match and b"autofocus" in match.group(0)
 
     def test_wrong_password_stays_on_password_step(self, app, client, auth_header):
         _enable_two_step(app)

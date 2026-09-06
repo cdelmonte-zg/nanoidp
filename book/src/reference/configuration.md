@@ -264,9 +264,9 @@ password screen, and whether a submission is the username-only step or a
 real login attempt is derived from whether it carries a password - a
 request that already has both authenticates directly, so a client written
 against the combined form keeps working unchanged. "Change username"
-returns to the first screen; on `/saml/sso` there is no such link, since
-that surface has no session-independent way back into an in-progress SP
-request.
+returns to the first screen everywhere, including `/saml/sso` - which has
+no GET to link back to, so it resubmits the in-progress SP request's
+hidden fields instead.
 
 ## Settings (`config/settings.yaml`)
 
