@@ -170,9 +170,6 @@ def _read_authorize_params() -> _AuthorizeParams:
     )
 
     if request.method == "GET":
-        # A new authorization request always starts at the username screen;
-        # never carry a captured identity across clients or browser tabs.
-        session.pop("oauth_login_username", None)
         session["oauth_response_type"] = p.response_type
         session["oauth_client_id"] = p.client_id
         session["oauth_redirect_uri"] = p.redirect_uri
@@ -597,36 +594,55 @@ def _try_persona_auto_login(
     return _issue_authorization_code(config, p, user.username, auto_login=True)
 
 
+def _two_step_login_active(config: ConfigManager, client: Optional[OAuthClient]) -> bool:
+    """Single home for the two_step_login predicate (#323 review round 1),
+    shared by the login handler and the renderer so they can never disagree.
+    Opt-in per client (#322), and inert under persona mode - which is
+    passwordless and has its own single-screen picker."""
+    return bool(client and client.two_step_login) and not config.settings.persona_mode_enabled
+
+
 def _handle_authorize_login(
     config: ConfigManager, p: _AuthorizeParams, client: OAuthClient
 ) -> Tuple[Optional[str], Optional[ResponseReturnValue]]:
     """The POST login leg: (None, redirect) on success, (error_msg, None) to
-    fall through to the login page (failed or incomplete credentials)."""
+    fall through to the login page (failed, or the password not yet
+    submitted).
+
+    Stateless (#323 review round 1): the step is derived from what THIS
+    request submits, not a login_step/session sentinel. A POST that carries
+    a password always attempts a real login - whether it's a two-step
+    client's second screen or a combined-form POST that skips straight past
+    the username-only step (#323 review round 1, blocking 1: a request
+    carrying full credentials must authenticate or be refused, never be
+    half-consumed). And nothing here can leak a captured identity across
+    clients (#323 review round 1, blocking 2), because nothing captures
+    one: the password screen re-submits the username as a plain form field,
+    exactly like the combined form always has.
+    """
     username = request.form.get("username", "").strip()
+    password_submitted = "password" in request.form
     password = request.form.get("password", "")
     persona_mode = config.settings.persona_mode_enabled
-    two_step_login = client.two_step_login and not persona_mode
+    two_step_login = _two_step_login_active(config, client)
 
-    if two_step_login:
-        if request.form.get("login_step") == "change_username":
-            session.pop("oauth_login_username", None)
-            return None, None
-        if request.form.get("login_step") != "password":
-            if not username:
-                return "Username is required", None
-            session["oauth_login_username"] = username
-            return None, None
-
-        username = session.get("oauth_login_username", "")
+    if two_step_login and not password:
         if not username:
             return "Username is required", None
+        if password_submitted:
+            # The password screen was resubmitted with a blank password.
+            return "Password is required", None
+        # Username-only step: nothing to authenticate yet - step 1 never
+        # verifies the username exists - fall through to render the
+        # password screen with this username carried forward.
+        return None, None
 
     user = config.interactive_authenticate(username, password)
 
     if user:
         return None, _issue_authorization_code(config, p, user.username)
 
-    if (persona_mode and username) or (not persona_mode and username and password):
+    if (persona_mode and username) or (username and password):
         # A real (failed) selection/login attempt, not just missing input
         audit_event(
             "authorization_request",
@@ -640,8 +656,6 @@ def _handle_authorize_login(
 
     if persona_mode:
         return "Select a user", None
-    if two_step_login:
-        return "Password is required", None
     return "Username and password are required", None
 
 
@@ -650,8 +664,14 @@ def _render_authorize_login(
     p: _AuthorizeParams,
     client: Optional[OAuthClient],
     error_msg: Optional[str],
+    login_username: str = "",
 ) -> ResponseReturnValue:
-    """The login page (GET, or a POST that did not authenticate)."""
+    """The login page (GET, or a POST that did not authenticate).
+
+    ``login_username`` is this request's username field, not a value
+    remembered from a previous one (#323 review round 1) - "" on a GET,
+    the just-submitted value on a POST.
+    """
     logo_url = None
     if client:
         logos_dir = effective_logos_dir(config.settings.logos_dir, current_app.static_folder)
@@ -666,9 +686,8 @@ def _render_authorize_login(
         scope=p.scope,
         error=error_msg,
         persona_mode=config.settings.persona_mode_enabled,
-        two_step_login=bool(client and client.two_step_login)
-        and not config.settings.persona_mode_enabled,
-        login_username=session.get("oauth_login_username", ""),
+        two_step_login=_two_step_login_active(config, client),
+        login_username=login_username,
         users=config.persona_picker_entries(),
     )
 
@@ -733,12 +752,14 @@ def authorize() -> ResponseReturnValue:
         return auto_login_response
 
     error_msg = None
+    login_username = ""
     if request.method == "POST":
+        login_username = request.form.get("username", "").strip()
         error_msg, response = _handle_authorize_login(config, p, client)
         if response is not None:
             return response
 
-    return _render_authorize_login(config, p, client, error_msg)
+    return _render_authorize_login(config, p, client, error_msg, login_username)
 
 
 @oauth_bp.route("/client-logos/<client_id>")

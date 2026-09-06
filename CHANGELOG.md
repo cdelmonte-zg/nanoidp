@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Per-client two-step `/authorize` login** (#322, opt-in, off by default):
+  `oauth.clients[].two_step_login: true` collects the username first and the
+  password on a second screen. Existing clients retain the combined form;
+  persona mode remains passwordless and persona auto-login still bypasses the
+  UI. The option is configurable through YAML, the OAuth client UI, and MCP
+  client tools. `/authorize` only - `/login`, `/device` and the SAML SP form
+  keep the combined form.
+
 ## [3.0.0] - 2026-09-06
 
 ### Breaking Changes
@@ -187,12 +196,6 @@ previous leniency allowed - needs a one-time adjustment.
   (RFC 3986 §3, e.g. `about:`). No audience bypass or escalation.
 
 ### Added
-- **Per-client two-step `/authorize` login** (#322, opt-in, off by default):
-  `oauth.clients[].two_step_login: true` collects the username first and the
-  password on a second screen. Existing clients retain the combined form;
-  persona mode remains passwordless and persona auto-login still bypasses the
-  UI. The option is configurable through YAML, the OAuth client UI, and MCP
-  client tools.
 - **Auto-login personas** (#250, opt-in, off by default): with
   `login.mode: persona`, a new `login.auto_login: true` lets an OIDC
   `/authorize` request log a configured user in directly - no picker, no

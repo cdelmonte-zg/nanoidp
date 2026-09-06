@@ -1413,12 +1413,14 @@ class NanoIDPTestAgent:
             )
 
     def test_client_branding(self) -> TestResult:
-        """Per-client login presentation is created and rendered end-to-end (#150/#322).
+        """Per-client login presentation is created and rendered end-to-end (#150).
 
         Creates a client with colors and the id/description toggles via the
         clients UI form, then checks that /authorize's login page reflects
-        every one of them and uses its two-step login, then cleans the client
-        up afterwards.
+        every one of them, then cleans the client up afterwards. Two-step
+        login has its own dedicated test_two_step_login (#323 review round
+        1, non-blocking): folding it in here made a password-step regression
+        report as a branding failure.
         """
         test_client_id = f"branding-test-{secrets.token_hex(4)}"
         test_description = "Branding e2e test client"
@@ -1438,7 +1440,6 @@ class NanoIDPTestAgent:
                     "footer_color": "#654321",
                     "show_client_id": "on",
                     "show_description": "on",
-                    "two_step_login": "on",
                 },
                 allow_redirects=False,
                 timeout=5,
@@ -1454,7 +1455,9 @@ class NanoIDPTestAgent:
                     f"location={create.headers.get('Location')}",
                 )
 
-            authorize = self.session.get(
+            # Bare requests, not self.session: this is a plain GET, no
+            # cookie-carried state to preserve (#323 review round 1).
+            authorize = requests.get(
                 f"{self.base_url}/authorize",
                 params={
                     "response_type": "code",
@@ -1470,9 +1473,6 @@ class NanoIDPTestAgent:
                 "footer_color": "#654321" in html,
                 "client_id_shown": test_client_id in html,
                 "description_shown": test_description in html,
-                "two_step_starts_with_username": (
-                    'name="username"' in html and 'name="password"' not in html
-                ),
                 # #249: the default ("vertical") layout must not render the
                 # horizontal two-column markup. The CSS selector for that
                 # class lives in every page's <style> block regardless of
@@ -1482,43 +1482,6 @@ class NanoIDPTestAgent:
                     'class="authorize-card authorize-card-horizontal"' not in html
                 ),
             }
-
-            username_step = self.session.post(
-                f"{self.base_url}/authorize",
-                data={"login_step": "username", "username": self.username},
-                timeout=5,
-            )
-            checks["two_step_asks_for_password"] = (
-                username_step.status_code == 200
-                and 'name="username"' not in username_step.text
-                and 'name="password"' in username_step.text
-                and "Change username" in username_step.text
-            )
-            change_username = self.session.post(
-                f"{self.base_url}/authorize",
-                data={"login_step": "change_username"},
-                timeout=5,
-            )
-            checks["two_step_can_change_username"] = (
-                change_username.status_code == 200
-                and 'name="username"' in change_username.text
-                and 'name="password"' not in change_username.text
-            )
-            self.session.post(
-                f"{self.base_url}/authorize",
-                data={"login_step": "username", "username": self.username},
-                timeout=5,
-            )
-            password_step = self.session.post(
-                f"{self.base_url}/authorize",
-                data={"login_step": "password", "password": self.password},
-                allow_redirects=False,
-                timeout=5,
-            )
-            checks["two_step_issues_code"] = (
-                password_step.status_code in (302, 303)
-                and "code=" in password_step.headers.get("Location", "")
-            )
 
             # #249: a client with layout=horizontal renders the two-column
             # composition. Same create/authorize/delete shape as above, kept
@@ -1573,6 +1536,120 @@ class NanoIDPTestAgent:
         except Exception as e:
             return self._add_result(
                 "Client Branding", TestCategory.OAUTH, False, f"Error: {e}"
+            )
+        finally:
+            self.session.post(
+                f"{self.base_url}/clients/{test_client_id}/delete", timeout=5
+            )
+
+    def test_two_step_login(self) -> TestResult:
+        """Per-client two-step /authorize login, end-to-end (#322).
+
+        A dedicated client with only two_step_login set, exercised through a
+        fresh requests.Session() the way _run_auth_code_flow's clients are
+        - not self.session - so this never shares cookie state with another
+        test. Split out of test_client_branding (#323 review round 1,
+        non-blocking) so a regression here reads as what it is, not a
+        branding failure.
+        """
+        test_client_id = f"two-step-test-{secrets.token_hex(4)}"
+        redirect_uri = "http://localhost:3000/callback"
+        auth_params = {
+            "response_type": "code",
+            "client_id": test_client_id,
+            "redirect_uri": redirect_uri,
+        }
+        try:
+            create = self.session.post(
+                f"{self.base_url}/clients/create",
+                data={
+                    "client_id": test_client_id,
+                    "client_secret": "two-step-test-secret",
+                    "two_step_login": "on",
+                },
+                allow_redirects=False,
+                timeout=5,
+            )
+            created = (
+                create.status_code in (302, 303)
+                and create.headers.get("Location", "").rstrip("/").endswith("/clients")
+            )
+            if not created:
+                return self._add_result(
+                    "Two-Step Login", TestCategory.OAUTH, False,
+                    f"Client creation failed: status={create.status_code}, "
+                    f"location={create.headers.get('Location')}",
+                )
+
+            checks = {}
+            sess = requests.Session()
+
+            first_screen = sess.get(f"{self.base_url}/authorize", params=auth_params, timeout=5)
+            checks["starts_with_username"] = (
+                first_screen.status_code == 200
+                and 'id="username"' in first_screen.text
+                and 'id="password"' not in first_screen.text
+            )
+
+            # A wrong username must not leak onto the password screen or
+            # survive "Change username" (#323 review round 1 test list).
+            sess.post(f"{self.base_url}/authorize", data={"username": "wrong-user"}, timeout=5)
+            change_username = sess.get(f"{self.base_url}/authorize", timeout=5)
+            checks["change_username_returns_to_first_screen"] = (
+                change_username.status_code == 200
+                and 'id="username"' in change_username.text
+                and "wrong-user" not in change_username.text
+            )
+
+            username_step = sess.post(
+                f"{self.base_url}/authorize", data={"username": self.username}, timeout=5
+            )
+            checks["asks_for_password_with_identity_shown"] = (
+                username_step.status_code == 200
+                and 'id="username"' not in username_step.text
+                and 'id="password"' in username_step.text
+                and "Signing in as" in username_step.text
+                and self.username in username_step.text
+                and "Change username" in username_step.text
+            )
+
+            password_step = sess.post(
+                f"{self.base_url}/authorize",
+                data={"username": self.username, "password": self.password},
+                allow_redirects=False,
+                timeout=5,
+            )
+            checks["password_step_issues_code"] = (
+                password_step.status_code in (302, 303)
+                and "code=" in password_step.headers.get("Location", "")
+            )
+
+            # #323 review round 1, blocking 1: a POST carrying full
+            # credentials for an opted-in client authenticates directly,
+            # rather than being half-consumed as the username-only step -
+            # this is the exact shape _run_auth_code_flow sends.
+            combined_sess = requests.Session()
+            combined_sess.get(f"{self.base_url}/authorize", params=auth_params, timeout=5)
+            combined_post = combined_sess.post(
+                f"{self.base_url}/authorize",
+                data={**auth_params, "username": self.username, "password": self.password},
+                allow_redirects=False,
+                timeout=5,
+            )
+            checks["combined_post_authenticates_directly"] = (
+                combined_post.status_code in (302, 303)
+                and "code=" in combined_post.headers.get("Location", "")
+            )
+
+            success = all(checks.values())
+            return self._add_result(
+                "Two-Step Login", TestCategory.OAUTH, success,
+                f"checks={checks}",
+                checks,
+            )
+        except Exception as e:
+            return self._add_result(
+                "Two-Step Login", TestCategory.OAUTH, False, f"Error: {e}"
             )
         finally:
             self.session.post(
@@ -5201,6 +5278,7 @@ class NanoIDPTestAgent:
                 self.test_native_app_redirect_uris,
                 self.test_scope_enforcement,
                 self.test_client_branding,
+                self.test_two_step_login,
                 self.test_id_token_audience,
                 self.test_id_token_time_claims,
                 self.test_id_token_audience_array,

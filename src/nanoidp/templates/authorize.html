@@ -122,7 +122,6 @@
             </form>
             {% elif two_step_login and not login_username %}
             <form method="POST">
-                <input type="hidden" name="login_step" value="username">
                 <div class="form-floating mb-4">
                     <input type="text" class="form-control" id="username" name="username" placeholder="Username" required autofocus autocomplete="username">
                     <label for="username"><i class="bi bi-person me-2"></i>Username</label>
@@ -134,7 +133,7 @@
             </form>
             {% elif two_step_login %}
             <form method="POST">
-                <input type="hidden" name="login_step" value="password">
+                <input type="hidden" name="username" value="{{ login_username }}">
                 <div class="form-floating mb-4">
                     <input type="password" class="form-control" id="password" name="password" placeholder="Password" required autofocus autocomplete="current-password">
                     <label for="password"><i class="bi bi-key me-2"></i>Password</label>
@@ -144,10 +143,9 @@
                     <i class="bi bi-check-circle me-2"></i>Authorize
                 </button>
             </form>
-            <form method="POST" class="text-center mt-3">
-                <input type="hidden" name="login_step" value="change_username">
-                <button type="submit" class="btn btn-link p-0">Change username</button>
-            </form>
+            <div class="text-center mt-3">
+                <a href="{{ url_for('oauth.authorize') }}" class="btn btn-link p-0">Change username</a>
+            </div>
             {% else %}
             <form method="POST">
                 <div class="form-floating mb-3">
@@ -191,7 +189,14 @@
             {% endif %}
 
             {% if horizontal %}
-            <div class="row g-4 align-items-start">
+            {# The password-only step is much shorter than the client-info
+               column, so it's top-aligned rather than centered - but only
+               once the "Signing in as" block above has already shown the
+               identity; every other case keeps the original centering
+               (#323 review round 1, before-merge 4: this must not change
+               existing horizontal-layout clients that never opt into
+               two_step_login). #}
+            <div class="row g-4 {{ 'align-items-start' if (two_step_login and login_username) else 'align-items-center' }}">
                 <div class="col-md-6">
                     {{ client_info_block() }}
                 </div>

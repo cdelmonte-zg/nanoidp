@@ -532,6 +532,15 @@ the header and footer still full width, collapsing back to the vertical
 stack on narrow viewports. It's one of exactly two nanoidp-owned layouts,
 not a general styling knob - there's no per-client CSS or column widths.
 
+`two_step_login` (#322) splits the password form into a username screen
+followed by a password screen, for a closer approximation of a production
+login flow; off by default, and per client, not a global presentation
+preference. Inert under `login.mode: persona` (see Auto-login below), which
+is passwordless and keeps its own single-screen picker regardless of this
+setting. It's scoped to `/authorize` only - the dashboard's `/login`, the
+`/device` verification page and the SAML SP form always keep the combined
+form.
+
 To preview a client's branded login page, open `/authorize` with its
 `client_id` and a `redirect_uri` (any syntactically valid URL works unless
 the client has `redirect_uris` pinned - see above):
