@@ -48,6 +48,7 @@ Uso:
 
 import base64
 import hashlib
+import html
 import json
 import os
 import re
@@ -1543,42 +1544,34 @@ class NanoIDPTestAgent:
             )
 
     def test_two_step_login(self) -> TestResult:
-        """Per-client two-step /authorize login, end-to-end (#322).
-
-        A dedicated client with only two_step_login set, exercised through a
-        fresh requests.Session() the way _run_auth_code_flow's clients are
-        - not self.session - so this never shares cookie state with another
-        test. Split out of test_client_branding (#323 review round 1,
+        """Two-step login (#322/#323 review round 2: a global `login.two_step`
+        setting, not a per-client field), end-to-end via /authorize and
+        /login, exercised through fresh requests.Session()s - not
+        self.session - so this never shares cookie state with another test.
+        Split out of test_client_branding (#323 review round 1,
         non-blocking) so a regression here reads as what it is, not a
-        branding failure.
+        branding failure. Restores the setting afterward.
         """
-        test_client_id = f"two-step-test-{secrets.token_hex(4)}"
         redirect_uri = "http://localhost:3000/callback"
         auth_params = {
             "response_type": "code",
-            "client_id": test_client_id,
+            "client_id": self.client_id,
             "redirect_uri": redirect_uri,
         }
         try:
-            create = self.session.post(
-                f"{self.base_url}/clients/create",
-                data={
-                    "client_id": test_client_id,
-                    "client_secret": "two-step-test-secret",
-                    "two_step_login": "on",
-                },
-                allow_redirects=False,
-                timeout=5,
+            # self.session (not bare requests) so this rides the same
+            # unlocked management_secret cookie as _unlock_management_secret
+            # set up (#163 review) - only relevant when a secret is
+            # configured; a no-op otherwise. Every other settings field
+            # follows the "absent = unchanged" contract (#131), so only
+            # two_step needs to be sent.
+            enable = self.session.post(
+                f"{self.base_url}/settings", data={"two_step": "true"}, timeout=10
             )
-            created = (
-                create.status_code in (302, 303)
-                and create.headers.get("Location", "").rstrip("/").endswith("/clients")
-            )
-            if not created:
+            if enable.status_code != 200:
                 return self._add_result(
                     "Two-Step Login", TestCategory.OAUTH, False,
-                    f"Client creation failed: status={create.status_code}, "
-                    f"location={create.headers.get('Location')}",
+                    f"Enabling login.two_step failed: status={enable.status_code}",
                 )
 
             checks = {}
@@ -1625,7 +1618,7 @@ class NanoIDPTestAgent:
             )
 
             # #323 review round 1, blocking 1: a POST carrying full
-            # credentials for an opted-in client authenticates directly,
+            # credentials while two-step is on authenticates directly,
             # rather than being half-consumed as the username-only step -
             # this is the exact shape _run_auth_code_flow sends.
             combined_sess = requests.Session()
@@ -1641,6 +1634,65 @@ class NanoIDPTestAgent:
                 and "code=" in combined_post.headers.get("Location", "")
             )
 
+            # #323 review round 2: a bare url_for('oauth.authorize') relies
+            # on the session's oauth_* fallback, which is cleared the
+            # moment any /authorize login completes - reproduced here as a
+            # second, unrelated completed login sharing the same cookie jar
+            # ("another tab"). The captured link must carry its own
+            # parameters and keep working regardless.
+            link_sess = requests.Session()
+            link_sess.get(f"{self.base_url}/authorize", params=auth_params, timeout=5)
+            link_first = link_sess.post(
+                f"{self.base_url}/authorize", data={"username": self.username}, timeout=5
+            )
+            match = re.search(r'href="([^"]+)"[^>]*>Change username', link_first.text)
+            change_username_href = html.unescape(match.group(1)) if match else None
+
+            link_sess.get(f"{self.base_url}/authorize", params=auth_params, timeout=5)
+            link_sess.post(f"{self.base_url}/authorize", data={"username": self.username}, timeout=5)
+            link_sess.post(
+                f"{self.base_url}/authorize",
+                data={"username": self.username, "password": self.password},
+                allow_redirects=False,
+                timeout=5,
+            )
+            change_username_response = (
+                link_sess.get(f"{self.base_url}{change_username_href}", timeout=5)
+                if change_username_href
+                else None
+            )
+            checks["change_username_link_survives_a_cleared_session"] = (
+                change_username_href is not None
+                and change_username_response is not None
+                and change_username_response.status_code == 200
+                and 'id="username"' in change_username_response.text
+            )
+
+            # #323 review round 2: two_step is global, so it also applies
+            # to the dashboard's /login, not just /authorize.
+            login_sess = requests.Session()
+            login_first = login_sess.get(f"{self.base_url}/login", timeout=5)
+            checks["login_starts_with_username"] = (
+                login_first.status_code == 200
+                and 'id="username"' in login_first.text
+                and 'id="password"' not in login_first.text
+            )
+            login_username_step = login_sess.post(
+                f"{self.base_url}/login", data={"username": self.username}, timeout=5
+            )
+            checks["login_asks_for_password_with_identity_shown"] = (
+                login_username_step.status_code == 200
+                and 'id="password"' in login_username_step.text
+                and "Signing in as" in login_username_step.text
+            )
+            login_password_step = login_sess.post(
+                f"{self.base_url}/login",
+                data={"username": self.username, "password": self.password},
+                allow_redirects=False,
+                timeout=5,
+            )
+            checks["login_password_step_signs_in"] = login_password_step.status_code in (302, 303)
+
             success = all(checks.values())
             return self._add_result(
                 "Two-Step Login", TestCategory.OAUTH, success,
@@ -1653,7 +1705,7 @@ class NanoIDPTestAgent:
             )
         finally:
             self.session.post(
-                f"{self.base_url}/clients/{test_client_id}/delete", timeout=5
+                f"{self.base_url}/settings", data={"two_step": "false"}, timeout=10
             )
 
     def test_id_token_audience(self) -> TestResult:

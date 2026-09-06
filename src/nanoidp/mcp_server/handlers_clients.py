@@ -74,7 +74,6 @@ def _tool_create_client(arguments: dict[str, Any], config: ConfigManager) -> dic
         footer_color=_normalize_hex_color(arguments.get("footer_color"), "footer_color"),
         show_client_id=arguments.get("show_client_id", True),
         show_description=arguments.get("show_description", False),
-        two_step_login=arguments.get("two_step_login", False),
         layout=_normalize_layout(arguments.get("layout", "vertical")),  # type: ignore[arg-type]
         additional_audiences=_normalize_audiences(arguments.get("additional_audiences")),
         redirect_uris=_normalize_str_list(arguments.get("redirect_uris"), "redirect_uris"),
@@ -181,8 +180,6 @@ def _tool_update_client(arguments: dict[str, Any], config: ConfigManager) -> dic
         client.show_client_id = arguments["show_client_id"]
     if "show_description" in arguments:
         client.show_description = arguments["show_description"]
-    if "two_step_login" in arguments:
-        client.two_step_login = arguments["two_step_login"]
     if new_layout is not None:
         client.layout = new_layout  # type: ignore[assignment]
     if new_audiences is not None:

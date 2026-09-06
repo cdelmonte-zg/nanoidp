@@ -92,21 +92,40 @@ def login() -> ResponseReturnValue:
     """
     config = get_config()
     persona_mode = config.settings.persona_mode_enabled
+    two_step_login = config.settings.two_step_login_active
 
-    if request.method == "GET":
-        error = request.args.get("error")
+    def render_login(error: str | None, login_username: str) -> ResponseReturnValue:
         return render_template(
             "login.html",
             error=error,
             users=config.persona_picker_entries(),
             persona_mode=persona_mode,
+            two_step_login=two_step_login,
+            login_username=login_username,
             management_secret_configured=bool(config.settings.management_secret),
         )
 
+    if request.method == "GET":
+        return render_login(request.args.get("error"), "")
+
     # POST: persona mode selects a user by identity, no password prompt;
-    # password mode is unchanged.
+    # password mode is unchanged. Two-step (#322/#323) collects username
+    # and password on separate screens, stateless the same way /authorize's
+    # _handle_authorize_login is - the username travels as a plain form
+    # field, carried forward as a hidden input on the password screen.
     username = request.form.get("username", "").strip()
+    password_submitted = "password" in request.form
     password = request.form.get("password", "")
+
+    if two_step_login and not password:
+        if not username:
+            return render_login("Username is required", "")
+        if password_submitted:
+            # The password screen was resubmitted with a blank password.
+            return render_login("Password is required", username)
+        # Username-only step: nothing to authenticate yet, render the
+        # password screen next with this username carried forward.
+        return render_login(None, username)
 
     if (persona_mode and not username) or (not persona_mode and (not username or not password)):
         error = "Select a user" if persona_mode else "Username and password required"
@@ -122,6 +141,8 @@ def login() -> ResponseReturnValue:
             username=username,
             details={"reason": "Invalid credentials"},
         )
+        if two_step_login:
+            return render_login("Invalid username or password", username)
         return redirect(url_for("ui.login", error="Invalid credentials"))
 
     # Create session
@@ -503,7 +524,6 @@ def client_create() -> ResponseReturnValue:
             footer_color=request.form.get("footer_color") or None,
             show_client_id=bool(request.form.get("show_client_id")),
             show_description=bool(request.form.get("show_description")),
-            two_step_login=bool(request.form.get("two_step_login")),
             additional_audiences=_parse_textarea_list(
                 request.form.get("additional_audiences", "")
             ),
@@ -588,7 +608,6 @@ def client_edit(client_id: str) -> ResponseReturnValue:
             footer_color=request.form.get("footer_color") or None,
             show_client_id=bool(request.form.get("show_client_id")),
             show_description=bool(request.form.get("show_description")),
-            two_step_login=bool(request.form.get("two_step_login")),
             additional_audiences=_parse_textarea_list(
                 request.form.get("additional_audiences", "")
             ),
@@ -784,6 +803,7 @@ def settings() -> ResponseReturnValue:
             allowed_identity_classes=identity_classes or None,
             login_mode=_form_text("login_mode"),
             auto_login=_form_bool("auto_login"),
+            two_step=_form_bool("two_step"),
             expected_revision=_expected_revision_from_form(),
         )
 

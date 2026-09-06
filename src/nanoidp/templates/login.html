@@ -65,6 +65,13 @@
             </div>
             {% endif %}
 
+            {% if two_step_login and login_username %}
+            <div class="mb-3">
+                <small class="text-muted">Signing in as</small>
+                <span class="fw-semibold">{{ login_username }}</span>
+            </div>
+            {% endif %}
+
             {% if persona_mode %}
             <form method="POST">
                 {% if saml_request %}
@@ -77,6 +84,55 @@
 
                 {{ macros.persona_picker(users, "Persona login - select a user to sign in.") }}
             </form>
+            {% elif two_step_login and not login_username %}
+            <form method="POST">
+                {% if saml_request %}
+                <input type="hidden" name="SAMLRequest" value="{{ saml_request|e }}">
+                <input type="hidden" name="saml_original_verb" value="{{ original_verb|e }}">
+                {% endif %}
+                {% if relay_state %}
+                <input type="hidden" name="RelayState" value="{{ relay_state|e }}">
+                {% endif %}
+
+                <div class="form-floating mb-4">
+                    <input type="text" class="form-control" id="username" name="username" placeholder="Username" required autofocus autocomplete="username">
+                    <label for="username"><i class="bi bi-person me-2"></i>Username</label>
+                </div>
+
+                <button type="submit" class="btn btn-primary w-100 py-2">
+                    Next <i class="bi bi-arrow-right ms-2"></i>
+                </button>
+            </form>
+            {% elif two_step_login %}
+            <form method="POST">
+                {% if saml_request %}
+                <input type="hidden" name="SAMLRequest" value="{{ saml_request|e }}">
+                <input type="hidden" name="saml_original_verb" value="{{ original_verb|e }}">
+                {% endif %}
+                {% if relay_state %}
+                <input type="hidden" name="RelayState" value="{{ relay_state|e }}">
+                {% endif %}
+                <input type="hidden" name="username" value="{{ login_username }}">
+
+                <div class="form-floating mb-4">
+                    <input type="password" class="form-control" id="password" name="password" placeholder="Password" required autofocus autocomplete="current-password">
+                    <label for="password"><i class="bi bi-key me-2"></i>Password</label>
+                </div>
+
+                <button type="submit" class="btn btn-primary w-100 py-2">
+                    <i class="bi bi-box-arrow-in-right me-2"></i>Sign In
+                </button>
+            </form>
+            {% if not saml_request %}
+            {# A plain link back to GET works for /login (no state to lose);
+               SAML's inline login has no such GET - the SAMLRequest was a
+               POST body, not stored anywhere to fall back to - so there is
+               no "change username" affordance on that path (#322/#323
+               review round 2). #}
+            <div class="text-center mt-3">
+                <a href="{{ url_for('ui.login') }}" class="btn btn-link p-0">Change username</a>
+            </div>
+            {% endif %}
             {% else %}
             <form method="POST">
                 {% if saml_request %}

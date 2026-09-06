@@ -187,10 +187,6 @@ class OAuthClient(BaseModel):
     )
     show_client_id: bool = Field(default=True, description="Show client_id on the /authorize login page")
     show_description: bool = Field(default=False, description="Show description on the /authorize login page")
-    two_step_login: bool = Field(
-        default=False,
-        description="Collect username and password on separate /authorize screens",
-    )
     additional_audiences: List[str] = Field(
         default_factory=list,
         description="Extra audiences added to the ID Token 'aud' alongside the client_id",
@@ -520,6 +516,14 @@ class Settings(BaseModel):
         "default; inert unless login_mode is also 'persona'. A prefixed "
         "login_hint is otherwise ignored, same as an unset flag.",
     )
+    two_step: bool = Field(
+        default=False,
+        description="Collect username and password on separate screens, "
+        "everywhere login_mode: password renders a combined form - "
+        "/authorize, /login, /saml/sso and the device flow (#322/#323). "
+        "Opt-in, off by default; inert under login_mode: persona, which is "
+        "passwordless and has no password screen to split off.",
+    )
 
     # Security (stricter-dev profile)
     security_profile: str = Field(
@@ -652,6 +656,15 @@ class Settings(BaseModel):
         set without it, it is inert rather than rejected - orthogonal
         composition, same as 'persona_mode_enabled' above."""
         return self.persona_mode_enabled and self.auto_login
+
+    @property
+    def two_step_login_active(self) -> bool:
+        """'two_step' is inert under persona mode (#322/#323 review round
+        2): passwordless login has no password screen to split off. Single
+        home for the predicate every password-form surface (/authorize,
+        /login, /saml/sso, the device flow) shares, so they can never
+        disagree on whether the two-screen flow is active."""
+        return self.two_step and not self.persona_mode_enabled
 
     @property
     def scope_enforcement_active(self) -> bool:

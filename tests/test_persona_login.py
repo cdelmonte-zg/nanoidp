@@ -582,3 +582,123 @@ class TestSettingsUiAutoLogin:
         config.reload()
         assert config.settings.auto_login is True
 
+
+class TestSettingsUiTwoStep:
+    """The '/settings' dashboard page persists 'two_step' (#322/#323 review
+    round 2) via a checkbox, following the same "absent marker = unchanged"
+    convention as the other checkboxes on this page."""
+
+    def _login_as_admin(self, client) -> None:
+        _login_as_admin(client)
+
+    def _base_form(self, settings) -> dict:
+        return _settings_base_form(settings)
+
+    def test_settings_page_shows_two_step_checkbox(self, client):
+        self._login_as_admin(client)
+
+        response = client.get("/settings")
+
+        assert response.status_code == 200
+        assert b'name="two_step"' in response.data
+
+    def test_enabling_two_step_persists(self, client, preserve_config_files):
+        self._login_as_admin(client)
+        config = get_config()
+
+        response = client.post(
+            "/settings",
+            data={
+                **self._base_form(config.settings),
+                "two_step": "true",
+                "two_step__on_form": "1",
+            },
+            follow_redirects=True,
+        )
+
+        assert response.status_code == 200
+        config.reload()
+        assert config.settings.two_step is True
+        assert config.settings.two_step_login_active is True
+
+    def test_enabling_two_step_alongside_persona_mode_is_inert(self, client, preserve_config_files):
+        """Accepted, not rejected - just inert until login_mode is back to
+        'password', same as auto_login's orthogonal composition."""
+        self._login_as_admin(client)
+        config = get_config()
+
+        response = client.post(
+            "/settings",
+            data={
+                **self._base_form(config.settings),
+                "login_mode": "persona",
+                "two_step": "true",
+                "two_step__on_form": "1",
+            },
+            follow_redirects=True,
+        )
+
+        assert response.status_code == 200
+        config.reload()
+        assert config.settings.two_step is True
+        assert config.settings.two_step_login_active is False
+
+    def test_unchecking_two_step_persists_and_leaves_sibling_mode(self, client, preserve_config_files):
+        self._login_as_admin(client)
+        config = get_config()
+        client.post(
+            "/settings",
+            data={
+                **self._base_form(config.settings),
+                "login_mode": "persona",
+                "two_step": "true",
+                "two_step__on_form": "1",
+            },
+            follow_redirects=True,
+        )
+
+        response = client.post(
+            "/settings",
+            data={
+                **self._base_form(config.settings),
+                "login_mode": "persona",
+                "two_step__on_form": "1",
+            },
+            follow_redirects=True,
+        )
+
+        assert response.status_code == 200
+        config.reload()
+        assert config.settings.two_step is False
+
+        import yaml
+        with open(config.config_dir / "settings.yaml") as f:
+            doc = yaml.safe_load(f)
+        assert doc["login"] == {"mode": "persona"}
+
+    def test_omitted_marker_leaves_two_step_unchanged(self, client, preserve_config_files):
+        """No 'two_step__on_form' marker at all (a stale tab, a script) must
+        not be misread as an unchecked box - it means the field was not part
+        of this submission."""
+        self._login_as_admin(client)
+        config = get_config()
+        client.post(
+            "/settings",
+            data={
+                **self._base_form(config.settings),
+                "two_step": "true",
+                "two_step__on_form": "1",
+            },
+            follow_redirects=True,
+        )
+
+        response = client.post(
+            "/settings",
+            data={**self._base_form(config.settings)},
+            follow_redirects=True,
+        )
+
+        assert response.status_code == 200
+        config.reload()
+        assert config.settings.two_step is True
+

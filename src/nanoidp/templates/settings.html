@@ -23,6 +23,7 @@
     <input type="hidden" name="saml_export_roles__on_form" value="1">
     <input type="hidden" name="saml_export_groups__on_form" value="1">
     <input type="hidden" name="auto_login__on_form" value="1">
+    <input type="hidden" name="two_step__on_form" value="1">
     <div class="row g-4">
         <!-- OAuth Settings -->
         <div class="col-md-6">
@@ -259,6 +260,15 @@
                         </div>
                         <div class="form-text">With Login Mode above set to "Persona", an OIDC <code>/authorize</code> request whose <code>login_hint</code> is <code>persona-auto-login:USERNAME</code> logs that user in directly - no picker, no HTML - for driving a real OIDC client library in automated integration tests. Opt-in, off by default; has no effect while Login Mode is "Password".</div>
                     </div>
+                    <div class="mb-3">
+                        <div class="form-check form-switch">
+                            <input class="form-check-input" type="checkbox" role="switch"
+                                   id="two_step" name="two_step" value="true"
+                                   {% if settings.two_step %}checked{% endif %}>
+                            <label class="form-check-label" for="two_step">Two-Step Login</label>
+                        </div>
+                        <div class="form-text">Collect username and password on separate screens, everywhere Login Mode is "Password" - /authorize, /login, /saml/sso and the device flow. Opt-in, off by default; has no effect while Login Mode is "Persona".</div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -424,7 +434,8 @@ function updatePreview() {
             .filter(s => s),
         login: {
             mode: document.getElementById('login_mode').value,
-            auto_login: document.getElementById('auto_login').checked
+            auto_login: document.getElementById('auto_login').checked,
+            two_step: document.getElementById('two_step').checked
         }
     };
 

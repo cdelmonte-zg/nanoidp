@@ -36,7 +36,6 @@ def _client_to_dict(client: OAuthClient) -> dict[str, Any]:
         "footer_color": client.footer_color,
         "show_client_id": client.show_client_id,
         "show_description": client.show_description,
-        "two_step_login": client.two_step_login,
         "layout": client.layout,
         "additional_audiences": client.additional_audiences,
         "redirect_uris": client.redirect_uris,

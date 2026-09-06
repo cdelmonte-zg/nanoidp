@@ -288,8 +288,6 @@ def client_to_yaml(client: OAuthClient) -> Dict[str, Any]:
         entry["show_client_id"] = False
     if client.show_description:
         entry["show_description"] = True
-    if client.two_step_login:
-        entry["two_step_login"] = True
     if client.additional_audiences:
         entry["additional_audiences"] = client.additional_audiences
     if client.redirect_uris:
@@ -351,7 +349,6 @@ def merge_client_entry(raw_entry: Dict[str, Any], client: OAuthClient) -> Dict[s
     for field_name, new_bool_value, default_value in (
         ("show_client_id", client.show_client_id, True),
         ("show_description", client.show_description, False),
-        ("two_step_login", client.two_step_login, False),
     ):
         if not is_unchanged(raw_entry.get(field_name), new_bool_value):
             if new_bool_value != default_value:
@@ -445,6 +442,7 @@ _FALLBACK_DEFAULTS: Dict[str, Any] = {
     "security_profile": "dev",
     "login.mode": "password",
     "login.auto_login": False,
+    "login.two_step": False,
 }
 
 
@@ -542,7 +540,7 @@ def apply_settings_document(
 
     The per-field encodings live on ``OWNED_SETTINGS`` (#214); the
     defaults-dependent keys (``security_profile``, ``login.mode``,
-    ``login.auto_login``) are handled explicitly below.
+    ``login.auto_login``, ``login.two_step``) are handled explicitly below.
     """
     for field in OWNED_SETTINGS:
         target = document if not field.section else document.setdefault(field.section, {})
@@ -587,6 +585,9 @@ def apply_settings_document(
 
     auto_login_default = resolved_defaults["login.auto_login"]
     merge_optional_nested_field(document, "login", "auto_login", settings.auto_login, auto_login_default)
+
+    two_step_default = resolved_defaults["login.two_step"]
+    merge_optional_nested_field(document, "login", "two_step", settings.two_step, two_step_default)
 
     return document
 

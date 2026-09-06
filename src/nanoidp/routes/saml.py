@@ -434,17 +434,54 @@ def _sso_authenticate_inline(
 
     Login happens inline (no redirect) to preserve the original binding
     context. Persona mode authenticates by identity selection only;
-    password mode is unchanged.
+    password mode is unchanged. Two-step (#322/#323) collects username and
+    password on separate screens, stateless like /authorize and /login: a
+    request carries no "username"/"password" form fields at all when it is
+    a fresh SAMLRequest (GET redirect binding, or the SP's own POST
+    binding) rather than a resubmission of one of nanoidp's own login
+    forms - only the latter ever posts those field names - so that
+    distinguishes "nothing submitted yet" from "submitted blank" without
+    needing request.method.
     """
     username = session.get("user")
     if username:
         return username, None
 
     persona_mode = config.settings.persona_mode_enabled
+    two_step_login = config.settings.two_step_login_active
     login_error = None
 
+    username_submitted = "username" in request.form
     form_username = request.form.get("username", "").strip()
+    password_submitted = "password" in request.form
     form_password = request.form.get("password", "")
+
+    def render_login(error: Optional[str], login_username: str) -> ResponseReturnValue:
+        # Pass the original HTTP verb to the template for strict mode
+        # parsing after inline login (POST with compressed SAMLRequest from
+        # an original GET needs to decompress).
+        return render_template(
+            "login.html",
+            error=error,
+            saml_request=saml_request_b64,
+            relay_state=relay_state,
+            original_verb=request.method,
+            users=config.persona_picker_entries(),
+            persona_mode=persona_mode,
+            two_step_login=two_step_login,
+            login_username=login_username,
+        )
+
+    if two_step_login and not form_password:
+        if username_submitted and not form_username:
+            return None, render_login("Username is required", "")
+        if password_submitted:
+            # The password screen was resubmitted with a blank password.
+            return None, render_login("Password is required", form_username)
+        # Either a fresh SAMLRequest (nothing submitted yet) or the
+        # username-only step just completed: either way, nothing to
+        # authenticate, render the next screen with no error.
+        return None, render_login(None, form_username)
 
     user = config.interactive_authenticate(form_username, form_password)
 
@@ -475,18 +512,8 @@ def _sso_authenticate_inline(
             details={"reason": "Invalid credentials"},
         )
 
-    # Still not authenticated - show login form. Pass the original HTTP verb
-    # to the template for strict mode parsing after inline login (POST with
-    # compressed SAMLRequest from an original GET needs to decompress).
-    return None, render_template(
-        "login.html",
-        error=login_error,
-        saml_request=saml_request_b64,
-        relay_state=relay_state,
-        original_verb=request.method,
-        users=config.persona_picker_entries(),
-        persona_mode=persona_mode,
-    )
+    # Still not authenticated - show login form.
+    return None, render_login(login_error, form_username if two_step_login else "")
 
 
 def _sso_parse_request(

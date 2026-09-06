@@ -184,13 +184,6 @@
                         <label class="form-check-label" for="show_description">Show description on login page</label>
                     </div>
 
-                    <div class="mb-3 form-check">
-                        <input type="checkbox" class="form-check-input" id="two_step_login" name="two_step_login"
-                               {% if client and client.two_step_login %}checked{% endif %}>
-                        <label class="form-check-label" for="two_step_login">Use separate username and password screens</label>
-                        <div class="form-text">Applies to password login on <code>/authorize</code>. Persona login remains passwordless.</div>
-                    </div>
-
                     <div class="mb-3">
                         <label for="layout" class="form-label">Login Page Layout</label>
                         <select class="form-select" id="layout" name="layout">

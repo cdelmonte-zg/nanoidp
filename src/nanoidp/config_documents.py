@@ -94,7 +94,6 @@ class ClientEntry(BaseModel):
     footer_color: Optional[str] = None
     show_client_id: bool = True
     show_description: bool = False
-    two_step_login: bool = False
     additional_audiences: Any = None
     redirect_uris: Any = None
     allowed_scopes: Any = None
@@ -114,7 +113,6 @@ class ClientEntry(BaseModel):
             footer_color=self.footer_color,
             show_client_id=self.show_client_id,
             show_description=self.show_description,
-            two_step_login=self.two_step_login,
             additional_audiences=_coerce_additional_audiences(
                 self.additional_audiences, self.client_id
             ),
@@ -217,6 +215,7 @@ class LoginSection(BaseModel):
 
     mode: str = "password"
     auto_login: bool = False
+    two_step: bool = False
 
 
 class HooksSection(BaseModel):
@@ -391,6 +390,7 @@ class SettingsDocument(BaseModel):
             keys_dir=self.jwt.keys_dir,
             login_mode=self.login.mode,
             auto_login=self.login.auto_login,
+            two_step=self.login.two_step,
             security_profile=self.security_profile,
             authority_prefixes=self.authority_prefixes,
             allowed_identity_classes=self.allowed_identity_classes,

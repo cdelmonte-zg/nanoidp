@@ -426,10 +426,6 @@ _TOOLS: list[Tool] = [
                     "type": "boolean",
                     "description": "Show description on the /authorize login page (optional, default false)",
                 },
-                "two_step_login": {
-                    "type": "boolean",
-                    "description": "Collect username and password on separate /authorize screens (optional, default false)",
-                },
                 "layout": {
                     "type": "string",
                     "enum": ["vertical", "horizontal"],
@@ -507,10 +503,6 @@ _TOOLS: list[Tool] = [
                 "show_description": {
                     "type": "boolean",
                     "description": "Show description on the /authorize login page (optional)",
-                },
-                "two_step_login": {
-                    "type": "boolean",
-                    "description": "Collect username and password on separate /authorize screens (optional)",
                 },
                 "layout": {
                     "type": "string",
@@ -738,6 +730,14 @@ _TOOLS: list[Tool] = [
                     "client library in automated integration tests. Opt-in, "
                     "off by default; inert unless login_mode is also "
                     "'persona'.",
+                },
+                "two_step": {
+                    "type": "boolean",
+                    "description": "Collect username and password on "
+                    "separate screens, everywhere login_mode: password "
+                    "renders a combined form - /authorize, /login, "
+                    "/saml/sso and the device flow (#322/#323). Opt-in, "
+                    "off by default; inert under login_mode: persona.",
                 },
             },
             "required": [],

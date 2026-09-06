@@ -64,7 +64,7 @@ class TestApiConfigLoginParity:
         resp = client.get("/api/config")
         assert resp.status_code == 200
         login = resp.get_json()["login"]
-        assert login == {"mode": "password", "auto_login": False}
+        assert login == {"mode": "password", "auto_login": False, "two_step": False}
 
     def test_e2e_round_trip_preserves_auto_login(self, client, app, preserve_config_files):
         """Replaying the settings-form round-trip (form rebuilt from
@@ -79,7 +79,7 @@ class TestApiConfigLoginParity:
         doc = client.get("/api/config").get_json()
         login = doc["login"]
         oauth = doc["oauth"]
-        assert login == {"mode": "persona", "auto_login": True}
+        assert login == {"mode": "persona", "auto_login": True, "two_step": False}
 
         resp = client.post(
             "/settings",

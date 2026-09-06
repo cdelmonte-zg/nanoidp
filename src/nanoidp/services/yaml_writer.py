@@ -81,13 +81,19 @@ def _mutate_auto_login(document: Dict[str, Any], auto_login: bool, auto_login_de
     merge_optional_nested_field(document, "login", "auto_login", auto_login, auto_login_default)
 
 
-def _login_settings_defaults() -> tuple[str, bool]:
-    """``(login.mode default, login.auto_login default)`` from one
-    ``document_defaults()`` call, shared by ``update_login_settings`` and
-    ``update_settings_form`` instead of each rebuilding a full
-    ``SettingsDocument`` twice for the same two values."""
+def _mutate_two_step(document: Dict[str, Any], two_step: bool, two_step_default: bool) -> None:
+    """``two_step`` follows the same explicit-True/False checkbox
+    convention as ``_mutate_auto_login`` above (#322/#323 review round 2)."""
+    merge_optional_nested_field(document, "login", "two_step", two_step, two_step_default)
+
+
+def _login_settings_defaults() -> tuple[str, bool, bool]:
+    """``(login.mode default, login.auto_login default, login.two_step
+    default)`` from one ``document_defaults()`` call, shared by
+    ``update_login_settings`` and ``update_settings_form`` instead of each
+    rebuilding a full ``SettingsDocument`` twice for the same values."""
     defaults = document_defaults()
-    return defaults["login.mode"], defaults["login.auto_login"]
+    return defaults["login.mode"], defaults["login.auto_login"], defaults["login.two_step"]
 
 
 class YamlWriter:
@@ -402,6 +408,7 @@ class YamlWriter:
         self,
         mode: Optional[str] = None,
         auto_login: Optional[bool] = None,
+        two_step: Optional[bool] = None,
         expected_revision: Optional[str] = None,
     ) -> str:
         """Update the 'login' section (persona login mode, local dev
@@ -418,22 +425,25 @@ class YamlWriter:
         loaded - so an invalid value (e.g. a typo) raises instead of
         persisting a mode the server can't start with.
 
-        ``auto_login`` (#250) follows the checkbox convention instead:
-        ``None`` means absent from the form (unchanged), an explicit
-        ``True``/``False`` is written, omitted at its ``False`` default.
-        No cross-field validation against ``mode`` here - see
-        ``Settings.auto_login_enabled`` for why it is simply inert rather
-        than rejected when ``login.mode`` isn't ``persona``.
+        ``auto_login`` (#250) and ``two_step`` (#322/#323 review round 2)
+        follow the checkbox convention instead: ``None`` means absent from
+        the form (unchanged), an explicit ``True``/``False`` is written,
+        omitted at its ``False`` default. No cross-field validation against
+        ``mode`` here - see ``Settings.auto_login_enabled`` and
+        ``Settings.two_step_login_active`` for why each is simply inert
+        rather than rejected when ``login.mode`` isn't what it needs.
         """
         if mode:
             Settings.validate_login_mode(mode)
-        login_mode_default, auto_login_default = _login_settings_defaults()
+        login_mode_default, auto_login_default, two_step_default = _login_settings_defaults()
 
         def mutate(data: Dict[str, Any]) -> None:
             if mode:
                 _mutate_login_mode(data, mode, login_mode_default)
             if auto_login is not None:
                 _mutate_auto_login(data, auto_login, auto_login_default)
+            if two_step is not None:
+                _mutate_two_step(data, two_step, two_step_default)
 
         return self._atomic_write(self.settings_file, mutate, expected_revision)
 
@@ -444,6 +454,7 @@ class YamlWriter:
         allowed_identity_classes: Optional[List[str]] = None,
         login_mode: Optional[str] = None,
         auto_login: Optional[bool] = None,
+        two_step: Optional[bool] = None,
         expected_revision: Optional[str] = None,
     ) -> str:
         """Apply the settings page's whole submission as ONE write (#229
@@ -475,12 +486,13 @@ class YamlWriter:
         login_mode is validated before this call ever touches the file,
         same as update_login_settings above and for the same reason: an
         invalid value must never reach the file at all. ``auto_login``
-        (#250) follows the checkbox convention (``None`` = unchanged) -
-        see ``update_login_settings`` above.
+        (#250) and ``two_step`` (#322/#323 review round 2) follow the
+        checkbox convention (``None`` = unchanged) - see
+        ``update_login_settings`` above.
         """
         if login_mode:
             Settings.validate_login_mode(login_mode)
-        login_mode_default, auto_login_default = _login_settings_defaults()
+        login_mode_default, auto_login_default, two_step_default = _login_settings_defaults()
 
         def mutate(data: Dict[str, Any]) -> None:
             _mutate_settings_section(data, "oauth", oauth_fields)
@@ -491,6 +503,8 @@ class YamlWriter:
                 _mutate_login_mode(data, login_mode, login_mode_default)
             if auto_login is not None:
                 _mutate_auto_login(data, auto_login, auto_login_default)
+            if two_step is not None:
+                _mutate_two_step(data, two_step, two_step_default)
 
         return self._atomic_write(self.settings_file, mutate, expected_revision)
 
