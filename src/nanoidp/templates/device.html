@@ -90,7 +90,7 @@
                     <div class="form-floating mb-3">
                         <input type="text" class="form-control user-code-input" id="user_code" name="user_code"
                                placeholder="XXXX-XXXX" value="{{ user_code }}" required
-                               {% if not (two_step_login and login_username) %}autofocus{% endif %}
+                               {% if not two_step_login %}autofocus{% endif %}
                                maxlength="8" pattern="[A-Za-z0-9]{8}">
                         <label for="user_code"><i class="bi bi-upc me-2"></i>Device Code</label>
                     </div>
@@ -122,7 +122,7 @@
                         <button type="submit" name="action" value="authorize" class="btn btn-primary py-2">
                             Next <i class="bi bi-arrow-right ms-2"></i>
                         </button>
-                        <button type="submit" name="action" value="deny" class="btn btn-outline-danger py-2">
+                        <button type="submit" name="action" value="deny" formnovalidate class="btn btn-outline-danger py-2">
                             <i class="bi bi-x-circle me-2"></i>Deny
                         </button>
                     </div>
@@ -137,7 +137,7 @@
                         <button type="submit" name="action" value="authorize" class="btn btn-primary py-2">
                             <i class="bi bi-check-circle me-2"></i>Authorize Device
                         </button>
-                        <button type="submit" name="action" value="deny" class="btn btn-outline-danger py-2">
+                        <button type="submit" name="action" value="deny" formnovalidate class="btn btn-outline-danger py-2">
                             <i class="bi bi-x-circle me-2"></i>Deny
                         </button>
                     </div>
@@ -156,7 +156,7 @@
                         <button type="submit" name="action" value="authorize" class="btn btn-primary py-2">
                             <i class="bi bi-check-circle me-2"></i>Authorize Device
                         </button>
-                        <button type="submit" name="action" value="deny" class="btn btn-outline-danger py-2">
+                        <button type="submit" name="action" value="deny" formnovalidate class="btn btn-outline-danger py-2">
                             <i class="bi bi-x-circle me-2"></i>Deny
                         </button>
                     </div>

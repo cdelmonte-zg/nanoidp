@@ -137,11 +137,11 @@ def login() -> ResponseReturnValue:
         # with this username carried forward.
         return render_login(None, username)
 
-    # Reached only for the combined form (two_step_login is False) or a
-    # tampered two-step submission (a cleared hidden username alongside a
-    # password) - the latter falls through to interactive_authenticate
-    # below instead of this legacy redirect, one message and one render
-    # transport for every two-step failure (#323 review round 2, nit).
+    # Reached only for the combined form (two_step_login is False): a
+    # two-step tampered submission (a cleared hidden username alongside a
+    # password) no longer reaches this point at all - two_step_phase
+    # answers USERNAME_REQUIRED for it above, before this legacy redirect
+    # (#322/#323 review round 3, before-merge 1).
     if not two_step_login and (
         (persona_mode and not username) or (not persona_mode and (not username or not password))
     ):
@@ -159,7 +159,7 @@ def login() -> ResponseReturnValue:
             details={"reason": "Invalid credentials"},
         )
         if two_step_login:
-            return render_login("Invalid username or password", username)
+            return render_login("Invalid credentials", username)
         return redirect(url_for("ui.login", error="Invalid credentials"))
 
     # Create session

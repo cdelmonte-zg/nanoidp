@@ -466,8 +466,15 @@ def _sso_authenticate_inline(
         # of this flow has request.method equal to that original verb, so
         # every subsequent render must forward the value the prior screen
         # already carried, exactly like saml_request and relay_state do.
-        # _sso_parse_request re-validates this value before trusting it.
-        original_verb = request.form.get("saml_original_verb") or request.method
+        # Whitelisted here rather than left to _sso_parse_request, which
+        # only runs once authentication succeeds: without this, a tampered
+        # value rides along through every intermediate screen and is only
+        # rejected after the user has typed credentials (#322/#323 review
+        # round 3, before-merge 5).
+        form_verb = request.form.get("saml_original_verb")
+        if form_verb and form_verb.upper() not in ("GET", "POST"):
+            return abort(400, description="invalid saml_original_verb")
+        original_verb = (form_verb or request.method).upper()
         return render_template(
             "login.html",
             error=error,

@@ -69,7 +69,7 @@ class TestLoginTwoStep:
         response = client.post("/login", data={"username": "admin", "password": "wrong"})
 
         assert response.status_code == 200
-        assert b"Invalid username or password" in response.data
+        assert b"Invalid credentials" in response.data
         assert b'name="password"' in response.data
 
     def test_blank_password_resubmission_reports_password_required(self, app, client):

@@ -1491,6 +1491,40 @@ class TestSAMLFlowsComprehensive:
             config.settings.strict_saml_binding = original_strict
             config.settings.two_step = original_two_step
 
+    def test_two_step_login_rejects_tampered_original_verb_at_username_step(self, client):
+        """#322/#323 review round 3, before-merge 5: a junk saml_original_verb
+        must be rejected as soon as render_login's closure reads it, not left
+        to ride along through the username-only screen and only be caught
+        once _sso_parse_request runs after the user has typed credentials."""
+        from nanoidp.config import get_config
+        config = get_config()
+        original_two_step = config.settings.two_step
+
+        try:
+            config.settings.two_step = True
+
+            saml_request = self._create_authn_request(
+                request_id="_tampered_verb_two_step", compress=True
+            )
+
+            client.get(
+                "/saml/sso",
+                query_string={"SAMLRequest": saml_request, "RelayState": "test-tampered-verb"},
+            )
+
+            response = client.post(
+                "/saml/sso",
+                data={
+                    "SAMLRequest": saml_request,
+                    "RelayState": "test-tampered-verb",
+                    "saml_original_verb": "PUT",
+                    "username": "admin",
+                },
+            )
+            assert response.status_code == 400
+        finally:
+            config.settings.two_step = original_two_step
+
     def test_idp_initiated_sso_not_supported(self, client):
         """Test that IdP-initiated SSO (no SAMLRequest) is NOT supported.
 

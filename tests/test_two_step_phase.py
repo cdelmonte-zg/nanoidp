@@ -44,6 +44,19 @@ class TestTwoStepPhase:
             is TwoStepPhase.USERNAME_REQUIRED
         )
 
+    def test_blank_username_with_password_is_still_required(self):
+        """#322/#323 review round 3, before-merge 1: a blank username is
+        rejected before a submitted password is even considered - a tampered
+        POST pairing an empty username with a password must not short-circuit
+        to ATTEMPT and authenticate (or audit a failed login) against
+        username=''."""
+        assert (
+            two_step_phase(
+                two_step_active=True, username="", password="admin", password_submitted=True
+            )
+            is TwoStepPhase.USERNAME_REQUIRED
+        )
+
     def test_blank_password_resubmission_is_required(self):
         """The password screen (hidden username, empty password field)
         resubmitted with nothing typed - distinct from the silent first
