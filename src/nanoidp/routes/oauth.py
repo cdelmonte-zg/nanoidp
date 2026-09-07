@@ -115,9 +115,11 @@ def jwks() -> ResponseReturnValue:
 class _AuthorizeParams:
     """The /authorize request parameters, read once per request.
 
-    On GET they come from the query string; on the login-form POST leg they
-    come from the form with the session as fallback (the GET leg stored them
-    there). ``scope`` starts as the raw request value and is replaced by the
+    On GET they come from the query string. On the login-form POST leg they
+    come EXCLUSIVELY from the session the GET leg stored them in (#325) -
+    never from the form body, which only ever carries username/password and
+    must not be able to override the request the user approved on GET.
+    ``scope`` starts as the raw request value and is replaced by the
     resolved/granted value once _validate_authorize_scope has run.
     """
 
@@ -143,12 +145,44 @@ class _AuthorizeParams:
 def _read_authorize_params() -> _AuthorizeParams:
     """Extract the request parameters and persist them for the POST leg.
 
-    Storing on GET happens before any validation, exactly as it always has:
-    an invalid request still leaves its parameters in the session, and the
-    login POST leg re-validates everything from scratch.
-    """
-    params = request.args if request.method == "GET" else request.form
+    On GET they come from the query string, with the session as fallback for
+    any field the query string omits (a bare ``url_for("oauth.authorize")``
+    or "Change username" link relies on this to return to a request already
+    in flight - see ``_authorize_query_params``). Whatever is resolved -
+    query value or session fallback - is then re-stored to the session
+    before any validation happens, exactly as it always has: an invalid
+    request still leaves its parameters in the session, and the login POST
+    leg re-validates everything from scratch.
 
+    On POST they come EXCLUSIVELY from the session (#325) - never from the
+    form body. The login form only ever submits username/password (see
+    _handle_authorize_login); it has no legitimate reason to carry
+    client_id/redirect_uri/scope/state/PKCE/resource/claims of its own. Prior
+    to this fix those fields fell back to ``request.form.get(key, session[...])``,
+    so a forged hidden form field silently overrode the request the user
+    actually saw and approved on GET, breaking the binding between the
+    approved request and the issued code. Reading only from the session ties
+    the code to that original GET request unconditionally.
+    """
+    if request.method != "GET":
+        return _AuthorizeParams(
+            response_type=session.get("oauth_response_type", ""),
+            client_id=session.get("oauth_client_id", ""),
+            redirect_uri=session.get("oauth_redirect_uri", ""),
+            scope=session.get("oauth_scope", ""),
+            state=session.get("oauth_state", ""),
+            code_challenge=session.get("oauth_code_challenge", ""),
+            code_challenge_method=session.get("oauth_code_challenge_method", ""),
+            nonce=session.get("oauth_nonce", ""),
+            claims_param=session.get("oauth_claims", ""),
+            resources=session.get("oauth_resources", []),
+            # No session fallback (#318 review round 1, blocking 1), and no
+            # form fallback either (#325): login_hint only ever comes from
+            # the current GET request - see the field's own comment.
+            login_hint="",
+        )
+
+    params = request.args
     p = _AuthorizeParams(
         response_type=params.get("response_type", session.get("oauth_response_type", "")),
         client_id=params.get("client_id", session.get("oauth_client_id", "")),
@@ -163,26 +197,21 @@ def _read_authorize_params() -> _AuthorizeParams:
         claims_param=params.get("claims", session.get("oauth_claims", "")),
         # RFC 8707 resource is repeatable (#187): read every value, not one.
         resources=params.getlist("resource") or session.get("oauth_resources", []),
-        # No session fallback (#318 review round 1, blocking 1): a stale
-        # login_hint left over from an earlier request in this browser
-        # session must never resurrect auto-login (or override an explicit
-        # picker selection) on a request that didn't send one.
         login_hint=params.get("login_hint", ""),
     )
 
-    if request.method == "GET":
-        session["oauth_response_type"] = p.response_type
-        session["oauth_client_id"] = p.client_id
-        session["oauth_redirect_uri"] = p.redirect_uri
-        session["oauth_scope"] = p.scope
-        session["oauth_state"] = p.state
-        session["oauth_code_challenge"] = p.code_challenge
-        session["oauth_code_challenge_method"] = p.code_challenge_method
-        session["oauth_nonce"] = p.nonce
-        session["oauth_claims"] = p.claims_param
-        session["oauth_resources"] = p.resources
-        # login_hint is deliberately NOT stored here - see the field's own
-        # comment on _AuthorizeParams.
+    session["oauth_response_type"] = p.response_type
+    session["oauth_client_id"] = p.client_id
+    session["oauth_redirect_uri"] = p.redirect_uri
+    session["oauth_scope"] = p.scope
+    session["oauth_state"] = p.state
+    session["oauth_code_challenge"] = p.code_challenge
+    session["oauth_code_challenge_method"] = p.code_challenge_method
+    session["oauth_nonce"] = p.nonce
+    session["oauth_claims"] = p.claims_param
+    session["oauth_resources"] = p.resources
+    # login_hint is deliberately NOT stored here - see the field's own
+    # comment on _AuthorizeParams.
 
     return p
 

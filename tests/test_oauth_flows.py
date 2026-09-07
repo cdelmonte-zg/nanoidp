@@ -102,6 +102,36 @@ class TestAuthorizationCodeFlow:
         assert 'code=' in location
         assert 'state=test123' in location
 
+    def test_authorize_post_ignores_form_body_oauth_params(self, client):
+        """#325: a forged client_id/redirect_uri/state/scope in the login
+        POST body must not override the request validated on GET - the
+        issued code must still be bound to what the user actually approved.
+        """
+        # First GET to set session with the real request.
+        client.get(
+            '/authorize?response_type=code&client_id=demo-client'
+            '&redirect_uri=http://localhost:3000/callback&scope=openid&state=test123'
+        )
+
+        # POST with valid credentials PLUS a forged set of OAuth params
+        # trying to redirect the issued code to an attacker-controlled URI.
+        response = client.post('/authorize', data={
+            'username': 'admin',
+            'password': 'admin',
+            'client_id': 'test-client',
+            'redirect_uri': 'http://evil.example/cb',
+            'state': 'evil-state',
+            'scope': 'admin-only',
+        }, follow_redirects=False)
+
+        assert response.status_code == 302
+        location = response.headers.get('Location')
+        assert location.startswith('http://localhost:3000/callback')
+        assert 'evil.example' not in location
+        assert 'code=' in location
+        assert 'state=test123' in location
+        assert 'state=evil-state' not in location
+
     def test_authorize_code_exchange(self, client, auth_header):
         """Test exchanging authorization code for tokens."""
         # Get authorization code

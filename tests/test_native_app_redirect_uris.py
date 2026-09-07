@@ -272,32 +272,20 @@ class TestAuthorizeNativeApp:
     ):
         """The login POST leg uses the same matcher and redirects to the
         port the app actually asked for, not the registered placeholder."""
+        _authorize(client, native_client, "http://127.0.0.1:51234/callback")
         response = client.post(
             "/authorize",
-            data={
-                "response_type": "code",
-                "client_id": native_client,
-                "redirect_uri": "http://127.0.0.1:51234/callback",
-                "scope": "openid",
-                "username": "admin",
-                "password": "admin",
-            },
+            data={"username": "admin", "password": "admin"},
         )
         assert response.status_code == 302
         assert response.headers["Location"].startswith("http://127.0.0.1:51234/callback?")
         assert "code=" in response.headers["Location"]
 
     def test_custom_scheme_flow_redirects_to_app_scheme(self, client, native_client):
+        _authorize(client, native_client, CUSTOM_SCHEME)
         response = client.post(
             "/authorize",
-            data={
-                "response_type": "code",
-                "client_id": native_client,
-                "redirect_uri": CUSTOM_SCHEME,
-                "scope": "openid",
-                "username": "admin",
-                "password": "admin",
-            },
+            data={"username": "admin", "password": "admin"},
         )
         assert response.status_code == 302
         assert response.headers["Location"].startswith(CUSTOM_SCHEME + "?")

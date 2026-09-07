@@ -20,6 +20,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   written against the combined form keeps working unchanged. Configurable
   through YAML, the Settings UI, and the MCP settings tools.
 
+### Fixed
+- **`/authorize` POST leg no longer trusts OAuth params from the login form
+  body** (#325): `client_id`, `redirect_uri`, `scope`, `state`,
+  `code_challenge`/`code_challenge_method`, `nonce`, `claims`, and `resource`
+  are now read exclusively from the session captured on the preceding GET.
+  Previously the POST leg fell back to the form body for these fields, so a
+  forged hidden form field could override the request the user actually
+  approved, breaking the binding between that approved request and the
+  issued authorization code. The login form only ever legitimately carries
+  `username`/`password`; existing callers are unaffected.
+
 ## [3.0.0] - 2026-09-06
 
 ### Breaking Changes
