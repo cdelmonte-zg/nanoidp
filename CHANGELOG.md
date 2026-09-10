@@ -35,10 +35,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a mere page load in another browser tab sharing the same cookie jar could
   do the same by clearing or overwriting the session's copy out from under
   an in-flight tab. Binding each POST to its own page's query string closes
-  all three at once. **Contract change:** a single `POST /authorize` that
-  packs the OAuth parameters into the body together with the credentials,
-  with no preceding GET, is no longer honored - send those parameters on
-  the query string instead (`POST /authorize?client_id=...&redirect_uri=...`),
+  all three. The session copy stays a per-field fallback for parameters a
+  page's query string does not carry, so such a parameter can still be
+  inherited from another request in the same browser session; that
+  mechanism is tracked in #328. **Contract change:** a single
+  `POST /authorize` that packs the OAuth parameters into the body together
+  with the credentials, with no preceding GET, is no longer honored - send
+  those parameters on the query string instead
+  (`POST /authorize?client_id=...&redirect_uri=...`),
   or do the GET first as before. The login form itself only ever
   legitimately carries `username`/`password`, and a POST already routed
   through the preceding GET's page (the common case) is unaffected.

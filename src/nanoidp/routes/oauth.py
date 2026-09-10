@@ -161,7 +161,9 @@ def _read_authorize_params() -> _AuthorizeParams:
     those are never read from it. A POST with no query string of its own
     (the common case) falls back to the session exactly like GET does -
     which is what makes a plain ``POST /authorize`` with a prior GET on the
-    same request keep working.
+    same request keep working. The fallback is per field, so a request whose
+    query string omits a parameter can still inherit that one parameter from
+    an earlier request in the same browser session (#328).
 
     Whatever is resolved is re-stored to the session before validation, on
     both legs, exactly as it always has: an invalid request still leaves its
