@@ -16,6 +16,13 @@
 | `POST /device_authorization` | Device Authorization (RFC 8628; alias: `/device/code`) |
 | `GET/POST /device` | Device verification page |
 
+`POST /authorize` (the login form submit) reads its OAuth request
+parameters (`client_id`, `redirect_uri`, `scope`, `state`, PKCE, `nonce`,
+`claims`, `resource`) from the query string only - its own, or the
+preceding `GET`'s via the session when the POST carries none - never from
+the POST body; the login form itself carries only `username`/`password`
+(#325).
+
 curl examples for every grant are in
 [Requesting tokens](../guides/token-requests.md).
 

@@ -24,12 +24,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`/authorize` POST leg no longer trusts OAuth params from the login form
   body** (#325): `client_id`, `redirect_uri`, `scope`, `state`,
   `code_challenge`/`code_challenge_method`, `nonce`, `claims`, and `resource`
-  are now read exclusively from the session captured on the preceding GET.
-  Previously the POST leg fell back to the form body for these fields, so a
-  forged hidden form field could override the request the user actually
-  approved, breaking the binding between that approved request and the
-  issued authorization code. The login form only ever legitimately carries
-  `username`/`password`; existing callers are unaffected.
+  are now read from the query string on both legs - the POST's own (the
+  login form has no `action`, so it always submits back to the exact
+  `/authorize?...` URL of the page it rendered), falling back to the session
+  captured on the preceding GET only when that query string is absent -
+  and never from the POST body. Previously the POST leg fell back to the
+  form body for these fields, so a forged hidden form field could override
+  the request the user actually approved, breaking the binding between that
+  approved request and the issued authorization code; a completed login or
+  a mere page load in another browser tab sharing the same cookie jar could
+  do the same by clearing or overwriting the session's copy out from under
+  an in-flight tab. Binding each POST to its own page's query string closes
+  all three at once. **Contract change:** a single `POST /authorize` that
+  packs the OAuth parameters into the body together with the credentials,
+  with no preceding GET, is no longer honored - send those parameters on
+  the query string instead (`POST /authorize?client_id=...&redirect_uri=...`),
+  or do the GET first as before. The login form itself only ever
+  legitimately carries `username`/`password`, and a POST already routed
+  through the preceding GET's page (the common case) is unaffected.
+- **`login_hint` is no longer honored on the POST leg** of `/authorize`
+  (#325): the persona auto-login prefix (see "Auto-Login" below) it feeds
+  only ever had a meaningful GET-time use, so a value posted with the login
+  form - which the login page itself never sends - is now always ignored
+  rather than read from the request.
 
 ## [3.0.0] - 2026-09-06
 

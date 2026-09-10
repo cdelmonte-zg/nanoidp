@@ -115,12 +115,11 @@ def jwks() -> ResponseReturnValue:
 class _AuthorizeParams:
     """The /authorize request parameters, read once per request.
 
-    On GET they come from the query string. On the login-form POST leg they
-    come EXCLUSIVELY from the session the GET leg stored them in (#325) -
-    never from the form body, which only ever carries username/password and
-    must not be able to override the request the user approved on GET.
-    ``scope`` starts as the raw request value and is replaced by the
-    resolved/granted value once _validate_authorize_scope has run.
+    On both GET and POST they come from the query string (never the POST
+    body, #325) - see ``_read_authorize_params`` for why a POST has a query
+    string of its own to read. ``scope`` starts as the raw request value and
+    is replaced by the resolved/granted value once _validate_authorize_scope
+    has run.
     """
 
     response_type: str
@@ -137,51 +136,38 @@ class _AuthorizeParams:
     # session fallback the other params use - unlike them, login_hint decides
     # WHO gets authenticated, and the auto-login branch it feeds never has a
     # POST leg of its own to need that fallback for (#318 review round 1,
-    # blocking 1). Ignored unless it carries the reserved
-    # 'persona-auto-login:' prefix - see _try_persona_auto_login.
+    # blocking 1; #325 review round 1, point 6: also never read on POST at
+    # all, even from that leg's own query string). Ignored unless it carries
+    # the reserved 'persona-auto-login:' prefix - see _try_persona_auto_login.
     login_hint: str
 
 
 def _read_authorize_params() -> _AuthorizeParams:
-    """Extract the request parameters and persist them for the POST leg.
+    """Extract this request's parameters from its own query string and
+    persist them to the session for later requests on this page.
 
-    On GET they come from the query string, with the session as fallback for
-    any field the query string omits (a bare ``url_for("oauth.authorize")``
-    or "Change username" link relies on this to return to a request already
-    in flight - see ``_authorize_query_params``). Whatever is resolved -
-    query value or session fallback - is then re-stored to the session
-    before any validation happens, exactly as it always has: an invalid
-    request still leaves its parameters in the session, and the login POST
-    leg re-validates everything from scratch.
+    GET: read from the query string, with the session as fallback for any
+    field the query string omits - a bare ``url_for("oauth.authorize")`` or
+    "Change username" link relies on this to return to a request already in
+    flight (see ``_authorize_query_params``).
 
-    On POST they come EXCLUSIVELY from the session (#325) - never from the
-    form body. The login form only ever submits username/password (see
+    POST: read the SAME way, from ``request.args``, never ``request.form``
+    (#325). The login form has no ``action`` attribute, so a POST always
+    submits back to the exact ``/authorize?...`` URL of the page that
+    rendered it - reading that query string binds each POST to its own page.
+    The form itself only ever carries username/password (see
     _handle_authorize_login); it has no legitimate reason to carry
-    client_id/redirect_uri/scope/state/PKCE/resource/claims of its own. Prior
-    to this fix those fields fell back to ``request.form.get(key, session[...])``,
-    so a forged hidden form field silently overrode the request the user
-    actually saw and approved on GET, breaking the binding between the
-    approved request and the issued code. Reading only from the session ties
-    the code to that original GET request unconditionally.
-    """
-    if request.method != "GET":
-        return _AuthorizeParams(
-            response_type=session.get("oauth_response_type", ""),
-            client_id=session.get("oauth_client_id", ""),
-            redirect_uri=session.get("oauth_redirect_uri", ""),
-            scope=session.get("oauth_scope", ""),
-            state=session.get("oauth_state", ""),
-            code_challenge=session.get("oauth_code_challenge", ""),
-            code_challenge_method=session.get("oauth_code_challenge_method", ""),
-            nonce=session.get("oauth_nonce", ""),
-            claims_param=session.get("oauth_claims", ""),
-            resources=session.get("oauth_resources", []),
-            # No session fallback (#318 review round 1, blocking 1), and no
-            # form fallback either (#325): login_hint only ever comes from
-            # the current GET request - see the field's own comment.
-            login_hint="",
-        )
+    client_id/redirect_uri/scope/state/PKCE/resource/claims of its own, and
+    those are never read from it. A POST with no query string of its own
+    (the common case) falls back to the session exactly like GET does -
+    which is what makes a plain ``POST /authorize`` with a prior GET on the
+    same request keep working.
 
+    Whatever is resolved is re-stored to the session before validation, on
+    both legs, exactly as it always has: an invalid request still leaves its
+    parameters in the session, and the next request on this page - GET or
+    POST - re-validates everything from scratch.
+    """
     params = request.args
     p = _AuthorizeParams(
         response_type=params.get("response_type", session.get("oauth_response_type", "")),
@@ -197,7 +183,7 @@ def _read_authorize_params() -> _AuthorizeParams:
         claims_param=params.get("claims", session.get("oauth_claims", "")),
         # RFC 8707 resource is repeatable (#187): read every value, not one.
         resources=params.getlist("resource") or session.get("oauth_resources", []),
-        login_hint=params.get("login_hint", ""),
+        login_hint=params.get("login_hint", "") if request.method == "GET" else "",
     )
 
     session["oauth_response_type"] = p.response_type
@@ -214,6 +200,47 @@ def _read_authorize_params() -> _AuthorizeParams:
     # comment on _AuthorizeParams.
 
     return p
+
+
+_FORGEABLE_POST_OAUTH_FIELDS = (
+    "client_id",
+    "redirect_uri",
+    "scope",
+    "state",
+    "code_challenge",
+    "code_challenge_method",
+    "nonce",
+    "claims",
+    "resource",
+)
+
+
+def _audit_suspicious_authorize_post(p: _AuthorizeParams) -> None:
+    """Restore the audit visibility a POST /authorize used to get before
+    this fix (#325 review round 1, point 5).
+
+    The login form never legitimately carries OAuth fields, so any of them
+    showing up in the POST body is a forged request - and the pre-lookup
+    checks in _validate_authorize_client (unlike everything after client
+    lookup) intentionally do not audit, so this is the only place that
+    would ever see it. An empty ``client_id`` after resolution (no query
+    string of its own and no pending session) is worth the same visibility:
+    a POST hitting the login form cold, with no request to bind to.
+    """
+    forged = [field for field in _FORGEABLE_POST_OAUTH_FIELDS if request.form.get(field)]
+    if not forged and p.client_id:
+        return
+    audit_event(
+        "authorization_request",
+        "failed",
+        endpoint="/authorize",
+        client_id=(request.form.get("client_id") or p.client_id or None),
+        details=(
+            {"reason": "OAuth parameters in POST body are ignored", "fields": forged}
+            if forged
+            else {"reason": "POST with no pending /authorize request"}
+        ),
+    )
 
 
 def _authorize_reject(
@@ -762,15 +789,26 @@ def authorize() -> ResponseReturnValue:
     OAuth2 Authorization endpoint.
     Supports Authorization Code Flow with optional PKCE.
 
-    GET: Display login page or process already logged-in user
-    POST: Process login form submission
+    GET: Display login page, or process an already-answered request (e.g.
+    persona auto-login).
+    POST: Process the login form submission.
 
-    Required parameters:
+    The parameters below - response_type, client_id, redirect_uri, and
+    optionally scope/state/code_challenge/code_challenge_method/nonce -
+    are query-string parameters on BOTH legs, never POST body fields (#325):
+    the login form has no ``action``, so its POST always lands back on the
+    exact ``/authorize?...`` URL of the page it rendered, and that query
+    string - falling back to the session when absent - is the only source
+    read. The POST body itself carries only ``username``/``password`` (plus
+    ``login_hint``, GET-only - see ``_AuthorizeParams``). See
+    ``_read_authorize_params``.
+
+    Required:
     - response_type: "code" for Authorization Code Flow
     - client_id: OAuth client ID
     - redirect_uri: Callback URL
 
-    Optional parameters:
+    Optional:
     - scope: Space-separated scopes (default: "openid")
     - state: CSRF protection (recommended)
     - code_challenge: PKCE challenge
@@ -782,6 +820,8 @@ def authorize() -> ResponseReturnValue:
     """
     config = get_config()
     p = _read_authorize_params()
+    if request.method == "POST":
+        _audit_suspicious_authorize_post(p)
 
     client, error = _validate_authorize_client(config, p)
     if error is not None:

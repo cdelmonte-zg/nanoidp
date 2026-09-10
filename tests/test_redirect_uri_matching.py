@@ -81,20 +81,25 @@ class TestExactMatching:
         assert response.status_code == 200
 
     def test_mismatch_enforced_on_login_post_too(self, client, registered_client):
-        """The POST leg (login form submit) revalidates against the registry."""
+        """The POST leg (login form submit) revalidates against the registry.
+
+        GET first, then POST only the credentials (#325 review round 1,
+        point 3): the login form has no ``action``, so it POSTs back to the
+        GET's own ``/authorize?...`` URL - a single POST carrying the OAuth
+        parameters in its body would never reach the registry check at all,
+        since those fields are never read from the body (#325), and would
+        instead fail earlier with an unrelated "client_id is required".
+        """
+        response = _authorize(client, registered_client, "http://localhost:3000/callbackevil")
+        assert response.status_code == 400
+
         response = client.post(
             "/authorize",
-            data={
-                "response_type": "code",
-                "client_id": registered_client,
-                "redirect_uri": "http://localhost:3000/callbackevil",
-                "scope": "openid",
-                "username": "admin",
-                "password": "admin",
-            },
+            data={"username": "admin", "password": "admin"},
         )
         assert response.status_code == 400
         assert "Location" not in response.headers
+        assert "not registered" in json.loads(response.data)["error_description"]
 
 
 class TestConfigLoadAndPersistence:

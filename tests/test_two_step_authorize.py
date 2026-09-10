@@ -149,17 +149,19 @@ class TestTwoStepAuthorize:
     def test_password_step_does_not_resurrect_a_stale_username(self, app, client):
         """#323 review round 1, blocking 2 (closed): the username used to
         authenticate is exactly what THIS request submitted, never a value
-        captured from an earlier one. A password-step POST that also
-        retargets client_id/redirect_uri/state via the form body still
+        captured from an earlier one. A password-step POST that also tries
+        to retarget client_id/redirect_uri/state via the form body still
         authenticates - and issues the code for - the username THIS POST
         carries, "admin", not anything a previous request might have left
         behind.
 
-        That form-body retarget itself (a POST can redirect the issued code
-        to a different client_id/redirect_uri than the GET that started the
-        flow) is pre-existing, out-of-scope behavior - tracked separately as
-        #325 - so this test does not pin where the redirect goes, only who
-        the code was issued to."""
+        The forged client_id/redirect_uri/state are also a #325 probe: the
+        password-step POST has no query string of its own, so it falls back
+        to the session the original GET populated and the forged body
+        fields are never read - the code is issued for demo-client's
+        localhost:3000/callback with state=two-step, exactly what
+        AUTHORIZE_QS asked for, not the swapped values (#325 review round
+        1, point 4)."""
         _enable_two_step(app)
         client.get(f"/authorize?{AUTHORIZE_QS}")
         client.post("/authorize", data={"username": "admin"})
@@ -178,6 +180,8 @@ class TestTwoStepAuthorize:
 
         assert response.status_code == 302
         location = response.headers["Location"]
+        assert location.startswith("http://localhost:3000/callback")
+        assert "state=two-step" in location
         assert "code=" in location
         code = location.split("code=")[1].split("&")[0]
 

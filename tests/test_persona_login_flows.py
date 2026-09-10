@@ -199,6 +199,33 @@ class TestAuthorizeAutoLogin:
             entries = get_audit_log().get_entries(limit=5, event_type="authorization_request")
         assert entries[0]["username"] == "nonexistent"
 
+    def test_login_hint_on_posts_own_query_string_is_still_ignored(self, app, client):
+        """#325 review round 1, point 6: OAuth request parameters are now
+        read from request.args uniformly on GET and POST alike (#325), but
+        login_hint keeps its own, stricter rule - it is never read on POST,
+        not even from that leg's own query string. A POST landing on a URL
+        carrying an auto-login hint for an UNKNOWN persona must still
+        process the picker's actual selection ("admin") normally, rather
+        than short-circuiting to the hint's invalid_request error - which is
+        exactly what would happen if _try_persona_auto_login ran again on
+        this POST with a hint read from its own query string."""
+        _enable_auto_login(app)
+        unknown_qs = AUTO_LOGIN_QS.replace(
+            "persona-auto-login:admin", "persona-auto-login:nonexistent"
+        )
+        client.get(f"/authorize?{AUTHORIZE_QS}")
+
+        response = client.post(
+            f"/authorize?{unknown_qs}",
+            data={"username": "admin"},
+            follow_redirects=False,
+        )
+
+        assert response.status_code == 302
+        location = response.headers["Location"]
+        assert "error=invalid_request" not in location
+        assert "code=" in location
+
     def test_flag_off_prefixed_hint_falls_through_to_picker(self, app, client):
         with app.app_context():
             get_config().settings.login_mode = "persona"

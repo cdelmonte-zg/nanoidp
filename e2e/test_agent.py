@@ -731,7 +731,7 @@ class NanoIDPTestAgent:
             if page.status_code == 200:
                 login = flow.post(
                     f"{self.base_url}/authorize",
-                    data={**auth_params, "username": self.username, "password": self.password},
+                    data={"username": self.username, "password": self.password},
                     allow_redirects=False,
                     timeout=5,
                 )
@@ -986,7 +986,7 @@ class NanoIDPTestAgent:
                  allow_redirects=False, timeout=5)
         resp = sess.post(
             f"{self.base_url}/authorize",
-            data={**auth_params, "username": self.username, "password": self.password},
+            data={"username": self.username, "password": self.password},
             allow_redirects=False,
             timeout=5,
         )
@@ -1172,7 +1172,7 @@ class NanoIDPTestAgent:
             # cookie, so the two must share a cookie jar like a real browser
             # tab would, and the GET has to actually run first.
             flow = requests.Session()
-            flow.get(
+            page = flow.get(
                 f"{self.base_url}/authorize",
                 params={
                     "response_type": "code",
@@ -1183,21 +1183,24 @@ class NanoIDPTestAgent:
                 allow_redirects=False,
                 timeout=5,
             )
-            login = flow.post(
-                f"{self.base_url}/authorize",
-                data={
-                    "username": self.username,
-                    "password": self.password,
-                },
-                allow_redirects=False,
-                timeout=5,
-            )
-            location = login.headers.get("Location", "")
-            checks["loopback_flow_redirects_to_requested_port"] = (
-                login.status_code == 302
-                and location.startswith("http://127.0.0.1:51234/callback?")
-                and "code=" in location
-            )
+            if page.status_code == 200:
+                login = flow.post(
+                    f"{self.base_url}/authorize",
+                    data={
+                        "username": self.username,
+                        "password": self.password,
+                    },
+                    allow_redirects=False,
+                    timeout=5,
+                )
+                location = login.headers.get("Location", "")
+                checks["loopback_flow_redirects_to_requested_port"] = (
+                    login.status_code == 302
+                    and location.startswith("http://127.0.0.1:51234/callback?")
+                    and "code=" in location
+                )
+            else:
+                checks["loopback_flow_redirects_to_requested_port"] = False
 
             success = all(checks.values())
             return self._add_result(
@@ -1652,7 +1655,7 @@ class NanoIDPTestAgent:
             combined_sess.get(f"{self.base_url}/authorize", params=auth_params, timeout=5)
             combined_post = combined_sess.post(
                 f"{self.base_url}/authorize",
-                data={**auth_params, "username": self.username, "password": self.password},
+                data={"username": self.username, "password": self.password},
                 allow_redirects=False,
                 timeout=5,
             )
