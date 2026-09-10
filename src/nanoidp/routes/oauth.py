@@ -146,58 +146,76 @@ def _read_authorize_params() -> _AuthorizeParams:
     """Extract this request's parameters from its own query string and
     persist them to the session for later requests on this page.
 
-    GET: read from the query string, with the session as fallback for any
-    field the query string omits - a bare ``url_for("oauth.authorize")`` or
-    "Change username" link relies on this to return to a request already in
-    flight (see ``_authorize_query_params``).
+    Both legs read from ``request.args``, never ``request.form`` (#325): the
+    login form has no ``action`` attribute, so a POST always submits back to
+    the exact ``/authorize?...`` URL of the page that rendered it - reading
+    that query string binds each POST to its own page. The form itself only
+    ever carries username/password (see _handle_authorize_login); it has no
+    legitimate reason to carry client_id/redirect_uri/scope/state/PKCE/
+    resource/claims of its own, and those are never read from it.
 
-    POST: read the SAME way, from ``request.args``, never ``request.form``
-    (#325). The login form has no ``action`` attribute, so a POST always
-    submits back to the exact ``/authorize?...`` URL of the page that
-    rendered it - reading that query string binds each POST to its own page.
-    The form itself only ever carries username/password (see
-    _handle_authorize_login); it has no legitimate reason to carry
-    client_id/redirect_uri/scope/state/PKCE/resource/claims of its own, and
-    those are never read from it. A POST with no query string of its own
-    (the common case) falls back to the session exactly like GET does -
-    which is what makes a plain ``POST /authorize`` with a prior GET on the
-    same request keep working. The fallback is per field, so a request whose
-    query string omits a parameter can still inherit that one parameter from
-    an earlier request in the same browser session (#328).
+    The session is a fallback for the WHOLE request, not a per-field one
+    (#328 - fixed): when this request's query string carries no ``client_id``
+    of its own, every field is pulled from the session instead, to
+    resume whatever request is already in flight on this page - a bare
+    ``url_for("oauth.authorize")``, the plain ``POST /authorize`` the login
+    form's own resubmission normally produces once its page's query string
+    has already reached the session, and the equivalent bare GET (e.g.
+    "Change username" before #323 gave it its own explicit link, see
+    ``_authorize_query_params``). But once a query string carries a
+    ``client_id``, it is treated as a request in its own right and read in
+    full from there, with plain empty defaults for whatever it omits -
+    exactly like ``login_hint`` already is - so a distinct request (a
+    different client, or the same client's genuinely new attempt) can never
+    inherit a leftover state/nonce/code_challenge/resource from an earlier,
+    unrelated request that merely happens to share this browser's cookie.
 
-    Whatever is resolved is re-stored to the session before validation, on
-    both legs, exactly as it always has: an invalid request still leaves its
-    parameters in the session, and the next request on this page - GET or
-    POST - re-validates everything from scratch.
+    GET stores the resolved request in the session before validation so a
+    later bare request can resume it. POST never writes that shared fallback:
+    a failed login on another page must not rebind the pending request.
     """
     params = request.args
-    p = _AuthorizeParams(
-        response_type=params.get("response_type", session.get("oauth_response_type", "")),
-        client_id=params.get("client_id", session.get("oauth_client_id", "")),
-        redirect_uri=params.get("redirect_uri", session.get("oauth_redirect_uri", "")),
-        scope=params.get("scope", session.get("oauth_scope", "")),
-        state=params.get("state", session.get("oauth_state", "")),
-        code_challenge=params.get("code_challenge", session.get("oauth_code_challenge", "")),
-        code_challenge_method=params.get(
-            "code_challenge_method", session.get("oauth_code_challenge_method", "")
-        ),
-        nonce=params.get("nonce", session.get("oauth_nonce", "")),
-        claims_param=params.get("claims", session.get("oauth_claims", "")),
-        # RFC 8707 resource is repeatable (#187): read every value, not one.
-        resources=params.getlist("resource") or session.get("oauth_resources", []),
-        login_hint=params.get("login_hint", "") if request.method == "GET" else "",
-    )
+    if params.get("client_id"):
+        p = _AuthorizeParams(
+            response_type=params.get("response_type", ""),
+            client_id=params.get("client_id", ""),
+            redirect_uri=params.get("redirect_uri", ""),
+            scope=params.get("scope", ""),
+            state=params.get("state", ""),
+            code_challenge=params.get("code_challenge", ""),
+            code_challenge_method=params.get("code_challenge_method", ""),
+            nonce=params.get("nonce", ""),
+            claims_param=params.get("claims", ""),
+            # RFC 8707 resource is repeatable (#187): read every value.
+            resources=params.getlist("resource"),
+            login_hint=params.get("login_hint", "") if request.method == "GET" else "",
+        )
+    else:
+        p = _AuthorizeParams(
+            response_type=session.get("oauth_response_type", ""),
+            client_id=session.get("oauth_client_id", ""),
+            redirect_uri=session.get("oauth_redirect_uri", ""),
+            scope=session.get("oauth_scope", ""),
+            state=session.get("oauth_state", ""),
+            code_challenge=session.get("oauth_code_challenge", ""),
+            code_challenge_method=session.get("oauth_code_challenge_method", ""),
+            nonce=session.get("oauth_nonce", ""),
+            claims_param=session.get("oauth_claims", ""),
+            resources=session.get("oauth_resources", []),
+            login_hint="",
+        )
 
-    session["oauth_response_type"] = p.response_type
-    session["oauth_client_id"] = p.client_id
-    session["oauth_redirect_uri"] = p.redirect_uri
-    session["oauth_scope"] = p.scope
-    session["oauth_state"] = p.state
-    session["oauth_code_challenge"] = p.code_challenge
-    session["oauth_code_challenge_method"] = p.code_challenge_method
-    session["oauth_nonce"] = p.nonce
-    session["oauth_claims"] = p.claims_param
-    session["oauth_resources"] = p.resources
+    if request.method == "GET":
+        session["oauth_response_type"] = p.response_type
+        session["oauth_client_id"] = p.client_id
+        session["oauth_redirect_uri"] = p.redirect_uri
+        session["oauth_scope"] = p.scope
+        session["oauth_state"] = p.state
+        session["oauth_code_challenge"] = p.code_challenge
+        session["oauth_code_challenge_method"] = p.code_challenge_method
+        session["oauth_nonce"] = p.nonce
+        session["oauth_claims"] = p.claims_param
+        session["oauth_resources"] = p.resources
     # login_hint is deliberately NOT stored here - see the field's own
     # comment on _AuthorizeParams.
 
