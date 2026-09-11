@@ -18,10 +18,12 @@
 
 `POST /authorize` (the login form submit) reads its OAuth request
 parameters (`client_id`, `redirect_uri`, `scope`, `state`, PKCE, `nonce`,
-`claims`, `resource`) from the query string only - its own, or the
-preceding `GET`'s via the session when the POST carries none - never from
-the POST body; the login form itself carries only `username`/`password`
-(#325).
+`claims`, `resource`) from one source only. If its query string carries any
+OAuth request parameter, it reads the complete request from there; otherwise,
+including when only unrelated query parameters are present, it resumes the
+complete request captured by the preceding `GET`. It never reads OAuth
+parameters from the POST body; the login form itself carries only
+`username`/`password` (#325/#328).
 
 curl examples for every grant are in
 [Requesting tokens](../guides/token-requests.md).

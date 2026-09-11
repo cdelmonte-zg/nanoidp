@@ -304,6 +304,50 @@ class TestAuthorizationCodeFlow:
         assert response.headers['Location'].startswith('http://localhost:3000/callback')
         assert 'state=tab-a' in response.headers['Location']
 
+    def test_empty_client_id_is_a_new_request_and_does_not_replace_pending(self, client):
+        """#329 review: presence, not truthiness, selects the query-string request."""
+        client.get(
+            '/authorize?response_type=code&client_id=demo-client'
+            '&redirect_uri=http://localhost:3000/callback&scope=openid&state=tab-a'
+        )
+        partial = (
+            '/authorize?response_type=code&client_id='
+            '&redirect_uri=http://localhost:4000/callback&state=evil'
+        )
+
+        assert client.get(partial).status_code == 400
+        assert client.post(
+            partial,
+            data={'username': 'admin', 'password': 'admin'},
+        ).status_code == 400
+
+        response = client.post(
+            '/authorize',
+            data={'username': 'admin', 'password': 'admin'},
+            follow_redirects=False,
+        )
+        assert response.status_code == 302
+        assert response.headers['Location'].startswith('http://localhost:3000/callback')
+        assert 'state=tab-a' in response.headers['Location']
+
+    def test_incomplete_get_does_not_replace_pending_request(self, client):
+        """#329 review: only a complete GET becomes the resumable request."""
+        client.get(
+            '/authorize?response_type=code&client_id=demo-client'
+            '&redirect_uri=http://localhost:3000/callback&scope=openid&state=tab-a'
+        )
+
+        assert client.get('/authorize?client_id=demo-client').status_code == 400
+
+        response = client.post(
+            '/authorize',
+            data={'username': 'admin', 'password': 'admin'},
+            follow_redirects=False,
+        )
+        assert response.status_code == 302
+        assert response.headers['Location'].startswith('http://localhost:3000/callback')
+        assert 'state=tab-a' in response.headers['Location']
+
     def test_failed_post_does_not_rebind_pending_request(self, client):
         """#328: a failed login on another URL must not replace the GET fallback."""
         client.get(

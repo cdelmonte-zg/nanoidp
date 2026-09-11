@@ -172,6 +172,21 @@ class TestAuthorizeAutoLogin:
         assert location.startswith("http://localhost:3000/callback?code=")
         assert "state=xyz" in location
 
+    def test_login_hint_uses_current_get_with_pending_oauth_request(self, app, client):
+        """#329 review: login_hint is independent of OAuth parameter fallback."""
+        _enable_auto_login(app)
+        assert client.get(f"/authorize?{AUTHORIZE_QS}").status_code == 200
+
+        response = client.get(
+            "/authorize?login_hint=persona-auto-login:admin",
+            follow_redirects=False,
+        )
+
+        assert response.status_code == 302
+        location = response.headers["Location"]
+        assert location.startswith("http://localhost:3000/callback?code=")
+        assert "state=xyz" in location
+
     def test_unknown_persona_redirects_error_with_state_preserved(self, app, client):
         _enable_auto_login(app)
         qs = AUTO_LOGIN_QS.replace("persona-auto-login:admin", "persona-auto-login:nonexistent")

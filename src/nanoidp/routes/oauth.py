@@ -142,6 +142,20 @@ class _AuthorizeParams:
     login_hint: str
 
 
+_AUTHORIZE_REQUEST_FIELDS = (
+    "response_type",
+    "client_id",
+    "redirect_uri",
+    "scope",
+    "state",
+    "code_challenge",
+    "code_challenge_method",
+    "nonce",
+    "claims",
+    "resource",
+)
+
+
 def _read_authorize_params() -> _AuthorizeParams:
     """Extract this request's parameters from its own query string and
     persist them to the session for later requests on this page.
@@ -155,57 +169,43 @@ def _read_authorize_params() -> _AuthorizeParams:
     resource/claims of its own, and those are never read from it.
 
     The session is a fallback for the WHOLE request, not a per-field one
-    (#328 - fixed): when this request's query string carries no ``client_id``
-    of its own, every field is pulled from the session instead, to
-    resume whatever request is already in flight on this page - a bare
-    ``url_for("oauth.authorize")``, the plain ``POST /authorize`` the login
-    form's own resubmission normally produces once its page's query string
-    has already reached the session, and the equivalent bare GET (e.g.
-    "Change username" before #323 gave it its own explicit link, see
-    ``_authorize_query_params``). But once a query string carries a
-    ``client_id``, it is treated as a request in its own right and read in
-    full from there, with plain empty defaults for whatever it omits -
-    exactly like ``login_hint`` already is - so a distinct request (a
-    different client, or the same client's genuinely new attempt) can never
-    inherit a leftover state/nonce/code_challenge/resource from an earlier,
-    unrelated request that merely happens to share this browser's cookie.
+    (#328 - fixed): when this request's query string carries none of the
+    OAuth request fields, every field is pulled from the session to resume
+    the request already in flight. But once the query string carries any
+    OAuth field, even an empty one, it is treated as a request in its own
+    right and read in full from there, with empty defaults for what it omits.
+    Unrelated query parameters do not disable the fallback.
 
-    GET stores the resolved request in the session before validation so a
-    later bare request can resume it. POST never writes that shared fallback:
-    a failed login on another page must not rebind the pending request.
+    A complete GET stores the resolved request in the session before
+    validation so a later bare request can resume it. An incomplete GET and
+    every POST leave that shared fallback alone. ``login_hint`` remains
+    independent: it is read from the current GET only in either branch and
+    is never stored.
     """
     params = request.args
-    if params.get("client_id"):
-        p = _AuthorizeParams(
-            response_type=params.get("response_type", ""),
-            client_id=params.get("client_id", ""),
-            redirect_uri=params.get("redirect_uri", ""),
-            scope=params.get("scope", ""),
-            state=params.get("state", ""),
-            code_challenge=params.get("code_challenge", ""),
-            code_challenge_method=params.get("code_challenge_method", ""),
-            nonce=params.get("nonce", ""),
-            claims_param=params.get("claims", ""),
-            # RFC 8707 resource is repeatable (#187): read every value.
-            resources=params.getlist("resource"),
-            login_hint=params.get("login_hint", "") if request.method == "GET" else "",
-        )
-    else:
-        p = _AuthorizeParams(
-            response_type=session.get("oauth_response_type", ""),
-            client_id=session.get("oauth_client_id", ""),
-            redirect_uri=session.get("oauth_redirect_uri", ""),
-            scope=session.get("oauth_scope", ""),
-            state=session.get("oauth_state", ""),
-            code_challenge=session.get("oauth_code_challenge", ""),
-            code_challenge_method=session.get("oauth_code_challenge_method", ""),
-            nonce=session.get("oauth_nonce", ""),
-            claims_param=session.get("oauth_claims", ""),
-            resources=session.get("oauth_resources", []),
-            login_hint="",
-        )
+    reads_query = any(field in params for field in _AUTHORIZE_REQUEST_FIELDS)
 
-    if request.method == "GET":
+    def value(name: str) -> str:
+        source = params if reads_query else session
+        key = name if reads_query else f"oauth_{name}"
+        return source.get(key, "")
+
+    p = _AuthorizeParams(
+        response_type=value("response_type"),
+        client_id=value("client_id"),
+        redirect_uri=value("redirect_uri"),
+        scope=value("scope"),
+        state=value("state"),
+        code_challenge=value("code_challenge"),
+        code_challenge_method=value("code_challenge_method"),
+        nonce=value("nonce"),
+        claims_param=value("claims"),
+        # RFC 8707 resource is repeatable (#187): read every value.
+        resources=params.getlist("resource") if reads_query else session.get("oauth_resources", []),
+        login_hint=params.get("login_hint", "") if request.method == "GET" else "",
+    )
+
+    if request.method == "GET" and p.client_id and p.redirect_uri and p.response_type:
         session["oauth_response_type"] = p.response_type
         session["oauth_client_id"] = p.client_id
         session["oauth_redirect_uri"] = p.redirect_uri
