@@ -6,7 +6,9 @@ Tests complete authorization code flow, password grant, client credentials, and 
 import base64
 import json
 
-from tests.conftest import authorize_error
+import pytest
+
+from tests.conftest import authorization_response_params, authorize_error, oauth_session
 
 
 class TestAuthorizationCodeFlow:
@@ -355,6 +357,146 @@ class TestAuthorizationCodeFlow:
         assert response.status_code == 302
         assert response.headers['Location'].startswith('http://localhost:3000/callback')
         assert 'state=tab-a' in response.headers['Location']
+
+    @pytest.mark.parametrize(
+        ("rejected_query", "expected_status"),
+        [
+            (
+                "response_type=code&client_id=demo-client"
+                "&redirect_uri=http://localhost:3000/callback"
+                "&scope=not-a-real-scope&state=evil",
+                302,
+            ),
+            (
+                "response_type=code&client_id=unknown-client"
+                "&redirect_uri=http://localhost:3000/callback"
+                "&scope=openid&state=evil",
+                400,
+            ),
+            (
+                "response_type=code&client_id=demo-client"
+                "&redirect_uri=http://localhost:3000/unregistered"
+                "&scope=openid&state=evil",
+                400,
+            ),
+            (
+                "response_type=token&client_id=demo-client"
+                "&redirect_uri=http://localhost:3000/callback"
+                "&scope=openid&state=evil",
+                302,
+            ),
+            (
+                "response_type=code&client_id=demo-client"
+                "&redirect_uri=http://localhost:3000/callback"
+                "&scope=openid&state=evil&code_challenge=challenge"
+                "&code_challenge_method=invalid",
+                302,
+            ),
+            (
+                "response_type=code&client_id=demo-client"
+                "&redirect_uri=http://localhost:3000/callback"
+                "&scope=openid&state=evil&resource=https%3A%2F%2Fapi.example%2F%23fragment",
+                302,
+            ),
+        ],
+        ids=(
+            "invalid-scope",
+            "unknown-client",
+            "unregistered-redirect-uri",
+            "unsupported-response-type",
+            "invalid-pkce",
+            "invalid-resource",
+        ),
+    )
+    def test_rejected_get_preserves_pending_request(
+        self, app, client, rejected_query, expected_status
+    ):
+        """#331: a rejected GET is not an authorization request in flight."""
+        with app.app_context():
+            from nanoidp.config import get_config
+
+            get_config().get_client("demo-client").redirect_uris = [
+                "http://localhost:3000/callback"
+            ]
+
+        client.get(
+            '/authorize?response_type=code&client_id=demo-client'
+            '&redirect_uri=http://localhost:3000/callback&scope=openid&state=tab-a'
+        )
+        captured = oauth_session(client)
+
+        rejected = client.get(f"/authorize?{rejected_query}", follow_redirects=False)
+
+        assert rejected.status_code == expected_status
+        assert oauth_session(client) == captured
+
+        response = client.post(
+            '/authorize',
+            data={'username': 'admin', 'password': 'admin'},
+            follow_redirects=False,
+        )
+
+        assert response.status_code == 302
+        assert response.headers['Location'].startswith('http://localhost:3000/callback')
+        response_params = authorization_response_params(response)
+        assert response_params["state"] == ["tab-a"]
+        assert "error" not in response_params
+        assert len(response_params["code"]) == 1
+
+        with app.app_context():
+            from nanoidp.services.auth_code import get_auth_code_store
+
+            info = get_auth_code_store().get_code_info(response_params["code"][0])
+        assert info is not None
+        assert info.client_id == "demo-client"
+        assert info.redirect_uri == "http://localhost:3000/callback"
+        assert info.scope == "openid"
+        assert info.state == "tab-a"
+
+    def test_valid_get_captures_requested_values_before_normalization(self, app, client):
+        """#331: resumed requests revalidate the original scope and resources."""
+        resource = "https%3A%2F%2Fapi.example.com%2Fv1"
+
+        response = client.get(
+            "/authorize?response_type=code&client_id=demo-client"
+            "&redirect_uri=http://localhost:3000/callback"
+            f"&resource={resource}&resource={resource}"
+        )
+
+        assert response.status_code == 200
+        captured = oauth_session(client)
+        assert captured["oauth_scope"] == ""
+        assert captured["oauth_resources"] == [
+            "https://api.example.com/v1",
+            "https://api.example.com/v1",
+        ]
+
+        resumed = client.post(
+            "/authorize",
+            data={"username": "admin", "password": "admin"},
+            follow_redirects=False,
+        )
+
+        assert resumed.status_code == 302
+        response_params = authorization_response_params(resumed)
+        assert "error" not in response_params
+        with app.app_context():
+            from nanoidp.services.auth_code import get_auth_code_store
+
+            info = get_auth_code_store().get_code_info(response_params["code"][0])
+        assert info is not None
+        assert info.scope == "openid"
+        assert info.resource == ["https://api.example.com/v1"]
+
+    def test_rejected_get_without_pending_request_creates_no_capture(self, client):
+        """#331: a rejected request cannot become resumable by itself."""
+        response = client.get(
+            "/authorize?response_type=code&client_id=unknown-client"
+            "&redirect_uri=http://localhost:3000/callback&state=evil"
+        )
+
+        assert response.status_code == 400
+        assert oauth_session(client) == {}
 
     def test_failed_post_does_not_rebind_pending_request(self, client):
         """#328: a direct POST on another URL must not replace the GET fallback."""

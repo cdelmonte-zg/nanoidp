@@ -45,7 +45,8 @@ def _authorize_redirect(client, extra=None, **headers):
     query = "&".join(f"{k}={v}" for k, v in params.items())
     client.get("/authorize?" + query, headers=headers)
     return client.post(
-        "/authorize", data={**params, "username": "admin", "password": "admin"},
+        "/authorize?" + query,
+        data={"username": "admin", "password": "admin"},
         follow_redirects=False, headers=headers,
     )
 

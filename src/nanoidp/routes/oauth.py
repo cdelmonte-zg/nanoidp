@@ -5,7 +5,7 @@ OAuth2/OIDC routes for token endpoint and discovery.
 import json
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Dict, List, Optional, Tuple
 
 import jwt as pyjwt
@@ -157,8 +157,7 @@ _AUTHORIZE_REQUEST_FIELDS = (
 
 
 def _read_authorize_params() -> _AuthorizeParams:
-    """Extract this request's parameters from its own query string and
-    persist them to the session for later requests on this page.
+    """Extract this request's parameters from its own query string.
 
     Both legs read from ``request.args``, never ``request.form`` (#325): the
     login form has no ``action`` attribute, so a POST always submits back to
@@ -179,11 +178,10 @@ def _read_authorize_params() -> _AuthorizeParams:
     carrying only that hint still resumes the OAuth request from the session
     while applying the hint from its own query string.
 
-    A complete GET stores the resolved request in the session before
-    validation so a later bare request can resume it. An incomplete GET and
-    every POST leave that shared fallback alone. ``login_hint`` remains
-    independent: it is read from the current GET only in either branch and
-    is never stored.
+    Session capture happens only after validation in ``authorize``. An
+    incomplete or rejected GET and every POST leave that shared fallback
+    alone. ``login_hint`` remains independent: it is read from the current
+    GET only in either branch and is never stored.
     """
     params = request.args
     reads_query = any(field in params for field in _AUTHORIZE_REQUEST_FIELDS)
@@ -208,21 +206,26 @@ def _read_authorize_params() -> _AuthorizeParams:
         login_hint=params.get("login_hint", "") if request.method == "GET" else "",
     )
 
-    if request.method == "GET" and p.client_id and p.redirect_uri and p.response_type:
-        session["oauth_response_type"] = p.response_type
-        session["oauth_client_id"] = p.client_id
-        session["oauth_redirect_uri"] = p.redirect_uri
-        session["oauth_scope"] = p.scope
-        session["oauth_state"] = p.state
-        session["oauth_code_challenge"] = p.code_challenge
-        session["oauth_code_challenge_method"] = p.code_challenge_method
-        session["oauth_nonce"] = p.nonce
-        session["oauth_claims"] = p.claims_param
-        session["oauth_resources"] = p.resources
-    # login_hint is deliberately NOT stored here - see the field's own
-    # comment on _AuthorizeParams.
-
     return p
+
+
+def _capture_authorize_params(p: _AuthorizeParams) -> None:
+    """Capture a validated GET so a later bare request can resume it.
+
+    ``p`` is a copy made before validation normalizes scope and resources.
+    Resumed requests therefore see the original requested values and run the
+    same validation and normalization again. ``login_hint`` is never stored.
+    """
+    session["oauth_response_type"] = p.response_type
+    session["oauth_client_id"] = p.client_id
+    session["oauth_redirect_uri"] = p.redirect_uri
+    session["oauth_scope"] = p.scope
+    session["oauth_state"] = p.state
+    session["oauth_code_challenge"] = p.code_challenge
+    session["oauth_code_challenge_method"] = p.code_challenge_method
+    session["oauth_nonce"] = p.nonce
+    session["oauth_claims"] = p.claims_param
+    session["oauth_resources"] = p.resources
 
 
 _FORGEABLE_POST_OAUTH_FIELDS = _AUTHORIZE_REQUEST_FIELDS
@@ -835,6 +838,7 @@ def authorize() -> ResponseReturnValue:
     """
     config = get_config()
     p = _read_authorize_params()
+    requested_p = replace(p, resources=list(p.resources))
     if request.method == "POST":
         _audit_suspicious_authorize_post(p)
 
@@ -869,6 +873,9 @@ def authorize() -> ResponseReturnValue:
     auto_login_response = _try_persona_auto_login(config, p)
     if auto_login_response is not None:
         return auto_login_response
+
+    if request.method == "GET":
+        _capture_authorize_params(requested_p)
 
     error_msg = None
     login_username = ""
