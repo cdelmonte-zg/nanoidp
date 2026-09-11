@@ -102,8 +102,8 @@ class TestAuthorizationCodeFlow:
         assert 'code=' in location
         assert 'state=test123' in location
 
-    def test_authorize_post_ignores_form_body_oauth_params(self, client):
-        """#325: a forged client_id/redirect_uri/state/scope in the login
+    def test_authorize_post_ignores_form_body_oauth_params(self, client, app):
+        """#325: forged OAuth parameters in the login
         POST body must not override the request validated on GET - the
         issued code must still be bound to what the user actually approved.
         """
@@ -118,6 +118,7 @@ class TestAuthorizationCodeFlow:
         response = client.post('/authorize', data={
             'username': 'admin',
             'password': 'admin',
+            'response_type': 'token',
             'client_id': 'test-client',
             'redirect_uri': 'http://evil.example/cb',
             'state': 'evil-state',
@@ -131,6 +132,13 @@ class TestAuthorizationCodeFlow:
         assert 'code=' in location
         assert 'state=test123' in location
         assert 'state=evil-state' not in location
+
+        with app.app_context():
+            from nanoidp.services import get_audit_log
+
+            entries = get_audit_log().get_entries(event_type='authorization_request')
+        forged = next(entry for entry in entries if entry['status'] == 'failed')
+        assert 'response_type' in forged['details']['fields']
 
     def test_authorize_post_survives_another_tab_clearing_the_session(self, client):
         """#325 review round 1, point 1 ("cross-tab clearing"): a completed
@@ -349,7 +357,7 @@ class TestAuthorizationCodeFlow:
         assert 'state=tab-a' in response.headers['Location']
 
     def test_failed_post_does_not_rebind_pending_request(self, client):
-        """#328: a failed login on another URL must not replace the GET fallback."""
+        """#328: a direct POST on another URL must not replace the GET fallback."""
         client.get(
             '/authorize?response_type=code&client_id=demo-client'
             '&redirect_uri=http://localhost:3000/callback&scope=openid&state=tab-a'
@@ -372,6 +380,27 @@ class TestAuthorizationCodeFlow:
         assert response.status_code == 302
         assert response.headers['Location'].startswith('http://localhost:3000/callback')
         assert 'state=tab-a' in response.headers['Location']
+
+    def test_another_tabs_get_rebinds_bare_post_fallback(self, client):
+        """#329 review: the fallback is shared session state, not tab isolation."""
+        client.get(
+            '/authorize?response_type=code&client_id=demo-client'
+            '&redirect_uri=http://localhost:3000/callback&scope=openid&state=tab-a'
+        )
+        client.get(
+            '/authorize?response_type=code&client_id=test-client'
+            '&redirect_uri=http://localhost:4000/callback&scope=openid&state=tab-b'
+        )
+
+        response = client.post(
+            '/authorize',
+            data={'username': 'admin', 'password': 'admin'},
+            follow_redirects=False,
+        )
+
+        assert response.status_code == 302
+        assert response.headers['Location'].startswith('http://localhost:4000/callback')
+        assert 'state=tab-b' in response.headers['Location']
 
     def test_authorize_code_exchange(self, client, auth_header):
         """Test exchanging authorization code for tokens."""

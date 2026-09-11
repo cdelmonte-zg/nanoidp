@@ -29,12 +29,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   omitted or use their normal defaults instead of falling back field by field
   to stale session values. A request carrying only unrelated query parameters
   still resumes the complete request captured by the preceding GET. Only a
-  complete GET updates that capture; POST requests never do, so a failed login
-  in another tab cannot rebind a later bare form submission. **Contract
-  changes:** a partial request no longer borrows its missing required fields
-  from the session, and a client that starts with a POST cannot retry it as a
-  bare POST after failed credentials. Browser form retries are unaffected
-  because the form resubmits to its full query-string URL.
+  complete GET updates that capture; POST requests never do, so a failed
+  direct POST carrying its own OAuth query string cannot rebind a later bare
+  form submission. A GET in another tab still replaces the shared session
+  capture. **Contract changes:** a partial request no longer borrows its
+  missing required fields from the session, and a client that starts with a
+  POST cannot retry it as a bare POST after failed credentials. Browser form
+  retries are unaffected because the form resubmits to its full query-string
+  URL.
 - **`/authorize` POST leg no longer trusts OAuth params from the login form
   body** (#325): `client_id`, `redirect_uri`, `scope`, `state`,
   `code_challenge`/`code_challenge_method`, `nonce`, `claims`, and `resource`
