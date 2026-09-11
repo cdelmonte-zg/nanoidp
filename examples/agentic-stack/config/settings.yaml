@@ -1,0 +1,61 @@
+# nanoidp settings for the n8n end-to-end stack (examples/agentic-stack).
+#
+# The issuer is the service name on the Compose network: n8n reaches nanoidp
+# as http://nanoidp:8000, the mock MCP server validates tokens against that
+# issuer and fetches its JWKS there. The one client is the public client the
+# n8n MCP Client node uses (PKCE, no secret); its redirect_uri is n8n's OAuth
+# callback as seen from the host, which is what n8n's WEBHOOK_URL makes it.
+# The scope vocabulary carries the three scopes the mock MCP server gates its
+# tools on. Everything else is the bundled default.
+server:
+  host: 0.0.0.0
+  port: 8000
+  debug: false
+oauth:
+  issuer: http://nanoidp:8000
+  audience: my-app
+  token_expiry_minutes: 60
+  clients:
+  - client_id: n8n-public
+    token_endpoint_auth_method: none
+    description: n8n MCP Client node (public client, PKCE), see examples/agentic-stack
+    redirect_uris:
+    - http://localhost:5678/rest/oauth2-credential/callback
+  issuer_from_request: false
+  issuer_from_proxy_headers: false
+  scopes_supported:
+  - openid
+  - profile
+  - email
+  - offline_access
+  - documents:read
+  - documents:write
+  - admin
+saml:
+  default_acs_url: http://localhost:8080/login/saml2/sso/nanoidp
+  sign_responses: true
+  c14n_algorithm: exc_c14n
+  strict_binding: false
+  export_roles: false
+  export_groups: false
+  roles_attr_name: roles
+  groups_attr_name: groups
+jwt:
+  algorithm: RS256
+  keys_dir: ./keys
+authority_prefixes:
+  roles: ROLE_
+  groups: GROUP_
+  identity_class: IDENTITY_
+  entitlements: ENT_
+allowed_identity_classes:
+- INTERNAL
+- EXTERNAL
+session:
+  secret_key: dev-secret-key-change-in-production
+  permanent: true
+logging:
+  level: INFO
+  format: '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+  log_token_requests: true
+  log_saml_requests: true

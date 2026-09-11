@@ -11,6 +11,7 @@ OAuth/MCP interoperability loop. They run in `.github/workflows/e2e.yml`.
 | `test_agent.py` | The main agent. Drives a real server and asserts protocol behaviour. Suites: default, `--oauth21`, `--saml-signed`, `--mcp`. |
 | `mock_mcp_server.py` | A minimal OAuth-protected MCP resource server (fixture) for the `--mcp` interoperability suite. See the guide "Testing an MCP client against nanoidp". |
 | `mcp_smoke_test.py` | Exercises the real MCP stdio server startup + a `tools/call`, the transport a unit test cannot reach. |
+| `n8n_e2e.py` | Drives `examples/agentic-stack/` (nanoidp + mock MCP server + a pinned n8n): n8n's own OAuth2 flow against nanoidp, then its MCP Client node calling a tool, plus the scope and audience negatives (#194). Runs in `.github/workflows/n8n-e2e.yml`, manual and nightly. |
 | `gen_sp_keypair.py` | Generates a test SP keypair for the signed-SAML suite. |
 
 ## Running
