@@ -50,6 +50,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   regenerated on every pod restart. `helm install` without `--version`
   resolves the newest final release; pre-releases need `--devel` or an
   explicit version.
+- **n8n end to end, path 1** (#194): `examples/agentic-stack/docker-compose.yml`
+  runs nanoidp, the RFC 9728 mock MCP server and a pinned n8n (2.38.7) on one
+  network, and `e2e/n8n_e2e.py` drives it headless: n8n's own OAuth2 flow
+  (PKCE, public client, RFC 8707 `resource`) against nanoidp, then a workflow
+  whose MCP Client node calls `read_document` with the token n8n obtained,
+  plus the insufficient-scope and wrong-audience negatives. A manual and
+  nightly workflow (`n8n E2E`) runs it. No change to nanoidp was needed;
+  n8n's dynamic client registration mode stays out of scope until #190.
 
 ### Fixed
 - **Rejected `/authorize` requests no longer replace an earlier pending

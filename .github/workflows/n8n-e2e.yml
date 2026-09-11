@@ -1,0 +1,40 @@
+# n8n end-to-end (#194, path 1): a real MCP host (n8n's MCP Client node)
+# authenticates against nanoidp with its own OAuth2 flow and calls a tool on
+# the RFC 9728 mock resource server. Manual and nightly, not on every PR: n8n
+# takes a minute to start and the run is about what a foreign host expects,
+# not about a change in this repository. The n8n image is pinned in
+# examples/agentic-stack/docker-compose.yml with the reason next to it.
+name: n8n E2E
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 3 * * *'
+
+jobs:
+  n8n-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install the e2e client
+        run: python -m pip install --upgrade pip requests
+
+      - name: Start the stack
+        run: docker compose -f examples/agentic-stack/docker-compose.yml up --build --wait --quiet-pull
+
+      - name: Run the n8n scenario
+        run: python e2e/n8n_e2e.py
+
+      - name: Stack logs
+        if: failure()
+        run: docker compose -f examples/agentic-stack/docker-compose.yml logs --no-color --tail=200
+
+      - name: Stop the stack
+        if: always()
+        run: docker compose -f examples/agentic-stack/docker-compose.yml down -v

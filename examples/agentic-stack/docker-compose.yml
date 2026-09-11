@@ -1,0 +1,99 @@
+# n8n end-to-end stack (#194, path 1): nanoidp, the mock protected MCP server
+# and n8n on one network, so a real MCP host authenticates against nanoidp
+# and calls a tool. `e2e/n8n_e2e.py` drives it headless; `docker compose up`
+# lets you open n8n at http://localhost:5678 and watch the same loop by hand.
+#
+# Assembly only: every component here is testable on its own (#191 runs the
+# mock server without Docker or n8n), and this file carries no logic the
+# tests need. The nanoidp image is built from this checkout, so the stack
+# exercises the code under test rather than a published release.
+
+services:
+  nanoidp:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    image: nanoidp:agentic-stack
+    ports:
+      - "8000:8000"
+    volumes:
+      # Read-only, as in the root docker-compose.yml: saves from the UI or
+      # the MCP server fail here by design, configuration is this file.
+      - ./config:/app/config:ro
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/api/health"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  # The RFC 9728 mock resource server from e2e/, run from the nanoidp image
+  # (the mcp SDK and PyJWT it needs are nanoidp dependencies). Its resource
+  # URL is its own address on the Compose network: that is the audience every
+  # token it accepts must carry.
+  mcp:
+    image: nanoidp:agentic-stack
+    depends_on:
+      nanoidp:
+        condition: service_healthy
+    volumes:
+      - ../../e2e/mock_mcp_server.py:/e2e/mock_mcp_server.py:ro
+    command:
+      - python
+      - /e2e/mock_mcp_server.py
+      - --issuer
+      - http://nanoidp:8000
+      - --resource
+      - http://mcp:9100/mcp
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "9100"
+    ports:
+      - "9100:9100"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9100/.well-known/oauth-protected-resource/mcp')"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  # Pinned on purpose: n8n's MCP OAuth support (RFC 8707 resource handling,
+  # the MCP Client node's authentication options, the session rule on its
+  # OAuth callback) has changed across releases. A failure must be
+  # attributable to nanoidp or to a known n8n version, so bump this
+  # deliberately and re-run e2e/n8n_e2e.py, never float it.
+  n8n:
+    image: n8nio/n8n:2.38.7
+    depends_on:
+      mcp:
+        condition: service_healthy
+    ports:
+      - "5678:5678"
+    environment:
+      N8N_PORT: "5678"
+      N8N_HOST: localhost
+      N8N_PROTOCOL: http
+      # n8n derives its OAuth redirect_uri from WEBHOOK_URL; it must be the
+      # URL the browser (or the e2e script) reaches n8n at, and it is the
+      # redirect_uri registered on the n8n-public client in config/.
+      WEBHOOK_URL: http://localhost:5678/
+      N8N_EDITOR_BASE_URL: http://localhost:5678/
+      N8N_PUBLIC_API_DISABLED: "false"
+      # A fixed key so credentials imported by the e2e script decrypt across
+      # restarts. Development only.
+      N8N_ENCRYPTION_KEY: agentic-stack-dev-encryption-key
+      N8N_SECURE_COOKIE: "false"
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      N8N_PERSONALIZATION_ENABLED: "false"
+      N8N_RUNNERS_ENABLED: "true"
+    volumes:
+      # Credentials the e2e script imports with `n8n import:credentials`:
+      # the public API refuses an empty clientSecret for mcpOAuth2Api, and a
+      # real MCP client holds no secret.
+      - ./n8n-import:/import:ro
+    healthcheck:
+      # /rest/settings, not /healthz: healthz answers seconds before the
+      # REST routes are mounted, and `--wait` must mean usable.
+      test: ["CMD", "wget", "-qO-", "http://localhost:5678/rest/settings"]
+      interval: 5s
+      timeout: 5s
+      retries: 40
