@@ -21,11 +21,14 @@ resources: {}
 podLabels: {}
 podAnnotations: {}
 
-# Verified against namespaces enforcing both the baseline and restricted
-# Pod Security Standards: these three fields keep baseline working and
-# narrow restricted down to just runAsNonRoot, an image-side change (no
-# USER in the Dockerfile) this chart can't close on its own.
+# Verified against a namespace enforcing the restricted Pod Security
+# Standard: with these defaults the pod is admitted. runAsNonRoot/runAsUser
+# match the USER the image has since nanoidp 3.1.0; for an older image.tag
+# set runAsNonRoot to false and runAsUser to 0, those images write their
+# keys as root.
 securityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
   allowPrivilegeEscalation: false
   capabilities:
     drop: ["ALL"]

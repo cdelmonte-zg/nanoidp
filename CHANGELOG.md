@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- **The container image runs as a non-root user** (#332): uid 1000, gid 0,
+  with `/app/keys` and `/app/config` owned by that user and group-writable
+  by group 0, so the image also runs where the platform assigns an
+  arbitrary uid with gid 0. Every Kubernetes namespace enforcing the
+  `restricted` Pod Security Standard rejected the previous image on
+  `runAsNonRoot`; the Helm chart's default `securityContext` now sets
+  `runAsNonRoot: true` and `runAsUser: 1000` and is admitted there. A plain
+  `docker run` with nothing mounted is unaffected. *Migration:* a keys
+  volume or bind mount first created by an earlier release is root-owned.
+  The new image still starts on it, because the existing keys are readable,
+  but the next key rotation fails with `Permission denied: 'keys/previous'`.
+  Chown it once: `docker run --rm -v nanoidp-keys:/k alpine chown -R 1000:0 /k`
+  (or `chown -R 1000:0` on the host directory of a bind mount). A read-only
+  config mount needs nothing. To run an older image tag with the chart,
+  set `securityContext.runAsNonRoot=false` and `securityContext.runAsUser=0`.
+
 ### Added
 - **Two-step login** (#322/#323, opt-in, off by default): `login.two_step:
   true` collects the username first and the password on a second screen,
@@ -26,11 +44,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `settings.yaml` files in a generated Secret (or one you manage), Ingress
   with `${INGRESS_URL}` for the issuer, a `checksum/config` annotation that
   rolls the pod on a configuration change, and a default `securityContext`
-  one image-side change (#332) away from the `restricted` Pod Security
-  Standard. The chart README states the limitations that hold by design:
-  read-only config mount, signing keys regenerated on every pod restart,
-  `baseline` PSS. `helm install` without `--version` resolves the newest
-  final release; pre-releases need `--devel` or an explicit version.
+  admitted by a namespace enforcing the `restricted` Pod Security Standard
+  (with the non-root image, see Breaking Changes). The chart README states
+  the limitations that hold by design: read-only config mount, signing keys
+  regenerated on every pod restart. `helm install` without `--version`
+  resolves the newest final release; pre-releases need `--devel` or an
+  explicit version.
 
 ### Fixed
 - **A fresh `/authorize` request no longer inherits optional parameters left

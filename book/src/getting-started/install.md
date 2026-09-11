@@ -27,6 +27,12 @@ docker run --rm -p 8000:8000 \
 Container tags are derived from release tags (for example `v2.6.0`);
 `latest` points at the newest non-prerelease.
 
+Since 3.1.0 the image runs as uid 1000 (gid 0) rather than root. Anything
+you mount for nanoidp to write, a keys volume in particular, must be
+writable by that user: a volume first created by an older release is
+root-owned and needs a one-time `chown -R 1000:0`. A read-only config
+mount needs nothing.
+
 ## Helm
 
 ```bash

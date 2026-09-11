@@ -51,16 +51,15 @@ knowing before relying on long-lived sessions across restarts.
 manage) is a possible future addition, not implemented in this version of
 the chart.
 
-### Pod Security Standard: `baseline`, not `restricted`
+### Pod Security Standard: `restricted`
 
-This chart targets the `baseline` Pod Security Standard, not
-`restricted`. Running it in a namespace enforcing `restricted` will fail
-on `runAsNonRoot`, the image has no `USER` directive, an image-side
-change outside this chart's scope. The default `securityContext`
-(`allowPrivilegeEscalation: false`, dropping all capabilities,
-`seccompProfile: RuntimeDefault`) already covers everything else
-`restricted` checks, verified against namespaces enforcing both
-standards.
+The default `securityContext` (`runAsNonRoot: true`, `runAsUser: 1000`,
+`allowPrivilegeEscalation: false`, all capabilities dropped,
+`seccompProfile: RuntimeDefault`) is admitted by a namespace enforcing the
+`restricted` Pod Security Standard, verified on a cluster. The uid matches
+the `USER` the image has since nanoidp 3.1.0. To run an older `image.tag`,
+which writes its signing keys as root, set `securityContext.runAsNonRoot`
+to `false` and `securityContext.runAsUser` to `0`.
 
 ## Configuration files (`configFiles`)
 

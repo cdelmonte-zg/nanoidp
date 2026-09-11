@@ -32,6 +32,20 @@ RUN pip install --no-cache-dir .
 # Create keys directory
 RUN mkdir -p /app/keys
 
+# Run as a non-root user (#332). nanoidp writes to exactly two places:
+# /app/keys (the signing keypair, generated on first start and on every
+# rotation) and /app/config (saves from the UI and the MCP server). Both
+# are owned by that user and group-writable by group 0, so the image also
+# runs where the platform assigns an arbitrary uid with gid 0 (OpenShift).
+# A keys volume created by an earlier, root-running image keeps its root
+# ownership: it still boots (the existing keys are readable) but the next
+# rotation fails - chown it to 1000:0, see the CHANGELOG for the release
+# that introduced this.
+RUN useradd --uid 1000 --gid 0 --no-create-home --shell /usr/sbin/nologin nanoidp \
+    && chown -R 1000:0 /app/keys /app/config \
+    && chmod -R g+rwX /app/keys /app/config
+USER 1000:0
+
 # Environment variables
 ENV PYTHONUNBUFFERED=1
 ENV NANOIDP_CONFIG_DIR=/app/config

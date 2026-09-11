@@ -115,6 +115,12 @@ assert_eq "no checksum/config with existingSecret set" \
 
 echo "=== behavioral assertions (values-minimal.yaml) ==="
 default="$(helm template "$CHART_DIR" -f "$CI_DIR/values-minimal.yaml")"
+assert_eq "securityContext.runAsNonRoot" \
+  "$(yq 'select(.kind == "Deployment") | .spec.template.spec.containers[0].securityContext.runAsNonRoot' <<<"$default")" \
+  "true"
+assert_eq "securityContext.runAsUser matches the image's USER" \
+  "$(yq 'select(.kind == "Deployment") | .spec.template.spec.containers[0].securityContext.runAsUser' <<<"$default")" \
+  "1000"
 assert_eq "securityContext.allowPrivilegeEscalation" \
   "$(yq 'select(.kind == "Deployment") | .spec.template.spec.containers[0].securityContext.allowPrivilegeEscalation' <<<"$default")" \
   "false"

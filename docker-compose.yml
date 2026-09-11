@@ -11,7 +11,9 @@ services:
     volumes:
       # Mount config for customization
       - ./config:/app/config:ro
-      # Persist generated keys
+      # Persist generated keys. The image runs as uid 1000 (gid 0); a
+      # volume first created by a release before 3.1.0 is root-owned and
+      # must be chowned once: docker run --rm -v nanoidp-keys:/k alpine chown -R 1000:0 /k
       - nanoidp-keys:/app/keys
     environment:
       - NANOIDP_CONFIG_DIR=/app/config
