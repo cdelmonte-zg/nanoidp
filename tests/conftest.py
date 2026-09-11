@@ -154,6 +154,19 @@ def client(app):
     return app.test_client()
 
 
+def oauth_session(client):
+    """Return the pending OAuth request stored in the test client's session."""
+    with client.session_transaction() as session:
+        return {key: value for key, value in session.items() if key.startswith("oauth_")}
+
+
+def authorization_response_params(response):
+    """Parse an authorization response's redirect query parameters."""
+    from urllib.parse import parse_qs, urlsplit
+
+    return parse_qs(urlsplit(response.headers["Location"]).query)
+
+
 @pytest.fixture
 def auth_header():
     """Create Basic auth header for demo-client."""

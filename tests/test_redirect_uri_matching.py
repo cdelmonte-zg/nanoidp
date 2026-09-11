@@ -91,6 +91,13 @@ class TestExactMatching:
         response = _authorize(client, registered_client, mismatch)
         assert response.status_code == 400
 
+        bare_post = client.post(
+            "/authorize",
+            data={"username": "admin", "password": "admin"},
+        )
+        assert bare_post.status_code == 400
+        assert json.loads(bare_post.data)["error_description"] == "client_id is required"
+
         response = client.post(
             f"/authorize?response_type=code&client_id={registered_client}"
             f"&redirect_uri={mismatch}&scope=openid",

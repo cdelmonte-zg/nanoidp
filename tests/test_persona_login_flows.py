@@ -14,13 +14,13 @@ import hashlib
 import json
 import re
 import secrets
-from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from lxml import etree
 
 from nanoidp.config import get_config
 from nanoidp.services.device_code import get_device_code_store
+from tests.conftest import authorization_response_params, oauth_session
 
 AUTHORIZE_QS = (
     "response_type=code&client_id=demo-client"
@@ -205,10 +205,7 @@ class TestAuthorizeAutoLogin:
         _enable_auto_login(app)
         original_qs = AUTHORIZE_QS.replace("state=xyz", "state=tab-a")
         assert client.get(f"/authorize?{original_qs}").status_code == 200
-        with client.session_transaction() as session:
-            captured = {
-                key: value for key, value in session.items() if key.startswith("oauth_")
-            }
+        captured = oauth_session(client)
 
         rejected = client.get(
             f"/authorize?{AUTHORIZE_QS}"
@@ -217,19 +214,14 @@ class TestAuthorizeAutoLogin:
         )
 
         assert rejected.status_code == 302
-        assert parse_qs(urlsplit(rejected.headers["Location"]).query)["error"] == [
-            "invalid_request"
-        ]
-        with client.session_transaction() as session:
-            assert {
-                key: value for key, value in session.items() if key.startswith("oauth_")
-            } == captured
+        assert authorization_response_params(rejected)["error"] == ["invalid_request"]
+        assert oauth_session(client) == captured
 
         response = client.post(
             "/authorize", data={"username": "admin"}, follow_redirects=False
         )
-        response_params = parse_qs(urlsplit(response.headers["Location"]).query)
         assert response.status_code == 302
+        response_params = authorization_response_params(response)
         assert response_params["state"] == ["tab-a"]
         assert "error" not in response_params
         assert len(response_params["code"]) == 1

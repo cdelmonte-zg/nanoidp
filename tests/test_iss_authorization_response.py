@@ -43,9 +43,7 @@ def _authorize_redirect(client, extra=None, **headers):
     if extra:
         params.update(extra)
     query = "&".join(f"{k}={v}" for k, v in params.items())
-    response = client.get("/authorize?" + query, headers=headers)
-    if response.status_code != 200:
-        return response
+    client.get("/authorize?" + query, headers=headers)
     return client.post(
         "/authorize?" + query,
         data={"username": "admin", "password": "admin"},

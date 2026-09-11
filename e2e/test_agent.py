@@ -1638,6 +1638,42 @@ class NanoIDPTestAgent:
                 and "code=" in fallback_post.headers.get("Location", "")
             )
 
+            # #331: a rejected GET must not replace the valid request that a
+            # later bare form submission resumes, including under two-step.
+            rejected_sess = requests.Session()
+            pending_params = {**auth_params, "scope": "openid", "state": "issue-331"}
+            pending_get = rejected_sess.get(
+                f"{self.base_url}/authorize", params=pending_params, timeout=5
+            )
+            rejected_get = rejected_sess.get(
+                f"{self.base_url}/authorize",
+                params={**pending_params, "scope": "not-a-real-scope", "state": "evil"},
+                allow_redirects=False,
+                timeout=5,
+            )
+            resumed_post = rejected_sess.post(
+                f"{self.base_url}/authorize",
+                data={"username": self.username, "password": self.password},
+                allow_redirects=False,
+                timeout=5,
+            )
+            rejected_params = parse_qs(
+                urlparse(rejected_get.headers.get("Location", "")).query
+            )
+            resumed_params = parse_qs(
+                urlparse(resumed_post.headers.get("Location", "")).query
+            )
+            checks["rejected_get_preserves_pending_request"] = (
+                pending_get.status_code == 200
+                and rejected_get.status_code in (302, 303)
+                and rejected_params.get("error") == ["invalid_scope"]
+                and rejected_params.get("state") == ["evil"]
+                and resumed_post.status_code in (302, 303)
+                and bool(resumed_params.get("code"))
+                and resumed_params.get("state") == ["issue-331"]
+                and "error" not in resumed_params
+            )
+
             # A wrong username must not leak onto the password screen or
             # survive "Change username" (#323 review round 1 test list).
             sess.post(f"{self.base_url}/authorize", data={"username": "wrong-user"}, timeout=5)

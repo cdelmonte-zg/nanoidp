@@ -21,7 +21,7 @@ parameters (`response_type`, `client_id`, `redirect_uri`, `scope`, `state`,
 PKCE, `nonce`, `claims`, `resource`) from one source only. If its query string
 carries any OAuth request parameter, it reads the complete request from there;
 otherwise, including when only unrelated query parameters are present, it
-resumes the complete request captured by the preceding `GET`. It never reads
+resumes the complete request captured by the preceding accepted `GET`. It never reads
 OAuth parameters from the POST body; the login form itself carries only
 `username`/`password`. `login_hint` is the GET-only exception: it comes from
 the current query string without changing where the OAuth request is read, so

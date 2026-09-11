@@ -216,9 +216,6 @@ def _capture_authorize_params(p: _AuthorizeParams) -> None:
     Resumed requests therefore see the original requested values and run the
     same validation and normalization again. ``login_hint`` is never stored.
     """
-    if request.method != "GET" or not (p.client_id and p.redirect_uri and p.response_type):
-        return
-
     session["oauth_response_type"] = p.response_type
     session["oauth_client_id"] = p.client_id
     session["oauth_redirect_uri"] = p.redirect_uri
@@ -877,7 +874,8 @@ def authorize() -> ResponseReturnValue:
     if auto_login_response is not None:
         return auto_login_response
 
-    _capture_authorize_params(requested_p)
+    if request.method == "GET":
+        _capture_authorize_params(requested_p)
 
     error_msg = None
     login_username = ""
