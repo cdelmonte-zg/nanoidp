@@ -1,6 +1,6 @@
 # Releasing nanoidp (maintainers)
 
-Everything a release needs is automated by two tag-triggered workflows, but
+Everything a release needs is automated by three tag-triggered workflows, but
 every step can be run and verified by hand. This document is the manual:
 what happens, in which order, with the exact commands, and how to verify
 that what was published is what you meant to publish.
@@ -20,6 +20,7 @@ Two hard-won rules first:
 |---|---|---|
 | `pyproject.toml` | `2.7.0rc5` (PEP 440, no hyphen) | `2.7.0` |
 | git tag | `v2.7.0-rc5` (hyphen) | `v2.7.0` |
+| Helm chart (set at publish, not committed) | `2.7.0-rc5` (SemVer, hyphen) | `2.7.0` |
 
 The hyphen in the git tag is load-bearing: `docker.yml` publishes `:latest`
 only when the tag name contains no hyphen (`enable=${{ !contains(github.ref_name, '-') }}`,
@@ -27,6 +28,14 @@ with `flavor: latest=false` so the metadata-action's `latest=auto` default
 cannot add it through a second path). `publish.yml` pushes every `v*` tag to
 TestPyPI and PyPI; pip's own resolver keeps plain `pip install nanoidp` on
 the last final because PEP 440 pre-releases need `--pre` or an exact pin.
+`helm-publish.yml` packages the chart with `--version` taken from the tag
+minus the `v`; `charts/nanoidp/Chart.yaml` stays at its `0.0.0` placeholder
+and is never bumped. Helm resolves `helm install oci://...` without
+`--version` to the highest stable version and sees pre-releases only with
+`--devel` or an explicit version, so the chart needs no `:latest` guard.
+The chart's default `image.tag` is `v` plus the chart version, matching the
+image tags `docker.yml` publishes, so nothing in the chart is edited for a
+release either.
 
 ## CHANGELOG policy
 
@@ -95,6 +104,10 @@ that plain `pip install nanoidp` keeps resolving the last final.
   `nanoidp init`, a real server start, `/api/health` and OIDC discovery.
 - `docker.yml` (`Publish to GHCR`): multi-arch build (amd64+arm64), tags
   `v2.7.0-rc5` always, `latest` only for hyphen-less tags.
+- `helm-publish.yml` (`Publish Helm chart`): `helm package --version 2.7.0-rc5`,
+  push to `oci://ghcr.io/cdelmonte-zg/charts/nanoidp`, then pull the
+  published chart back and check that its version is the one from the tag
+  and that the image it runs is `ghcr.io/cdelmonte-zg/nanoidp:v2.7.0-rc5`.
 
 ### 5. Watch the runs
 
@@ -110,8 +123,9 @@ for id in $(gh run list --limit 4 --json databaseId,headBranch \
     --jq '.[] | select(.headBranch=="v2.7.0-rc5") | .databaseId'); do
   gh run view "$id" --json jobs --jq '.jobs[] | "\(.name): \(.conclusion)"'
 done
-# expect: test, build, wheel-smoke, publish-testpypi, publish-pypi, publish-ghcr
-# all "success"; a "skipped" anywhere means the artifact did NOT go out
+# expect: test, build, wheel-smoke, publish-testpypi, publish-pypi, publish-ghcr,
+# publish-chart, all "success"; a "skipped" anywhere means the artifact did
+# NOT go out
 ```
 
 ### 7. Verify the published artifacts, not the repo
@@ -153,6 +167,27 @@ docker run --rm -p 8000:8000 ghcr.io/cdelmonte-zg/nanoidp:v2.7.0-rc5 &
 curl -sf http://127.0.0.1:8000/api/health
 ```
 
+The Helm chart, anonymously (log out first, so a cached login cannot hide a
+visibility problem):
+
+```bash
+helm registry logout ghcr.io 2>/dev/null
+helm show chart oci://ghcr.io/cdelmonte-zg/charts/nanoidp --version 2.7.0-rc5 | grep ^version
+helm show chart oci://ghcr.io/cdelmonte-zg/charts/nanoidp | grep ^version   # no --version
+helm template t oci://ghcr.io/cdelmonte-zg/charts/nanoidp --version 2.7.0-rc5 \
+  -f charts/nanoidp/ci/values-minimal.yaml | grep 'image:'
+```
+
+Checks: the first line prints the new version; the second prints the **last
+final** for a pre-release and the new version for a final (this is the
+chart-side equivalent of the `latest` rule); the image is
+`ghcr.io/cdelmonte-zg/nanoidp:v2.7.0-rc5`. **First publish only:** GHCR
+creates the `charts/nanoidp` package private; the workflow's own verify
+step passes because it is logged in, so this anonymous check is the one
+that catches it. Make it public in the package settings
+(github.com/users/cdelmonte-zg/packages/container/charts%2Fnanoidp/settings)
+and re-run the check.
+
 ## When a cut goes wrong
 
 - **Minutes old, nothing installed by anyone**: delete release and tag,
@@ -173,6 +208,23 @@ curl -sf http://127.0.0.1:8000/api/health
 - **A workflow bug in the tagged commit**: fix on main through a PR, then
   re-cut (rule 1 above). Re-running the failed run re-runs the old broken
   definition.
+- **A bad chart went out**: same rule as the image. OCI lets a tag be
+  overwritten, but anyone who already pulled it has the old bytes; publish
+  the fix under a new version instead.
+
+## Chart-only releases
+
+A chart fix with no nanoidp change does not get a `v*` tag (that would
+rebuild and republish the image and the wheel for nothing). Instead:
+
+1. In a PR, pin `image.tag` in `charts/nanoidp/values.yaml` to the last
+   nanoidp release (`"v2.7.0"`), since the default would otherwise follow the
+   new chart version to an image tag that does not exist.
+2. Merge, then run `Publish Helm chart` by hand
+   (`gh workflow run helm-publish.yml -f version=2.7.1`) with the new chart
+   version as the input. The verify step fails if the pin is missing.
+3. Verify as in step 7. Restore `image.tag: ""` in the next PR that ships
+   with an app release, or the chart stays pinned to the old image.
 
 ## Final-release extras
 

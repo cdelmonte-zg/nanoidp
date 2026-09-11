@@ -125,6 +125,26 @@ assert_eq "securityContext.seccompProfile" \
   "$(yq 'select(.kind == "Deployment") | .spec.template.spec.containers[0].securityContext.seccompProfile.type' <<<"$default")" \
   "RuntimeDefault"
 
+# The published image tags carry a "v" (docker.yml tags from the git tag),
+# Chart.yaml's version is plain SemVer: the default must add the prefix.
+assert_eq "image tag defaults to the chart version with the v prefix" \
+  "$(yq 'select(.kind == "Deployment") | .spec.template.spec.containers[0].image' <<<"$default")" \
+  "ghcr.io/cdelmonte-zg/nanoidp:v0.0.0"
+with_tag="$(helm template "$CHART_DIR" -f "$CI_DIR/values-minimal.yaml" --set image.tag=v3.0.0)"
+assert_eq "an explicit image.tag is used verbatim" \
+  "$(yq 'select(.kind == "Deployment") | .spec.template.spec.containers[0].image' <<<"$with_tag")" \
+  "ghcr.io/cdelmonte-zg/nanoidp:v3.0.0"
+
+echo "=== packaged chart (the publish path: helm package --version from the git tag) ==="
+pkg_dir="$(mktemp -d)"
+helm package "$CHART_DIR" --version 3.1.0-rc1 --destination "$pkg_dir" >/dev/null
+assert_eq "packaged chart carries the version given at package time" \
+  "$(helm show chart "$pkg_dir/nanoidp-3.1.0-rc1.tgz" | sed -n 's/^version: //p')" "3.1.0-rc1"
+assert_eq "packaged chart runs the image tagged from that version" \
+  "$(helm template t "$pkg_dir/nanoidp-3.1.0-rc1.tgz" -f "$CI_DIR/values-minimal.yaml" | yq 'select(.kind == "Deployment") | .spec.template.spec.containers[0].image')" \
+  "ghcr.io/cdelmonte-zg/nanoidp:v3.1.0-rc1"
+rm -rf "$pkg_dir"
+
 with_ingress="$(helm template "$CHART_DIR" -f "$CI_DIR/values-minimal.yaml" --set ingress.create=true --set ingress.host=idp.example.com)"
 assert_eq "no ingressClassName by default" \
   "$(yq 'select(.kind == "Ingress") | .spec.ingressClassName' <<<"$with_ingress")" "null"
@@ -159,14 +179,14 @@ notes_or_skip() {
 }
 
 if notes_or_skip "NOTES.txt (default values)"; then
-  if ! grep -q 'WARNING: the resolved image tag is "0.0.0"' <<<"$NOTES_OUT"; then
+  if ! grep -q 'WARNING: the resolved image tag is "v0.0.0"' <<<"$NOTES_OUT"; then
     echo "FAIL: NOTES.txt did not warn about the 0.0.0 placeholder tag with default values" >&2
     exit 1
   fi
   echo "ok: NOTES.txt warns about the 0.0.0 placeholder tag by default"
 
   notes_or_skip "NOTES.txt (image.tag set)" --set image.tag=v3.0.0
-  if grep -q 'WARNING: the resolved image tag is "0.0.0"' <<<"$NOTES_OUT"; then
+  if grep -q 'WARNING: the resolved image tag is "v0.0.0"' <<<"$NOTES_OUT"; then
     echo "FAIL: NOTES.txt still warned about 0.0.0 with an explicit image.tag set" >&2
     exit 1
   fi

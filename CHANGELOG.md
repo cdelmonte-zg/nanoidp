@@ -19,6 +19,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a request that already carries both authenticates directly, so anything
   written against the combined form keeps working unchanged. Configurable
   through YAML, the Settings UI, and the MCP settings tools.
+- **Helm chart** (#327/#330) under `charts/nanoidp`, published to
+  `oci://ghcr.io/cdelmonte-zg/charts/nanoidp` on every release tag by the
+  new `Publish Helm chart` workflow, with the chart version taken from the
+  tag. Single replica by design, configuration as whole `users.yaml`/
+  `settings.yaml` files in a generated Secret (or one you manage), Ingress
+  with `${INGRESS_URL}` for the issuer, a `checksum/config` annotation that
+  rolls the pod on a configuration change, and a default `securityContext`
+  one image-side change (#332) away from the `restricted` Pod Security
+  Standard. The chart README states the limitations that hold by design:
+  read-only config mount, signing keys regenerated on every pod restart,
+  `baseline` PSS. `helm install` without `--version` resolves the newest
+  final release; pre-releases need `--devel` or an explicit version.
 
 ### Fixed
 - **A fresh `/authorize` request no longer inherits optional parameters left

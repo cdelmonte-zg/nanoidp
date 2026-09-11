@@ -1,0 +1,107 @@
+name: Publish Helm chart
+
+# Publishes charts/nanoidp to oci://ghcr.io/<owner>/charts/nanoidp on every
+# release tag, with the chart version taken from the tag (v3.1.0 -> 3.1.0,
+# v3.1.0-rc1 -> 3.1.0-rc1). Chart.yaml's committed version is a 0.0.0
+# placeholder on purpose; the tag is the single source of truth for the
+# version, as it is for docker.yml and publish.yml.
+#
+# No :latest equivalent exists for OCI charts: `helm install` without
+# --version resolves the highest stable version on its own and only sees
+# pre-releases with --devel or an explicit --version, so a pre-release tag
+# cannot capture default installs the way v2.7.0-rc1 once captured :latest.
+#
+# workflow_dispatch is the chart-only release path (a chart fix with no
+# nanoidp change): the checkout must already pin image.tag in
+# charts/nanoidp/values.yaml to the last nanoidp release, and the version
+# input is the new chart version. The verify step fails if the pin is
+# missing, so a forgotten pin cannot publish a chart that runs nothing.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Chart version to publish, plain SemVer without the v (chart-only release; image.tag must be pinned in values.yaml first)'
+        required: true
+        type: string
+
+jobs:
+  publish-chart:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      CHART_DIR: charts/nanoidp
+      OCI_REPO: oci://ghcr.io/${{ github.repository_owner }}/charts
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          # Same pin as helm.yml's Helm 3 leg: the version most users run.
+          version: v3.19.0
+
+      - name: Chart version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            version="${{ inputs.version }}"
+          else
+            version="${GITHUB_REF_NAME#v}"
+          fi
+          # Plain SemVer 2, pre-release suffix allowed: 3.1.0, 3.1.0-rc1.
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "not a chart version: '$version'" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Lint
+        run: helm lint "$CHART_DIR"
+
+      - name: Package
+        run: |
+          helm package "$CHART_DIR" \
+            --version "${{ steps.version.outputs.version }}" \
+            --destination .helm-dist
+
+      - name: Log in to GHCR
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io \
+            --username "${{ github.actor }}" --password-stdin
+
+      - name: Push
+        run: helm push ".helm-dist/nanoidp-${{ steps.version.outputs.version }}.tgz" "$OCI_REPO"
+
+      # Pull what was just published and check it, rather than trusting the
+      # checkout: the version inside the archive and the image the chart
+      # would run must both come out of the tag (or, on a chart-only
+      # release, out of the pinned image.tag).
+      - name: Verify the published chart
+        run: |
+          v="${{ steps.version.outputs.version }}"
+          rm -rf .helm-verify && mkdir .helm-verify
+          helm pull "$OCI_REPO/nanoidp" --version "$v" --destination .helm-verify --untar
+          got="$(helm show chart .helm-verify/nanoidp | sed -n 's/^version: //p')"
+          if [ "$got" != "$v" ]; then
+            echo "published chart version is '$got', expected '$v'" >&2
+            exit 1
+          fi
+          image="$(helm template verify .helm-verify/nanoidp -f "$CHART_DIR/ci/values-minimal.yaml" \
+            | sed -n 's/^ *image: "\(.*\)"$/\1/p')"
+          if [ "${{ github.event_name }}" = "push" ]; then
+            expected="ghcr.io/${{ github.repository }}:${GITHUB_REF_NAME}"
+          else
+            pinned="$(sed -n 's/^  tag: "\(.*\)"$/\1/p' "$CHART_DIR/values.yaml")"
+            expected="ghcr.io/${{ github.repository }}:${pinned}"
+          fi
+          if [ "$image" != "$expected" ]; then
+            echo "published chart runs '$image', expected '$expected'" >&2
+            exit 1
+          fi
+          echo "published $OCI_REPO/nanoidp:$v, running $image"

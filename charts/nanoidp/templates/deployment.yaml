@@ -44,9 +44,9 @@ spec:
       containers:
         - name: {{ .Chart.Name }}
           # No appVersion: chart version equals the nanoidp release it
-          # ships, so the tag defaults to .Chart.Version, not
-          # .Chart.AppVersion.
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.Version }}"
+          # ships, so the tag defaults to the chart version, with the "v"
+          # prefix the published image tags carry (see nanoidp.imageTag).
+          image: "{{ .Values.image.repository }}:{{ include "nanoidp.imageTag" . }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:
             - name: http
