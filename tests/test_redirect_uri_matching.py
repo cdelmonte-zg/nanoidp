@@ -83,18 +83,17 @@ class TestExactMatching:
     def test_mismatch_enforced_on_login_post_too(self, client, registered_client):
         """The POST leg (login form submit) revalidates against the registry.
 
-        GET first, then POST only the credentials (#325 review round 1,
-        point 3): the login form has no ``action``, so it POSTs back to the
-        GET's own ``/authorize?...`` URL - a single POST carrying the OAuth
-        parameters in its body would never reach the registry check at all,
-        since those fields are never read from the body (#325), and would
-        instead fail earlier with an unrelated "client_id is required".
+        The login form has no ``action``, so it POSTs back to the GET's own
+        ``/authorize?...`` URL. The rejected GET is not captured for a bare
+        POST (#331), but a POST to that URL still reaches the registry check.
         """
-        response = _authorize(client, registered_client, "http://localhost:3000/callbackevil")
+        mismatch = "http://localhost:3000/callbackevil"
+        response = _authorize(client, registered_client, mismatch)
         assert response.status_code == 400
 
         response = client.post(
-            "/authorize",
+            f"/authorize?response_type=code&client_id={registered_client}"
+            f"&redirect_uri={mismatch}&scope=openid",
             data={"username": "admin", "password": "admin"},
         )
         assert response.status_code == 400

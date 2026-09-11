@@ -6,6 +6,8 @@ Tests complete authorization code flow, password grant, client credentials, and 
 import base64
 import json
 
+import pytest
+
 from tests.conftest import authorize_error
 
 
@@ -355,6 +357,122 @@ class TestAuthorizationCodeFlow:
         assert response.status_code == 302
         assert response.headers['Location'].startswith('http://localhost:3000/callback')
         assert 'state=tab-a' in response.headers['Location']
+
+    @pytest.mark.parametrize(
+        ("rejected_query", "expected_status"),
+        [
+            (
+                "response_type=code&client_id=demo-client"
+                "&redirect_uri=http://localhost:3000/callback"
+                "&scope=not-a-real-scope&state=evil",
+                302,
+            ),
+            (
+                "response_type=code&client_id=unknown-client"
+                "&redirect_uri=http://localhost:3000/callback"
+                "&scope=openid&state=evil",
+                400,
+            ),
+            (
+                "response_type=code&client_id=demo-client"
+                "&redirect_uri=http://localhost:3000/unregistered"
+                "&scope=openid&state=evil",
+                400,
+            ),
+            (
+                "response_type=token&client_id=demo-client"
+                "&redirect_uri=http://localhost:3000/callback"
+                "&scope=openid&state=evil",
+                302,
+            ),
+            (
+                "response_type=code&client_id=demo-client"
+                "&redirect_uri=http://localhost:3000/callback"
+                "&scope=openid&state=evil&code_challenge=challenge"
+                "&code_challenge_method=invalid",
+                302,
+            ),
+            (
+                "response_type=code&client_id=demo-client"
+                "&redirect_uri=http://localhost:3000/callback"
+                "&scope=openid&state=evil&resource=https%3A%2F%2Fapi.example%2F%23fragment",
+                302,
+            ),
+        ],
+        ids=(
+            "invalid-scope",
+            "unknown-client",
+            "unregistered-redirect-uri",
+            "unsupported-response-type",
+            "invalid-pkce",
+            "invalid-resource",
+        ),
+    )
+    def test_rejected_get_preserves_pending_request(
+        self, app, client, rejected_query, expected_status
+    ):
+        """#331: a rejected GET is not an authorization request in flight."""
+        with app.app_context():
+            from nanoidp.config import get_config
+
+            get_config().get_client("demo-client").redirect_uris = [
+                "http://localhost:3000/callback"
+            ]
+
+        client.get(
+            '/authorize?response_type=code&client_id=demo-client'
+            '&redirect_uri=http://localhost:3000/callback&scope=openid&state=tab-a'
+        )
+
+        rejected = client.get(f"/authorize?{rejected_query}", follow_redirects=False)
+
+        assert rejected.status_code == expected_status
+        with client.session_transaction() as session:
+            assert session["oauth_client_id"] == "demo-client"
+            assert session["oauth_redirect_uri"] == "http://localhost:3000/callback"
+            assert session["oauth_scope"] == "openid"
+            assert session["oauth_state"] == "tab-a"
+
+        response = client.post(
+            '/authorize',
+            data={'username': 'admin', 'password': 'admin'},
+            follow_redirects=False,
+        )
+
+        assert response.status_code == 302
+        assert response.headers['Location'].startswith('http://localhost:3000/callback')
+        assert 'state=tab-a' in response.headers['Location']
+
+    def test_valid_get_captures_requested_values_before_normalization(self, client):
+        """#331: resumed requests revalidate the original scope and resources."""
+        resource = "https%3A%2F%2Fapi.example.com%2Fv1"
+
+        response = client.get(
+            "/authorize?response_type=code&client_id=demo-client"
+            "&redirect_uri=http://localhost:3000/callback"
+            f"&resource={resource}&resource={resource}"
+            "&login_hint=persona-auto-login%3Aadmin"
+        )
+
+        assert response.status_code == 200
+        with client.session_transaction() as session:
+            assert session["oauth_scope"] == ""
+            assert session["oauth_resources"] == [
+                "https://api.example.com/v1",
+                "https://api.example.com/v1",
+            ]
+            assert "oauth_login_hint" not in session
+
+    def test_rejected_get_without_pending_request_creates_no_capture(self, client):
+        """#331: a rejected request cannot become resumable by itself."""
+        response = client.get(
+            "/authorize?response_type=code&client_id=unknown-client"
+            "&redirect_uri=http://localhost:3000/callback&state=evil"
+        )
+
+        assert response.status_code == 400
+        with client.session_transaction() as session:
+            assert not any(key.startswith("oauth_") for key in session)
 
     def test_failed_post_does_not_rebind_pending_request(self, client):
         """#328: a direct POST on another URL must not replace the GET fallback."""
