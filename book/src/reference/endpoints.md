@@ -17,11 +17,15 @@
 | `GET/POST /device` | Device verification page |
 
 `POST /authorize` (the login form submit) reads its OAuth request
-parameters (`client_id`, `redirect_uri`, `scope`, `state`, PKCE, `nonce`,
-`claims`, `resource`) from the query string only - its own, or the
-preceding `GET`'s via the session when the POST carries none - never from
-the POST body; the login form itself carries only `username`/`password`
-(#325).
+parameters (`response_type`, `client_id`, `redirect_uri`, `scope`, `state`,
+PKCE, `nonce`, `claims`, `resource`) from one source only. If its query string
+carries any OAuth request parameter, it reads the complete request from there;
+otherwise, including when only unrelated query parameters are present, it
+resumes the complete request captured by the preceding `GET`. It never reads
+OAuth parameters from the POST body; the login form itself carries only
+`username`/`password`. `login_hint` is the GET-only exception: it comes from
+the current query string without changing where the OAuth request is read, so
+a GET carrying only a hint can apply it to the pending request (#250/#325/#328).
 
 curl examples for every grant are in
 [Requesting tokens](../guides/token-requests.md).

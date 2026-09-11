@@ -102,8 +102,8 @@ class TestAuthorizationCodeFlow:
         assert 'code=' in location
         assert 'state=test123' in location
 
-    def test_authorize_post_ignores_form_body_oauth_params(self, client):
-        """#325: a forged client_id/redirect_uri/state/scope in the login
+    def test_authorize_post_ignores_form_body_oauth_params(self, client, app):
+        """#325: forged OAuth parameters in the login
         POST body must not override the request validated on GET - the
         issued code must still be bound to what the user actually approved.
         """
@@ -118,6 +118,7 @@ class TestAuthorizationCodeFlow:
         response = client.post('/authorize', data={
             'username': 'admin',
             'password': 'admin',
+            'response_type': 'token',
             'client_id': 'test-client',
             'redirect_uri': 'http://evil.example/cb',
             'state': 'evil-state',
@@ -131,6 +132,13 @@ class TestAuthorizationCodeFlow:
         assert 'code=' in location
         assert 'state=test123' in location
         assert 'state=evil-state' not in location
+
+        with app.app_context():
+            from nanoidp.services import get_audit_log
+
+            entries = get_audit_log().get_entries(event_type='authorization_request')
+        forged = next(entry for entry in entries if entry['status'] == 'failed')
+        assert 'response_type' in forged['details']['fields']
 
     def test_authorize_post_survives_another_tab_clearing_the_session(self, client):
         """#325 review round 1, point 1 ("cross-tab clearing"): a completed
@@ -197,6 +205,202 @@ class TestAuthorizationCodeFlow:
         assert location.startswith('http://localhost:3000/callback')
         assert 'state=tab-a' in location
         assert 'localhost:4000' not in location
+
+    def test_authorize_does_not_inherit_optional_params_from_abandoned_request(
+        self, client, app, test_auth_header
+    ):
+        """#328: an earlier request's optional parameters - here left behind
+        by tab A, never completed - must not leak into a distinct, later
+        request from a different client that simply doesn't send them (a
+        client not sending ``state``/``nonce``/PKCE/``claims``/``resource``
+        at all, not one sending them empty). Before the fix, the per-field
+        session fallback in ``_read_authorize_params`` filled each omitted
+        field from whatever an earlier, unrelated request had last stored.
+        """
+        # Tab A: a request carrying every optional value, then abandoned.
+        client.get(
+            '/authorize?response_type=code&client_id=demo-client'
+            '&redirect_uri=http://localhost:3000/callback&scope=openid%20profile'
+            '&state=tab-a-state&nonce=tab-a-nonce'
+            '&code_challenge=abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG'
+            '&code_challenge_method=plain'
+            '&claims=%7B%22id_token%22%3A%7B%22email%22%3Anull%7D%7D'
+            '&resource=https%3A%2F%2Fapi.example.com%2Fv1'
+        )
+
+        # Tab B: a different client's fresh request that omits scope and all
+        # optional binding parameters.
+        response = client.post(
+            '/authorize?response_type=code&client_id=test-client'
+            '&redirect_uri=http://localhost:4000/callback',
+            data={'username': 'admin', 'password': 'admin'},
+            follow_redirects=False,
+        )
+
+        assert response.status_code == 302
+        location = response.headers['Location']
+        assert location.startswith('http://localhost:4000/callback')
+        assert 'state=' not in location
+        assert 'tab-a-state' not in location
+
+        code = location.split('code=')[1].split('&')[0]
+        with app.app_context():
+            from nanoidp.services.auth_code import get_auth_code_store
+
+            info = get_auth_code_store().get_code_info(code)
+        assert info is not None
+        assert info.state is None
+        assert info.nonce is None
+        assert info.scope == 'openid'
+        assert info.code_challenge is None
+        assert info.code_challenge_method is None
+        assert info.claims is None
+        assert info.resource is None
+
+        # A stale PKCE challenge would make this exchange fail without a
+        # verifier; successful redemption proves it was not inherited.
+        response = client.post('/token', data={
+            'grant_type': 'authorization_code',
+            'code': code,
+            'redirect_uri': 'http://localhost:4000/callback',
+        }, headers=test_auth_header)
+        assert response.status_code == 200
+
+    def test_fresh_get_for_same_client_clears_abandoned_optional_params(self, client, app):
+        """#328: a new attempt is complete even when it reuses the same client."""
+        client.get(
+            '/authorize?response_type=code&client_id=demo-client'
+            '&redirect_uri=http://localhost:3000/callback&scope=openid'
+            '&state=old-state&nonce=old-nonce'
+        )
+
+        client.get(
+            '/authorize?response_type=code&client_id=demo-client'
+            '&redirect_uri=http://localhost:3000/callback&scope=openid'
+        )
+        response = client.post(
+            '/authorize',
+            data={'username': 'admin', 'password': 'admin'},
+            follow_redirects=False,
+        )
+
+        assert response.status_code == 302
+        assert 'state=' not in response.headers['Location']
+        code = response.headers['Location'].split('code=')[1].split('&')[0]
+        with app.app_context():
+            from nanoidp.services.auth_code import get_auth_code_store
+
+            info = get_auth_code_store().get_code_info(code)
+        assert info is not None
+        assert info.state is None
+        assert info.nonce is None
+
+    def test_authorize_unrelated_query_param_preserves_pending_request(self, client):
+        """#328: non-OAuth query parameters must not disable whole-request fallback."""
+        client.get(
+            '/authorize?response_type=code&client_id=demo-client'
+            '&redirect_uri=http://localhost:3000/callback&scope=openid&state=tab-a'
+        )
+
+        response = client.post(
+            '/authorize?tracking=abc',
+            data={'username': 'admin', 'password': 'admin'},
+            follow_redirects=False,
+        )
+
+        assert response.status_code == 302
+        assert response.headers['Location'].startswith('http://localhost:3000/callback')
+        assert 'state=tab-a' in response.headers['Location']
+
+    def test_empty_client_id_is_a_new_request_and_does_not_replace_pending(self, client):
+        """#329 review: presence, not truthiness, selects the query-string request."""
+        client.get(
+            '/authorize?response_type=code&client_id=demo-client'
+            '&redirect_uri=http://localhost:3000/callback&scope=openid&state=tab-a'
+        )
+        partial = (
+            '/authorize?response_type=code&client_id='
+            '&redirect_uri=http://localhost:4000/callback&state=evil'
+        )
+
+        assert client.get(partial).status_code == 400
+        assert client.post(
+            partial,
+            data={'username': 'admin', 'password': 'admin'},
+        ).status_code == 400
+
+        response = client.post(
+            '/authorize',
+            data={'username': 'admin', 'password': 'admin'},
+            follow_redirects=False,
+        )
+        assert response.status_code == 302
+        assert response.headers['Location'].startswith('http://localhost:3000/callback')
+        assert 'state=tab-a' in response.headers['Location']
+
+    def test_incomplete_get_does_not_replace_pending_request(self, client):
+        """#329 review: only a complete GET becomes the resumable request."""
+        client.get(
+            '/authorize?response_type=code&client_id=demo-client'
+            '&redirect_uri=http://localhost:3000/callback&scope=openid&state=tab-a'
+        )
+
+        assert client.get('/authorize?client_id=demo-client').status_code == 400
+
+        response = client.post(
+            '/authorize',
+            data={'username': 'admin', 'password': 'admin'},
+            follow_redirects=False,
+        )
+        assert response.status_code == 302
+        assert response.headers['Location'].startswith('http://localhost:3000/callback')
+        assert 'state=tab-a' in response.headers['Location']
+
+    def test_failed_post_does_not_rebind_pending_request(self, client):
+        """#328: a direct POST on another URL must not replace the GET fallback."""
+        client.get(
+            '/authorize?response_type=code&client_id=demo-client'
+            '&redirect_uri=http://localhost:3000/callback&scope=openid&state=tab-a'
+        )
+
+        failed = client.post(
+            '/authorize?response_type=code&client_id=test-client'
+            '&redirect_uri=http://localhost:4000/callback&scope=openid&state=tab-b',
+            data={'username': 'admin', 'password': 'wrong-password'},
+        )
+        assert failed.status_code == 200
+        assert b'Invalid username or password' in failed.data
+
+        response = client.post(
+            '/authorize',
+            data={'username': 'admin', 'password': 'admin'},
+            follow_redirects=False,
+        )
+
+        assert response.status_code == 302
+        assert response.headers['Location'].startswith('http://localhost:3000/callback')
+        assert 'state=tab-a' in response.headers['Location']
+
+    def test_another_tabs_get_rebinds_bare_post_fallback(self, client):
+        """#329 review: the fallback is shared session state, not tab isolation."""
+        client.get(
+            '/authorize?response_type=code&client_id=demo-client'
+            '&redirect_uri=http://localhost:3000/callback&scope=openid&state=tab-a'
+        )
+        client.get(
+            '/authorize?response_type=code&client_id=test-client'
+            '&redirect_uri=http://localhost:4000/callback&scope=openid&state=tab-b'
+        )
+
+        response = client.post(
+            '/authorize',
+            data={'username': 'admin', 'password': 'admin'},
+            follow_redirects=False,
+        )
+
+        assert response.status_code == 302
+        assert response.headers['Location'].startswith('http://localhost:4000/callback')
+        assert 'state=tab-b' in response.headers['Location']
 
     def test_authorize_code_exchange(self, client, auth_header):
         """Test exchanging authorization code for tokens."""

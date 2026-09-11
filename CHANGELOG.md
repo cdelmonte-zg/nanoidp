@@ -21,24 +21,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   through YAML, the Settings UI, and the MCP settings tools.
 
 ### Fixed
+- **A fresh `/authorize` request no longer inherits optional parameters left
+  behind by an earlier, abandoned request in the same browser session**
+  (#328). A query string carrying any OAuth request parameter is now a
+  complete request: omitted required parameters are rejected, while omitted
+  `state`, `nonce`, PKCE, `claims`, `resource`, and `scope` values remain
+  omitted or use their normal defaults instead of falling back field by field
+  to stale session values. A request carrying only unrelated query parameters
+  still resumes the complete request captured by the preceding GET. Only a
+  complete GET updates that capture; POST requests never do, so a failed
+  direct POST carrying its own OAuth query string cannot rebind a later bare
+  form submission. A GET in another tab still replaces the shared session
+  capture. **Contract changes:** a partial request no longer borrows its
+  missing required fields from the session, and a client that starts with a
+  POST cannot retry it as a bare POST after failed credentials. Browser form
+  retries are unaffected because the form resubmits to its full query-string
+  URL.
 - **`/authorize` POST leg no longer trusts OAuth params from the login form
   body** (#325): `client_id`, `redirect_uri`, `scope`, `state`,
   `code_challenge`/`code_challenge_method`, `nonce`, `claims`, and `resource`
   are now read from the query string on both legs - the POST's own (the
   login form has no `action`, so it always submits back to the exact
   `/authorize?...` URL of the page it rendered), falling back to the session
-  captured on the preceding GET only when that query string is absent -
-  and never from the POST body. Previously the POST leg fell back to the
-  form body for these fields, so a forged hidden form field could override
-  the request the user actually approved, breaking the binding between that
-  approved request and the issued authorization code; a completed login or
-  a mere page load in another browser tab sharing the same cookie jar could
-  do the same by clearing or overwriting the session's copy out from under
-  an in-flight tab. Binding each POST to its own page's query string closes
-  all three. The session copy stays a per-field fallback for parameters a
-  page's query string does not carry, so such a parameter can still be
-  inherited from another request in the same browser session; that
-  mechanism is tracked in #328. **Contract change:** a single
+  captured on the preceding GET when the query string has no OAuth request
+  parameters of its own - and never from the POST body. Previously the POST
+  leg fell back to the form body for these fields, so a forged hidden form
+  field could override the request the user actually approved, breaking the
+  binding between that approved request and the issued authorization code; a
+  completed login or a mere page load in another browser tab sharing the same
+  cookie jar could do the same by clearing or overwriting the session's copy
+  out from under an in-flight tab. Binding each POST to its own page's query
+  string closes all three. **Contract change:** a single
   `POST /authorize` that packs the OAuth parameters into the body together
   with the credentials, with no preceding GET, is no longer honored - send
   those parameters on the query string instead

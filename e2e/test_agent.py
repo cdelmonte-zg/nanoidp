@@ -1614,6 +1614,30 @@ class NanoIDPTestAgent:
                 and 'id="password"' not in first_screen.text
             )
 
+            # #328/#329: a cold bare POST has no complete request to resume.
+            cold_post = requests.Session().post(
+                f"{self.base_url}/authorize",
+                data={"username": self.username, "password": self.password},
+                allow_redirects=False,
+                timeout=5,
+            )
+            checks["bare_post_without_get_is_refused"] = cold_post.status_code == 400
+
+            # An unrelated query parameter does not disable whole-request
+            # fallback to the complete request captured by the GET.
+            fallback_sess = requests.Session()
+            fallback_sess.get(f"{self.base_url}/authorize", params=auth_params, timeout=5)
+            fallback_post = fallback_sess.post(
+                f"{self.base_url}/authorize?tracking=e2e",
+                data={"username": self.username, "password": self.password},
+                allow_redirects=False,
+                timeout=5,
+            )
+            checks["unrelated_query_resumes_pending_request"] = (
+                fallback_post.status_code in (302, 303)
+                and "code=" in fallback_post.headers.get("Location", "")
+            )
+
             # A wrong username must not leak onto the password screen or
             # survive "Change username" (#323 review round 1 test list).
             sess.post(f"{self.base_url}/authorize", data={"username": "wrong-user"}, timeout=5)
