@@ -27,6 +27,16 @@ docker run --rm -p 8000:8000 \
 Container tags are derived from release tags (for example `v2.6.0`);
 `latest` points at the newest non-prerelease.
 
+## Helm
+
+```bash
+helm install nanoidp oci://ghcr.io/cdelmonte-zg/charts/nanoidp --values values.yaml
+```
+
+See the [chart README](https://github.com/cdelmonte-zg/nanoidp/tree/main/charts/nanoidp)
+for a complete, working `values.yaml` (config files, a registered OAuth
+client, Ingress), the full set of values, and the chart's limitations.
+
 ## From source
 
 ```bash

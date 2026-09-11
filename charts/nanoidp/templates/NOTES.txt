@@ -1,0 +1,24 @@
+nanoidp has been installed.
+
+Image: {{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.Version }}
+{{- if eq (.Values.image.tag | default .Chart.Version) "0.0.0" }}
+
+WARNING: the resolved image tag is "0.0.0", the placeholder committed in
+this chart's Chart.yaml, not a real nanoidp release. Installing straight
+from a git checkout needs an explicit tag, e.g.:
+
+  helm install {{ .Release.Name }} charts/nanoidp --set image.tag=v3.0.0
+
+A chart published to oci://ghcr.io/cdelmonte-zg/charts/nanoidp has this
+resolved automatically at publish time and does not need it.
+{{- end }}
+
+{{- if .Values.ingress.create }}
+
+Reach nanoidp at: http{{ if .Values.ingress.tls }}s{{ end }}://{{ .Values.ingress.host }}
+{{- else }}
+
+Ingress is not enabled (ingress.create is false), nanoidp is not
+reachable from outside the cluster. Set ingress.create/ingress.host, or
+provide your own binding to the outside world.
+{{- end }}

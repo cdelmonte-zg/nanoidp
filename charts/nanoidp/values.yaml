@@ -1,0 +1,67 @@
+# Default values for the nanoidp chart.
+
+image:
+  repository: ghcr.io/cdelmonte-zg/nanoidp
+  tag: ""
+  pullPolicy: IfNotPresent
+
+# Extra labels/annotations applied to every resource this chart renders,
+# in addition to the chart's own managed labels. A resource's own
+# labels/annotations (e.g. service.labels, ingress.labels) win over these
+# on key collision.
+commonLabels: {}
+commonAnnotations: {}
+
+# Single replica only, nanoidp keeps authorization codes, refresh-token
+# families, revocations and the audit log in-process with no coordination
+# between instances. There is deliberately no replicaCount value here.
+
+resources: {}
+
+podLabels: {}
+podAnnotations: {}
+
+# Verified against namespaces enforcing both the baseline and restricted
+# Pod Security Standards: these three fields keep baseline working and
+# narrow restricted down to just runAsNonRoot, an image-side change (no
+# USER in the Dockerfile) this chart can't close on its own.
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: ["ALL"]
+  seccompProfile:
+    type: RuntimeDefault
+
+service:
+  type: ClusterIP
+  labels: {}
+  annotations: {}
+
+# ingress.create is false by default so a bare `helm install` never
+# renders an Ingress for a hostname the installer doesn't own.
+ingress:
+  create: false
+  host: ""
+  className: ""
+  labels: {}
+  annotations: {}
+  tls: {}
+
+# Extra environment variables/sources for the container, e.g.
+# NANOIDP_MANAGEMENT_SECRET or values referenced by ${VAR} placeholders in
+# configFiles.settings/configFiles.users.
+env: []
+envFrom: []
+
+# configFiles controls the generated config Secret (a Secret, not a
+# ConfigMap, since settings.yaml carries client secrets). users/settings
+# are written verbatim, so they are plain YAML text, not structured
+# values. Required (non-empty) unless existingSecret is set, an empty
+# mount would shadow the image's own bundled demo config and boot with
+# zero users/clients rather than falling back to it.
+configFiles:
+  # When set, skips the generated Secret and mounts this existing one
+  # instead. It must contain the same users.yaml/settings.yaml keys.
+  existingSecret: ""
+  users: ""
+  settings: ""

@@ -1,0 +1,35 @@
+# Full configuration: Ingress, a client secret sourced from an env var
+# (not inlined), and a real registered OAuth client. Matches the "Complete
+# example" section in charts/nanoidp/README.md.
+ingress:
+  create: true
+  host: idp.example.com
+  className: nginx
+
+env:
+  - name: CLIENT_SECRET
+    value: "ci-placeholder-secret"
+  - name: NANOIDP_MANAGEMENT_SECRET
+    value: "ci-placeholder-management-secret"
+
+configFiles:
+  users: |
+    users:
+      admin:
+        password: admin
+
+  settings: |
+    session:
+      require_ui_login: true
+
+    login:
+      mode: password
+
+    oauth:
+      issuer: ${INGRESS_URL}
+      clients:
+        - client_id: myapp
+          client_secret: ${CLIENT_SECRET}
+          redirect_uris:
+            - https://myapp.example.com/callback
+          token_endpoint_auth_method: client_secret_post

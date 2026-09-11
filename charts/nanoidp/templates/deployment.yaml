@@ -1,0 +1,110 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "nanoidp.fullname" . }}
+  labels:
+    {{- include "nanoidp.mergedLabels" (dict "context" $) | nindent 4 }}
+  {{- with (include "nanoidp.mergedAnnotations" (dict "context" $)) }}
+  annotations:
+    {{- . | nindent 4 }}
+  {{- end }}
+spec:
+  # Single replica only, nanoidp keeps authorization codes, refresh-token
+  # families, revocations and the audit log in-process with no
+  # coordination between instances. Not exposed as a value on purpose,
+  # more than one replica is not supported.
+  replicas: 1
+  strategy:
+    # A rollout must never run two pods at once, see above.
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "nanoidp.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "nanoidp.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- if or .Values.podAnnotations (not .Values.configFiles.existingSecret) }}
+      annotations:
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        {{- if not .Values.configFiles.existingSecret }}
+        # Rolls the pod on a configFiles.users/settings change, nanoidp
+        # only reads its config at boot. Not rendered with
+        # configFiles.existingSecret, the chart can't see content it
+        # doesn't own, see the chart README.
+        checksum/config: {{ include (print $.Template.BasePath "/config-secret.yaml") $ | sha256sum }}
+        {{- end }}
+      {{- end }}
+    spec:
+      containers:
+        - name: {{ .Chart.Name }}
+          # No appVersion: chart version equals the nanoidp release it
+          # ships, so the tag defaults to .Chart.Version, not
+          # .Chart.AppVersion.
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.Version }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+          {{- $envVars := .Values.env | default list }}
+          {{- if .Values.ingress.host }}
+          {{/* configFiles.settings is written verbatim, so the chart
+               cannot fill oauth.issuer itself - these let the settings
+               blob use ${INGRESS_HOST}/${INGRESS_URL} instead of a
+               hardcoded value that would drift from ingress.host. */}}
+          {{- $ingressEnv := list
+                (dict "name" "INGRESS_HOST" "value" .Values.ingress.host)
+                (dict "name" "INGRESS_URL" "value" (printf "%s://%s" (ternary "https" "http" (gt (len (.Values.ingress.tls | default dict)) 0)) .Values.ingress.host)) }}
+          {{- $envVars = concat $envVars $ingressEnv }}
+          {{- end }}
+          {{- if $envVars }}
+          env:
+            {{- toYaml $envVars | nindent 12 }}
+          {{- end }}
+          {{- with .Values.envFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            # Read-only: nanoidp's config writer does lock-and-replace in
+            # this directory, so saving from the UI or MCP will fail here,
+            # by design, see the chart README.
+            - name: config
+              mountPath: /app/config
+              readOnly: true
+          # Conservative defaults, not tuned against measured startup,
+          # nanoidp has no known history of a slow boot. First boot
+          # generates the RSA signing keypair, hence a startupProbe
+          # rather than a generous initialDelaySeconds on liveness.
+          startupProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            periodSeconds: 2
+            failureThreshold: 15
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: config
+          secret:
+            secretName: {{ include "nanoidp.configSecretName" . }}

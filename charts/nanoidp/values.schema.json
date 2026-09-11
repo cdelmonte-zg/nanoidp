@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "Values",
+  "type": "object",
+  "properties": {
+    "image": {
+      "type": "object",
+      "properties": {
+        "repository": { "type": "string" },
+        "tag": { "type": "string" },
+        "pullPolicy": {
+          "type": "string",
+          "enum": ["Always", "IfNotPresent", "Never"]
+        }
+      },
+      "required": ["repository", "pullPolicy"]
+    },
+    "resources": {
+      "type": "object"
+    },
+    "commonLabels": {
+      "type": "object"
+    },
+    "commonAnnotations": {
+      "type": "object"
+    },
+    "podLabels": {
+      "type": "object"
+    },
+    "podAnnotations": {
+      "type": "object"
+    },
+    "securityContext": {
+      "type": "object"
+    },
+    "service": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["ClusterIP", "NodePort", "LoadBalancer"]
+        },
+        "labels": { "type": "object" },
+        "annotations": { "type": "object" }
+      },
+      "required": ["type"]
+    },
+    "ingress": {
+      "type": "object",
+      "properties": {
+        "create": { "type": "boolean" },
+        "host": { "type": "string" },
+        "className": { "type": "string" },
+        "labels": { "type": "object" },
+        "annotations": { "type": "object" },
+        "tls": { "type": "object" }
+      },
+      "required": ["create"]
+    },
+    "env": {
+      "type": "array"
+    },
+    "envFrom": {
+      "type": "array"
+    },
+    "configFiles": {
+      "type": "object",
+      "properties": {
+        "existingSecret": { "type": "string" },
+        "users": { "type": "string" },
+        "settings": { "type": "string" }
+      },
+      "if": {
+        "properties": { "existingSecret": { "const": "" } }
+      },
+      "then": {
+        "required": ["users", "settings"],
+        "properties": {
+          "users": { "minLength": 1 },
+          "settings": { "minLength": 1 }
+        }
+      }
+    }
+  },
+  "required": ["image", "ingress", "configFiles"]
+}

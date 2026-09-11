@@ -1,0 +1,9 @@
+# Minimal working configuration: just enough config content to boot.
+configFiles:
+  users: |
+    users:
+      admin:
+        password: admin
+  settings: |
+    login:
+      mode: password

@@ -1,0 +1,36 @@
+{{- if .Values.ingress.create }}
+{{- if not .Values.ingress.host }}
+{{- fail "ingress.create is true but ingress.host is empty - set ingress.host to the external hostname" }}
+{{- end }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "nanoidp.fullname" . }}
+  labels:
+    {{- include "nanoidp.mergedLabels" (dict "context" $ "extra" .Values.ingress.labels) | nindent 4 }}
+  {{- with (include "nanoidp.mergedAnnotations" (dict "context" $ "extra" .Values.ingress.annotations)) }}
+  annotations:
+    {{- . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- if .Values.ingress.tls }}
+  tls:
+    - hosts:
+        - {{ .Values.ingress.host | quote }}
+      secretName: {{ .Values.ingress.tls.secretName | quote }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.ingress.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "nanoidp.fullname" . }}
+                port:
+                  name: http
+{{- end }}

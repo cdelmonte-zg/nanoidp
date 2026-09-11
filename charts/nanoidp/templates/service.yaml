@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "nanoidp.fullname" . }}
+  labels:
+    {{- include "nanoidp.mergedLabels" (dict "context" $ "extra" .Values.service.labels) | nindent 4 }}
+  {{- with (include "nanoidp.mergedAnnotations" (dict "context" $ "extra" .Values.service.annotations)) }}
+  annotations:
+    {{- . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
+      protocol: TCP
+  selector:
+    {{- include "nanoidp.selectorLabels" . | nindent 4 }}
