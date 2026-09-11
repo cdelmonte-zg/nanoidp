@@ -5,6 +5,7 @@ Tests complete authorization code flow, password grant, client credentials, and 
 
 import base64
 import json
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
@@ -423,15 +424,18 @@ class TestAuthorizationCodeFlow:
             '/authorize?response_type=code&client_id=demo-client'
             '&redirect_uri=http://localhost:3000/callback&scope=openid&state=tab-a'
         )
+        with client.session_transaction() as session:
+            captured = {
+                key: value for key, value in session.items() if key.startswith("oauth_")
+            }
 
         rejected = client.get(f"/authorize?{rejected_query}", follow_redirects=False)
 
         assert rejected.status_code == expected_status
         with client.session_transaction() as session:
-            assert session["oauth_client_id"] == "demo-client"
-            assert session["oauth_redirect_uri"] == "http://localhost:3000/callback"
-            assert session["oauth_scope"] == "openid"
-            assert session["oauth_state"] == "tab-a"
+            assert {
+                key: value for key, value in session.items() if key.startswith("oauth_")
+            } == captured
 
         response = client.post(
             '/authorize',
@@ -441,7 +445,20 @@ class TestAuthorizationCodeFlow:
 
         assert response.status_code == 302
         assert response.headers['Location'].startswith('http://localhost:3000/callback')
-        assert 'state=tab-a' in response.headers['Location']
+        response_params = parse_qs(urlsplit(response.headers['Location']).query)
+        assert response_params["state"] == ["tab-a"]
+        assert "error" not in response_params
+        assert len(response_params["code"]) == 1
+
+        with app.app_context():
+            from nanoidp.services.auth_code import get_auth_code_store
+
+            info = get_auth_code_store().get_code_info(response_params["code"][0])
+        assert info is not None
+        assert info.client_id == "demo-client"
+        assert info.redirect_uri == "http://localhost:3000/callback"
+        assert info.scope == "openid"
+        assert info.state == "tab-a"
 
     def test_valid_get_captures_requested_values_before_normalization(self, client):
         """#331: resumed requests revalidate the original scope and resources."""

@@ -24,9 +24,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Rejected `/authorize` requests no longer replace an earlier pending
   request in the same browser session** (#331). The session capture now
   updates only after client, redirect URI, response type, scope, PKCE, and
-  resource validation succeeds. A later bare login submission can therefore
-  complete the original request instead of inheriting a rejected request's
-  client, callback, or state.
+  resource validation succeeds, and after persona auto-login remains inert.
+  A later bare login submission can therefore complete the original request
+  instead of inheriting a rejected request's client, callback, or state.
 - **A fresh `/authorize` request no longer inherits optional parameters left
   behind by an earlier, abandoned request in the same browser session**
   (#328). A query string carrying any OAuth request parameter is now a

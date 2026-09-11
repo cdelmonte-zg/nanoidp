@@ -870,14 +870,14 @@ def authorize() -> ResponseReturnValue:
     if error is not None:
         return error
 
-    _capture_authorize_params(requested_p)
-
     # #250: a login_hint carrying the reserved auto-login prefix bypasses
     # the login page/picker entirely - inert (returns None) unless
     # login.auto_login and login.mode: persona are both active.
     auto_login_response = _try_persona_auto_login(config, p)
     if auto_login_response is not None:
         return auto_login_response
+
+    _capture_authorize_params(requested_p)
 
     error_msg = None
     login_username = ""

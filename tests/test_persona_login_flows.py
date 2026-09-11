@@ -14,6 +14,7 @@ import hashlib
 import json
 import re
 import secrets
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from lxml import etree
@@ -198,6 +199,40 @@ class TestAuthorizeAutoLogin:
         assert location.startswith("http://localhost:3000/callback?")
         assert "error=invalid_request" in location
         assert "state=xyz" in location
+
+    def test_unknown_persona_preserves_pending_request(self, app, client):
+        """#331: an auto-login rejection is not a request in flight."""
+        _enable_auto_login(app)
+        original_qs = AUTHORIZE_QS.replace("state=xyz", "state=tab-a")
+        assert client.get(f"/authorize?{original_qs}").status_code == 200
+        with client.session_transaction() as session:
+            captured = {
+                key: value for key, value in session.items() if key.startswith("oauth_")
+            }
+
+        rejected = client.get(
+            f"/authorize?{AUTHORIZE_QS}"
+            "&login_hint=persona-auto-login:nonexistent",
+            follow_redirects=False,
+        )
+
+        assert rejected.status_code == 302
+        assert parse_qs(urlsplit(rejected.headers["Location"]).query)["error"] == [
+            "invalid_request"
+        ]
+        with client.session_transaction() as session:
+            assert {
+                key: value for key, value in session.items() if key.startswith("oauth_")
+            } == captured
+
+        response = client.post(
+            "/authorize", data={"username": "admin"}, follow_redirects=False
+        )
+        response_params = parse_qs(urlsplit(response.headers["Location"]).query)
+        assert response.status_code == 302
+        assert response_params["state"] == ["tab-a"]
+        assert "error" not in response_params
+        assert len(response_params["code"]) == 1
 
     def test_unknown_persona_audits_the_attempted_username(self, app, client):
         """#318 review round 1, non-blocking: the attempted name must be a
