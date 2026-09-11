@@ -10,6 +10,10 @@ Kubernetes.
 helm install nanoidp oci://ghcr.io/cdelmonte-zg/charts/nanoidp --values values.yaml
 ```
 
+Without `--version`, Helm resolves the newest final release. Pre-releases
+are only picked with `--devel` or an explicit `--version 3.1.0-rc1`, so a
+release candidate never captures a default install.
+
 See the repository's `values.yaml` for the full set of options and their
 defaults.
 
@@ -240,7 +244,12 @@ internet, the right boundary depends on your own security requirements.
 
 This chart's `version` equals the nanoidp release it ships, there is no
 separate `appVersion`, `helm ls` answers "which nanoidp is this" on its
-own. `image.tag` defaults to the chart's own `version`. The one stated
-exception: a chart-only fix (no nanoidp code change) may ship as a
-patch-bump of `version` with `image.tag` left pinned to the last app
-release, this is expected to be rare.
+own. `image.tag` defaults to the chart's own `version` with a `v` prefix,
+because the published image tags carry one (`ghcr.io/cdelmonte-zg/nanoidp:v3.0.0`)
+while a chart version is plain SemVer (`3.0.0`). The version is set at
+publish time from the git tag (`helm package --version`); the committed
+`Chart.yaml` carries a `0.0.0` placeholder, which is why an install from a
+git checkout needs an explicit `image.tag`. The one stated exception: a
+chart-only fix (no nanoidp code change) may ship as a patch-bump of
+`version` with `image.tag` left pinned to the last app release, this is
+expected to be rare.

@@ -78,3 +78,13 @@ Secret name.
 {{- define "nanoidp.configSecretName" -}}
 {{- .Values.configFiles.existingSecret | default (printf "%s-config" (include "nanoidp.fullname" .)) }}
 {{- end }}
+
+{{/*
+The image tag to run: image.tag when set, otherwise the chart version with
+the "v" prefix the published image tags carry. docker.yml tags images from
+the git tag (v3.0.0), while Chart.yaml's version is plain SemVer (3.0.0), so
+the default must add the prefix or it names a tag that does not exist.
+*/}}
+{{- define "nanoidp.imageTag" -}}
+{{- .Values.image.tag | default (printf "v%s" .Chart.Version) }}
+{{- end }}

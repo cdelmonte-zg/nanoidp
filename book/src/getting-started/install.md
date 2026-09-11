@@ -33,7 +33,9 @@ Container tags are derived from release tags (for example `v2.6.0`);
 helm install nanoidp oci://ghcr.io/cdelmonte-zg/charts/nanoidp --values values.yaml
 ```
 
-See the [chart README](https://github.com/cdelmonte-zg/nanoidp/tree/main/charts/nanoidp)
+Without `--version`, Helm resolves the newest final release; pre-releases
+need `--devel` or an explicit `--version`. See the
+[chart README](https://github.com/cdelmonte-zg/nanoidp/tree/main/charts/nanoidp)
 for a complete, working `values.yaml` (config files, a registered OAuth
 client, Ingress), the full set of values, and the chart's limitations.
 

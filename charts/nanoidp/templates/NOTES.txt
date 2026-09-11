@@ -1,11 +1,11 @@
 nanoidp has been installed.
 
-Image: {{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.Version }}
-{{- if eq (.Values.image.tag | default .Chart.Version) "0.0.0" }}
+Image: {{ .Values.image.repository }}:{{ include "nanoidp.imageTag" . }}
+{{- if and (not .Values.image.tag) (eq .Chart.Version "0.0.0") }}
 
-WARNING: the resolved image tag is "0.0.0", the placeholder committed in
-this chart's Chart.yaml, not a real nanoidp release. Installing straight
-from a git checkout needs an explicit tag, e.g.:
+WARNING: the resolved image tag is "v0.0.0": this chart's Chart.yaml carries
+the 0.0.0 placeholder, not a real nanoidp release. Installing straight from
+a git checkout needs an explicit tag, e.g.:
 
   helm install {{ .Release.Name }} charts/nanoidp --set image.tag=v3.0.0
 
