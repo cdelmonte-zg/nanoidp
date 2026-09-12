@@ -14,24 +14,12 @@ import base64
 import json
 import re
 
-import pytest
-
 from nanoidp.config import get_config
-from nanoidp.services.device_code import get_device_code_store
 
 
 def _enable_two_step(app) -> None:
     with app.app_context():
         get_config().settings.two_step = True
-
-
-@pytest.fixture(autouse=True)
-def cleanup_device_codes():
-    """device_code store is a process-wide singleton (see
-    test_device_flow_complete.py) - clear it so codes from one test never
-    leak into the next."""
-    yield
-    get_device_code_store().clear()
 
 
 class TestLoginTwoStep:

@@ -15,14 +15,6 @@ import time
 import pytest
 
 
-@pytest.fixture(autouse=True)
-def cleanup_device_codes():
-    """Clean up device codes after each test to prevent state leakage."""
-    yield
-    from nanoidp.services.device_code import get_device_code_store
-    get_device_code_store().clear()
-
-
 class TestDeviceFlowHappyPath:
     """Tests for the complete Device Flow happy path."""
 

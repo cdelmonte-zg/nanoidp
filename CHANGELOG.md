@@ -80,6 +80,13 @@ upgrade is collected here.
   never uses it. Still no change to nanoidp.
 
 ### Changed
+- **Test suite hygiene** (#305, #320): the shared `conftest` reset now
+  covers the three runtime stores (authorization codes, device codes,
+  revocation) next to the service singletons, and the per-file cleanup
+  fixtures that patched that gap are gone; the crypto leg of the singleton
+  concurrency test uses a stub that carries what `get_crypto_service` reads
+  since #281, and the test now asserts that every racing thread returned an
+  instance, so it cannot go silently vacuous again.
 - **The Helm chart is published only once its image is in the registry**
   (#340). `docker.yml` and the chart workflow both start on the same
   release tag with nothing ordering them; the chart workflow now waits for

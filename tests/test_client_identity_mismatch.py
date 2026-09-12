@@ -16,16 +16,6 @@ authentication and only the contradictory body client_id trips the check.
 import base64
 import json
 
-import pytest
-
-
-@pytest.fixture(autouse=True)
-def _cleanup_device_codes():
-    yield
-    from nanoidp.services.device_code import get_device_code_store
-
-    get_device_code_store().clear()
-
 
 def _basic(client_id: str, secret: str) -> dict:
     credentials = base64.b64encode(f"{client_id}:{secret}".encode()).decode()

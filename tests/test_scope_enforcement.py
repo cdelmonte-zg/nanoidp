@@ -337,13 +337,6 @@ class TestDeviceCodeRedemptionScopeReValidation:
     scope against the CURRENT vocabulary/allowed_scopes at the poll - both
     may have changed between /device_authorization and redemption."""
 
-    @pytest.fixture(autouse=True)
-    def _cleanup_device_codes(self):
-        yield
-        from nanoidp.services.device_code import get_device_code_store
-
-        get_device_code_store().clear()
-
     def _device_flow_authorized(self, client, scope):
         resp = client.post(
             "/device_authorization", data={"scope": scope}, headers=SCOPED_AUTH

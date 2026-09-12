@@ -11,18 +11,10 @@ end-user, so it never emits an ID Token even if ``openid`` is requested.
 import json
 
 import jwt as pyjwt
-import pytest
 
 
 def _decode(token: str) -> dict:
     return pyjwt.decode(token, options={"verify_signature": False})
-
-
-@pytest.fixture(autouse=True)
-def cleanup_device_codes():
-    yield
-    from nanoidp.services.device_code import get_device_code_store
-    get_device_code_store().clear()
 
 
 class TestPasswordGrantIdToken:

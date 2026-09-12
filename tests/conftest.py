@@ -12,7 +12,10 @@ import pytest
 import nanoidp.config as config_module
 import nanoidp.mcp_server as mcp_server_module
 import nanoidp.services.audit as audit_module
+import nanoidp.services.auth_code as auth_code_module
 import nanoidp.services.crypto as crypto_module
+import nanoidp.services.device_code as device_code_module
+import nanoidp.services.revocation as revocation_module
 import nanoidp.services.token as token_module
 import nanoidp.services.yaml_writer as yaml_writer_module
 from nanoidp.app import create_app
@@ -103,20 +106,29 @@ def reset_singletons():
     # ConfigManager is active when first built and keeps writing there; left
     # unreset, a later test's saves land in an earlier test's directory.
     # Reset before test
-    crypto_module._crypto_service = None
-    config_module._config = None
-    token_module._token_service = None
-    mcp_server_module._config = None
-    yaml_writer_module._yaml_writer = None
-    audit_module._audit_log = None
+    _reset_process_singletons()
     yield
-    # Reset after test
+    _reset_process_singletons()
+
+
+def _reset_process_singletons() -> None:
+    """Every process-wide singleton, services and runtime stores alike.
+
+    The list is the singleton inventory of the #230 audit; a store added
+    later (there will be one, #192) belongs here, or its state leaks across
+    tests as order-dependent flakes. Until #305 the three runtime stores
+    were missing and test files that touched them carried their own
+    autouse cleanup fixtures; any new file that forgot one leaked.
+    """
     crypto_module._crypto_service = None
     config_module._config = None
     token_module._token_service = None
     mcp_server_module._config = None
     yaml_writer_module._yaml_writer = None
     audit_module._audit_log = None
+    auth_code_module._auth_code_store = None
+    device_code_module._device_code_store = None
+    revocation_module._revocation_store = None
 
 
 @pytest.fixture
