@@ -7,7 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Breaking Changes
+### Migration notes
+
+Nothing below changes a supported API. This release stays a minor: the
+`/authorize` changes correct behaviour the protocol never allowed, and the
+non-root image is a deployment-compatibility change. What needs a hand on
+upgrade is collected here.
 
 - **The container image runs as a non-root user** (#332): uid 1000, gid 0,
   with `/app/keys` and `/app/config` owned by that user and group-writable
@@ -15,7 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   arbitrary uid with gid 0. Every Kubernetes namespace enforcing the
   `restricted` Pod Security Standard rejected the previous image on
   `runAsNonRoot`; the Helm chart's default `securityContext` now sets
-  `runAsNonRoot: true` and `runAsUser: 1000` and is admitted there. A plain
+  `runAsNonRoot: true` and is admitted there. It pins no `runAsUser`
+  (#339): the standard does not need one, and a platform that assigns its
+  own uid per namespace (OpenShift's `restricted-v2`) would reject a pinned
+  `1000` while the image runs fine under the assigned uid. A plain
   `docker run` with nothing mounted is unaffected. *Migration:* a keys
   volume or bind mount first created by an earlier release is root-owned.
   The new image still starts on it, because the existing keys are readable,
@@ -45,7 +53,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with `${INGRESS_URL}` for the issuer, a `checksum/config` annotation that
   rolls the pod on a configuration change, and a default `securityContext`
   admitted by a namespace enforcing the `restricted` Pod Security Standard
-  (with the non-root image, see Breaking Changes). The chart README states
+  (with the non-root image, see Migration notes). The chart README states
   the limitations that hold by design: read-only config mount, signing keys
   regenerated on every pod restart. `helm install` without `--version`
   resolves the newest final release; pre-releases need `--devel` or an

@@ -53,13 +53,18 @@ the chart.
 
 ### Pod Security Standard: `restricted`
 
-The default `securityContext` (`runAsNonRoot: true`, `runAsUser: 1000`,
+The default `securityContext` (`runAsNonRoot: true`,
 `allowPrivilegeEscalation: false`, all capabilities dropped,
 `seccompProfile: RuntimeDefault`) is admitted by a namespace enforcing the
-`restricted` Pod Security Standard, verified on a cluster. The uid matches
-the `USER` the image has since nanoidp 3.1.0. To run an older `image.tag`,
-which writes its signing keys as root, set `securityContext.runAsNonRoot`
-to `false` and `securityContext.runAsUser` to `0`.
+`restricted` Pod Security Standard, verified on a cluster. It sets no
+`runAsUser`: the standard does not require one, the kubelet checks
+`runAsNonRoot` against the numeric `USER` the image has since nanoidp 3.1.0
+(`1000:0`), and a platform that assigns its own uid per namespace, such as
+OpenShift under the `restricted-v2` SCC, keeps working because the image's
+key and config directories are group-writable by gid 0. To run an older
+`image.tag`, which writes its signing keys as root, set
+`securityContext.runAsNonRoot` to `false` and `securityContext.runAsUser`
+to `0`.
 
 ## Configuration files (`configFiles`)
 
