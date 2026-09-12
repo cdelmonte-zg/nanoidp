@@ -88,17 +88,21 @@ upgrade is collected here.
   chart that runs nothing. On the chart-only dispatch path the same wait
   confirms the pinned `image.tag` exists.
 
-### Fixed
+### Changed
 - **The login session has a single writer** (#301). The dashboard's `/login`
   and the SAML SSO inline login each used to set `session['user']` and
   `session['auth_method']` by hand, and the SAML assertion's
   `AuthnContextClassRef` is derived from the latter. Both now call one
   helper, `establish_login_session`, which records the user and how it
-  authenticated together, and a contract test holds every other module to
-  it. A future login surface can therefore no longer record a user without
-  recording the method, which would have made its persona logins silently
-  claim `PasswordProtectedTransport`. No behavior changes for existing
-  logins.
+  authenticated together. A future login surface is held to the helper by
+  a contract test (direct forms only: a subscript store, `session.update`
+  or `session.setdefault` naming the key, the `'auth_method'` literal
+  anywhere), so recording a user without recording the method, which would
+  have made its persona logins silently claim `PasswordProtectedTransport`,
+  fails the suite rather than passing unnoticed. No behavior changes for
+  existing logins.
+
+### Fixed
 - **Rejected `/authorize` requests no longer replace an earlier pending
   request in the same browser session** (#331). The session capture now
   updates only after client, redirect URI, response type, scope, PKCE, and

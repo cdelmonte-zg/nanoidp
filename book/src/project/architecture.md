@@ -64,7 +64,7 @@ Shared route infrastructure, all underscore-prefixed:
 
 | Module | What it is |
 |---|---|
-| `routes/_auth.py` | The management-gate choke point: `require_ui_login` session gate and the opt-in `management_secret` write guard for `/api/*`, the UI unlock, and MCP |
+| `routes/_auth.py` | The login-session and management-gate choke point: `establish_login_session` is the single writer of the login session (`session['user']` and `session['auth_method']`, which the SAML `AuthnContextClassRef` is derived from; every surface that establishes a UI session calls it, #301), plus the `require_ui_login` session gate and the opt-in `management_secret` write guard for `/api/*`, the UI unlock, and MCP |
 | `routes/_issuer.py` | Effective-issuer resolution, shared by every endpoint that mints a token or advertises the issuer (#133: they must never disagree) |
 | `routes/_audit.py` | `audit_event(...)`: shared helper for route-level audit events (not yet universal: `/api/keys/rotate` still logs directly) |
 
