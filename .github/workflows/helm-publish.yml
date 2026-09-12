@@ -14,8 +14,12 @@ name: Publish Helm chart
 # workflow_dispatch is the chart-only release path (a chart fix with no
 # nanoidp change): the checkout must already pin image.tag in
 # charts/nanoidp/values.yaml to the last nanoidp release, and the version
-# input is the new chart version. The verify step fails if the pin is
-# missing, so a forgotten pin cannot publish a chart that runs nothing.
+# input is the new chart version. A missing pin fails before the push.
+#
+# The chart is pushed only once the image it runs is in the registry
+# (#340): docker.yml publishes that image from the same tag independently,
+# so the wait below is what keeps a chart from pointing at an image that
+# does not exist yet, or never will if that build failed.
 
 on:
   push:
@@ -74,6 +78,46 @@ jobs:
         run: |
           echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io \
             --username "${{ github.actor }}" --password-stdin
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io \
+            --username "${{ github.actor }}" --password-stdin
+
+      # The image the chart would run: from the tag on a release, from the
+      # pinned image.tag on a chart-only dispatch (the verify step at the end
+      # compares the published chart against the same reference).
+      - name: Image the chart runs
+        id: image
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            tag="${GITHUB_REF_NAME}"
+          else
+            tag="$(sed -n 's/^  tag: "\(.*\)"$/\1/p' "$CHART_DIR/values.yaml")"
+            if [ -z "$tag" ]; then
+              echo "image.tag is not pinned in $CHART_DIR/values.yaml; a chart-only release needs the pin" >&2
+              exit 1
+            fi
+          fi
+          echo "ref=ghcr.io/${{ github.repository }}:${tag}" >> "$GITHUB_OUTPUT"
+
+      # docker.yml publishes that image from the same tag in a workflow of
+      # its own, a multi-arch build of about four minutes. Nothing orders the
+      # two, so without this the chart could go out before its image, or
+      # stay out after an image build that failed (#340). Wait for the
+      # manifest, bounded well above the build time, and refuse to publish a
+      # chart that runs nothing. On the chart-only path the same check
+      # confirms the pinned release exists.
+      - name: Wait for the image
+        run: |
+          ref="${{ steps.image.outputs.ref }}"
+          for i in $(seq 1 60); do
+            if docker manifest inspect "$ref" >/dev/null 2>&1; then
+              echo "$ref is in the registry"
+              exit 0
+            fi
+            echo "waiting for $ref ($i/60)"
+            sleep 20
+          done
+          echo "$ref is not in the registry after 20 minutes: not publishing a chart that runs nothing" >&2
+          exit 1
 
       - name: Push
         run: helm push ".helm-dist/nanoidp-${{ steps.version.outputs.version }}.tgz" "$OCI_REPO"
@@ -94,12 +138,7 @@ jobs:
           fi
           image="$(helm template verify .helm-verify/nanoidp -f "$CHART_DIR/ci/values-minimal.yaml" \
             | sed -n 's/^ *image: "\(.*\)"$/\1/p')"
-          if [ "${{ github.event_name }}" = "push" ]; then
-            expected="ghcr.io/${{ github.repository }}:${GITHUB_REF_NAME}"
-          else
-            pinned="$(sed -n 's/^  tag: "\(.*\)"$/\1/p' "$CHART_DIR/values.yaml")"
-            expected="ghcr.io/${{ github.repository }}:${pinned}"
-          fi
+          expected="${{ steps.image.outputs.ref }}"
           if [ "$image" != "$expected" ]; then
             echo "published chart runs '$image', expected '$expected'" >&2
             exit 1
