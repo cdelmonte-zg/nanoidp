@@ -79,6 +79,15 @@ upgrade is collected here.
   profile for running the same loop by hand with a real local model; CI
   never uses it. Still no change to nanoidp.
 
+### Changed
+- **The Helm chart is published only once its image is in the registry**
+  (#340). `docker.yml` and the chart workflow both start on the same
+  release tag with nothing ordering them; the chart workflow now waits for
+  the image's manifest (bounded at twenty minutes, well above the
+  multi-arch build) before `helm push`, and fails instead of publishing a
+  chart that runs nothing. On the chart-only dispatch path the same wait
+  confirms the pinned `image.tag` exists.
+
 ### Fixed
 - **Rejected `/authorize` requests no longer replace an earlier pending
   request in the same browser session** (#331). The session capture now
