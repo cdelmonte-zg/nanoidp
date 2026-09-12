@@ -132,13 +132,13 @@ services:
   # Optional and hands-on only, never in CI: a real local model with tool
   # calling, to run the same agent loop from the n8n editor with something
   # that actually reads the prompt. `docker compose --profile ollama up`,
-  # then pull the model named in README.md once; the volume keeps it.
+  # then pull the model named in README.md once; the volume keeps it. No
+  # published port: n8n reaches it as http://ollama:11434 on the Compose
+  # network, and a host that already runs its own Ollama keeps its 11434.
   ollama:
     image: ollama/ollama:0.34.0
     profiles:
       - ollama
-    ports:
-      - "11434:11434"
     volumes:
       - ollama:/root/.ollama
 
