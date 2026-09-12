@@ -1,8 +1,10 @@
-# n8n end-to-end (#194, path 1): a real MCP host (n8n's MCP Client node)
-# authenticates against nanoidp with its own OAuth2 flow and calls a tool on
-# the RFC 9728 mock resource server. Manual and nightly, not on every PR: n8n
-# takes a minute to start and the run is about what a foreign host expects,
-# not about a change in this repository. The n8n image is pinned in
+# n8n end-to-end (#194): a real MCP host (n8n) authenticates against nanoidp
+# with its own OAuth2 flow and calls a tool on the RFC 9728 mock resource
+# server, from the MCP Client node (path 1) and from inside an AI Agent's
+# tool-calling loop with a mock chat model as the model (path 2; no LLM).
+# Manual and nightly, not on every PR: n8n takes a minute to start and the
+# run is about what a foreign host expects, not about a change in this
+# repository. The n8n image is pinned in
 # examples/agentic-stack/docker-compose.yml with the reason next to it.
 name: n8n E2E
 
