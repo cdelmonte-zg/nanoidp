@@ -58,6 +58,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   plus the insufficient-scope and wrong-audience negatives. A manual and
   nightly workflow (`n8n E2E`) runs it. No change to nanoidp was needed;
   n8n's dynamic client registration mode stays out of scope until #190.
+- **n8n end to end, path 2** (#194): the same stack now also runs n8n's AI
+  Agent with the MCP Client Tool node inside its tool-calling loop. The
+  agent's model is `e2e/mock_chat_model.py`, an OpenAI-compatible fixture
+  that always asks for the MCP tool and then quotes the tool's answer, so
+  the run needs no LLM. `e2e/n8n_e2e.py` asserts that the agent offers the
+  model the tools the resource server lists, calls `read_document` with the
+  token n8n obtained and quotes the document; that an `insufficient_scope`
+  refusal comes back to the model as the tool's result rather than as a
+  crash; and that a wrong-audience token stops the agent at `tools/list`,
+  before the model is called. The Compose file gains an optional `ollama`
+  profile for running the same loop by hand with a real local model; CI
+  never uses it. Still no change to nanoidp.
 
 ### Fixed
 - **Rejected `/authorize` requests no longer replace an earlier pending

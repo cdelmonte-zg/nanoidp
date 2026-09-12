@@ -11,7 +11,7 @@ This directory contains ready-to-use configuration presets for common integratio
 | [microservices-client-credentials](./microservices-client-credentials/) | Service-to-service auth | Client Credentials |
 | [cli-device-flow](./cli-device-flow/) | CLI tools and IoT devices | Device Authorization |
 | [persona-login](./persona-login/) | Local dev/testing convenience - pick a user, no password | N/A (interactive login only) |
-| [agentic-stack](./agentic-stack/) | n8n MCP Client node -> mock MCP server -> nanoidp, end to end (#194) | Authorization Code + PKCE, RFC 8707 resource |
+| [agentic-stack](./agentic-stack/) | n8n -> mock MCP server -> nanoidp, end to end: the MCP Client node, and an AI Agent with the MCP Client Tool and a mock chat model (#194) | Authorization Code + PKCE, RFC 8707 resource |
 
 ## How to Use
 

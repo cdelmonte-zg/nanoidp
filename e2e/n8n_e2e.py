@@ -1,12 +1,18 @@
 #!/usr/bin/env python3
-"""n8n end-to-end (#194, path 1): MCP Client node -> mock MCP server -> nanoidp.
+"""n8n end-to-end (#194): n8n -> mock MCP server -> nanoidp, on two paths.
 
 Drives the stack in examples/agentic-stack/docker-compose.yml headless, as a
 real MCP host would use nanoidp: n8n's own OAuth2 credential flow (PKCE,
-public client, RFC 8707 ``resource``) against nanoidp, then an n8n workflow
-whose MCP Client node calls a tool on the RFC 9728 mock resource server with
-the token n8n obtained. No LLM is involved: the node is the deterministic
-"step" MCP Client, not the AI Agent tool.
+public client, RFC 8707 ``resource``) against nanoidp, then n8n workflows that
+call a tool on the RFC 9728 mock resource server with the token n8n obtained.
+
+Path 1 is the deterministic "step" MCP Client node. Path 2 is the AI Agent
+with the MCP Client Tool node inside its tool-calling loop; the agent's
+"model" is e2e/mock_chat_model.py, a fixture that always asks for the MCP
+tool and then quotes the tool's answer, so no LLM is involved in either path.
+Path 2 tests that n8n propagates the OAuth-protected MCP tools into the
+agent, and that the resource server's decisions come back through it; the
+OAuth itself is path 1's business and is not repeated.
 
 What it asserts, in order:
 
@@ -25,10 +31,27 @@ What it asserts, in order:
   5. Negative, audience: a credential whose ``resourceUrl`` names another
      resource obtains a token nanoidp happily binds to it, and the mock server
      rejects that token (wrong ``aud``), so the node fails.
+  6. Path 2: an AI Agent whose model is the mock and whose one tool node is
+     the MCP Client Tool with the good credential is asked to read a document.
+     The model is offered the three tools the MCP server lists (the token's
+     scope decides at call time, not at listing), it calls ``read_document``,
+     and the agent's final answer quotes the document.
+  7. Negative, scope inside the loop: asked to delete, the model calls
+     ``delete_document``, the resource server refuses it (insufficient_scope),
+     and that refusal is what the agent hands back to the model and quotes in
+     its answer: the authorization decision reaches the loop as a tool result,
+     not as a crash. The execution is recorded as success, and the MCP Client
+     Tool node's run carries the refusal as its error.
+  8. Negative, audience inside the loop: the MCP Client Tool with the
+     wrong-audience credential cannot even list tools (401 invalid_token), so
+     the agent fails before calling the model.
 
-Two n8n facts the script encodes, measured on 2.38.7: n8n sends ``resource``
+Four n8n facts the script encodes, measured on 2.38.7: n8n sends ``resource``
 only when the credential's ``resourceUrl`` is explicit (discovery alone does
-not make it send one), and the OAuth callback needs the logged-in session.
+not make it send one), the OAuth callback needs the logged-in session, the
+MCP Client Tool node offers the model every tool under the node's name as a
+prefix (``MCP_Client_Tool_read_document``), and readiness is /rest/settings
+answering JSON, not any 200 (see wait_http).
 
 Usage (from the repository root, stack already up):
 
@@ -36,9 +59,10 @@ Usage (from the repository root, stack already up):
     python e2e/n8n_e2e.py
 
 Exit code 0 on success, 1 on any failure. The script talks to the published
-ports on localhost; the OAuth URL n8n builds names nanoidp by its Compose
-service name, so the script rewrites that origin to the published one before
-following it (nanoidp does not check the Host header). Re-runs against the
+ports on localhost (n8n, nanoidp, the mock chat model's request log); the
+OAuth URL n8n builds names nanoidp by its Compose service name, so the script
+rewrites that origin to the published one before following it (nanoidp does
+not check the Host header). Re-runs against the
 same stack work: bootstrap is idempotent, and workflows, their webhook paths
 and the API key are created fresh with a per-run suffix.
 """
@@ -65,30 +89,49 @@ NANOIDP_USER = ("admin", "admin")
 
 CRED_OK = "n8ne2emcp0000001"  # examples/agentic-stack/n8n-import/credentials.json
 CRED_WRONG_AUD = "n8ne2emcp0000002"
+CRED_CHAT = "n8ne2echat000001"  # the openAiApi credential pointing at the mock chat model
 
 MCP_NODE_TYPE = "@n8n/n8n-nodes-langchain.mcpClient"
+AGENT_NODE_TYPE = "@n8n/n8n-nodes-langchain.agent"
+CHAT_MODEL_NODE_TYPE = "@n8n/n8n-nodes-langchain.lmChatOpenAi"
+MCP_TOOL_NODE_TYPE = "@n8n/n8n-nodes-langchain.mcpClientTool"
+MCP_TOOL_NODE_NAME = "MCP Client Tool"
+MOCK_MODEL = "mock-tool-caller"  # e2e/mock_chat_model.py
+MOCK_FINAL_PREFIX = "The tool answered: "  # e2e/mock_chat_model.py FINAL_ANSWER
 
 
 class Failure(Exception):
     """A check failed; the message is the evidence."""
 
 
-def wait_http(url: str, timeout: float) -> None:
-    """Wait for a 200. n8n's /healthz answers seconds before its REST routes
-    are mounted (they 404 meanwhile), so readiness is /rest/settings, not
-    /healthz."""
+def wait_http(url: str, timeout: float, *, json_key: Optional[str] = None) -> None:
+    """Wait for a 200, and with ``json_key`` for a JSON object carrying that
+    key. n8n 2.38.7 starts in three phases: /healthz is 200 from the first
+    seconds while every other path, /rest/settings included, gets a 200
+    text/html "n8n is starting up" page; then the SPA answers 404 HTML
+    while the REST routes are still unmounted; only then comes the JSON.
+    A 200 alone is therefore not readiness (the nightly once ran the whole
+    bootstrap against the HTML page), the JSON envelope is."""
     deadline = time.monotonic() + timeout
     last = ""
     while time.monotonic() < deadline:
         try:
             r = requests.get(url, timeout=5)
             if r.status_code == 200:
-                return
-            last = f"HTTP {r.status_code}"
+                if json_key is None:
+                    return
+                try:
+                    if json_key in r.json():
+                        return
+                    last = f"HTTP 200, JSON without {json_key!r}"
+                except ValueError:
+                    last = f"HTTP 200, not JSON: {r.text[:60]!r}"
+            else:
+                last = f"HTTP {r.status_code}"
         except requests.RequestException as exc:  # noqa: PERF203
             last = str(exc)
         time.sleep(2)
-    raise Failure(f"{url} not reachable within {timeout:.0f}s: {last}")
+    raise Failure(f"{url} not ready within {timeout:.0f}s: {last}")
 
 
 class N8n:
@@ -118,7 +161,10 @@ class N8n:
         )
         if login.status_code != 200:
             raise Failure(f"login: HTTP {login.status_code} {login.text[:200]}")
-        scopes = self.rest("GET", "/api-keys/scopes").json().get("data", [])
+        scopes_resp = self.rest("GET", "/api-keys/scopes")
+        if scopes_resp.status_code != 200:
+            raise Failure(f"api key scopes: HTTP {scopes_resp.status_code} {scopes_resp.text[:200]}")
+        scopes = scopes_resp.json().get("data", [])
         # n8n refuses a second key with the same label, and never shows a raw
         # key again after creating it: a fresh, uniquely labelled key per run.
         created = self.rest(
@@ -175,15 +221,20 @@ class N8n:
         headers = {"X-N8N-API-KEY": self.api_key or ""}
         return requests.request(method, f"{self.base}/api/v1{path}", headers=headers, timeout=30, **kw)
 
+    @staticmethod
+    def _webhook_node(path: str) -> Dict[str, Any]:
+        return {
+            "parameters": {"httpMethod": "POST", "path": path, "responseMode": "lastNode", "options": {}},
+            "id": "trigger", "name": "Webhook", "type": "n8n-nodes-base.webhook",
+            "typeVersion": 2, "position": [0, 0], "webhookId": path,
+        }
+
     def create_workflow(self, name: str, path: str, tool: str, cred_id: str, endpoint: str) -> str:
+        """Path 1: Webhook -> MCP Client (step) node calling one named tool."""
         body = {
             "name": name,
             "nodes": [
-                {
-                    "parameters": {"httpMethod": "POST", "path": path, "responseMode": "lastNode", "options": {}},
-                    "id": "trigger", "name": "Webhook", "type": "n8n-nodes-base.webhook",
-                    "typeVersion": 2, "position": [0, 0], "webhookId": path,
-                },
+                self._webhook_node(path),
                 {
                     "parameters": {
                         "serverTransport": "httpStreamable",
@@ -202,6 +253,60 @@ class N8n:
             "connections": {"Webhook": {"main": [[{"node": "MCP Client", "type": "main", "index": 0}]]}},
             "settings": {"executionOrder": "v1"},
         }
+        return self._create_and_activate(name, body)
+
+    def create_agent_workflow(self, name: str, path: str, cred_id: str, endpoint: str) -> str:
+        """Path 2: Webhook -> AI Agent, with the mock chat model as its model
+        and the MCP Client Tool (all tools, OAuth credential) as its one tool.
+        Streaming is off (the webhook answers with the last node's output),
+        the Responses API is off (the mock speaks chat completions), and the
+        iteration cap keeps a misbehaving loop short."""
+        body = {
+            "name": name,
+            "nodes": [
+                self._webhook_node(path),
+                {
+                    "parameters": {
+                        "promptType": "define",
+                        "text": "={{ $json.body.prompt }}",
+                        "options": {"maxIterations": 3, "enableStreaming": False, "returnIntermediateSteps": True},
+                    },
+                    "id": "agent", "name": "AI Agent", "type": AGENT_NODE_TYPE,
+                    "typeVersion": 3.1, "position": [300, 0],
+                },
+                {
+                    "parameters": {
+                        "model": {"__rl": True, "mode": "id", "value": MOCK_MODEL},
+                        "responsesApiEnabled": False,
+                        "options": {},
+                    },
+                    "id": "model", "name": "Mock Chat Model", "type": CHAT_MODEL_NODE_TYPE,
+                    "typeVersion": 1.3, "position": [200, 200],
+                    "credentials": {"openAiApi": {"id": CRED_CHAT, "name": CRED_CHAT}},
+                },
+                {
+                    "parameters": {
+                        "endpointUrl": endpoint,
+                        "serverTransport": "httpStreamable",
+                        "authentication": "mcpOAuth2Api",
+                        "include": "all",
+                        "options": {},
+                    },
+                    "id": "mcptool", "name": MCP_TOOL_NODE_NAME, "type": MCP_TOOL_NODE_TYPE,
+                    "typeVersion": 1.4, "position": [420, 200],
+                    "credentials": {"mcpOAuth2Api": {"id": cred_id, "name": cred_id}},
+                },
+            ],
+            "connections": {
+                "Webhook": {"main": [[{"node": "AI Agent", "type": "main", "index": 0}]]},
+                "Mock Chat Model": {"ai_languageModel": [[{"node": "AI Agent", "type": "ai_languageModel", "index": 0}]]},
+                MCP_TOOL_NODE_NAME: {"ai_tool": [[{"node": "AI Agent", "type": "ai_tool", "index": 0}]]},
+            },
+            "settings": {"executionOrder": "v1"},
+        }
+        return self._create_and_activate(name, body)
+
+    def _create_and_activate(self, name: str, body: Dict[str, Any]) -> str:
         created = self.api("POST", "/workflows", json=body)
         if created.status_code not in (200, 201):
             raise Failure(f"create workflow {name}: HTTP {created.status_code} {created.text[:300]}")
@@ -225,19 +330,54 @@ class N8n:
         raise Failure(f"no finished execution for workflow {wf_id}")
 
 
+def run_data(execution: Dict[str, Any]) -> Dict[str, Any]:
+    return ((execution.get("data") or {}).get("resultData") or {}).get("runData") or {}
+
+
 def node_error(execution: Dict[str, Any], node: str) -> str:
-    run_data = ((execution.get("data") or {}).get("resultData") or {}).get("runData") or {}
-    for run in run_data.get(node, []):
+    for run in run_data(execution).get(node, []):
         err = run.get("error")
         if err:
             return err.get("description") or err.get("message") or json.dumps(err)
     return ""
 
 
+def execution_error(execution: Dict[str, Any]) -> str:
+    """The execution-level error (a sub-node failing during the agent's setup
+    lands here, attributed to the agent), else the first node error."""
+    err = ((execution.get("data") or {}).get("resultData") or {}).get("error") or {}
+    if err:
+        return err.get("description") or err.get("message") or json.dumps(err)
+    for node in run_data(execution):
+        found = node_error(execution, node)
+        if found:
+            return found
+    return ""
+
+
+class MockChat:
+    """The request log of e2e/mock_chat_model.py, on its published port."""
+
+    def __init__(self, base: str) -> None:
+        self.base = base.rstrip("/")
+
+    def clear(self) -> None:
+        requests.delete(f"{self.base}/requests", timeout=10)
+
+    def requests(self) -> List[Dict[str, Any]]:
+        return [entry["body"] for entry in requests.get(f"{self.base}/requests", timeout=10).json()]
+
+
+def offered_tools(chat_request: Dict[str, Any]) -> List[str]:
+    return [t.get("function", {}).get("name", "") for t in chat_request.get("tools") or []]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--n8n", default="http://localhost:5678")
     parser.add_argument("--nanoidp", default="http://localhost:8000")
+    parser.add_argument("--chat", default="http://localhost:9200",
+                        help="the mock chat model as published on the host (its request log)")
     parser.add_argument("--mcp-endpoint", default="http://mcp:9100/mcp",
                         help="the MCP server URL as n8n reaches it, on the Compose network")
     parser.add_argument("--compose-file", default="examples/agentic-stack/docker-compose.yml")
@@ -251,6 +391,7 @@ def main() -> int:
         print(f"  [{'OK' if ok else 'FAIL'}] {name}" + (f": {detail}" if detail and not ok else ""))
 
     n8n = N8n(args.n8n, args.compose_file)
+    chat = MockChat(args.chat)
     # Workflows and their webhook paths are created fresh on every run; a
     # path already registered by an earlier run's workflow makes activation
     # fail with 409, so each run gets its own suffix.
@@ -258,7 +399,7 @@ def main() -> int:
     try:
         print("nanoidp, mock MCP server, n8n")
         wait_http(f"{args.nanoidp}/api/health", args.timeout)
-        wait_http(f"{args.n8n}/rest/settings", args.timeout)
+        wait_http(f"{args.n8n}/rest/settings", args.timeout, json_key="data")
         check("stack reachable", True)
 
         n8n.bootstrap()
@@ -307,6 +448,70 @@ def main() -> int:
             params.get("resource") == [f"{args.mcp_endpoint.rsplit('/', 1)[0]}/other"]
             and execution.get("status") == "error" and "invalid_token" in err,
             f"resource={params.get('resource')} status={execution.get('status')} error={err[:200]}",
+        )
+
+        # Path 2: the same credential (its token is already stored) inside an
+        # AI Agent's tool-calling loop, with the mock chat model as the model.
+        print("AI Agent -> MCP Client Tool -> mock MCP server")
+        chat.clear()
+        wf_agent = n8n.create_agent_workflow(f"e2e {run_id}: agent read_document", f"e2e-agent-read-{run_id}", CRED_OK, args.mcp_endpoint)
+        resp = n8n.trigger(f"e2e-agent-read-{run_id}", {"prompt": "Read doc-42 for me."})
+        body = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
+        output = body.get("output", "") if isinstance(body, dict) else ""
+        execution = n8n.last_execution(wf_agent)
+        seen = chat.requests()
+        first_tools = offered_tools(seen[0]) if seen else []
+        fed_back = [m for r in seen for m in r.get("messages") or [] if m.get("role") == "tool"]
+        check(
+            "the agent offers the model the MCP server's tools, prefixed with the node name",
+            len(seen) >= 2 and sorted(first_tools) == sorted(
+                f"MCP_Client_Tool_{t}" for t in ("read_document", "delete_document", "admin_operation")
+            ),
+            f"requests={len(seen)} tools={first_tools}",
+        )
+        check(
+            "the agent calls read_document with the model's arguments and quotes the document",
+            resp.status_code == 200 and execution.get("status") == "success"
+            and output.startswith(MOCK_FINAL_PREFIX) and "contents of document 'doc-42'" in output
+            and any("doc-42" in str(m.get("content")) for m in fed_back),
+            f"HTTP {resp.status_code} status={execution.get('status')} output={output[:200]!r} "
+            f"fed_back={[str(m.get('content'))[:80] for m in fed_back]} {execution_error(execution)[:200]}",
+        )
+
+        chat.clear()
+        wf_agent_scope = n8n.create_agent_workflow(f"e2e {run_id}: agent delete_document (insufficient scope)", f"e2e-agent-delete-{run_id}", CRED_OK, args.mcp_endpoint)
+        resp = n8n.trigger(f"e2e-agent-delete-{run_id}", {"prompt": "Delete doc-42."})
+        body = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
+        output = body.get("output", "") if isinstance(body, dict) else ""
+        execution = n8n.last_execution(wf_agent_scope)
+        seen = chat.requests()
+        fed_back = [m for r in seen for m in r.get("messages") or [] if m.get("role") == "tool"]
+        tool_err = node_error(execution, MCP_TOOL_NODE_NAME)
+        check(
+            "insufficient_scope from the MCP server comes back to the model as the tool result",
+            any("insufficient_scope" in str(m.get("content")) and "documents:write" in str(m.get("content")) for m in fed_back)
+            and output.startswith(MOCK_FINAL_PREFIX) and "insufficient_scope" in output
+            # a tool error is not a crash: the execution succeeds, and the
+            # refusal is recorded as the tool node's error
+            and execution.get("status") == "success" and "insufficient_scope" in tool_err,
+            f"HTTP {resp.status_code} status={execution.get('status')} output={output[:200]!r} "
+            f"tool_error={tool_err[:120]!r} fed_back={[str(m.get('content'))[:120] for m in fed_back]}",
+        )
+
+        chat.clear()
+        wf_agent_aud = n8n.create_agent_workflow(f"e2e {run_id}: agent wrong audience", f"e2e-agent-aud-{run_id}", CRED_WRONG_AUD, args.mcp_endpoint)
+        resp = n8n.trigger(f"e2e-agent-aud-{run_id}", {"prompt": "Read doc-42 for me."})
+        execution = n8n.last_execution(wf_agent_aud)
+        # n8n reports the sub-node's failure at execution level with its own
+        # wording; the resource server's 401 body is the tool node's error.
+        err = execution_error(execution)
+        tool_err = node_error(execution, MCP_TOOL_NODE_NAME)
+        check(
+            "a wrong-audience token stops the agent before the model is called",
+            execution.get("status") == "error" and "Authentication failed" in err
+            and "invalid_token" in tool_err and not chat.requests(),
+            f"HTTP {resp.status_code} status={execution.get('status')} error={err[:120]} "
+            f"tool_error={tool_err[:200]} chat_requests={len(chat.requests())}",
         )
     except Failure as exc:
         check("setup", False, str(exc))

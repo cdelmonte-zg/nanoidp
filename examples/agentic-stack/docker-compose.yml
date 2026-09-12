@@ -1,7 +1,9 @@
-# n8n end-to-end stack (#194, path 1): nanoidp, the mock protected MCP server
-# and n8n on one network, so a real MCP host authenticates against nanoidp
-# and calls a tool. `e2e/n8n_e2e.py` drives it headless; `docker compose up`
-# lets you open n8n at http://localhost:5678 and watch the same loop by hand.
+# n8n end-to-end stack (#194): nanoidp, the mock protected MCP server, the
+# mock chat model and n8n on one network, so a real MCP host authenticates
+# against nanoidp and calls a tool, on its own (path 1, the MCP Client node)
+# and from inside an AI Agent's tool-calling loop (path 2, the MCP Client Tool
+# node). `e2e/n8n_e2e.py` drives both headless; `docker compose up` lets you
+# open n8n at http://localhost:5678 and watch the same loops by hand.
 #
 # Assembly only: every component here is testable on its own (#191 runs the
 # mock server without Docker or n8n), and this file carries no logic the
@@ -56,6 +58,32 @@ services:
       timeout: 3s
       retries: 20
 
+  # The OpenAI-compatible mock chat model from e2e/ (path 2), also run from
+  # the nanoidp image; it needs nothing but the standard library. It is the
+  # AI Agent's "model" in CI: it always asks for the MCP tool, then quotes
+  # the tool's answer. No LLM is involved anywhere in the automated run.
+  chat:
+    image: nanoidp:agentic-stack
+    depends_on:
+      nanoidp:
+        condition: service_healthy
+    volumes:
+      - ../../e2e/mock_chat_model.py:/e2e/mock_chat_model.py:ro
+    command:
+      - python
+      - /e2e/mock_chat_model.py
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "9200"
+    ports:
+      - "9200:9200"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9200/v1/models')"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
   # Pinned on purpose: n8n's MCP OAuth support (RFC 8707 resource handling,
   # the MCP Client node's authentication options, the session rule on its
   # OAuth callback) has changed across releases. A failure must be
@@ -65,6 +93,8 @@ services:
     image: n8nio/n8n:2.38.7
     depends_on:
       mcp:
+        condition: service_healthy
+      chat:
         condition: service_healthy
     ports:
       - "5678:5678"
@@ -88,12 +118,35 @@ services:
     volumes:
       # Credentials the e2e script imports with `n8n import:credentials`:
       # the public API refuses an empty clientSecret for mcpOAuth2Api, and a
-      # real MCP client holds no secret.
+      # real MCP client holds no secret. The mock chat model's credential
+      # travels in the same file.
       - ./n8n-import:/import:ro
     healthcheck:
-      # /rest/settings, not /healthz: healthz answers seconds before the
-      # REST routes are mounted, and `--wait` must mean usable.
-      test: ["CMD", "wget", "-qO-", "http://localhost:5678/rest/settings"]
+      # /rest/settings answering JSON, not /healthz and not any 200: n8n
+      # 2.38.7 starts in three phases. /healthz is 200 from the first
+      # seconds; meanwhile every other path, /rest/settings included, gets
+      # a 200 text/html "n8n is starting up" page, then a 404 HTML from the
+      # SPA while the REST routes are still unmounted, and only then the
+      # JSON body. The nightly run once passed this check on the HTML 200
+      # and the e2e script got HTML back from every REST call. `--wait`
+      # must mean usable, so the check requires the JSON envelope.
+      test: ["CMD-SHELL", "wget -qO- http://localhost:5678/rest/settings | grep -q '\"data\"'"]
       interval: 5s
       timeout: 5s
       retries: 40
+
+  # Optional and hands-on only, never in CI: a real local model with tool
+  # calling, to run the same agent loop from the n8n editor with something
+  # that actually reads the prompt. `docker compose --profile ollama up`,
+  # then pull the model named in README.md once; the volume keeps it. No
+  # published port: n8n reaches it as http://ollama:11434 on the Compose
+  # network, and a host that already runs its own Ollama keeps its 11434.
+  ollama:
+    image: ollama/ollama:0.34.0
+    profiles:
+      - ollama
+    volumes:
+      - ollama:/root/.ollama
+
+volumes:
+  ollama:
