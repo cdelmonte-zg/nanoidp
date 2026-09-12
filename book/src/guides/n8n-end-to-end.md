@@ -132,9 +132,17 @@ own. The model is pulled once into a volume; CPU inference is slow; nothing
 in CI depends on it, and no hosted provider is configured anywhere in the
 repository.
 
-## Two n8n facts the script encodes
+## Three n8n facts the script encodes
 
-Both measured on n8n 2.38.7, the version the Compose file pins:
+All measured on n8n 2.38.7, the version the Compose file pins:
+
+- **Readiness is JSON, not a 200.** n8n starts in three phases: `/healthz`
+  answers 200 from the first seconds while every other path, `/rest/settings`
+  included, gets a 200 `text/html` "n8n is starting up" page; then the SPA
+  answers 404 HTML while the REST routes are still unmounted; only then the
+  JSON. The Compose healthcheck and the script both wait for
+  `/rest/settings` to answer the JSON envelope. The nightly once passed on
+  the HTML page and ran the whole bootstrap against it.
 
 - **`resourceUrl` must be explicit** on the `MCP OAuth2 API` credential. n8n
   does discover the resource from the server's RFC 9728 metadata, but only an

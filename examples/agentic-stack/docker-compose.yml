@@ -122,9 +122,15 @@ services:
       # travels in the same file.
       - ./n8n-import:/import:ro
     healthcheck:
-      # /rest/settings, not /healthz: healthz answers seconds before the
-      # REST routes are mounted, and `--wait` must mean usable.
-      test: ["CMD", "wget", "-qO-", "http://localhost:5678/rest/settings"]
+      # /rest/settings answering JSON, not /healthz and not any 200: n8n
+      # 2.38.7 starts in three phases. /healthz is 200 from the first
+      # seconds; meanwhile every other path, /rest/settings included, gets
+      # a 200 text/html "n8n is starting up" page, then a 404 HTML from the
+      # SPA while the REST routes are still unmounted, and only then the
+      # JSON body. The nightly run once passed this check on the HTML 200
+      # and the e2e script got HTML back from every REST call. `--wait`
+      # must mean usable, so the check requires the JSON envelope.
+      test: ["CMD-SHELL", "wget -qO- http://localhost:5678/rest/settings | grep -q '\"data\"'"]
       interval: 5s
       timeout: 5s
       retries: 40

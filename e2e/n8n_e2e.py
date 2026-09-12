@@ -46,11 +46,12 @@ What it asserts, in order:
      wrong-audience credential cannot even list tools (401 invalid_token), so
      the agent fails before calling the model.
 
-Three n8n facts the script encodes, measured on 2.38.7: n8n sends ``resource``
+Four n8n facts the script encodes, measured on 2.38.7: n8n sends ``resource``
 only when the credential's ``resourceUrl`` is explicit (discovery alone does
-not make it send one), the OAuth callback needs the logged-in session, and
-the MCP Client Tool node offers the model every tool under the node's name as
-a prefix (``MCP_Client_Tool_read_document``).
+not make it send one), the OAuth callback needs the logged-in session, the
+MCP Client Tool node offers the model every tool under the node's name as a
+prefix (``MCP_Client_Tool_read_document``), and readiness is /rest/settings
+answering JSON, not any 200 (see wait_http).
 
 Usage (from the repository root, stack already up):
 
@@ -103,22 +104,34 @@ class Failure(Exception):
     """A check failed; the message is the evidence."""
 
 
-def wait_http(url: str, timeout: float) -> None:
-    """Wait for a 200. n8n's /healthz answers seconds before its REST routes
-    are mounted (they 404 meanwhile), so readiness is /rest/settings, not
-    /healthz."""
+def wait_http(url: str, timeout: float, *, json_key: Optional[str] = None) -> None:
+    """Wait for a 200, and with ``json_key`` for a JSON object carrying that
+    key. n8n 2.38.7 starts in three phases: /healthz is 200 from the first
+    seconds while every other path, /rest/settings included, gets a 200
+    text/html "n8n is starting up" page; then the SPA answers 404 HTML
+    while the REST routes are still unmounted; only then comes the JSON.
+    A 200 alone is therefore not readiness (the nightly once ran the whole
+    bootstrap against the HTML page), the JSON envelope is."""
     deadline = time.monotonic() + timeout
     last = ""
     while time.monotonic() < deadline:
         try:
             r = requests.get(url, timeout=5)
             if r.status_code == 200:
-                return
-            last = f"HTTP {r.status_code}"
+                if json_key is None:
+                    return
+                try:
+                    if json_key in r.json():
+                        return
+                    last = f"HTTP 200, JSON without {json_key!r}"
+                except ValueError:
+                    last = f"HTTP 200, not JSON: {r.text[:60]!r}"
+            else:
+                last = f"HTTP {r.status_code}"
         except requests.RequestException as exc:  # noqa: PERF203
             last = str(exc)
         time.sleep(2)
-    raise Failure(f"{url} not reachable within {timeout:.0f}s: {last}")
+    raise Failure(f"{url} not ready within {timeout:.0f}s: {last}")
 
 
 class N8n:
@@ -148,7 +161,10 @@ class N8n:
         )
         if login.status_code != 200:
             raise Failure(f"login: HTTP {login.status_code} {login.text[:200]}")
-        scopes = self.rest("GET", "/api-keys/scopes").json().get("data", [])
+        scopes_resp = self.rest("GET", "/api-keys/scopes")
+        if scopes_resp.status_code != 200:
+            raise Failure(f"api key scopes: HTTP {scopes_resp.status_code} {scopes_resp.text[:200]}")
+        scopes = scopes_resp.json().get("data", [])
         # n8n refuses a second key with the same label, and never shows a raw
         # key again after creating it: a fresh, uniquely labelled key per run.
         created = self.rest(
@@ -383,7 +399,7 @@ def main() -> int:
     try:
         print("nanoidp, mock MCP server, n8n")
         wait_http(f"{args.nanoidp}/api/health", args.timeout)
-        wait_http(f"{args.n8n}/rest/settings", args.timeout)
+        wait_http(f"{args.n8n}/rest/settings", args.timeout, json_key="data")
         check("stack reachable", True)
 
         n8n.bootstrap()
