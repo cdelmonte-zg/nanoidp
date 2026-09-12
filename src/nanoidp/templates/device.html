@@ -90,14 +90,14 @@
                     <div class="form-floating mb-3">
                         <input type="text" class="form-control user-code-input" id="user_code" name="user_code"
                                placeholder="XXXX-XXXX" value="{{ user_code }}" required
-                               {% if not two_step_login %}autofocus{% endif %}
+                               {% if not two_step_login and not totp_step %}autofocus{% endif %}
                                maxlength="8" pattern="[A-Za-z0-9]{8}">
                         <label for="user_code"><i class="bi bi-upc me-2"></i>Device Code</label>
                     </div>
 
                     <hr class="my-4">
 
-                    {% if two_step_login and login_username %}
+                    {% if (two_step_login or totp_step) and login_username %}
                     <div class="mb-3">
                         <small class="text-muted">Signing in as</small>
                         <span class="fw-semibold">{{ login_username }}</span>
@@ -109,6 +109,22 @@
 
                     <div class="d-grid">
                         <button type="submit" name="action" value="deny" class="btn btn-outline-danger py-2">
+                            <i class="bi bi-x-circle me-2"></i>Deny
+                        </button>
+                    </div>
+                    {% elif totp_step %}
+                    {# Declarative TOTP second factor (#348): a further
+                       phase after a successful password check, riding
+                       two_step's machinery. Since nothing is stored
+                       server-side, the password travels forward as a
+                       hidden field too and is re-checked on submit. #}
+                    {{ macros.totp_code_fields(login_username, login_password) }}
+
+                    <div class="d-grid gap-2">
+                        <button type="submit" name="action" value="authorize" class="btn btn-primary py-2">
+                            <i class="bi bi-check-circle me-2"></i>Verify
+                        </button>
+                        <button type="submit" name="action" value="deny" formnovalidate class="btn btn-outline-danger py-2">
                             <i class="bi bi-x-circle me-2"></i>Deny
                         </button>
                     </div>
@@ -163,7 +179,7 @@
                     {% endif %}
                 </form>
 
-                {% if two_step_login and login_username %}
+                {% if (two_step_login or totp_step) and login_username %}
                 <div class="text-center mt-3">
                     <a href="{{ url_for('oauth.device_verify', user_code=user_code) }}" class="btn btn-link p-0">Change username</a>
                 </div>

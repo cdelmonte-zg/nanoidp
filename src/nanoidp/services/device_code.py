@@ -20,7 +20,7 @@ import threading
 import time
 from dataclasses import dataclass
 from enum import Enum
-from typing import TYPE_CHECKING, Callable, Dict, Optional, Tuple
+from typing import TYPE_CHECKING, Callable, Dict, Optional, Sequence, Tuple
 
 if TYPE_CHECKING:
     # From the model's real home (#285): config only re-exports it for
@@ -64,6 +64,11 @@ class DeviceCodeGrant:
     status: str = "pending"  # pending, authorized, denied, expired
     username: Optional[str] = None
     auth_time: Optional[int] = None
+    # OIDC amr (RFC 8176 §2, #348): how the interactive login at /device
+    # authenticated - set by verify() on a successful authorization, from
+    # the caller's own TOTP-phase check (this store has no TOTP logic of
+    # its own, same "no mode of its own" contract as username/password).
+    amr: Optional[Sequence[str]] = None
     # RFC 8707 resource indicators requested at /device_authorization (#187).
     resource: Optional[list] = None
 
@@ -172,6 +177,29 @@ class DeviceCodeStore:
                 return DevicePollOutcome.AUTHORIZED, user, grant
             return DevicePollOutcome.UNKNOWN_STATUS, None, None
 
+    def pending_status(self, user_code: str) -> Optional[DeviceVerifyOutcome]:
+        """Non-mutating look at a user code: ``None`` when it is pending and
+        live, else the outcome verify() would report for it (#348 review).
+
+        Lets /device decide whether a submission is even worth a credential
+        check before it runs one: without this, the TOTP pre-check ran the
+        password before the code was looked at, so a correct password
+        answered with the code screen and a wrong one with "invalid code" -
+        a password oracle needing no live device code. Nothing transitions
+        here - an expired entry is reported, not marked - so a concurrent
+        poll observes the same state it did before.
+        """
+        with self._lock:
+            device_code = self._by_user_code.get(user_code)
+            grant = self._codes.get(device_code) if device_code else None
+            if not grant:
+                return DeviceVerifyOutcome.INVALID_CODE
+            if grant.status != "pending":
+                return DeviceVerifyOutcome.ALREADY_USED
+            if time.time() > grant.expires_at:
+                return DeviceVerifyOutcome.EXPIRED
+            return None
+
     def verify(
         self,
         user_code: str,
@@ -179,6 +207,8 @@ class DeviceCodeStore:
         username: str,
         password: str,
         authenticate: Callable[[str, str], Optional["User"]],
+        *,
+        amr: Optional[Sequence[str]] = None,
     ) -> Tuple[DeviceVerifyOutcome, Optional["User"]]:
         """User verification at /device: atomic check-status + transition (#43).
 
@@ -186,7 +216,11 @@ class DeviceCodeStore:
         concurrent verifications cannot both claim the same pending code.
         ``authenticate`` is the single choke point for both password and
         persona login (see ``ConfigManager.interactive_authenticate``) - this
-        store no longer needs to know which mode is active.
+        store no longer needs to know which mode is active. ``amr`` (#348) is
+        likewise decided entirely by the caller (routes/_auth's TOTP phase,
+        run before this call, using the same ``authenticate``) - this store
+        has no TOTP logic of its own, it only records what it is given on a
+        successful authorization.
         """
         with self._lock:
             device_code = self._by_user_code.get(user_code)
@@ -211,6 +245,7 @@ class DeviceCodeStore:
             grant.status = "authorized"
             grant.username = user.username
             grant.auth_time = int(time.time())
+            grant.amr = amr
             return DeviceVerifyOutcome.AUTHORIZED, user
 
     def prune_expired(self) -> int:

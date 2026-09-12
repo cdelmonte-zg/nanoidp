@@ -431,6 +431,8 @@ def user_to_yaml(user: User) -> Dict[str, Any]:
         entry["attributes"] = {
             k: (_quoted(v) if isinstance(v, str) else v) for k, v in user.attributes.items()
         }
+    if user.totp_secret is not None:
+        entry["totp_secret"] = _quoted(user.totp_secret)
     return entry
 
 
@@ -443,6 +445,7 @@ _FALLBACK_DEFAULTS: Dict[str, Any] = {
     "login.mode": "password",
     "login.auto_login": False,
     "login.two_step": False,
+    "login.totp": False,
 }
 
 
@@ -540,7 +543,8 @@ def apply_settings_document(
 
     The per-field encodings live on ``OWNED_SETTINGS`` (#214); the
     defaults-dependent keys (``security_profile``, ``login.mode``,
-    ``login.auto_login``, ``login.two_step``) are handled explicitly below.
+    ``login.auto_login``, ``login.two_step``, ``login.totp``) are handled
+    explicitly below.
     """
     for field in OWNED_SETTINGS:
         target = document if not field.section else document.setdefault(field.section, {})
@@ -588,6 +592,9 @@ def apply_settings_document(
 
     two_step_default = resolved_defaults["login.two_step"]
     merge_optional_nested_field(document, "login", "two_step", settings.two_step, two_step_default)
+
+    totp_default = resolved_defaults["login.totp"]
+    merge_optional_nested_field(document, "login", "totp", settings.totp, totp_default)
 
     return document
 

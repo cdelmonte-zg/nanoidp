@@ -1080,6 +1080,60 @@ class TestMCPUserDescription:
         assert payload["code"] == "MCP_INVALID_ARGUMENTS"
         assert "auto_login" in payload["error"]
 
+    @pytest.mark.asyncio
+    async def test_get_settings_includes_totp(self, tmp_path):
+        """#348: default off, alongside two_step."""
+        from nanoidp.mcp_server import _execute_tool
+        config = self._config(tmp_path)
+
+        result = await _execute_tool("get_settings", {}, config)
+
+        assert result["totp"] is False
+
+    @pytest.mark.asyncio
+    async def test_update_settings_can_enable_totp(self, tmp_path):
+        from nanoidp.mcp_server import _execute_tool
+        config = self._config(tmp_path)
+
+        result = await _execute_tool("update_settings", {"totp": True}, config)
+
+        assert result["success"] is True
+        assert "totp" in result["updated_fields"]
+        assert result["current_settings"]["totp"] is True
+        assert config.settings.totp is True
+        assert config.settings.totp_active is True
+
+    @pytest.mark.asyncio
+    async def test_update_settings_totp_with_persona_mode_is_inert(self, tmp_path):
+        """Accepted, not rejected - just has no effect until login_mode is
+        back to 'password', same composition as auto_login/two_step."""
+        from nanoidp.mcp_server import _execute_tool
+        config = self._config(tmp_path)
+
+        result = await _execute_tool(
+            "update_settings", {"login_mode": "persona", "totp": True}, config
+        )
+
+        assert result["success"] is True
+        assert config.settings.totp is True
+        assert config.settings.totp_active is False
+
+    @pytest.mark.asyncio
+    async def test_update_settings_rejects_non_bool_totp(self, monkeypatch, mcp_call_tool, tmp_path):
+        """Caught by the schema's "type": "boolean" constraint before dispatch."""
+        import nanoidp.mcp_server as mcp
+
+        monkeypatch.setattr(mcp, "_config", self._config(tmp_path))
+        monkeypatch.setattr(mcp, "_readonly_mode", False)
+        monkeypatch.delenv("NANOIDP_MCP_ADMIN_SECRET", raising=False)
+
+        result = await mcp_call_tool("update_settings", {"totp": "yes"})
+
+        assert result.is_error is True
+        payload = json.loads(result.content[0].text)
+        assert payload["code"] == "MCP_INVALID_ARGUMENTS"
+        assert "totp" in payload["error"]
+
 
 class TestGenerateTokenClaims:
     """MCP ``generate_token`` claims arguments (#104/#113, parity #112).

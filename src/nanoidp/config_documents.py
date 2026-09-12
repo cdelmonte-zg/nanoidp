@@ -216,6 +216,7 @@ class LoginSection(BaseModel):
     mode: str = "password"
     auto_login: bool = False
     two_step: bool = False
+    totp: bool = False
 
 
 class HooksSection(BaseModel):
@@ -391,6 +392,7 @@ class SettingsDocument(BaseModel):
             login_mode=self.login.mode,
             auto_login=self.login.auto_login,
             two_step=self.login.two_step,
+            totp=self.login.totp,
             security_profile=self.security_profile,
             authority_prefixes=self.authority_prefixes,
             allowed_identity_classes=self.allowed_identity_classes,
@@ -451,7 +453,7 @@ class BootstrapDocument(BaseModel):
 # NOT forbid extras.
 _USER_KNOWN_FIELDS = frozenset(
     {"password", "description", "email", "identity_class", "entitlements", "roles", "groups",
-     "tenant", "source_acl", "attributes"}
+     "tenant", "source_acl", "attributes", "totp_secret"}
 )
 
 
@@ -477,6 +479,7 @@ class UserEntry(BaseModel):
     tenant: str = "default"
     source_acl: List[str] = Field(default_factory=list)
     attributes: Dict[str, Any] = Field(default_factory=dict)
+    totp_secret: Optional[str] = None
 
     def to_user(self, username: str) -> User:
         attributes: Dict[str, Any] = dict(self.attributes)
@@ -505,6 +508,7 @@ class UserEntry(BaseModel):
             tenant=self.tenant,
             source_acl=self.source_acl,
             attributes=attributes,
+            totp_secret=self.totp_secret,
         )
 
 

@@ -8,7 +8,7 @@ import logging
 import threading
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Sequence, Union
 
 from ..config import User, get_config
 from .crypto import get_crypto_service
@@ -33,7 +33,7 @@ _RESERVED_CLAIMS = frozenset({
     # registered JWT claims (RFC 7519)
     "iss", "sub", "aud", "exp", "iat", "nbf", "jti",
     # nanoidp protocol claims
-    "token_use", "auth_time", "at_hash", "azp", "nonce",
+    "token_use", "auth_time", "at_hash", "azp", "nonce", "amr",
     *_AUTHORITATIVE_CLAIMS,
 })
 
@@ -213,6 +213,7 @@ class TokenService:
         scope: Optional[str] = None,
         client_id: Optional[str] = None,
         auth_time: Optional[int] = None,
+        amr: Optional[Sequence[str]] = None,
         refresh_family: Optional[str] = None,
         id_token_claims: Optional[List[str]] = None,
         userinfo_claims: Optional[List[str]] = None,
@@ -228,6 +229,15 @@ class TokenService:
         code creation time, device authorization time, value preserved from a
         refresh token); when omitted it defaults to "now", which is correct
         for grants that authenticate the user in the same request (password).
+
+        ``amr`` (RFC 8176 §2, #348) is the authentication method(s) that
+        login used - ``["pwd"]`` or ``["pwd", "otp"]`` for the declarative
+        TOTP second factor, carried from an authorization code, a device
+        grant, or a refresh token's payload the same way ``auth_time`` is.
+        ``None`` (the default) omits the claim entirely rather than
+        asserting a method nothing actually checked - persona mode, and
+        every grant that predates #348, are both silent on it rather than
+        claiming ``pwd`` for a password that was never verified.
 
         ``id_token_claims``/``userinfo_claims`` are the claim names a client
         asked for through the OIDC ``claims`` request parameter (OIDC Core
@@ -372,6 +382,8 @@ class TokenService:
             }
             if azp:
                 id_extra["azp"] = azp
+            if amr:
+                id_extra["amr"] = list(amr)
             # Claims the client asked for in the ID Token via the OIDC `claims`
             # parameter (§5.5, #104). Resolved from the user and added only when
             # available (voluntary claims, §5.5.1). resolve_user_claim refuses
@@ -418,6 +430,8 @@ class TokenService:
                 refresh_extra["scope"] = scope
             if effective_auth_time is not None:
                 refresh_extra["auth_time"] = effective_auth_time
+            if amr:
+                refresh_extra["amr"] = list(amr)
             if client_id:
                 refresh_extra["client_id"] = client_id
             if id_token_claims:

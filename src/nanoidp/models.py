@@ -12,6 +12,8 @@ from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
+from .totp_secret import canonical_secret
+
 _SAML_ATTR_NAME_DEFAULTS = {
     "saml_roles_attr_name": "roles",
     "saml_groups_attr_name": "groups",
@@ -99,6 +101,16 @@ class User(BaseModel):
     tenant: str = Field(default="default", description="User tenant")
     source_acl: List[str] = Field(default_factory=list, description="Source ACL list")
     attributes: Dict[str, Any] = Field(default_factory=dict, description="Custom attributes")
+    totp_secret: Optional[str] = Field(
+        default=None,
+        description="Base32 TOTP secret for the declarative second factor "
+        "(settings 'login.totp', #348). The presence of a secret is the "
+        "enrolment - there is no separate 'enabled' flag. A demo factor, "
+        "not IdP hardening: the operator writes it in users.yaml (${VAR} "
+        "allowed like any value), it is never accepted or returned by the "
+        "users form, MCP create_user/update_user, or any read surface - "
+        "the same treatment as 'password'.",
+    )
 
     @field_validator("email")
     @classmethod
@@ -107,6 +119,33 @@ class User(BaseModel):
         if v and "@" not in v:
             raise ValueError("Invalid email format")
         return v
+
+    @field_validator("totp_secret")
+    @classmethod
+    def validate_totp_secret(cls, v: Optional[str]) -> Optional[str]:
+        """Base32 or rejected (#348) - the one validation rule the issue
+        specifies. ``canonical_secret`` owns both the accepted alphabet and
+        the stored spelling (upper-case, unpadded), and the verifier decodes
+        from that same function, so config loading and verification cannot
+        drift. Two spellings of one secret therefore compare equal on the
+        model.
+        """
+        if v is None or v == "":
+            return None
+        return canonical_secret(v)
+
+    @model_validator(mode="after")
+    def _validate_totp_requires_password(self) -> "User":
+        """A factor has to follow a password (#348): a secret on a
+        password-less (persona-only) user is rejected at the model, the
+        one home every constructor - YAML load, the users form, MCP
+        create_user/update_user - shares."""
+        if self.totp_secret and not self.password:
+            raise ValueError(
+                "totp_secret requires a password: a second factor has "
+                "nothing to follow on a password-less (persona-only) user"
+            )
+        return self
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
@@ -524,6 +563,19 @@ class Settings(BaseModel):
         "Opt-in, off by default; inert under login_mode: persona, which is "
         "passwordless and has no password screen to split off.",
     )
+    totp: bool = Field(
+        default=False,
+        description="After a successful password check, require a "
+        "time-based one-time code (RFC 6238, 6 digits, 30s period, SHA-1) "
+        "from any user carrying a totp_secret - on /authorize, /login, "
+        "/saml/sso and the device flow, riding the same phase machinery as "
+        "two_step (#348). A declarative demo factor, not IdP hardening: "
+        "the secret is a plain field of the user entry, there is no "
+        "enrolment, no replay protection, and no admin reset - see the "
+        "'Second factor (TOTP)' docs. Opt-in, off by default; inert under "
+        "login_mode: persona, which is passwordless. A user with no "
+        "totp_secret sees no change either way.",
+    )
 
     # Security (stricter-dev profile)
     security_profile: str = Field(
@@ -665,6 +717,14 @@ class Settings(BaseModel):
         /login, /saml/sso, the device flow) shares, so they can never
         disagree on whether the two-screen flow is active."""
         return self.two_step and not self.persona_mode_enabled
+
+    @property
+    def totp_active(self) -> bool:
+        """'totp' is inert under persona mode (#348), same composition as
+        'two_step_login_active': persona login checks no password, so
+        there is nothing for a second factor to follow. Single home for
+        the predicate every interactive-login surface shares."""
+        return self.totp and not self.persona_mode_enabled
 
     @property
     def scope_enforcement_active(self) -> bool:

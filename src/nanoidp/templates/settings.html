@@ -24,6 +24,7 @@
     <input type="hidden" name="saml_export_groups__on_form" value="1">
     <input type="hidden" name="auto_login__on_form" value="1">
     <input type="hidden" name="two_step__on_form" value="1">
+    <input type="hidden" name="totp__on_form" value="1">
     <div class="row g-4">
         <!-- OAuth Settings -->
         <div class="col-md-6">
@@ -269,6 +270,15 @@
                         </div>
                         <div class="form-text">Collect username and password on separate screens, everywhere Login Mode is "Password" - /authorize, /login, /saml/sso and the device flow. Opt-in, off by default; has no effect while Login Mode is "Persona".</div>
                     </div>
+                    <div class="mb-3">
+                        <div class="form-check form-switch">
+                            <input class="form-check-input" type="checkbox" role="switch"
+                                   id="totp" name="totp" value="true"
+                                   {% if settings.totp %}checked{% endif %}>
+                            <label class="form-check-label" for="totp">Second Factor (TOTP)</label>
+                        </div>
+                        <div class="form-text">After a successful password check, a user carrying a <code>totp_secret</code> (written directly in <code>users.yaml</code> - a demo factor, not a managed enrollment) gets one more screen asking for a 6-digit code, on /login, /authorize, /saml/sso and the device flow. Opt-in, off by default; has no effect while Login Mode is "Persona", and no effect for a user without a secret.</div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -435,7 +445,8 @@ function updatePreview() {
         login: {
             mode: document.getElementById('login_mode').value,
             auto_login: document.getElementById('auto_login').checked,
-            two_step: document.getElementById('two_step').checked
+            two_step: document.getElementById('two_step').checked,
+            totp: document.getElementById('totp').checked
         }
     };
 

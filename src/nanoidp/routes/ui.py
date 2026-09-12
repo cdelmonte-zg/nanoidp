@@ -31,10 +31,13 @@ from ..hooks import HookError
 from ..services import get_audit_log, get_crypto_service, get_token_service, get_yaml_writer
 from ._audit import audit_event
 from ._auth import (
+    SecondFactorPhase,
     TwoStepPhase,
+    authenticate_interactively,
     establish_login_session,
     management_secret_required_for_ui,
     mark_management_verified,
+    no_store,
     two_step_phase,
     ui_login_required,
     verify_management_secret,
@@ -97,7 +100,13 @@ def login() -> ResponseReturnValue:
     persona_mode = config.settings.persona_mode_enabled
     two_step_login = config.settings.two_step_login_active
 
-    def render_login(error: str | None, login_username: str) -> ResponseReturnValue:
+    def render_login(
+        error: str | None,
+        login_username: str,
+        *,
+        totp_step: bool = False,
+        login_password: str = "",
+    ) -> ResponseReturnValue:
         return render_template(
             "login.html",
             error=error,
@@ -105,6 +114,8 @@ def login() -> ResponseReturnValue:
             persona_mode=persona_mode,
             two_step_login=two_step_login,
             login_username=login_username,
+            totp_step=totp_step,
+            login_password=login_password,
             management_secret_configured=bool(config.settings.management_secret),
         )
 
@@ -149,9 +160,28 @@ def login() -> ResponseReturnValue:
         error = "Select a user" if persona_mode else "Username and password required"
         return redirect(url_for("ui.login", error=error))
 
-    user = config.interactive_authenticate(username, password)
+    # Declarative TOTP second factor (#348): riding the same phase
+    # machinery as two_step - the code screen is a further phase, the
+    # username and (since nothing is stored server-side) the password
+    # travel forward as hidden fields. login.user is None until the login
+    # is complete, so the failure branch below cannot be reached with a
+    # code still outstanding.
+    login = authenticate_interactively(config, username=username, password=password)
 
-    if not user:
+    if login.phase.pending:
+        if login.phase is SecondFactorPhase.CODE_INVALID:
+            audit_event(
+                "login",
+                "failed",
+                endpoint="/login",
+                username=username,
+                details={"reason": "Invalid code"},
+            )
+        return no_store(
+            render_login(login.phase.error, username, totp_step=True, login_password=password)
+        )
+
+    if not login.user:
         audit_event(
             "login",
             "failed",
@@ -165,7 +195,7 @@ def login() -> ResponseReturnValue:
 
     # Single writer for the login session (#301): SAML SSO may later reuse
     # this session and needs to know how it authenticated.
-    establish_login_session(username, persona_mode=persona_mode)
+    establish_login_session(username, method=login.method)
 
     audit_event(
         "login",
@@ -383,6 +413,12 @@ def user_edit(username: str) -> ResponseReturnValue:
             tenant=request.form.get("tenant", "default"),
             source_acl=source_acl,
             attributes=attributes,
+            # totp_secret is YAML-only (#348): the form neither shows nor
+            # accepts it, so an edit through here must not erase it -
+            # save_user() replaces the whole entry, so it has to be carried
+            # forward explicitly from the pre-edit user, same as password
+            # would be if the form omitted it.
+            totp_secret=user.totp_secret,
         )
 
         yaml_writer.save_user(
@@ -818,6 +854,7 @@ def settings() -> ResponseReturnValue:
             login_mode=_form_text("login_mode"),
             auto_login=_form_bool("auto_login"),
             two_step=_form_bool("two_step"),
+            totp=_form_bool("totp"),
             expected_revision=_expected_revision_from_form(),
         )
 

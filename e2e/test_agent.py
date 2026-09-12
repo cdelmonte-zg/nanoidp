@@ -48,11 +48,13 @@ Uso:
 
 import base64
 import hashlib
+import hmac
 import html
 import json
 import os
 import re
 import secrets
+import struct
 import sys
 import time
 import xml.etree.ElementTree as ET
@@ -72,6 +74,29 @@ try:
 except ImportError:
     jwt = None
     print("Avviso: PyJWT non installato, alcuni test saranno limitati")
+
+
+def _generate_totp(secret: str, at: Optional[float] = None, period: int = 30, digits: int = 6) -> str:
+    """RFC 6238 code for a Base32 `secret`, self-contained (no nanoidp
+    import - this agent only ever talks HTTP to the server under test) so
+    test_totp_login can compute the expected code for a pre-configured
+    demo secret (#348). Same parameters as nanoidp.services.totp: 6
+    digits, 30s period, HMAC-SHA1.
+    """
+    cleaned = secret.strip().replace(" ", "").upper()
+    padded = cleaned + "=" * ((-len(cleaned)) % 8)
+    key = base64.b32decode(padded, casefold=True)
+    counter = int((at if at is not None else time.time()) // period)
+    msg = struct.pack(">Q", counter)
+    digest = hmac.new(key, msg, hashlib.sha1).digest()
+    offset = digest[-1] & 0x0F
+    truncated = (
+        (digest[offset] & 0x7F) << 24
+        | (digest[offset + 1] & 0xFF) << 16
+        | (digest[offset + 2] & 0xFF) << 8
+        | (digest[offset + 3] & 0xFF)
+    )
+    return str(truncated % (10 ** digits)).zfill(digits)
 
 
 class TestCategory(Enum):
@@ -1797,6 +1822,168 @@ class NanoIDPTestAgent:
             self.session.post(
                 f"{self.base_url}/settings",
                 data={"two_step": "true" if original_two_step else "false"},
+                timeout=10,
+            )
+
+    def test_totp_login(self) -> TestResult:
+        """Declarative TOTP second factor (#348: a global `login.totp`
+        setting, riding two_step's phase machinery), exercised the same way
+        test_two_step_login exercises `login.two_step` - reads the
+        setting's original value first and restores exactly that.
+
+        `totp_secret` is YAML-only (#348): there is no HTTP surface that
+        enrolls one, so this agent cannot set one up itself. The always-run
+        part of this test is still real coverage: the demo user
+        (self.username) has no totp_secret by default, so flipping
+        login.totp on and confirming its login is completely unaffected is
+        exactly the "a user without a secret sees no change" contract the
+        feature promises. The code-screen-and-verify path additionally runs
+        when NANOIDP_E2E_TOTP_SECRET names a Base32 secret already
+        configured (by the operator, in users.yaml) for
+        NANOIDP_E2E_TOTP_USERNAME (default: self.username) /
+        NANOIDP_E2E_TOTP_PASSWORD (default: self.password); it is skipped,
+        not failed, when unset.
+        """
+        redirect_uri = "http://localhost:3000/callback"
+        auth_params = {
+            "response_type": "code",
+            "client_id": self.client_id,
+            "redirect_uri": redirect_uri,
+        }
+        original_totp = False
+        try:
+            config_response = self.session.get(f"{self.base_url}/api/config", timeout=5)
+            if config_response.status_code == 200:
+                original_totp = bool(
+                    config_response.json().get("login", {}).get("totp", False)
+                )
+
+            enable = self.session.post(
+                f"{self.base_url}/settings", data={"totp": "true"}, timeout=10
+            )
+            if enable.status_code != 200:
+                return self._add_result(
+                    "TOTP Login", TestCategory.OAUTH, False,
+                    f"Enabling login.totp failed: status={enable.status_code}",
+                )
+
+            checks = {}
+
+            # The demo user has no totp_secret: login.totp must change
+            # nothing for it, on either surface.
+            authorize_sess = requests.Session()
+            authorize_sess.get(f"{self.base_url}/authorize", params=auth_params, timeout=5)
+            no_secret_authorize = authorize_sess.post(
+                f"{self.base_url}/authorize",
+                data={"username": self.username, "password": self.password},
+                allow_redirects=False,
+                timeout=5,
+            )
+            checks["authorize_without_secret_unaffected"] = (
+                no_secret_authorize.status_code in (302, 303)
+                and "code=" in no_secret_authorize.headers.get("Location", "")
+            )
+
+            login_sess = requests.Session()
+            no_secret_login = login_sess.post(
+                f"{self.base_url}/login",
+                data={"username": self.username, "password": self.password},
+                allow_redirects=False,
+                timeout=5,
+            )
+            # A failed /login also answers 302 (to /login?error=...), so the
+            # redirect alone proves nothing: it has to land on the dashboard.
+            checks["login_without_secret_unaffected"] = (
+                no_secret_login.status_code in (302, 303)
+                and "error=" not in no_secret_login.headers.get("Location", "")
+            )
+
+            totp_secret = os.environ.get("NANOIDP_E2E_TOTP_SECRET")
+            if not totp_secret:
+                if self.verbose:
+                    print(
+                        "  (skipping TOTP code-screen checks: set "
+                        "NANOIDP_E2E_TOTP_SECRET to a Base32 secret already "
+                        "configured as a user's totp_secret in users.yaml "
+                        "to exercise them)"
+                    )
+            else:
+                totp_username = os.environ.get("NANOIDP_E2E_TOTP_USERNAME", self.username)
+                totp_password = os.environ.get("NANOIDP_E2E_TOTP_PASSWORD", self.password)
+
+                code_sess = requests.Session()
+                code_sess.get(f"{self.base_url}/authorize", params=auth_params, timeout=5)
+                code_screen = code_sess.post(
+                    f"{self.base_url}/authorize",
+                    data={"username": totp_username, "password": totp_password},
+                    timeout=5,
+                )
+                checks["code_screen_appears"] = (
+                    code_screen.status_code == 200 and 'id="totp_code"' in code_screen.text
+                )
+
+                wrong_code = code_sess.post(
+                    f"{self.base_url}/authorize",
+                    data={
+                        "username": totp_username,
+                        "password": totp_password,
+                        "totp_code": "000000",
+                    },
+                    timeout=5,
+                )
+                checks["wrong_code_rejected"] = (
+                    wrong_code.status_code == 200 and "Invalid code" in wrong_code.text
+                )
+
+                valid_code = _generate_totp(totp_secret)
+                verified = code_sess.post(
+                    f"{self.base_url}/authorize",
+                    data={
+                        "username": totp_username,
+                        "password": totp_password,
+                        "totp_code": valid_code,
+                    },
+                    allow_redirects=False,
+                    timeout=5,
+                )
+                checks["valid_code_issues_authorization_code"] = (
+                    verified.status_code in (302, 303)
+                    and "code=" in verified.headers.get("Location", "")
+                )
+
+                if checks["valid_code_issues_authorization_code"] and jwt:
+                    location = verified.headers.get("Location", "")
+                    auth_code = parse_qs(urlparse(location).query).get("code", [None])[0]
+                    token_response = requests.post(
+                        f"{self.base_url}/token",
+                        data={
+                            "grant_type": "authorization_code",
+                            "code": auth_code,
+                            "redirect_uri": redirect_uri,
+                        },
+                        auth=(self.client_id, self.client_secret),
+                        timeout=5,
+                    )
+                    amr_ok = False
+                    if token_response.status_code == 200:
+                        id_token = token_response.json().get("id_token")
+                        if id_token:
+                            claims = jwt.decode(id_token, options={"verify_signature": False})
+                            amr_ok = claims.get("amr") == ["pwd", "otp"]
+                    checks["amr_reaches_id_token"] = amr_ok
+
+            success = all(checks.values())
+            return self._add_result(
+                "TOTP Login", TestCategory.OAUTH, success, f"checks={checks}", checks,
+            )
+        except Exception as e:
+            return self._add_result(
+                "TOTP Login", TestCategory.OAUTH, False, f"Error: {e}"
+            )
+        finally:
+            self.session.post(
+                f"{self.base_url}/settings",
+                data={"totp": "true" if original_totp else "false"},
                 timeout=10,
             )
 
@@ -5427,6 +5614,7 @@ class NanoIDPTestAgent:
                 self.test_scope_enforcement,
                 self.test_client_branding,
                 self.test_two_step_login,
+                self.test_totp_login,
                 self.test_id_token_audience,
                 self.test_id_token_time_claims,
                 self.test_id_token_audience_array,

@@ -268,6 +268,75 @@ returns to the first screen everywhere, including `/saml/sso` - which has
 no GET to link back to, so it resubmits the in-progress SP request's
 hidden fields instead.
 
+### Second factor (TOTP)
+
+`login.totp` (default `false`, #348) requires a time-based one-time code
+after a successful password check, for any user carrying a `totp_secret` -
+on the same four surfaces as two-step above. It is a **declarative demo
+factor**, not IdP hardening (VISION principle 1): nanoidp is not a
+production identity provider, and nothing here protects anything. It
+exists so an application can be demoed and tested against a login that has
+a real second screen and a real authenticator app, the way `login.two_step`
+exists so a client can be tested against a split login form.
+
+```yaml
+# settings.yaml
+login:
+  totp: true   # default: false
+
+# users.yaml
+users:
+  alice:
+    password: "alice-password"
+    totp_secret: "JBSWY3DPEHPK3PXP"   # or ${ALICE_TOTP_SECRET}
+```
+
+Everything is data in the configuration files, nothing is managed at
+runtime, like every other property of a user:
+
+- **Enrolment is the secret's presence.** There is no per-user `enabled`
+  flag, no enrolment screen, and no QR code in the UI - the operator
+  writes the Base32 secret directly in `users.yaml` (`${VAR}` placeholders
+  work exactly as they do for `password`). To set the secret up in an
+  authenticator app, use its "enter a setup key" option with the same
+  secret, or generate a QR code from the standard `otpauth://` URI
+  yourself: `otpauth://totp/nanoidp:<username>?secret=<secret>&issuer=nanoidp&algorithm=SHA1&digits=6&period=30`.
+- **Validation.** The secret must be Base32 (case-insensitive, spaces and
+  missing padding tolerated) or the configuration is rejected; a secret on
+  a user with no password is rejected too - a factor has to follow a
+  password.
+- **One rule, one place.** `login.totp` rides the same phase machinery as
+  `login.two_step` (`routes/_auth.py`): the code screen is a further phase
+  after the password step, the username travels forward as a hidden field
+  exactly as it does for two-step, and so does the password - since
+  nothing is stored server-side, the code screen re-submits the password
+  too, and it is re-checked when the code is verified.
+- **Verification.** RFC 6238, six digits, a 30-second period, HMAC-SHA1,
+  one step of clock skew either side - the parameters every authenticator
+  app assumes by default. Implemented with the standard library only
+  (`hmac`, `struct`), no new dependency.
+- **No replay memory.** The same code is accepted more than once within
+  its 30-second step. A production TOTP implementation would track the
+  last accepted step per enrolment and refuse a repeat. A wrong code is
+  written to the audit log the way a wrong password is, and the code
+  screen is sent with `Cache-Control: no-store`, since it carries the
+  password forward.
+- **Inert under persona mode**, the same composition as `two_step`:
+  persona login checks no password, so there is nothing for a second
+  factor to follow.
+- **The OAuth password grant and client-credentials are unaffected** - a
+  `totp_secret` only changes the four interactive login surfaces above,
+  never `grant_type=password`.
+- **Claims follow the login**, so a client can see the difference - see
+  [Tokens](tokens.md) for the `amr` claim and [SAML](saml.md) for the
+  `AuthnContextClassRef` value.
+
+Out of scope, on purpose: enrolment/QR in the UI, encrypted secret storage,
+a challenge store, replay protection, an administrator reset/recovery flow
+(edit the file instead), and step-up on a session that logged in before
+`login.totp` was turned on. A demo needs the visible flow. The rest is
+what a production IdP needs.
+
 ## Settings (`config/settings.yaml`)
 
 ```yaml
@@ -388,6 +457,7 @@ saml:
 #   mode: persona     # password (default) | persona
 #   auto_login: true  # default: false; requires mode: persona - see "Auto-login" above
 #   two_step: true    # default: false; see "Two-step login" above
+#   totp: true         # default: false; see "Second factor (TOTP)" above
 
 # Optional; how an unknown key is reported - see "Validating your configuration"
 # below. Also settable at startup with --strict-config, which wins over this
@@ -559,7 +629,9 @@ not a general styling knob - there's no per-client CSS or column widths.
 
 Two-step login (splitting the password form into a username screen and a
 password screen) is a global `login.two_step` setting, not part of a
-client's branding - see "Two-step login" above.
+client's branding - see "Two-step login" above. The same is true of the
+declarative TOTP second factor, `login.totp` - see "Second factor (TOTP)"
+above.
 
 To preview a client's branded login page, open `/authorize` with its
 `client_id` and a `redirect_uri` (any syntactically valid URL works unless

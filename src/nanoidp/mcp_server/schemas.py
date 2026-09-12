@@ -739,6 +739,18 @@ _TOOLS: list[Tool] = [
                     "/saml/sso and the device flow (#322/#323). Opt-in, "
                     "off by default; inert under login_mode: persona.",
                 },
+                "totp": {
+                    "type": "boolean",
+                    "description": "After a successful password check, "
+                    "require a time-based one-time code (RFC 6238, 6 "
+                    "digits, 30s period, SHA-1) from any user carrying a "
+                    "totp_secret - on /authorize, /login, /saml/sso and "
+                    "the device flow (#348). A declarative demo factor: "
+                    "the secret is a plain field of the user entry, "
+                    "written directly in users.yaml, with no enrolment, "
+                    "no replay protection and no admin reset. Opt-in, "
+                    "off by default; inert under login_mode: persona.",
+                },
             },
             "required": [],
         },

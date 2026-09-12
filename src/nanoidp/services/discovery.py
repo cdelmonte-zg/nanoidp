@@ -83,7 +83,7 @@ def build_discovery_document(
         "scopes_supported": settings.scopes_supported,
         "claims_supported": [
             "sub", "iss", "aud", "azp", "exp", "iat", "nbf",
-            "auth_time", "nonce", "at_hash",
+            "auth_time", "nonce", "at_hash", "amr",
             "email", "email_verified", "preferred_username",
             "roles", "groups", "tenant", "identity_class", "entitlements",
             "source_acl", "attributes", "authorities"

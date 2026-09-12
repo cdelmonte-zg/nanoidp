@@ -2,23 +2,27 @@
 Login-gate helper for ui_bp (opt-in, off by default - see require_ui_login
 in models.py), the management_secret mutation gate shared by ui_bp, api_bp
 and the MCP server (opt-in, off by default - see management_secret in
-models.py), and the two-step login phase shared by every interactive
-password-form surface (#322/#323 review round 2).
+models.py), the two-step login phase shared by every interactive
+password-form surface (#322/#323 review round 2), and the declarative
+TOTP second-factor phase riding the same machinery (#348).
 """
 
 import hashlib
 import hmac
+from dataclasses import dataclass
 from enum import Enum
+from typing import Optional, Sequence
 
-from flask import current_app, jsonify, redirect, request, session, url_for
+from flask import Response, current_app, jsonify, make_response, redirect, request, session, url_for
 from flask.typing import ResponseReturnValue
 
-from ..config import get_config
+from ..config import ConfigManager, User, get_config
 
 # Re-exported: verify_secret moved to the framework-free nanoidp.security
 # (#286) so the stdio MCP process stops importing Flask to reach it; this
 # module stays the import path its own callers and tests already use.
 from ..security import verify_secret  # noqa: F401
+from ..services.totp import verify_totp
 
 
 class TwoStepPhase(str, Enum):
@@ -95,43 +99,232 @@ _SAFE_METHODS = ("GET", "HEAD", "OPTIONS")
 _UI_MANAGEMENT_EXEMPT_ENDPOINTS = {"ui.login", "ui.management_unlock"}
 
 
-def establish_login_session(username: str, *, persona_mode: bool) -> None:
+class AuthMethod(str, Enum):
+    """How establish_login_session authenticated this session (#301,
+    extended #348 for the declarative TOTP second factor).
+
+    The single vocabulary session['auth_method'] is written and read
+    through: the SAML assertion's AuthnContextClassRef is derived from it
+    (``saml_context``), and so is the OIDC ``amr`` claim (``amr``).
+    """
+
+    PERSONA = "persona"
+    PASSWORD = "password"
+    PASSWORD_OTP = "password_otp"
+
+    @property
+    def amr(self) -> Optional[Sequence[str]]:
+        """OIDC ``amr`` values (RFC 8176 §2), or ``None`` when nothing
+        should be claimed at all. Persona login checks no password
+        (identity selection only - see Settings.login_mode), so claiming
+        'pwd' there would be a claim about a check that never happened -
+        VISION principle 2, "metadata never lies" (#348)."""
+        return _AMR[self]
+
+    @property
+    def saml_context(self) -> str:
+        """SAML V2.0 AuthnContextClassRef for this method (SAML V2.0
+        Authentication Context). TimeSyncToken is the class for a
+        time-synchronized one-time token, next to the pre-existing
+        password/unspecified pair (#348)."""
+        return _SAML_CONTEXT[self]
+
+
+# Static tables behind the two AuthMethod properties: built once, not per
+# login (review of #348).
+_AMR: dict[AuthMethod, Optional[tuple[str, ...]]] = {
+    AuthMethod.PERSONA: None,
+    AuthMethod.PASSWORD: ("pwd",),
+    AuthMethod.PASSWORD_OTP: ("pwd", "otp"),
+}
+_SAML_CONTEXT: dict[AuthMethod, str] = {
+    AuthMethod.PERSONA: "urn:oasis:names:tc:SAML:2.0:ac:classes:unspecified",
+    AuthMethod.PASSWORD: "urn:oasis:names:tc:SAML:2.0:ac:classes:PasswordProtectedTransport",
+    AuthMethod.PASSWORD_OTP: "urn:oasis:names:tc:SAML:2.0:ac:classes:TimeSyncToken",
+}
+
+
+def establish_login_session(username: str, *, method: AuthMethod) -> None:
     """Log ``username`` into the Flask session - the single writer of
-    session['user'] and session['auth_method'] (#301).
+    session['user'] and session['auth_method'] (#301, extended #348).
 
     The two surfaces that establish a UI session (ui.login's POST handler,
     the SAML SSO inline-login form in routes/saml.py) call this right after
-    config.interactive_authenticate() succeeds, instead of assigning the
-    keys themselves; a future surface that establishes one must go through
-    this helper too, and tests/test_login_session_contract.py holds every
-    module but this one to that. /authorize and /device also authenticate
-    through interactive_authenticate but establish no UI session, so they
-    never call this. The two keys must travel together: the SAML assertion's
-    AuthnContextClassRef is derived from 'auth_method', and a persona
-    login (identity selection, no password - see Settings.login_mode) must
-    not claim PasswordProtectedTransport (persona login design contract,
-    point 6). Before this helper each surface wrote both lines by hand, and
-    a third surface that set 'user' alone would have silently defaulted
-    every persona login to the password context.
+    the login (and, when active, the TOTP second factor) succeeds, instead
+    of assigning the keys themselves; a future surface that establishes one
+    must go through this helper too, and tests/test_login_session_contract.py
+    holds every module but this one to that. /authorize and /device also
+    authenticate through interactive_authenticate but establish no UI
+    session, so they never call this. The two keys must travel together:
+    the SAML assertion's AuthnContextClassRef and the OIDC amr claim are
+    both derived from 'auth_method' (AuthMethod.saml_context / .amr), and a
+    persona login (identity selection, no password) must not claim either a
+    password or a second factor it never checked. Before this helper each
+    surface wrote both lines by hand, and a third surface that set 'user'
+    alone would have silently defaulted every persona login to the password
+    context.
 
-    The 'auth_method' literal is spelled here and in
-    session_authenticated_via_persona only, on purpose: the contract test
-    looks for the string constant, which a named alias would hide from it.
+    The 'auth_method' literal is spelled here and in session_auth_method
+    only, on purpose: the contract test looks for the string constant,
+    which a named alias would hide from it.
     """
     session["user"] = username
-    session["auth_method"] = "persona" if persona_mode else "password"
+    session["auth_method"] = method.value
     session.permanent = True
 
 
-def session_authenticated_via_persona() -> bool:
-    """True when this session was established by a persona login - the
-    single reader of session['auth_method'] (#301).
+def session_auth_method() -> AuthMethod:
+    """The AuthMethod this session was established with - the single
+    reader of session['auth_method'] (#301, extended #348).
 
-    An absent key means 'password': sessions predating the persona feature,
-    and sessions seeded directly in tests with only session['user'], keep
-    the prior unconditional PasswordProtectedTransport behavior.
+    An absent key means AuthMethod.PASSWORD: sessions predating the
+    persona feature, and sessions seeded directly in tests with only
+    session['user'], keep the prior unconditional PasswordProtectedTransport
+    behavior. So does a value outside the enum (a cookie written by a
+    build with a method this one does not know): the reader this replaced
+    treated every non-persona string as the password context, and a SAML
+    response must not turn into a 500 over an unrecognised label.
     """
-    return session.get("auth_method", "password") == "persona"
+    try:
+        return AuthMethod(session.get("auth_method", AuthMethod.PASSWORD.value))
+    except ValueError:
+        return AuthMethod.PASSWORD
+
+
+class SecondFactorPhase(str, Enum):
+    """Where a login submission stands under the declarative TOTP second
+    factor (#348), once two_step_phase (or the combined form) has already
+    decided ATTEMPT and the password has been checked. Derived purely from
+    settings, the just-authenticated user, and this request's form - the
+    single home every interactive-login surface shares, exactly like
+    two_step_phase above.
+    """
+
+    NOT_REQUIRED = "not_required"  # totp inactive, or this user has no secret: no change
+    CODE_STEP = "code_step"  # nothing submitted yet: render the code screen
+    CODE_REQUIRED = "code_required"  # the code screen was resubmitted blank
+    CODE_INVALID = "code_invalid"  # a non-blank code was submitted but did not verify
+    VERIFIED = "verified"  # a valid code was submitted
+
+    @property
+    def pending(self) -> bool:
+        """The password passed but the login is not complete: render the
+        code screen. One predicate for the four surfaces, so none of them
+        re-spells the set of pending phases."""
+        return self in _PENDING_PHASES
+
+    @property
+    def error(self) -> Optional[str]:
+        """The message the code screen shows for this phase, ``None`` for
+        the first arrival at it. Spelled once here rather than at each
+        surface (review of #348)."""
+        return _CODE_SCREEN_ERRORS.get(self)
+
+
+_PENDING_PHASES = frozenset(
+    {SecondFactorPhase.CODE_STEP, SecondFactorPhase.CODE_REQUIRED, SecondFactorPhase.CODE_INVALID}
+)
+_CODE_SCREEN_ERRORS: dict[SecondFactorPhase, str] = {
+    SecondFactorPhase.CODE_REQUIRED: "Code is required",
+    SecondFactorPhase.CODE_INVALID: "Invalid code",
+}
+
+
+def second_factor_phase(
+    *,
+    totp_active: bool,
+    user: Optional[User],
+    code_submitted: bool,
+    code: str,
+) -> SecondFactorPhase:
+    """Classify a just-password-authenticated login under the declarative
+    TOTP second factor (#348). ``user`` is the account interactive_authenticate
+    just returned (``None`` on a failed password check - callers only reach
+    here on success). A user without a totp_secret sees no change, same
+    composition as Settings.totp_active being inert under persona mode.
+    """
+    if not totp_active or user is None or not user.totp_secret:
+        return SecondFactorPhase.NOT_REQUIRED
+    if code:
+        return (
+            SecondFactorPhase.VERIFIED
+            if verify_totp(user.totp_secret, code)
+            else SecondFactorPhase.CODE_INVALID
+        )
+    if code_submitted:
+        return SecondFactorPhase.CODE_REQUIRED
+    return SecondFactorPhase.CODE_STEP
+
+
+@dataclass(frozen=True)
+class InteractiveLogin:
+    """What authenticate_interactively decided for one submission (#348).
+
+    ``user`` is set only when the login is COMPLETE - the password (or
+    persona selection) passed and no second factor is outstanding. While
+    the TOTP code screen is pending, ``user`` is ``None`` on purpose: a
+    surface that keeps the pre-#348 idiom ``if user: <issue code /
+    establish session>`` therefore fails closed (it shows its usual
+    invalid-credentials response) instead of minting a credential with no
+    code checked. ``phase.pending`` tells such a surface to render the code
+    screen instead, with ``phase.error`` as its message.
+
+    ``method`` is how the completed login authenticated (the session
+    writer's and the SAML context's vocabulary); ``amr`` is the OIDC claim
+    to mint, already gated: ``None`` unless ``login.totp`` is active, so
+    the feature is opt-in on the wire too - a deployment that never turned
+    it on sees no new claim in its ID Tokens.
+    """
+
+    user: Optional[User]
+    phase: SecondFactorPhase
+    method: AuthMethod
+    amr: Optional[Sequence[str]]
+
+
+def authenticate_interactively(
+    config: ConfigManager,
+    *,
+    username: str,
+    password: str,
+) -> InteractiveLogin:
+    """The one call every interactive surface makes once two_step_phase (or
+    the combined form) says ATTEMPT (#348): runs the existing password/
+    persona check, then - only when it succeeds and login.totp is active -
+    the further TOTP phase, riding the same phase machinery as two_step
+    (#322/#323). The submitted code is read from this request's form here
+    (``totp_code``), so the field name too is spelled once. Each route only
+    renders what the returned ``InteractiveLogin`` says; the rule is here.
+    """
+    user = config.interactive_authenticate(username, password)
+    if user is None:
+        return InteractiveLogin(None, SecondFactorPhase.NOT_REQUIRED, AuthMethod.PASSWORD, None)
+    if config.settings.persona_mode_enabled:
+        return InteractiveLogin(user, SecondFactorPhase.NOT_REQUIRED, AuthMethod.PERSONA, None)
+    totp_active = config.settings.totp_active
+    phase = second_factor_phase(
+        totp_active=totp_active,
+        user=user,
+        code_submitted="totp_code" in request.form,
+        code=request.form.get("totp_code", ""),
+    )
+    method = AuthMethod.PASSWORD_OTP if phase is SecondFactorPhase.VERIFIED else AuthMethod.PASSWORD
+    return InteractiveLogin(
+        user=None if phase.pending else user,
+        phase=phase,
+        method=method,
+        amr=method.amr if totp_active else None,
+    )
+
+
+def no_store(response: ResponseReturnValue) -> Response:
+    """Mark a code-screen response uncacheable (#348 review). The screen
+    carries the password forward as a hidden field - the price of keeping
+    the step stateless like two_step - so it must never sit in a shared or
+    back/forward cache."""
+    resp = make_response(response)
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
 
 
 def is_ui_authenticated() -> bool:

@@ -68,6 +68,27 @@ do **not** carry `email` or other profile claims - see [Where do the
 `email` / `profile` claims come from?](#where-do-the-email--profile-claims-come-from)
 below.
 
+### `amr`
+
+`amr` (Authentication Methods References, OIDC Core §2, values from RFC
+8176 §2) is present on an ID Token issued through an interactive login
+surface (`/login`, `/authorize`, `/saml/sso`, the device flow) once
+`login.totp` is on (#348, see [Second factor
+(TOTP)](configuration.md#second-factor-totp)):
+
+- `["pwd"]` - a password login with no second factor.
+- `["pwd", "otp"]` - a password login followed by a valid TOTP code.
+
+It is absent with `login.totp` off (the feature is opt-in on the wire too:
+a deployment that never turned it on sees no new claim), under
+`login.mode: persona` (identity selection checks no password, so `pwd`
+would be a claim about a check that never happened - metadata never lies),
+and on the OAuth password grant, which #348 leaves untouched. It is
+preserved across a refresh (carried in the refresh token payload, the same
+way `auth_time` is) and is never emitted on an access token, only the ID
+Token. `amr` is a reserved claim name: a `claims` request parameter (see
+below) cannot set it.
+
 If `additional_audiences` produces more than one distinct audience value,
 `aud` becomes an array and `azp` is added:
 

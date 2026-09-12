@@ -20,6 +20,14 @@ that stops being true also fails):
   widget, not a single named input - recognized explicitly (#291 corrected:
   the input was never missing, the single-name regex just could not see it).
 - ``/api/users/<u>`` adds derived ``authorities`` (not a stored field).
+- ``totp_secret`` (#348) is YAML-only, strictly more excluded than
+  ``password``: the operator writes it directly in users.yaml, and it is
+  absent from every surface that isn't the YAML load contract itself - the
+  users form, every MCP user tool (create_user/update_user included, unlike
+  password, which those tools DO accept), _USER_COMMON_PROPERTIES, and every
+  read surface. An edit through the form or MCP leaves whatever secret the
+  file already has untouched (see routes/ui.py and the MCP update_user
+  handler), rather than accepting a new one.
 """
 
 import re
@@ -47,17 +55,22 @@ class TestUserFieldParity:
 
     def test_mcp_read_surface_matches_the_model(self):
         user = User(username="parity", password="p")
-        # password is the one intentional omission on every read surface.
-        assert set(_user_to_dict(user)) == _MODEL_FIELDS - {"password"}
+        # password and totp_secret are the intentional omissions on every
+        # read surface.
+        assert set(_user_to_dict(user)) == _MODEL_FIELDS - {"password", "totp_secret"}
 
     def test_mcp_common_properties_match_the_model(self):
-        # The shared block omits username/password: the create/update schemas
-        # declare those two separately (asserted below).
-        assert set(_USER_COMMON_PROPERTIES) == _MODEL_FIELDS - {"username", "password"}
+        # The shared block omits username/password (declared separately by
+        # create/update, asserted below) and totp_secret (YAML-only, #348).
+        assert set(_USER_COMMON_PROPERTIES) == _MODEL_FIELDS - {
+            "username", "password", "totp_secret",
+        }
 
     def test_mcp_tool_schemas_match_the_model(self):
+        # totp_secret is YAML-only (#348): neither create_user nor
+        # update_user takes it, unlike password, which both do.
         for tool in ("create_user", "update_user"):
-            assert set(_TOOL_SCHEMAS[tool]["properties"]) == _MODEL_FIELDS, tool
+            assert set(_TOOL_SCHEMAS[tool]["properties"]) == _MODEL_FIELDS - {"totp_secret"}, tool
 
     def test_users_form_has_an_input_per_field(self):
         html = _TEMPLATE.read_text()
@@ -71,12 +84,14 @@ class TestUserFieldParity:
         assert {"attr_key[]", "attr_value[]"} <= widget_names, (
             "the users form lost its attributes widget"
         )
-        missing = _MODEL_FIELDS - form_names - {"attributes"}
+        # totp_secret is YAML-only (#348): the operator writes it in
+        # users.yaml, not through this form.
+        missing = _MODEL_FIELDS - form_names - {"attributes", "totp_secret"}
         assert not missing, f"users_form.html has no input for: {sorted(missing)}"
 
     def test_api_read_surface_matches_the_model(self, client):
         resp = client.get("/api/users/admin")
         assert resp.status_code == 200
         keys = set(resp.get_json())
-        # password elided; authorities is derived, not a stored field.
-        assert keys == (_MODEL_FIELDS - {"password"}) | {"authorities"}
+        # password/totp_secret elided; authorities is derived, not a stored field.
+        assert keys == (_MODEL_FIELDS - {"password", "totp_secret"}) | {"authorities"}
