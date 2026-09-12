@@ -65,8 +65,12 @@ jobs:
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
+      # With the CI values: the chart's values.schema.json requires
+      # configFiles.users/settings (or existingSecret), so a bare lint fails
+      # on the empty defaults, as it did on the v3.1.0-rc1 tag. helm.yml
+      # lints the same way.
       - name: Lint
-        run: helm lint "$CHART_DIR"
+        run: helm lint "$CHART_DIR" -f "$CHART_DIR/ci/values-minimal.yaml"
 
       - name: Package
         run: |
