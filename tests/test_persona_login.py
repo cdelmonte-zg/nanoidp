@@ -127,6 +127,9 @@ class TestPersonaLoginPost:
         assert response.headers["Location"] == "/"
         with client.session_transaction() as sess:
             assert sess["user"] == "admin"
+            # Recorded alongside 'user' (#301) so a SAML SSO that later
+            # reuses this session emits the persona AuthnContextClassRef.
+            assert sess["auth_method"] == "persona"
 
     def test_password_is_ignored_even_if_supplied(self, app, client):
         """Persona mode never checks a password, even a wrong one posted anyway."""

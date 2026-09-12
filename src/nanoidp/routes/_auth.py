@@ -95,13 +95,53 @@ _SAFE_METHODS = ("GET", "HEAD", "OPTIONS")
 _UI_MANAGEMENT_EXEMPT_ENDPOINTS = {"ui.login", "ui.management_unlock"}
 
 
+def establish_login_session(username: str, *, persona_mode: bool) -> None:
+    """Log ``username`` into the Flask session - the single writer of
+    session['user'] and session['auth_method'] (#301).
+
+    The two surfaces that establish a UI session (ui.login's POST handler,
+    the SAML SSO inline-login form in routes/saml.py) call this right after
+    config.interactive_authenticate() succeeds, instead of assigning the
+    keys themselves; a future surface that establishes one must go through
+    this helper too, and tests/test_login_session_contract.py holds every
+    module but this one to that. /authorize and /device also authenticate
+    through interactive_authenticate but establish no UI session, so they
+    never call this. The two keys must travel together: the SAML assertion's
+    AuthnContextClassRef is derived from 'auth_method', and a persona
+    login (identity selection, no password - see Settings.login_mode) must
+    not claim PasswordProtectedTransport (persona login design contract,
+    point 6). Before this helper each surface wrote both lines by hand, and
+    a third surface that set 'user' alone would have silently defaulted
+    every persona login to the password context.
+
+    The 'auth_method' literal is spelled here and in
+    session_authenticated_via_persona only, on purpose: the contract test
+    looks for the string constant, which a named alias would hide from it.
+    """
+    session["user"] = username
+    session["auth_method"] = "persona" if persona_mode else "password"
+    session.permanent = True
+
+
+def session_authenticated_via_persona() -> bool:
+    """True when this session was established by a persona login - the
+    single reader of session['auth_method'] (#301).
+
+    An absent key means 'password': sessions predating the persona feature,
+    and sessions seeded directly in tests with only session['user'], keep
+    the prior unconditional PasswordProtectedTransport behavior.
+    """
+    return session.get("auth_method", "password") == "persona"
+
+
 def is_ui_authenticated() -> bool:
     """True when the current Flask session carries a logged-in UI user.
 
-    Set by ui.login's POST handler and by the SAML SSO inline-login form
-    (routes/saml.py) - both authenticate via config.interactive_authenticate(),
-    so either is sufficient here. Under login_mode: persona that call is
-    identity selection only, not a credential check (see Settings.login_mode).
+    Set by establish_login_session, which ui.login's POST handler and the
+    SAML SSO inline-login form (routes/saml.py) both call after
+    config.interactive_authenticate() succeeds, so either is sufficient
+    here. Under login_mode: persona that call is identity selection only,
+    not a credential check (see Settings.login_mode).
     """
     return bool(session.get("user"))
 

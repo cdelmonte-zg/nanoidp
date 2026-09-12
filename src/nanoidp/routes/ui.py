@@ -32,6 +32,7 @@ from ..services import get_audit_log, get_crypto_service, get_token_service, get
 from ._audit import audit_event
 from ._auth import (
     TwoStepPhase,
+    establish_login_session,
     management_secret_required_for_ui,
     mark_management_verified,
     two_step_phase,
@@ -162,13 +163,9 @@ def login() -> ResponseReturnValue:
             return render_login("Invalid credentials", username)
         return redirect(url_for("ui.login", error="Invalid credentials"))
 
-    # Create session
-    session["user"] = username
-    # Recorded so a session authenticated here and later reused by SAML SSO
-    # reports the correct AuthnContextClassRef (persona logins must not
-    # claim PasswordProtectedTransport).
-    session["auth_method"] = "persona" if persona_mode else "password"
-    session.permanent = True
+    # Single writer for the login session (#301): SAML SSO may later reuse
+    # this session and needs to know how it authenticated.
+    establish_login_session(username, persona_mode=persona_mode)
 
     audit_event(
         "login",
