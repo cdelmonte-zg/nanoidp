@@ -22,13 +22,16 @@ podLabels: {}
 podAnnotations: {}
 
 # Verified against a namespace enforcing the restricted Pod Security
-# Standard: with these defaults the pod is admitted. runAsNonRoot/runAsUser
-# match the USER the image has since nanoidp 3.1.0; for an older image.tag
-# set runAsNonRoot to false and runAsUser to 0, those images write their
-# keys as root.
+# Standard: with these defaults the pod is admitted. No runAsUser on
+# purpose (#339): runAsNonRoot alone satisfies the standard, the kubelet
+# checks it against the numeric USER the image has since nanoidp 3.1.0
+# (1000:0), and a platform that assigns its own uid per namespace
+# (OpenShift's restricted-v2 SCC) can do so, the image's key and config
+# directories being group-writable by gid 0. Pinning runAsUser: 1000 would
+# be rejected there. For an older image.tag, which writes its keys as
+# root, set runAsNonRoot to false and runAsUser to 0.
 securityContext:
   runAsNonRoot: true
-  runAsUser: 1000
   allowPrivilegeEscalation: false
   capabilities:
     drop: ["ALL"]

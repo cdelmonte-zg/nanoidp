@@ -118,9 +118,12 @@ default="$(helm template "$CHART_DIR" -f "$CI_DIR/values-minimal.yaml")"
 assert_eq "securityContext.runAsNonRoot" \
   "$(yq 'select(.kind == "Deployment") | .spec.template.spec.containers[0].securityContext.runAsNonRoot' <<<"$default")" \
   "true"
-assert_eq "securityContext.runAsUser matches the image's USER" \
+# No runAsUser by default (#339): runAsNonRoot is checked by the kubelet
+# against the image's numeric USER, and a platform assigning its own uid
+# per namespace (OpenShift restricted-v2) would reject a pinned one.
+assert_eq "securityContext.runAsUser is unset" \
   "$(yq 'select(.kind == "Deployment") | .spec.template.spec.containers[0].securityContext.runAsUser' <<<"$default")" \
-  "1000"
+  "null"
 assert_eq "securityContext.allowPrivilegeEscalation" \
   "$(yq 'select(.kind == "Deployment") | .spec.template.spec.containers[0].securityContext.allowPrivilegeEscalation' <<<"$default")" \
   "false"
