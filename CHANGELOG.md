@@ -87,8 +87,6 @@ upgrade is collected here.
   multi-arch build) before `helm push`, and fails instead of publishing a
   chart that runs nothing. On the chart-only dispatch path the same wait
   confirms the pinned `image.tag` exists.
-
-### Changed
 - **The login session has a single writer** (#301). The dashboard's `/login`
   and the SAML SSO inline login each used to set `session['user']` and
   `session['auth_method']` by hand, and the SAML assertion's

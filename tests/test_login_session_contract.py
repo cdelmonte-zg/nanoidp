@@ -12,18 +12,28 @@ structural test holds every other module in src/nanoidp to calling it.
 
 The structural test is a tripwire, not a proof. It walks the AST of every
 module under src/nanoidp (the same rglob tests/test_token_issuance_parity.py
-uses) and flags three things outside _auth.py: a store into (or del of)
-session['user'], a session.update(...) whose keyword, dict-literal
-argument or unpacked ``**{...}`` names 'user' (and a session.setdefault
-whose key argument is 'user'), and the string constant 'auth_method'
-anywhere but a docstring (subscript, .get, .pop, a dict key). Working on
-the AST rather than the source text means a read like ``if
-session["user"]:`` or ``actor=session.get("user")`` passes, comments and
-docstrings are never matched, and a session.update( call split across
-lines is still caught. What still passes: a key held in a variable
-(``session[key] = ...``) and a dict built on another line and splatted in.
-The review that goes with a new login surface still has to look for the
-call.
+uses) and flags three things outside _auth.py: a store into (del of, or
+.pop of) session['user'], a session.update(...) whose keyword, dict
+argument (a ``{...}`` literal or a ``dict(...)`` call) or unpacked ``**``
+form names 'user' (and a session.setdefault whose key argument is 'user'),
+and the string constant 'auth_method' anywhere but a docstring (subscript,
+.get, .pop, a dict key). Working on the AST rather than the source text
+means a read like ``if session["user"]:`` or ``actor=session.get("user")``
+passes, comments and docstrings are never matched, and a session.update(
+call split across lines is still caught.
+
+What still passes: a key held in a variable (``session[key] = ...``), a
+dict built on another line and splatted in, and an aliased import
+(``from flask import session as s; s["user"] = ...``): ``_is_session``
+knows only the name ``session`` and ``<anything>.session``. That last
+match is deliberately wide, so a ``db.session.update(user=1)`` would trip
+it too; nothing in src/nanoidp has a ``.session`` attribute today. And
+because any bare 'auth_method' constant trips the test, an unrelated use
+of the literal (an audit ``details={"auth_method": ...}``, say) is
+expected to pick another name rather than weaken the check. "Exactly one
+reader" holds within src/nanoidp; the tests read ``sess["auth_method"]``
+directly to pin what the helper wrote. The review that goes with a new
+login surface still has to look for the call.
 """
 
 import ast
@@ -70,12 +80,22 @@ def _docstring_nodes(tree: ast.AST) -> set[int]:
 
 
 def _dict_names_user(node: ast.expr) -> bool:
-    return isinstance(node, ast.Dict) and any(_const(k) == "user" for k in node.keys)
+    """A ``{"user": ...}`` literal, or a ``dict(user=...)`` /
+    ``dict({"user": ...})`` call (review round 2: ``dict(...)`` is an
+    ast.Call, not an ast.Dict, and used to pass)."""
+    if isinstance(node, ast.Dict):
+        return any(_const(k) == "user" for k in node.keys)
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "dict":
+        return any(kw.arg == "user" for kw in node.keywords) or any(
+            _dict_names_user(arg) for arg in node.args
+        )
+    return False
 
 
 def _update_call_writes_user(call: ast.Call) -> bool:
-    """session.update(user=...), session.update({"user": ...}), and the
-    unpacked form session.update(**{"user": ...}) (review round 2)."""
+    """session.update(user=...), session.update({"user": ...}),
+    session.update(dict(user=...)), and the unpacked forms
+    session.update(**{"user": ...}) / session.update(**dict(user=...))."""
     for kw in call.keywords:
         if kw.arg in _LOGIN_KEYS:
             return True
@@ -116,9 +136,11 @@ def login_session_key_offenders(tree: ast.AST) -> list[ast.AST]:
             and isinstance(node.func, ast.Attribute)
             and _is_session(node.func.value)
         ):
-            # session.setdefault("user", ...): only the key argument is a
-            # write; the value may legitimately be any dict.
-            if node.func.attr == "setdefault":
+            # session.setdefault("user", ...) and session.pop("user"[, default]):
+            # only the key argument counts; setdefault's value may
+            # legitimately be any dict. pop is del spelled as a call, and
+            # the two get the same verdict.
+            if node.func.attr in ("setdefault", "pop"):
                 if node.args and _const(node.args[0]) == "user":
                     offenders.append(node)
             elif node.func.attr == "update" and _update_call_writes_user(node):
@@ -194,7 +216,12 @@ class TestSingleWriter:
         assert _offends('session.update({"user": username})')
         assert _offends('session.update(\n    {\n        "user": username,\n    }\n)')
         assert _offends('session.update(**{"user": username})')
+        assert _offends("session.update(dict(user=username))")
+        assert _offends('session.update(dict({"user": username}))')
+        assert _offends("session.update(**dict(user=username))")
         assert _offends('session.setdefault("user", username)')
+        assert _offends('session.pop("user", None)')
+        assert _offends('session.pop("user")')
         assert _offends('session["auth_method"] = "persona"')
         assert _offends('session.get("auth_method", "password")')
         assert _offends('session.pop("auth_method", None)')
@@ -204,14 +231,23 @@ class TestSingleWriter:
         assert not _offends('session.get("user")')
         assert not _offends("client.token_endpoint_auth_method")
         assert not _offends('if session["user"] == "admin":\n    pass')
-        assert not _offends('if not session["user"]:\n    return redirect(url_for("ui.login", error=e))')
+        assert not _offends(
+            'if not session["user"]:\n    return redirect(url_for("ui.login", error=e))'
+        )
         assert not _offends('if session["user"]:\n    x = 1')
         assert not _offends('current_user=session.get("user"),')
         assert not _offends('session.update(actor=session.get("user"))')
         assert not _offends('session.setdefault("hint", user.username)')
         assert not _offends('session.setdefault("hint", {"user": username})')
+        assert not _offends('session.pop("hint", None)')
+        assert not _offends("session.update(dict(hint=username))")
         assert not _offends('"""session["auth_method"] is described here, not touched."""')
         assert not _offends('def f():\n    """auth_method"""')
         assert not _offends('class C:\n    """auth_method"""')
         assert not _offends('"""auth_method"""')  # a module docstring
         assert not _offends('# session["user"] = username')
+        # the documented misses (module docstring): pinned so a change in
+        # reach shows up here rather than being discovered in review
+        assert not _offends("session[key] = username")
+        assert not _offends("session.update(**fields)")
+        assert not _offends('from flask import session as s\ns["user"] = username')
