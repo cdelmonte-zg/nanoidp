@@ -40,7 +40,8 @@ What it asserts, in order:
      ``delete_document``, the resource server refuses it (insufficient_scope),
      and that refusal is what the agent hands back to the model and quotes in
      its answer: the authorization decision reaches the loop as a tool result,
-     not as a crash.
+     not as a crash. The execution is recorded as success, and the MCP Client
+     Tool node's run carries the refusal as its error.
   8. Negative, audience inside the loop: the MCP Client Tool with the
      wrong-audience credential cannot even list tools (401 invalid_token), so
      the agent fails before calling the model.
@@ -469,12 +470,16 @@ def main() -> int:
         execution = n8n.last_execution(wf_agent_scope)
         seen = chat.requests()
         fed_back = [m for r in seen for m in r.get("messages") or [] if m.get("role") == "tool"]
+        tool_err = node_error(execution, MCP_TOOL_NODE_NAME)
         check(
             "insufficient_scope from the MCP server comes back to the model as the tool result",
             any("insufficient_scope" in str(m.get("content")) and "documents:write" in str(m.get("content")) for m in fed_back)
-            and output.startswith(MOCK_FINAL_PREFIX) and "insufficient_scope" in output,
+            and output.startswith(MOCK_FINAL_PREFIX) and "insufficient_scope" in output
+            # a tool error is not a crash: the execution succeeds, and the
+            # refusal is recorded as the tool node's error
+            and execution.get("status") == "success" and "insufficient_scope" in tool_err,
             f"HTTP {resp.status_code} status={execution.get('status')} output={output[:200]!r} "
-            f"fed_back={[str(m.get('content'))[:120] for m in fed_back]} {execution_error(execution)[:200]}",
+            f"tool_error={tool_err[:120]!r} fed_back={[str(m.get('content'))[:120] for m in fed_back]}",
         )
 
         chat.clear()

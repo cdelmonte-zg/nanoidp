@@ -26,8 +26,10 @@ The machine is stateless; it decides from the conversation it is handed:
      admin_operation, anything else -> read_document) and must be among the
      offered ones, matched on the suffix, because n8n's MCP Client Tool node
      prefixes every tool with the node's name (``MCP_Client_Tool_read_document``)
-     and the call goes back under that prefixed name; the ``document_id`` is
-     the first ``doc-...`` token in the user message, ``doc-42`` if none.
+     and the call goes back under that prefixed name. The arguments follow
+     the mock MCP server's signatures: ``document_id`` (the first ``doc-...``
+     token in the user message, ``doc-42`` if none) for read_document and
+     delete_document, ``action`` for admin_operation.
   3. No tools at all -> a plain text answer saying so.
 
 Every request is kept in memory and served back on ``GET /requests`` so a
@@ -93,6 +95,15 @@ def _pick_tool(user_text: str, offered: List[str]) -> Optional[str]:
     return None
 
 
+def _arguments_for(tool: str, user_text: str) -> Dict[str, str]:
+    """The arguments e2e/mock_mcp_server.py's tool takes: read_document and
+    delete_document want ``document_id``, admin_operation wants ``action``."""
+    if tool.endswith("admin_operation"):
+        return {"action": "audit"}
+    match = DOC_ID.search(user_text)
+    return {"document_id": match.group(0) if match else "doc-42"}
+
+
 def decide(body: Dict[str, Any]) -> Dict[str, Any]:
     """The two-state machine: a chat completion ``message`` and its finish reason."""
     messages = body.get("messages") or []
@@ -114,8 +125,6 @@ def decide(body: Dict[str, Any]) -> Dict[str, Any]:
             "message": {"role": "assistant", "content": NO_TOOLS_ANSWER},
             "finish_reason": "stop",
         }
-    match = DOC_ID.search(_last_user_text(messages))
-    arguments = {"document_id": match.group(0) if match else "doc-42"}
     return {
         "message": {
             "role": "assistant",
@@ -124,7 +133,7 @@ def decide(body: Dict[str, Any]) -> Dict[str, Any]:
                 {
                     "id": f"call_{uuid.uuid4().hex[:24]}",
                     "type": "function",
-                    "function": {"name": tool, "arguments": json.dumps(arguments)},
+                    "function": {"name": tool, "arguments": json.dumps(_arguments_for(tool, _last_user_text(messages)))},
                 }
             ],
         },
