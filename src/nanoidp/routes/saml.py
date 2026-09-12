@@ -27,7 +27,12 @@ from ..services.saml_verification import (
     verify_redirect_signature,
 )
 from ._audit import audit_event
-from ._auth import TwoStepPhase, two_step_phase
+from ._auth import (
+    TwoStepPhase,
+    establish_login_session,
+    session_authenticated_via_persona,
+    two_step_phase,
+)
 from ._issuer import effective_saml_entity_id, effective_saml_sso_url
 
 # Create secure XML parser (XXE protection without deprecated defusedxml.lxml)
@@ -513,13 +518,10 @@ def _sso_authenticate_inline(
     user = config.interactive_authenticate(form_username, form_password)
 
     if user:
-        session["user"] = form_username
-        # Recorded so the assertion's AuthnContextClassRef reflects how this
-        # session actually authenticated (#persona login design contract,
-        # point 6) - persona logins must not claim
-        # PasswordProtectedTransport.
-        session["auth_method"] = "persona" if persona_mode else "password"
-        session.permanent = True
+        # Single writer for the login session (#301); it records how this
+        # session authenticated so _sso_success_response can pick the
+        # matching AuthnContextClassRef.
+        establish_login_session(form_username, persona_mode=persona_mode)
         audit_event(
             "login",
             "success",
@@ -589,12 +591,11 @@ def _sso_success_response(
     # AuthnContextClassRef must reflect how THIS session actually
     # authenticated, not the current server-wide setting - the session may
     # have been authenticated earlier (e.g. via the nanoidp dashboard's own
-    # /login) and is only being reused here. Defaults to "password" when
-    # unset (sessions predating this feature, or seeded directly in tests),
-    # preserving the prior unconditional PasswordProtectedTransport behavior.
+    # /login) and is only being reused here. The reader and its
+    # absent-means-password default live in _auth (#301).
     authn_context = (
         "urn:oasis:names:tc:SAML:2.0:ac:classes:unspecified"
-        if session.get("auth_method", "password") == "persona"
+        if session_authenticated_via_persona()
         else "urn:oasis:names:tc:SAML:2.0:ac:classes:PasswordProtectedTransport"
     )
 

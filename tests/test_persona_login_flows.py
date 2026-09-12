@@ -418,6 +418,9 @@ class TestSamlSsoPersonaMode:
 
         assert response.status_code == 200
         assert self._authn_context_of(response.data) == self.PASSWORD_CTX
+        with client.session_transaction() as sess:
+            assert sess["user"] == "admin"
+            assert sess["auth_method"] == "password"
 
     def test_persona_mode_shows_picker_no_password_field(self, app, client):
         _enable_persona_mode(app)
@@ -439,6 +442,11 @@ class TestSamlSsoPersonaMode:
 
         assert response.status_code == 200
         assert self._authn_context_of(response.data) == self.UNSPECIFIED_CTX
+        # The inline login goes through the same single writer as /login
+        # (#301), so the session itself records the persona method too.
+        with client.session_transaction() as sess:
+            assert sess["user"] == "admin"
+            assert sess["auth_method"] == "persona"
 
     def test_persona_mode_nonexistent_user_rejected(self, app, client):
         _enable_persona_mode(app)

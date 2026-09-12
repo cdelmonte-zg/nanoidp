@@ -89,6 +89,16 @@ upgrade is collected here.
   confirms the pinned `image.tag` exists.
 
 ### Fixed
+- **The login session has a single writer** (#301). The dashboard's `/login`
+  and the SAML SSO inline login each used to set `session['user']` and
+  `session['auth_method']` by hand, and the SAML assertion's
+  `AuthnContextClassRef` is derived from the latter. Both now call one
+  helper, `establish_login_session`, which records the user and how it
+  authenticated together, and a contract test holds every other module to
+  it. A future login surface can therefore no longer record a user without
+  recording the method, which would have made its persona logins silently
+  claim `PasswordProtectedTransport`. No behavior changes for existing
+  logins.
 - **Rejected `/authorize` requests no longer replace an earlier pending
   request in the same browser session** (#331). The session capture now
   updates only after client, redirect URI, response type, scope, PKCE, and
