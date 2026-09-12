@@ -15,11 +15,9 @@ import json
 import re
 import secrets
 
-import pytest
 from lxml import etree
 
 from nanoidp.config import get_config
-from nanoidp.services.device_code import get_device_code_store
 from tests.conftest import authorization_response_params, oauth_session
 
 AUTHORIZE_QS = (
@@ -31,14 +29,6 @@ AUTHORIZE_QS = (
 def _enable_persona_mode(app) -> None:
     with app.app_context():
         get_config().settings.login_mode = "persona"
-
-
-@pytest.fixture(autouse=True)
-def cleanup_device_codes():
-    """Clean up device codes after each test to prevent state leakage
-    (device_code store is a process-wide singleton, see test_device_flow_complete.py)."""
-    yield
-    get_device_code_store().clear()
 
 
 class TestAuthorizePersonaMode:

@@ -15,15 +15,6 @@ import pytest
 from nanoidp.config import get_config
 
 
-@pytest.fixture(autouse=True)
-def clean_revoked_tokens():
-    """The revocation store is a process-wide singleton; keep tests isolated."""
-    from nanoidp.services.revocation import get_revocation_store
-    get_revocation_store().clear()
-    yield
-    get_revocation_store().clear()
-
-
 def _password_grant(client, auth_header):
     resp = client.post(
         "/token",

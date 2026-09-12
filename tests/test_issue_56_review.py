@@ -18,14 +18,6 @@ from nanoidp.config import get_config
 from tests.conftest import authorize_error
 
 
-@pytest.fixture(autouse=True)
-def clean_revocation_state():
-    from nanoidp.services.revocation import get_revocation_store
-    get_revocation_store().clear()
-    yield
-    get_revocation_store().clear()
-
-
 def _password_grant(client, headers, scope="openid"):
     data = {"grant_type": "password", "username": "admin", "password": "admin"}
     if scope is not None:

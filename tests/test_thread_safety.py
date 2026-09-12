@@ -8,6 +8,7 @@ without the locks they fail reliably, with them they must always pass.
 """
 
 import threading
+from pathlib import Path
 
 import nanoidp.config as config_module
 import nanoidp.services.crypto as crypto_module
@@ -86,13 +87,25 @@ class TestSingletonConcurrency:
     """Lazy singletons must be constructed exactly once under concurrent
     first access. A slow __init__ forces the check-then-set race window."""
 
-    def _assert_single_instance(self, module, attr, getter, monkeypatch):
+    def _assert_single_instance(self, module, attr, getter, monkeypatch, stub_attrs=None):
+        """Race ``n`` threads through ``getter`` with the service class
+        replaced by a slow stub, and assert one construction, seen by all.
+
+        ``stub_attrs`` is a callable ``(stub, *args, **kwargs) -> None`` that
+        gives the stub the attributes the getter reads on a published
+        instance; a getter that inspects the instance (get_crypto_service
+        since #281 reads ``keys_dir`` and ``uses_external_keys``) raises
+        AttributeError on a bare stub in every thread that observes it, and
+        those threads never reach ``seen`` (#320).
+        """
         instances = []
 
         class SlowInit:
             def __init__(self, *args, **kwargs):
                 import time
                 time.sleep(0.05)  # widen the race window
+                if stub_attrs is not None:
+                    stub_attrs(self, *args, **kwargs)
                 instances.append(self)
 
         monkeypatch.setattr(module, attr, SlowInit)
@@ -110,6 +123,9 @@ class TestSingletonConcurrency:
         _run_threads(n, get)
 
         assert len(instances) == 1, f"{attr} was constructed {len(instances)} times"
+        # Every thread must get here: a getter that raises on the stub would
+        # otherwise leave ``seen`` short and the next assertion vacuous (#320).
+        assert len(seen) == n, f"{len(seen)} of {n} threads returned an instance"
         assert all(obj is seen[0] for obj in seen)
 
     def test_get_config_creates_one_instance(self, monkeypatch):
@@ -126,6 +142,18 @@ class TestSingletonConcurrency:
 
     def test_get_crypto_service_creates_one_instance(self, monkeypatch):
         crypto_module._crypto_service = None
+
+        def crypto_stub(stub, keys_dir, *args, **kwargs):
+            # What get_crypto_service reads on a published instance (#281):
+            # the keys_dir it was built for, and whether it hosts external
+            # keys. CryptoService sets both before the getter can publish it.
+            stub.keys_dir = Path(keys_dir)
+            stub.uses_external_keys = False
+
         self._assert_single_instance(
-            crypto_module, "CryptoService", crypto_module.get_crypto_service, monkeypatch
+            crypto_module,
+            "CryptoService",
+            crypto_module.get_crypto_service,
+            monkeypatch,
+            stub_attrs=crypto_stub,
         )
