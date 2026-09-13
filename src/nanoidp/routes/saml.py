@@ -490,7 +490,11 @@ def _sso_authenticate_inline(
         if form_verb and form_verb.upper() not in ("GET", "POST"):
             return abort(400, description="invalid saml_original_verb")
         original_verb = (form_verb or request.method).upper()
-        return render_template(
+        # no_store applied here, not by each caller (#348 review, cleanup):
+        # the code screen carries the password forward as a hidden field,
+        # so every response rendering it must be uncacheable, and this is
+        # the one place that knows totp_step is set.
+        response = render_template(
             "login.html",
             error=error,
             saml_request=saml_request_b64,
@@ -503,6 +507,7 @@ def _sso_authenticate_inline(
             totp_step=totp_step,
             login_password=login_password,
         )
+        return no_store(response) if totp_step else response
 
     # Step detection is shared with every other password-form surface
     # (#323 review round 2, before-merge 5); username_submitted is what
@@ -540,12 +545,10 @@ def _sso_authenticate_inline(
                 "failed",
                 endpoint="/saml/sso",
                 username=form_username,
-                details={"reason": "Invalid code"},
+                details={"reason": login.phase.error},
             )
-        return None, no_store(
-            render_login(
-                login.phase.error, form_username, totp_step=True, login_password=form_password
-            )
+        return None, render_login(
+            login.phase.error, form_username, totp_step=True, login_password=form_password
         )
 
     if login.user:

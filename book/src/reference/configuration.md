@@ -328,8 +328,9 @@ runtime, like every other property of a user:
   `totp_secret` only changes the four interactive login surfaces above,
   never `grant_type=password`.
 - **Claims follow the login**, so a client can see the difference - see
-  [Tokens](tokens.md) for the `amr` claim and [SAML](saml.md) for the
-  `AuthnContextClassRef` value.
+  [Tokens](tokens.md) for the `amr` claim and the
+  [security guide](../guides/SECURITY.md) for the `AuthnContextClassRef`
+  value (`saml.md` covers SAML options, not this per-method detail).
 
 Out of scope, on purpose: enrolment/QR in the UI, encrypted secret storage,
 a challenge store, replay protection, an administrator reset/recovery flow

@@ -83,7 +83,14 @@ def build_discovery_document(
         "scopes_supported": settings.scopes_supported,
         "claims_supported": [
             "sub", "iss", "aud", "azp", "exp", "iat", "nbf",
-            "auth_time", "nonce", "at_hash", "amr",
+            "auth_time", "nonce", "at_hash",
+            # amr is only ever minted when login.totp is on (routes/_auth's
+            # authenticate_interactively gates it on totp_active) - listing
+            # it unconditionally would advertise a claim a deployment that
+            # never turned TOTP on can never actually see (#348 review,
+            # cleanup): tokens.md documents the claim as opt-in "on the
+            # wire too", which this must match.
+            *(["amr"] if settings.totp else []),
             "email", "email_verified", "preferred_username",
             "roles", "groups", "tenant", "identity_class", "entitlements",
             "source_acl", "attributes", "authorities"

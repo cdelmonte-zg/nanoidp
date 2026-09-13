@@ -122,6 +122,18 @@ class TestRejectedCodes:
     def test_invalid_secret_is_rejected_not_raised(self):
         assert not verify_totp("not-valid-base32!!!", "123456", at=1_700_000_000)
 
+    def test_fullwidth_digits_are_rejected_not_raised(self):
+        # str.isdigit() is True for fullwidth digits too, but they are not
+        # ASCII, and hmac.compare_digest raises TypeError on a non-ASCII
+        # str - the code screen must return False here, not 500 (#348
+        # review, blocking 1).
+        at = 1_700_000_000
+        code = generate_totp(_RFC_SECRET_B32, at=at)
+        fullwidth = code.translate(str.maketrans("0123456789", "０１２３４５６７８９"))
+        assert fullwidth.isdigit()
+        assert not fullwidth.isascii()
+        assert not verify_totp(_RFC_SECRET_B32, fullwidth, at=at)
+
 
 class TestSecretSpellingEquivalence:
     def test_lower_case_and_spaced_secrets_produce_the_same_code(self):

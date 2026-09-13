@@ -485,6 +485,69 @@ class TestReviewFollowUps:
         )
         assert authorize_screen.headers.get("Cache-Control") == "no-store"
 
+        saml_request = TestSamlSsoTotp()._authn_request()
+        saml_screen = client.post(
+            "/saml/sso",
+            data={"SAMLRequest": saml_request, "username": "admin", "password": "admin"},
+        )
+        assert saml_screen.headers.get("Cache-Control") == "no-store"
+
+        device_code, user_code = TestDeviceTotp()._get_device_code(client, auth_header)
+        device_screen = client.post(
+            "/device",
+            data={"user_code": user_code, "username": "admin", "password": "admin"},
+        )
+        assert device_screen.headers.get("Cache-Control") == "no-store"
+
+    def test_fullwidth_code_is_rejected_not_a_500(self, app, client, auth_header):
+        """str.isdigit() is True for fullwidth digits, which are not legal
+        hmac.compare_digest arguments - every code-screen surface must
+        answer "Invalid code", never a 500 (#348 review, blocking 1)."""
+        _enable_totp(app)
+        _give_admin_a_secret(app)
+        fullwidth = "１２３４５６"
+
+        login = client.post(
+            "/login",
+            data={"username": "admin", "password": "admin", "totp_code": fullwidth},
+        )
+        assert login.status_code == 200
+        assert b"Invalid code" in login.data
+
+        client.get(f"/authorize?{self.AUTHORIZE_QS}")
+        authorize = client.post(
+            "/authorize",
+            data={"username": "admin", "password": "admin", "totp_code": fullwidth},
+        )
+        assert authorize.status_code == 200
+        assert b"Invalid code" in authorize.data
+
+        saml_request = TestSamlSsoTotp()._authn_request()
+        saml = client.post(
+            "/saml/sso",
+            data={
+                "SAMLRequest": saml_request,
+                "username": "admin",
+                "password": "admin",
+                "totp_code": fullwidth,
+            },
+        )
+        assert saml.status_code == 200
+        assert b"Invalid code" in saml.data
+
+        _, user_code = TestDeviceTotp()._get_device_code(client, auth_header)
+        device = client.post(
+            "/device",
+            data={
+                "user_code": user_code,
+                "username": "admin",
+                "password": "admin",
+                "totp_code": fullwidth,
+            },
+        )
+        assert device.status_code == 200
+        assert b"Invalid code" in device.data
+
     def test_device_does_not_check_the_password_for_a_dead_user_code(self, app, client):
         """A correct password with no live device code must answer exactly
         like a wrong one: the code error, never the TOTP screen."""

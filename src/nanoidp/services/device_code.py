@@ -177,6 +177,22 @@ class DeviceCodeStore:
                 return DevicePollOutcome.AUTHORIZED, user, grant
             return DevicePollOutcome.UNKNOWN_STATUS, None, None
 
+    @staticmethod
+    def _status_of(grant: Optional[DeviceCodeGrant]) -> Optional[DeviceVerifyOutcome]:
+        """Classify a user code's grant: ``None`` when it is pending and
+        live, else the outcome ``pending_status``/``verify`` reports for it -
+        the one rule both read, so the oracle guard and the transition
+        cannot drift onto two spellings of the same classification (#348
+        review, cleanup). Must be called under ``self._lock``.
+        """
+        if not grant:
+            return DeviceVerifyOutcome.INVALID_CODE
+        if grant.status != "pending":
+            return DeviceVerifyOutcome.ALREADY_USED
+        if time.time() > grant.expires_at:
+            return DeviceVerifyOutcome.EXPIRED
+        return None
+
     def pending_status(self, user_code: str) -> Optional[DeviceVerifyOutcome]:
         """Non-mutating look at a user code: ``None`` when it is pending and
         live, else the outcome verify() would report for it (#348 review).
@@ -192,13 +208,7 @@ class DeviceCodeStore:
         with self._lock:
             device_code = self._by_user_code.get(user_code)
             grant = self._codes.get(device_code) if device_code else None
-            if not grant:
-                return DeviceVerifyOutcome.INVALID_CODE
-            if grant.status != "pending":
-                return DeviceVerifyOutcome.ALREADY_USED
-            if time.time() > grant.expires_at:
-                return DeviceVerifyOutcome.EXPIRED
-            return None
+            return self._status_of(grant)
 
     def verify(
         self,
@@ -225,11 +235,13 @@ class DeviceCodeStore:
         with self._lock:
             device_code = self._by_user_code.get(user_code)
             grant = self._codes.get(device_code) if device_code else None
-            if not grant:
+            status = self._status_of(grant)
+            if status is DeviceVerifyOutcome.INVALID_CODE:
                 return DeviceVerifyOutcome.INVALID_CODE, None
-            if grant.status != "pending":
+            if status is DeviceVerifyOutcome.ALREADY_USED:
                 return DeviceVerifyOutcome.ALREADY_USED, None
-            if time.time() > grant.expires_at:
+            assert grant is not None  # a live grant is the only case left
+            if status is DeviceVerifyOutcome.EXPIRED:
                 grant.status = "expired"
                 return DeviceVerifyOutcome.EXPIRED, None
             if action == "deny":

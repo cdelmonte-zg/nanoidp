@@ -739,7 +739,7 @@ def _handle_authorize_login(
                 endpoint="/authorize",
                 username=username,
                 client_id=p.client_id,
-                details={"reason": "Invalid code"},
+                details={"reason": login.phase.error},
             )
         return login.phase.error, None, True
 
@@ -815,7 +815,10 @@ def _render_authorize_login(
     the just-submitted value on a POST. ``totp_step``/``login_password``
     (#348) render the further code screen after a successful password
     check; the password travels forward as a hidden field the same way
-    the username does, since nothing is stored server-side.
+    the username does, since nothing is stored server-side. no_store is
+    applied here, not by the caller (#348 review, cleanup): this is the
+    one place that knows totp_step is set, the same shape /login,
+    /saml/sso and /device use.
     """
     logo_url = None
     if client:
@@ -823,7 +826,7 @@ def _render_authorize_login(
         if resolve_client_logo(logos_dir, client.client_id):
             logo_url = url_for("oauth.client_logo", client_id=client.client_id)
 
-    return render_template(
+    response = render_template(
         "authorize.html",
         client_id=p.client_id,
         client=client,
@@ -838,6 +841,7 @@ def _render_authorize_login(
         change_username_url=url_for("oauth.authorize", **_authorize_query_params(p)),
         users=config.persona_picker_entries(),
     )
+    return no_store(response) if totp_step else response
 
 
 @oauth_bp.route("/authorize", methods=["GET", "POST"])
@@ -929,7 +933,7 @@ def authorize() -> ResponseReturnValue:
         if response is not None:
             return response
 
-    page = _render_authorize_login(
+    return _render_authorize_login(
         config,
         p,
         client,
@@ -938,7 +942,6 @@ def authorize() -> ResponseReturnValue:
         totp_step=totp_step,
         login_password=login_password,
     )
-    return no_store(page) if totp_step else page
 
 
 @oauth_bp.route("/client-logos/<client_id>")
@@ -1967,8 +1970,12 @@ def device_verify() -> ResponseReturnValue:
         login_password: str = "",
     ) -> ResponseReturnValue:
         # One render for the three exits below (#348 review), the same
-        # closure /login and /saml/sso already use.
-        return render_template(
+        # closure /login and /saml/sso already use. no_store applied here,
+        # not by each caller (#348 review, cleanup): the code screen
+        # carries the password forward as a hidden field, so every response
+        # rendering it must be uncacheable, and this is the one place that
+        # knows totp_step is set.
+        response = render_template(
             "device.html",
             user_code=user_code,
             error=error,
@@ -1980,6 +1987,7 @@ def device_verify() -> ResponseReturnValue:
             login_password=login_password,
             users=config.persona_picker_entries(),
         )
+        return no_store(response) if totp_step else response
 
     if request.method == "POST":
         user_code = request.form.get("user_code", "").upper().strip()
@@ -2032,11 +2040,15 @@ def device_verify() -> ResponseReturnValue:
         # has. A code screen returns early WITHOUT touching the store -
         # .verify() is the atomic check-status + transition (#43), and a
         # code-step render has no business touching a pending code's
-        # status, exactly like the username-only step above. When the login
-        # is complete, verify() is handed the decided user instead of the
-        # raw credential check, so the password is not hashed a second time
-        # inside the store's lock and the grant's username and amr come from
-        # the same decision.
+        # status, exactly like the username-only step above. Once the check
+        # above has run, ``authenticate`` is rebound unconditionally - to a
+        # closure returning ``login.user`` (``None`` on a failed check) -
+        # so verify() below never re-runs the credential check itself: it
+        # used to be rebound only on success, so a wrong password was
+        # checked twice (once here, once by store.verify()'s own call to
+        # the original ``authenticate``, serialized inside the store's
+        # lock) - under password_hashing that was two bcrypt rounds per
+        # attempt instead of one (#348 review, cleanup).
         store = get_device_code_store()
         authenticate: Callable[[str, str], Optional[User]] = config.interactive_authenticate
         amr = None
@@ -2049,15 +2061,12 @@ def device_verify() -> ResponseReturnValue:
                         "failed",
                         endpoint="/device",
                         username=username,
-                        details={"user_code": user_code, "reason": "Invalid code"},
+                        details={"user_code": user_code, "reason": login.phase.error},
                     )
-                return no_store(
-                    render_device(login.phase.error, totp_step=True, login_password=password)
-                )
-            if login.user is not None:
-                completed_user = login.user
-                authenticate = lambda _u, _p: completed_user  # noqa: E731
-                amr = login.amr
+                return render_device(login.phase.error, totp_step=True, login_password=password)
+            decided_user = login.user
+            authenticate = lambda _u, _p: decided_user  # noqa: E731
+            amr = login.amr
 
         # The store runs check-status + transition atomically so two
         # concurrent verifications can't both claim the same pending code

@@ -129,8 +129,18 @@ class User(BaseModel):
         from that same function, so config loading and verification cannot
         drift. Two spellings of one secret therefore compare equal on the
         model.
+
+        Only ``None`` (the field omitted) is passed through: an empty
+        string reaches ``canonical_secret``, which raises "totp_secret must
+        not be empty", exactly like an unset ``${VAR}`` placeholder on
+        ``password`` aborts the load today. Mapping "" to None here used to
+        paper over that instead, which silently disabled the factor for
+        `totp_secret: "${VAR}"` with VAR unset - the user logs in on the
+        password alone with no second factor and no error (#348 review,
+        blocking 2). That mapping served no real surface: the users form
+        and MCP create_user/update_user never send this field at all.
         """
-        if v is None or v == "":
+        if v is None:
             return None
         return canonical_secret(v)
 

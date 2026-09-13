@@ -107,7 +107,11 @@ def login() -> ResponseReturnValue:
         totp_step: bool = False,
         login_password: str = "",
     ) -> ResponseReturnValue:
-        return render_template(
+        # no_store applied here, not by each caller (#348 review, cleanup):
+        # the code screen carries the password forward as a hidden field,
+        # so every response rendering it must be uncacheable, and this is
+        # the one place that knows totp_step is set.
+        response = render_template(
             "login.html",
             error=error,
             users=config.persona_picker_entries(),
@@ -118,6 +122,7 @@ def login() -> ResponseReturnValue:
             login_password=login_password,
             management_secret_configured=bool(config.settings.management_secret),
         )
+        return no_store(response) if totp_step else response
 
     if request.method == "GET":
         return render_login(request.args.get("error"), "")
@@ -175,11 +180,9 @@ def login() -> ResponseReturnValue:
                 "failed",
                 endpoint="/login",
                 username=username,
-                details={"reason": "Invalid code"},
+                details={"reason": login.phase.error},
             )
-        return no_store(
-            render_login(login.phase.error, username, totp_step=True, login_password=password)
-        )
+        return render_login(login.phase.error, username, totp_step=True, login_password=password)
 
     if not login.user:
         audit_event(

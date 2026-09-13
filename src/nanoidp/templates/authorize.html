@@ -134,9 +134,6 @@
                     <i class="bi bi-check-circle me-2"></i>Verify
                 </button>
             </form>
-            <div class="text-center mt-3">
-                <a href="{{ change_username_url }}" class="btn btn-link p-0">Change username</a>
-            </div>
             {% elif two_step_login and not login_username %}
             <form method="POST">
                 <div class="form-floating mb-4">
@@ -160,9 +157,6 @@
                     <i class="bi bi-check-circle me-2"></i>Authorize
                 </button>
             </form>
-            <div class="text-center mt-3">
-                <a href="{{ change_username_url }}" class="btn btn-link p-0">Change username</a>
-            </div>
             {% else %}
             <form method="POST">
                 <div class="form-floating mb-3">
@@ -179,6 +173,15 @@
                     <i class="bi bi-check-circle me-2"></i>Authorize
                 </button>
             </form>
+            {% endif %}
+
+            {% if (two_step_login or totp_step) and login_username %}
+            {# "Change username" for the password step and the TOTP step
+               alike - one block, so the two screens cannot drift, the same
+               shape login.html uses (#348 review, cleanup). #}
+            <div class="text-center mt-3">
+                <a href="{{ change_username_url }}" class="btn btn-link p-0">Change username</a>
+            </div>
             {% endif %}
 {% endmacro %}
 

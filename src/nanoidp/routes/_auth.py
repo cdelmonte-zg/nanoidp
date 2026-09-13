@@ -293,8 +293,11 @@ def authenticate_interactively(
     persona check, then - only when it succeeds and login.totp is active -
     the further TOTP phase, riding the same phase machinery as two_step
     (#322/#323). The submitted code is read from this request's form here
-    (``totp_code``), so the field name too is spelled once. Each route only
-    renders what the returned ``InteractiveLogin`` says; the rule is here.
+    (``totp_code``), so the field name too is spelled once - stripped like
+    ``username`` on every one of these forms, so a pasted or autofilled
+    code with trailing whitespace verifies instead of being audited as a
+    failed attempt (#348 review, cleanup). Each route only renders what
+    the returned ``InteractiveLogin`` says; the rule is here.
     """
     user = config.interactive_authenticate(username, password)
     if user is None:
@@ -306,7 +309,7 @@ def authenticate_interactively(
         totp_active=totp_active,
         user=user,
         code_submitted="totp_code" in request.form,
-        code=request.form.get("totp_code", ""),
+        code=request.form.get("totp_code", "").strip(),
     )
     method = AuthMethod.PASSWORD_OTP if phase is SecondFactorPhase.VERIFIED else AuthMethod.PASSWORD
     return InteractiveLogin(

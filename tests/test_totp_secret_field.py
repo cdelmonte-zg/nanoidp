@@ -51,9 +51,14 @@ class TestModelValidation:
         user = User(username="alice")
         assert user.totp_secret is None
 
-    def test_empty_string_secret_is_treated_as_absent(self):
-        user = User(username="alice", password="pw", totp_secret="")
-        assert user.totp_secret is None
+    def test_empty_string_secret_is_rejected(self):
+        # Not treated as absent (#348 review, blocking 2): an unset
+        # ${VAR} placeholder expands to "", and silently mapping that to
+        # None would disable the factor with no error - see
+        # TestYamlLoadAndEnvVarExpansion.test_unset_env_var_secret_fails_to_load
+        # for the placeholder form of this same case.
+        with pytest.raises(ValidationError, match="must not be empty"):
+            User(username="alice", password="pw", totp_secret="")
 
 
 class TestYamlLoadAndEnvVarExpansion:
@@ -81,6 +86,24 @@ class TestYamlLoadAndEnvVarExpansion:
         )
         config = ConfigManager(str(config_dir))
         assert config.get_user("alice").totp_secret == _VALID_SECRET
+
+    def test_unset_env_var_secret_fails_to_load(self, tmp_path, monkeypatch):
+        """An unset ${VAR} placeholder expands to "" (serialization.
+        expand_env_vars), which must fail to load exactly like the same
+        mistake on 'password' already does (#348 review, blocking 2) - not
+        silently disable the factor with alice logging in on the password
+        alone."""
+        monkeypatch.delenv("ALICE_TOTP_SECRET", raising=False)
+        config_dir = _write_config(
+            tmp_path,
+            "users:\n"
+            "  alice:\n"
+            '    password: "alice-pw"\n'
+            '    totp_secret: "${ALICE_TOTP_SECRET}"\n'
+            "default_user: alice\n",
+        )
+        with pytest.raises(Exception, match="must not be empty"):
+            ConfigManager(str(config_dir))
 
     def test_user_without_secret_is_unaffected(self, tmp_path):
         config_dir = _write_config(

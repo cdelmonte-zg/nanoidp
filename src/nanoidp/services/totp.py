@@ -59,13 +59,18 @@ def verify_totp(secret: str, code: str, *, at: Optional[float] = None) -> bool:
     (default: now) or one step either side.
 
     ``code`` must be exactly six ASCII digits before any HMAC is computed -
-    a malformed submission is rejected outright rather than compared. A
-    secret that does not decode returns False rather than raising, so a
-    login can never 500 on it (the model rejects such a secret at load, so
-    this is defence in depth). Steps before the epoch are skipped rather
-    than packed as a negative counter. No replay memory (module docstring).
+    a malformed submission is rejected outright rather than compared.
+    ``str.isdigit()`` alone is not enough: it is also true for fullwidth
+    (e.g. "１２３４５６"), Arabic-Indic and superscript digits, none of
+    which are legal ``hmac.compare_digest`` arguments (a non-ASCII ``str``
+    raises ``TypeError`` there), so ``isascii()`` is checked first (#348
+    review, blocking 1). A secret that does not decode returns False rather
+    than raising, so a login can never 500 on it (the model rejects such a
+    secret at load, so this is defence in depth). Steps before the epoch
+    are skipped rather than packed as a negative counter. No replay memory
+    (module docstring).
     """
-    if len(code) != DIGITS or not code.isdigit():
+    if len(code) != DIGITS or not code.isascii() or not code.isdigit():
         return False
     try:
         key = normalize_secret(secret)
