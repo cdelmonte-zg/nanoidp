@@ -1,5 +1,5 @@
 """
-A rejected configuration value never echoes a secret (#352).
+Pydantic validation of the configuration never echoes a rejected secret (#352).
 
 pydantic renders ``input_value=<the value>`` into a ValidationError unless
 the model that runs the validation sets ``hide_input_in_errors``. The loader
@@ -12,8 +12,10 @@ validator that rejects a secret on its content (the printable-ASCII rule on
 
 The flag is honoured on the outermost model of a validation, so it sits on
 the three document roots and on the domain models built from them
-(``Settings``, ``OAuthClient``, ``User``); these tests pin the value's
-absence on every rendering, not the flag itself.
+(``Settings``, ``OAuthClient``, ``User``), plus ``UserEntry`` as defense in
+depth; these tests pin the value's absence on every rendering, not the flag
+itself. The scope is pydantic's rendering of these validation errors, not
+every exception that might carry configuration data.
 """
 
 import json
@@ -25,6 +27,7 @@ import yaml
 from pydantic import ValidationError
 
 from nanoidp.config import ConfigManager
+from nanoidp.config_documents import UserEntry
 from nanoidp.config_validation import validate_config_dir, validate_config_result
 from nanoidp.models import OAuthClient, Settings, User
 
@@ -150,6 +153,12 @@ class TestDomainModelsNeverEchoASecret:
         with pytest.raises(ValidationError) as exc:
             Settings(management_secret="pässwörd-geheim-42")
         assert not _leaks("pässwörd-geheim-42", str(exc.value))
+
+    def test_user_entry_on_its_own(self):
+        """Defense in depth: outside UsersDocument, the entry hides input too."""
+        with pytest.raises(ValidationError) as exc:
+            UserEntry.model_validate({"password": 98765432123})
+        assert not _leaks("98765432123", str(exc.value))
 
     def test_user_password(self):
         with pytest.raises(ValidationError) as exc:

@@ -468,9 +468,11 @@ class UserEntry(BaseModel):
     to ``["USER"]``, ``email`` to ``<username>@example.org`` (filled in by
     ``to_user`` because it needs the key)."""
 
-    # No hide_input_in_errors of its own: an entry is only ever validated
-    # inside UsersDocument, whose _ROOT flag is the one pydantic applies.
-    model_config = ConfigDict(extra="allow")
+    # Inside UsersDocument the _ROOT flag is the one pydantic applies; the
+    # entry keeps its own as defense in depth, so validating an entry on its
+    # own (UserEntry.model_validate) cannot echo a password or a
+    # totp_secret either (#352, #350).
+    model_config = ConfigDict(extra="allow", hide_input_in_errors=True)
 
     # Missing -> default, explicit null -> validation error, exactly like the
     # old ``user_data.get(key, default)`` followed by the domain model's
