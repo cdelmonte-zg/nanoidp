@@ -300,11 +300,12 @@ runtime, like every other property of a user:
   work exactly as they do for `password`, including [what a whole-entry
   save does to them](#placeholders-and-the-config-directory-as-the-interface):
   a form edit of an unrelated field or the MCP `save_config` tool
-  materializes an expanded `${VAR}` and rewrites a non-canonical spelling
-  - spaces, lowercase - to the canonical one). To set the secret up in an
-  authenticator app, use its "enter a setup key" option with the same
-  secret, or generate a QR code from the standard `otpauth://` URI
-  yourself: `otpauth://totp/nanoidp:<username>?secret=<secret>&issuer=nanoidp&algorithm=SHA1&digits=6&period=30`.
+  materializes an expanded `${VAR}` and rewrites a non-canonical spelling,
+  such as spaces or lowercase letters, to the canonical one). To set the
+  secret up in an authenticator app:
+  - use its "enter a setup key" option with the same secret, or
+  - generate a QR code from the standard `otpauth://` URI yourself:
+    `otpauth://totp/nanoidp:<username>?secret=<secret>&issuer=nanoidp&algorithm=SHA1&digits=6&period=30`.
 - **Validation.** The secret must be Base32 (case-insensitive, spaces and
   missing padding tolerated) or the configuration is rejected; a secret on
   a user with no password is rejected too - a factor has to follow a

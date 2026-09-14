@@ -463,7 +463,12 @@ class UserEntry(BaseModel):
     to ``["USER"]``, ``email`` to ``<username>@example.org`` (filled in by
     ``to_user`` because it needs the key)."""
 
-    model_config = ConfigDict(extra="allow")
+    # hide_input_in_errors matches User's own model_config (models.py): a
+    # totp_secret that YAML reads as a number (an unquoted all-digit Base32
+    # value) fails string_type here, before it ever reaches User, and
+    # without the flag pydantic would echo it via input_value=... in the
+    # startup traceback (#348 review round 2).
+    model_config = ConfigDict(extra="allow", hide_input_in_errors=True)
 
     # Missing -> default, explicit null -> validation error, exactly like the
     # old ``user_data.get(key, default)`` followed by the domain model's
@@ -515,7 +520,10 @@ class UserEntry(BaseModel):
 class UsersDocument(BaseModel):
     """Top-level shape of ``users.yaml``."""
 
-    model_config = _FORBID
+    # hide_input_in_errors too, so a rejected totp_secret stays out of the
+    # traceback whether pydantic-core attributes the error to the nested
+    # UserEntry or to this document (see UserEntry.model_config above).
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     config_version: Optional[int] = None
     default_user: str = "admin"

@@ -351,7 +351,7 @@ def _grant_refresh_token(ctx: _GrantContext) -> GrantResult:
     # amr (RFC 8176 §2, #348) travels the same way, so a refreshed ID
     # Token keeps claiming the same authentication method(s). Taken as-is
     # here - a hand-crafted refresh token may carry anything - create_token
-    # runs it through sanitize_claim_names before use (#348 review, cleanup).
+    # runs it through _sanitize_amr before use (#348 review, cleanup).
     amr = payload.get("amr")
 
     # Claim names requested via the OIDC `claims` parameter are persisted in
