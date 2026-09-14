@@ -77,7 +77,15 @@ class User(BaseModel):
     # Validate on direct attribute assignment too (e.g. MCP update_user), so
     # field constraints like description's max_length are enforced beyond
     # construction time - the same rule OAuthClient follows (#37).
-    model_config = ConfigDict(extra="allow", validate_assignment=True)
+    # hide_input_in_errors keeps a rejected totp_secret out of validation
+    # error text (#348 review round 2, blocking): without it, pydantic
+    # appends input_value=<the secret> to every ValueError raised on this
+    # model, contradicting totp_secret.py's "the message never repeats the
+    # value" promise - a persona-only user with a secret would otherwise
+    # echo the whole user dict, secret included, in that same text.
+    model_config = ConfigDict(
+        extra="allow", validate_assignment=True, hide_input_in_errors=True
+    )
 
     username: str = Field(..., min_length=1, description="Unique username")
     password: Optional[str] = Field(

@@ -71,10 +71,13 @@ below.
 ### `amr`
 
 `amr` (Authentication Methods References, OIDC Core §2, values from RFC
-8176 §2) is present on an ID Token issued through an interactive login
-surface (`/login`, `/authorize`, `/saml/sso`, the device flow) once
-`login.totp` is on (#348, see [Second factor
-(TOTP)](configuration.md#second-factor-totp)):
+8176 §2) is present on an ID Token once `login.totp` is on (#348, see
+[Second factor (TOTP)](configuration.md#second-factor-totp)). Only
+`/authorize` and the device flow mint ID Tokens, so those are the two
+surfaces that carry it; `/login` and `/saml/sso` authenticate the same way
+but feed the dashboard session and the SAML context instead, and
+`/authorize` never reuses a `/login` session - it re-authenticates on its
+own each time, TOTP check included:
 
 - `["pwd"]` - a password login with no second factor.
 - `["pwd", "otp"]` - a password login followed by a valid TOTP code.

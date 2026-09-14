@@ -439,6 +439,26 @@ class TestReviewFollowUps:
         assert "amr" not in _decode(payload["id_token"])
         assert "amr" not in _decode(payload["refresh_token"])
 
+    def test_discovery_advertises_amr_when_totp_is_active(self, app, client):
+        """Counterpart to test_discovery_amr_matches_persona_minting: a
+        password-mode deployment with login.totp on does mint amr, so
+        discovery must still advertise it."""
+        _enable_totp(app)
+        doc = json.loads(client.get("/.well-known/openid-configuration").data)
+        assert "amr" in doc["claims_supported"]
+
+    def test_discovery_amr_matches_persona_minting(self, app, client):
+        """#348 review round 2, blocking: claims_supported must agree with
+        the only minting site (routes/_auth.authenticate_interactively,
+        gated on totp_active). Persona mode makes totp inert, so with
+        login.mode: persona + login.totp: true, discovery must NOT
+        advertise a claim no ID Token can ever carry."""
+        with app.app_context():
+            get_config().settings.login_mode = "persona"
+        _enable_totp(app)
+        doc = json.loads(client.get("/.well-known/openid-configuration").data)
+        assert "amr" not in doc["claims_supported"]
+
     def test_refresh_preserves_amr(self, app, client, auth_header):
         _enable_totp(app)
         _give_admin_a_secret(app)

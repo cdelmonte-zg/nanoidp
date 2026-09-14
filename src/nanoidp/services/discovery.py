@@ -84,13 +84,14 @@ def build_discovery_document(
         "claims_supported": [
             "sub", "iss", "aud", "azp", "exp", "iat", "nbf",
             "auth_time", "nonce", "at_hash",
-            # amr is only ever minted when login.totp is on (routes/_auth's
-            # authenticate_interactively gates it on totp_active) - listing
-            # it unconditionally would advertise a claim a deployment that
-            # never turned TOTP on can never actually see (#348 review,
-            # cleanup): tokens.md documents the claim as opt-in "on the
-            # wire too", which this must match.
-            *(["amr"] if settings.totp else []),
+            # amr is only ever minted when totp_active is true (routes/_auth's
+            # authenticate_interactively gates it on that, not the raw
+            # settings.totp) - persona mode makes totp inert (#348), so
+            # gating on settings.totp alone would advertise a claim that
+            # login.mode: persona + login.totp: true can never actually
+            # mint (#348 review round 2, blocking): tokens.md documents the
+            # claim as opt-in "on the wire too", which this must match.
+            *(["amr"] if settings.totp_active else []),
             "email", "email_verified", "preferred_username",
             "roles", "groups", "tenant", "identity_class", "entitlements",
             "source_acl", "attributes", "authorities"

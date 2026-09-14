@@ -6,7 +6,7 @@ import json
 import logging
 import os
 from dataclasses import dataclass, replace
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import jwt as pyjwt
 from flask import (
@@ -2040,17 +2040,17 @@ def device_verify() -> ResponseReturnValue:
         # has. A code screen returns early WITHOUT touching the store -
         # .verify() is the atomic check-status + transition (#43), and a
         # code-step render has no business touching a pending code's
-        # status, exactly like the username-only step above. Once the check
-        # above has run, ``authenticate`` is rebound unconditionally - to a
-        # closure returning ``login.user`` (``None`` on a failed check) -
-        # so verify() below never re-runs the credential check itself: it
-        # used to be rebound only on success, so a wrong password was
-        # checked twice (once here, once by store.verify()'s own call to
-        # the original ``authenticate``, serialized inside the store's
-        # lock) - under password_hashing that was two bcrypt rounds per
-        # attempt instead of one (#348 review, cleanup).
+        # status, exactly like the username-only step above. store.verify()
+        # takes the already-resolved user (``None`` on a failed, incomplete,
+        # or "deny" attempt) rather than a credential-check callback, so the
+        # check above runs exactly once - it used to be rebound only on
+        # success via a closure, so a wrong password was checked twice (once
+        # here, once by store.verify()'s own call to the original
+        # authenticate, serialized inside the store's lock) - under
+        # password_hashing that was two bcrypt rounds per attempt instead of
+        # one (#348 review, cleanup).
         store = get_device_code_store()
-        authenticate: Callable[[str, str], Optional[User]] = config.interactive_authenticate
+        decided_user: Optional[User] = None
         amr = None
         if action != "deny" and not missing_input and store.pending_status(user_code) is None:
             login = authenticate_interactively(config, username=username, password=password)
@@ -2065,7 +2065,6 @@ def device_verify() -> ResponseReturnValue:
                     )
                 return render_device(login.phase.error, totp_step=True, login_password=password)
             decided_user = login.user
-            authenticate = lambda _u, _p: decided_user  # noqa: E731
             amr = login.amr
 
         # The store runs check-status + transition atomically so two
@@ -2075,9 +2074,7 @@ def device_verify() -> ResponseReturnValue:
         outcome, user = store.verify(
             user_code,
             action,
-            username,
-            password,
-            authenticate,
+            decided_user,
             amr=amr,
         )
         if outcome is DeviceVerifyOutcome.INVALID_CREDENTIALS and missing_input:

@@ -349,7 +349,9 @@ def _grant_refresh_token(ctx: _GrantContext) -> GrantResult:
     # (OIDC Core §12.2), persisted in the refresh token claims (#42).
     auth_time = payload.get("auth_time")
     # amr (RFC 8176 §2, #348) travels the same way, so a refreshed ID
-    # Token keeps claiming the same authentication method(s).
+    # Token keeps claiming the same authentication method(s). Taken as-is
+    # here - a hand-crafted refresh token may carry anything - create_token
+    # runs it through sanitize_claim_names before use (#348 review, cleanup).
     amr = payload.get("amr")
 
     # Claim names requested via the OIDC `claims` parameter are persisted in

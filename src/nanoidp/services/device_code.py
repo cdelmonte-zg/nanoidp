@@ -10,8 +10,10 @@ Concurrency semantics are unchanged from #43: the polling client races against
 the user's verification and against its own retries, so every compound
 lookup-check-transition runs under one lock - ``poll`` cannot double-issue an
 authorized code, ``verify`` cannot double-claim a pending one. Credential
-verification during ``verify`` intentionally happens inside the lock, exactly
-as before, so a concurrent poll can never observe a half-transitioned entry.
+verification itself runs in the caller, before ``verify`` is called (#348
+review, cleanup) - ``verify`` only takes the already-resolved user and does
+the atomic check-status + transition under the lock, so a concurrent poll can
+never observe a half-transitioned entry.
 """
 
 import logging
@@ -214,43 +216,35 @@ class DeviceCodeStore:
         self,
         user_code: str,
         action: str,
-        username: str,
-        password: str,
-        authenticate: Callable[[str, str], Optional["User"]],
+        user: Optional["User"],
         *,
         amr: Optional[Sequence[str]] = None,
     ) -> Tuple[DeviceVerifyOutcome, Optional["User"]]:
         """User verification at /device: atomic check-status + transition (#43).
 
-        The credential check runs inside the lock, as it always did, so two
-        concurrent verifications cannot both claim the same pending code.
-        ``authenticate`` is the single choke point for both password and
-        persona login (see ``ConfigManager.interactive_authenticate``) - this
-        store no longer needs to know which mode is active. ``amr`` (#348) is
-        likewise decided entirely by the caller (routes/_auth's TOTP phase,
-        run before this call, using the same ``authenticate``) - this store
-        has no TOTP logic of its own, it only records what it is given on a
-        successful authorization.
+        The credential check itself runs in the caller, before this call
+        (routes/_auth's TOTP-aware ``authenticate_interactively``) - this
+        store receives the already-resolved ``user`` (``None`` on a
+        failed, incomplete, or "deny" attempt) and only does the atomic
+        check-status + transition, so two concurrent verifications still
+        cannot both claim the same pending code. ``amr`` (#348) is likewise
+        decided entirely by the caller - this store has no TOTP logic of
+        its own, it only records what it is given on a successful
+        authorization.
         """
         with self._lock:
             device_code = self._by_user_code.get(user_code)
             grant = self._codes.get(device_code) if device_code else None
-            status = self._status_of(grant)
-            if status is DeviceVerifyOutcome.INVALID_CODE:
+            if not grant:
                 return DeviceVerifyOutcome.INVALID_CODE, None
-            if status is DeviceVerifyOutcome.ALREADY_USED:
-                return DeviceVerifyOutcome.ALREADY_USED, None
-            assert grant is not None  # a live grant is the only case left
+            status = self._status_of(grant)
             if status is DeviceVerifyOutcome.EXPIRED:
                 grant.status = "expired"
-                return DeviceVerifyOutcome.EXPIRED, None
+            if status is not None:
+                return status, None
             if action == "deny":
                 grant.status = "denied"
                 return DeviceVerifyOutcome.DENIED, None
-
-            if not username:
-                return DeviceVerifyOutcome.MISSING_CREDENTIALS, None
-            user = authenticate(username, password)
 
             if not user:
                 return DeviceVerifyOutcome.INVALID_CREDENTIALS, None

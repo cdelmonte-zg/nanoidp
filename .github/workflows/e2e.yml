@@ -138,6 +138,44 @@ jobs:
         run: |
           python e2e/test_agent.py --url http://localhost:8003             --mcp http://localhost:9100/mcp
 
+      - name: Prepare TOTP config
+        # NANOIDP_E2E_TOTP_SECRET only unlocks test_totp_login's
+        # code-screen-and-verify checks (#348 review round 2, blocking) -
+        # no job set it, so that half of the test has silently no-op'd in
+        # CI since the feature landed. The secret goes on user1, not the
+        # agent's own default user (admin): test_totp_login also asserts
+        # that a user WITHOUT a secret is unaffected, using self.username -
+        # putting the secret there instead would make that half fail. A
+        # copy of config on its own server matches the e2e-saml/e2e-mcp
+        # shape above.
+        run: |
+          cp -r config e2e-totp-config
+          python - <<'EOF'
+          import yaml
+          path = "e2e-totp-config/users.yaml"
+          doc = yaml.safe_load(open(path))
+          doc["users"]["user1"]["totp_secret"] = "JBSWY3DPEHPK3PXP"
+          yaml.safe_dump(doc, open(path, "w"), sort_keys=False)
+          EOF
+
+      - name: Start TOTP server
+        run: |
+          PORT=8004 NANOIDP_CONFIG_DIR=e2e-totp-config python -m nanoidp > server-totp.log 2>&1 &
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:8004/api/health && exit 0
+            sleep 1
+          done
+          echo "TOTP server did not become healthy" >&2
+          cat server-totp.log >&2
+          exit 1
+
+      - name: Run TOTP suite
+        env:
+          NANOIDP_E2E_TOTP_SECRET: JBSWY3DPEHPK3PXP
+          NANOIDP_E2E_TOTP_USERNAME: user1
+          NANOIDP_E2E_TOTP_PASSWORD: password
+        run: python e2e/test_agent.py --url http://localhost:8004
+
       - name: Server log on failure
         if: failure()
         run: |
@@ -150,6 +188,8 @@ jobs:
           cat server-mcp.log 2>/dev/null || true
           echo "===== mock MCP server ====="
           cat mock-mcp.log 2>/dev/null || true
+          echo "===== TOTP server ====="
+          cat server-totp.log 2>/dev/null || true
 
   mcp-e2e:
     runs-on: ubuntu-latest
