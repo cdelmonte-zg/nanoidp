@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Declarative TOTP second factor** (#348, opt-in, off by default):
+  `login.totp: true` requires a time-based one-time code after a successful
+  password check, across every interactive login surface - `/authorize`,
+  `/login`, `/saml/sso` and the device flow's `/device` - the same
+  surfaces `login.two_step` covers, riding its phase machinery. A
+  declarative demo factor, not IdP hardening: the secret is a plain
+  `totp_secret` field of the user entry in `users.yaml` (its presence is
+  the enrolment, no per-user `enabled` flag, `${VAR}` allowed like any
+  value), never accepted or returned by the users form or any MCP user
+  tool. Verification is RFC 6238 (6 digits, 30s period, HMAC-SHA1, one
+  step of clock skew), standard library only, no new dependency, and
+  deliberately has no replay protection. Inert under `login.mode: persona`,
+  which checks no password; the OAuth password grant and client
+  credentials are unaffected. While `login.totp` is on, the ID Token
+  carries an OIDC `amr` claim (RFC 8176): `["pwd"]` for a plain password
+  login, `["pwd", "otp"]` once the code is verified, preserved across a
+  refresh like `auth_time`; with it off no new claim appears. A third SAML
+  `AuthnContextClassRef` value,
+  `urn:oasis:names:tc:SAML:2.0:ac:classes:TimeSyncToken`, next to the
+  existing password/unspecified pair. Configurable through YAML, the
+  Settings UI, and the MCP settings tools.
+  Two side effects on existing configurations: `totp_secret` is now a
+  reserved top-level user key (before, an unknown key of that name was
+  folded into the user's `attributes`), and `amr` joined the reserved
+  claim names, so a user attribute named `amr` requested through the
+  `claims` parameter is no longer resolved, whether `login.totp` is on or
+  off (#110).
+
 ## [3.1.0] - 2026-09-14
 
 ### Migration notes

@@ -28,9 +28,13 @@ from ..services.saml_verification import (
 )
 from ._audit import audit_event
 from ._auth import (
+    AuthMethod,
+    SecondFactorPhase,
     TwoStepPhase,
+    authenticate_interactively,
     establish_login_session,
-    session_authenticated_via_persona,
+    no_store,
+    session_auth_method,
     two_step_phase,
 )
 from ._issuer import effective_saml_entity_id, effective_saml_sso_url
@@ -176,7 +180,7 @@ def _build_saml_response(
     attributes: dict,
     in_response_to: Optional[str] = None,
     sign: bool = True,
-    authn_context: str = "urn:oasis:names:tc:SAML:2.0:ac:classes:PasswordProtectedTransport",
+    authn_context: str = AuthMethod.PASSWORD.saml_context,
 ) -> bytes:
     """Build a SAML Response XML.
 
@@ -462,7 +466,13 @@ def _sso_authenticate_inline(
     password_submitted = "password" in request.form
     form_password = request.form.get("password", "")
 
-    def render_login(error: Optional[str], login_username: str) -> ResponseReturnValue:
+    def render_login(
+        error: Optional[str],
+        login_username: str,
+        *,
+        totp_step: bool = False,
+        login_password: str = "",
+    ) -> ResponseReturnValue:
         # The screen must carry the verb of the request that ENTERED the
         # flow, not the verb of the request that is rendering it (#323
         # review round 2, blocking): a GET's compressed SAMLRequest is
@@ -480,7 +490,11 @@ def _sso_authenticate_inline(
         if form_verb and form_verb.upper() not in ("GET", "POST"):
             return abort(400, description="invalid saml_original_verb")
         original_verb = (form_verb or request.method).upper()
-        return render_template(
+        # no_store applied here, not by each caller (#348 review, cleanup):
+        # the code screen carries the password forward as a hidden field,
+        # so every response rendering it must be uncacheable, and this is
+        # the one place that knows totp_step is set.
+        response = render_template(
             "login.html",
             error=error,
             saml_request=saml_request_b64,
@@ -490,7 +504,10 @@ def _sso_authenticate_inline(
             persona_mode=persona_mode,
             two_step_login=two_step_login,
             login_username=login_username,
+            totp_step=totp_step,
+            login_password=login_password,
         )
+        return no_store(response) if totp_step else response
 
     # Step detection is shared with every other password-form surface
     # (#323 review round 2, before-merge 5); username_submitted is what
@@ -515,13 +532,30 @@ def _sso_authenticate_inline(
         # authenticate, render the next screen with no error.
         return None, render_login(None, form_username)
 
-    user = config.interactive_authenticate(form_username, form_password)
+    # Declarative TOTP second factor (#348): riding the same phase
+    # machinery as two_step above - the code screen is a further phase,
+    # and since nothing is stored server-side, the password travels
+    # forward as a hidden field too and is re-checked on submit.
+    login = authenticate_interactively(config, username=form_username, password=form_password)
 
-    if user:
+    if login.phase.pending:
+        if login.phase is SecondFactorPhase.CODE_INVALID:
+            audit_event(
+                "login",
+                "failed",
+                endpoint="/saml/sso",
+                username=form_username,
+                details={"reason": login.phase.error},
+            )
+        return None, render_login(
+            login.phase.error, form_username, totp_step=True, login_password=form_password
+        )
+
+    if login.user:
         # Single writer for the login session (#301); it records how this
         # session authenticated so _sso_success_response can pick the
         # matching AuthnContextClassRef.
-        establish_login_session(form_username, persona_mode=persona_mode)
+        establish_login_session(form_username, method=login.method)
         audit_event(
             "login",
             "success",
@@ -592,12 +626,8 @@ def _sso_success_response(
     # authenticated, not the current server-wide setting - the session may
     # have been authenticated earlier (e.g. via the nanoidp dashboard's own
     # /login) and is only being reused here. The reader and its
-    # absent-means-password default live in _auth (#301).
-    authn_context = (
-        "urn:oasis:names:tc:SAML:2.0:ac:classes:unspecified"
-        if session_authenticated_via_persona()
-        else "urn:oasis:names:tc:SAML:2.0:ac:classes:PasswordProtectedTransport"
-    )
+    # absent-means-password default live in _auth (#301, extended #348).
+    authn_context = session_auth_method().saml_context
 
     # Generate SAML Response
     xml = _build_saml_response(

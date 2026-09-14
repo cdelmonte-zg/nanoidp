@@ -705,3 +705,123 @@ class TestSettingsUiTwoStep:
         config.reload()
         assert config.settings.two_step is True
 
+
+class TestSettingsUiTotp:
+    """The '/settings' dashboard page persists 'totp' (#348) via a
+    checkbox, following the same "absent marker = unchanged" convention
+    as every other checkbox on this page - two_step's sibling above."""
+
+    def _login_as_admin(self, client) -> None:
+        _login_as_admin(client)
+
+    def _base_form(self, settings) -> dict:
+        return _settings_base_form(settings)
+
+    def test_settings_page_shows_totp_checkbox(self, client):
+        self._login_as_admin(client)
+
+        response = client.get("/settings")
+
+        assert response.status_code == 200
+        assert b'name="totp"' in response.data
+
+    def test_enabling_totp_persists(self, client, preserve_config_files):
+        self._login_as_admin(client)
+        config = get_config()
+
+        response = client.post(
+            "/settings",
+            data={
+                **self._base_form(config.settings),
+                "totp": "true",
+                "totp__on_form": "1",
+            },
+            follow_redirects=True,
+        )
+
+        assert response.status_code == 200
+        config.reload()
+        assert config.settings.totp is True
+        assert config.settings.totp_active is True
+
+    def test_enabling_totp_alongside_persona_mode_is_inert(self, client, preserve_config_files):
+        """Accepted, not rejected - just inert until login_mode is back to
+        'password', same as two_step's orthogonal composition."""
+        self._login_as_admin(client)
+        config = get_config()
+
+        response = client.post(
+            "/settings",
+            data={
+                **self._base_form(config.settings),
+                "login_mode": "persona",
+                "totp": "true",
+                "totp__on_form": "1",
+            },
+            follow_redirects=True,
+        )
+
+        assert response.status_code == 200
+        config.reload()
+        assert config.settings.totp is True
+        assert config.settings.totp_active is False
+
+    def test_unchecking_totp_persists_and_leaves_sibling_mode(self, client, preserve_config_files):
+        self._login_as_admin(client)
+        config = get_config()
+        client.post(
+            "/settings",
+            data={
+                **self._base_form(config.settings),
+                "login_mode": "persona",
+                "totp": "true",
+                "totp__on_form": "1",
+            },
+            follow_redirects=True,
+        )
+
+        response = client.post(
+            "/settings",
+            data={
+                **self._base_form(config.settings),
+                "login_mode": "persona",
+                "totp__on_form": "1",
+            },
+            follow_redirects=True,
+        )
+
+        assert response.status_code == 200
+        config.reload()
+        assert config.settings.totp is False
+
+        import yaml
+        with open(config.config_dir / "settings.yaml") as f:
+            doc = yaml.safe_load(f)
+        assert doc["login"] == {"mode": "persona"}
+
+    def test_omitted_marker_leaves_totp_unchanged(self, client, preserve_config_files):
+        """No 'totp__on_form' marker at all (a stale tab, a script) must
+        not be misread as an unchecked box - it means the field was not
+        part of this submission."""
+        self._login_as_admin(client)
+        config = get_config()
+        client.post(
+            "/settings",
+            data={
+                **self._base_form(config.settings),
+                "totp": "true",
+                "totp__on_form": "1",
+            },
+            follow_redirects=True,
+        )
+
+        response = client.post(
+            "/settings",
+            data={**self._base_form(config.settings)},
+            follow_redirects=True,
+        )
+
+        assert response.status_code == 200
+        config.reload()
+        assert config.settings.totp is True
+

@@ -8,7 +8,7 @@ import logging
 import threading
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Sequence, Union
 
 from ..config import User, get_config
 from .crypto import get_crypto_service
@@ -33,7 +33,7 @@ _RESERVED_CLAIMS = frozenset({
     # registered JWT claims (RFC 7519)
     "iss", "sub", "aud", "exp", "iat", "nbf", "jti",
     # nanoidp protocol claims
-    "token_use", "auth_time", "at_hash", "azp", "nonce",
+    "token_use", "auth_time", "at_hash", "azp", "nonce", "amr",
     *_AUTHORITATIVE_CLAIMS,
 })
 
@@ -60,6 +60,34 @@ def sanitize_claim_names(value: Any) -> Optional[List[str]]:
     names = [name for name in value if isinstance(name, str)]
     if len(names) != len(value):
         logger.warning("Dropping non-string entries from requested-claims value")
+    return names or None
+
+
+def _sanitize_amr(value: Any) -> Optional[List[str]]:
+    """Coerce a requested ``amr`` value to a list of str, or ``None``.
+
+    Legitimate values are a tuple (``AuthMethod.amr``) or a list (already
+    sanitized, e.g. round-tripped through a refresh token); on refresh the
+    value is recovered from the refresh token's payload, which may be
+    hand-crafted with the IdP key (#348 review, cleanup). A bare string
+    would silently explode into single characters via ``list(value)``, and
+    anything else risks a crash well after the refresh token's ``jti`` has
+    already been claimed and spent - so anything but a list/tuple is
+    dropped and non-string entries are filtered out, always with a warning
+    and never an exception, the same contract ``sanitize_claim_names``
+    keeps for requested claim names.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, (list, tuple)):
+        logger.warning(
+            "Ignoring malformed amr value: expected a list of strings, got %s",
+            type(value).__name__,
+        )
+        return None
+    names = [name for name in value if isinstance(name, str)]
+    if len(names) != len(value):
+        logger.warning("Dropping non-string entries from amr value")
     return names or None
 
 
@@ -213,6 +241,7 @@ class TokenService:
         scope: Optional[str] = None,
         client_id: Optional[str] = None,
         auth_time: Optional[int] = None,
+        amr: Optional[Sequence[str]] = None,
         refresh_family: Optional[str] = None,
         id_token_claims: Optional[List[str]] = None,
         userinfo_claims: Optional[List[str]] = None,
@@ -228,6 +257,23 @@ class TokenService:
         code creation time, device authorization time, value preserved from a
         refresh token); when omitted it defaults to "now", which is correct
         for grants that authenticate the user in the same request (password).
+
+        ``amr`` (RFC 8176 §2, #348) is the authentication method(s) that
+        login used - ``["pwd"]`` or ``["pwd", "otp"]`` for the declarative
+        TOTP second factor, carried from an authorization code, a device
+        grant, or a refresh token's payload the same way ``auth_time`` is.
+        ``None`` (the default) omits the claim entirely rather than
+        asserting a method nothing actually checked - persona mode, and
+        every grant that predates #348, are both silent on it rather than
+        claiming ``pwd`` for a password that was never verified. Sanitized
+        through ``_sanitize_amr`` below the same way ``id_token_claims``/
+        ``userinfo_claims`` go through ``sanitize_claim_names`` (#348
+        review, cleanup): a refresh token's payload may be hand-crafted
+        with the IdP key, and by the time this runs its ``jti`` has already
+        been claimed - a bare string (which ``list()`` would silently
+        explode into single characters) or a non-string entry must not
+        reach the token, and issuance must not be able to fail on it after
+        the token is spent.
 
         ``id_token_claims``/``userinfo_claims`` are the claim names a client
         asked for through the OIDC ``claims`` request parameter (OIDC Core
@@ -270,6 +316,7 @@ class TokenService:
         # token or an unvalidated MCP call (see sanitize_claim_names).
         id_token_claims = sanitize_claim_names(id_token_claims)
         userinfo_claims = sanitize_claim_names(userinfo_claims)
+        amr = _sanitize_amr(amr)
 
         # Build extra claims
         extra: Dict[str, Any] = {}
@@ -372,6 +419,8 @@ class TokenService:
             }
             if azp:
                 id_extra["azp"] = azp
+            if amr:
+                id_extra["amr"] = amr
             # Claims the client asked for in the ID Token via the OIDC `claims`
             # parameter (§5.5, #104). Resolved from the user and added only when
             # available (voluntary claims, §5.5.1). resolve_user_claim refuses
@@ -418,6 +467,8 @@ class TokenService:
                 refresh_extra["scope"] = scope
             if effective_auth_time is not None:
                 refresh_extra["auth_time"] = effective_auth_time
+            if amr:
+                refresh_extra["amr"] = amr
             if client_id:
                 refresh_extra["client_id"] = client_id
             if id_token_claims:

@@ -12,6 +12,23 @@
    instead, for surfaces (device.html) where a text input shares the form
    and implicit Enter-submission must not silently pick a user; the caller
    is then responsible for the click handler that actually submits. #}
+{# The declarative TOTP second factor's code screen (#348), shared by the
+   same three templates for the same reason. Stateless like two-step: the
+   username AND the password travel forward as hidden fields (nothing is
+   stored server-side; the route re-checks the password and marks the
+   response no-store), and the submit button stays with the caller, since
+   each surface labels and groups it differently. #}
+{% macro totp_code_fields(login_username, login_password) %}
+<input type="hidden" name="username" value="{{ login_username }}">
+<input type="hidden" name="password" value="{{ login_password }}">
+<div class="form-floating mb-4">
+    <input type="text" class="form-control" id="totp_code" name="totp_code"
+           placeholder="Code" required autofocus inputmode="numeric"
+           pattern="[0-9]{6}" autocomplete="one-time-code" maxlength="6">
+    <label for="totp_code"><i class="bi bi-shield-check me-2"></i>Authenticator code</label>
+</div>
+{% endmacro %}
+
 {% macro persona_picker(users, prompt, js_submit=false) %}
 <p class="text-muted small mb-3">
     <i class="bi bi-people me-1"></i>{{ prompt }}

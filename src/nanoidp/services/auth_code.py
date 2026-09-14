@@ -10,7 +10,7 @@ import secrets
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Sequence
 
 from ..config import get_config_if_loaded
 
@@ -36,6 +36,12 @@ class AuthorizationCode:
     # normalized to {"id_token": [...], "userinfo": [...]}. Carried from
     # /authorize to the token exchange so the ID Token / UserInfo can honour it.
     claims: Optional[Dict[str, Any]] = None
+    # OIDC amr (RFC 8176 §2, #348): how the interactive login that produced
+    # this code authenticated - ("pwd",) or ("pwd", "otp"); None under
+    # persona mode, which checks no password (see routes/_auth.AuthMethod).
+    # Carried to the token exchange the same way auth_time is, so a refresh
+    # can keep honouring it (#112's pattern).
+    amr: Optional[Sequence[str]] = None
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     expires_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc) + timedelta(minutes=10))
     used: bool = False
@@ -67,6 +73,7 @@ class AuthCodeStore:
         state: Optional[str] = None,
         claims: Optional[Dict[str, Any]] = None,
         resource: Optional[list] = None,
+        amr: Optional[Sequence[str]] = None,
     ) -> str:
         """
         Create a new authorization code.
@@ -81,6 +88,7 @@ class AuthCodeStore:
             nonce: OIDC nonce for ID token (optional)
             state: OAuth state parameter (optional)
             claims: Normalized OIDC `claims` request (§5.5, optional)
+            amr: OIDC amr for the login that produced this code (#348, optional)
 
         Returns:
             The generated authorization code
@@ -100,6 +108,7 @@ class AuthCodeStore:
             state=state,
             claims=claims,
             resource=resource,
+            amr=amr,
         )
 
         with self._lock:

@@ -311,7 +311,7 @@ approver persona", "Read-only auditor". It's a display-only note, capped at
 200 characters and plain text only: never a claim, never a SAML attribute,
 never part of a token, and never treated as a custom attribute.
 
-**SAML detail**: a persona login can't claim `AuthnContextClassRef: PasswordProtectedTransport`, since no password was used - NanoIDP emits `urn:oasis:names:tc:SAML:2.0:ac:classes:unspecified` instead for sessions authenticated this way.
+**SAML detail**: a persona login can't claim `AuthnContextClassRef: PasswordProtectedTransport`, since no password was used - NanoIDP emits `urn:oasis:names:tc:SAML:2.0:ac:classes:unspecified` instead for sessions authenticated this way. A session that also completed the [declarative TOTP second factor](../reference/configuration.md#second-factor-totp) claims a third value, `urn:oasis:names:tc:SAML:2.0:ac:classes:TimeSyncToken`, instead of `PasswordProtectedTransport`.
 
 **Orthogonal to security profiles**: `login.mode` and `security_profile` are independent settings. `security_profile` governs OAuth/SAML protocol strictness; `login.mode` only changes how the interactive login UI authenticates the resource owner. Persona mode works the same under any profile.
 

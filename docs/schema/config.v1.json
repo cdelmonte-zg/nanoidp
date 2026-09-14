@@ -301,6 +301,11 @@
             "title": "Mode",
             "type": "string"
           },
+          "totp": {
+            "default": false,
+            "title": "Totp",
+            "type": "boolean"
+          },
           "two_step": {
             "default": false,
             "title": "Two Step",
@@ -768,6 +773,18 @@
             "default": "default",
             "title": "Tenant",
             "type": "string"
+          },
+          "totp_secret": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Totp Secret"
           }
         },
         "title": "UserEntry",

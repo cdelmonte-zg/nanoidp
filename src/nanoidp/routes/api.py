@@ -208,6 +208,7 @@ def get_configuration() -> ResponseReturnValue:
             "mode": settings.login_mode,
             "auto_login": settings.auto_login,
             "two_step": settings.two_step,
+            "totp": settings.totp,
         },
         "authority_prefixes": settings.authority_prefixes,
         "allowed_identity_classes": settings.allowed_identity_classes,

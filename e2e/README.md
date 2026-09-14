@@ -27,3 +27,13 @@ python e2e/mcp_smoke_test.py --config ./config
 
 Adding a feature? Extend the matching suite here in the same PR - an
 end-to-end scenario is part of the deliverable, not a follow-up.
+
+## Environment variables
+
+`test_agent.py`'s `test_totp_login` needs a secret it cannot enroll itself
+(`totp_secret` is YAML-only, #348): set `NANOIDP_E2E_TOTP_SECRET` to a
+Base32 secret already configured as a user's `totp_secret` in `users.yaml`
+to exercise its code-screen-and-verify checks - without it, that half of
+the test silently no-ops instead of failing. `NANOIDP_E2E_TOTP_USERNAME` /
+`NANOIDP_E2E_TOTP_PASSWORD` name the user the secret belongs to (default:
+`--user`/`--password`, i.e. `admin`/`admin`).

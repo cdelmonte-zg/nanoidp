@@ -120,6 +120,20 @@
             <form method="POST">
                 {{ macros.persona_picker(users, "Persona login - select a user to authorize.") }}
             </form>
+            {% elif totp_step %}
+            {# Declarative TOTP second factor (#348): a further phase after
+               a successful password check, riding two_step's machinery.
+               OAuth parameters stay in the URL (the form has no action, so
+               it always lands back on this same /authorize?... URL); since
+               nothing is stored server-side, the password travels forward
+               as a hidden field too and is re-checked on submit. #}
+            <form method="POST">
+                {{ macros.totp_code_fields(login_username, login_password) }}
+
+                <button type="submit" class="btn btn-primary w-100 py-2">
+                    <i class="bi bi-check-circle me-2"></i>Verify
+                </button>
+            </form>
             {% elif two_step_login and not login_username %}
             <form method="POST">
                 <div class="form-floating mb-4">
@@ -143,9 +157,6 @@
                     <i class="bi bi-check-circle me-2"></i>Authorize
                 </button>
             </form>
-            <div class="text-center mt-3">
-                <a href="{{ change_username_url }}" class="btn btn-link p-0">Change username</a>
-            </div>
             {% else %}
             <form method="POST">
                 <div class="form-floating mb-3">
@@ -162,6 +173,15 @@
                     <i class="bi bi-check-circle me-2"></i>Authorize
                 </button>
             </form>
+            {% endif %}
+
+            {% if (two_step_login or totp_step) and login_username %}
+            {# "Change username" for the password step and the TOTP step
+               alike - one block, so the two screens cannot drift, the same
+               shape login.html uses (#348 review, cleanup). #}
+            <div class="text-center mt-3">
+                <a href="{{ change_username_url }}" class="btn btn-link p-0">Change username</a>
+            </div>
             {% endif %}
 {% endmacro %}
 
@@ -181,7 +201,7 @@
             </div>
             {% endif %}
 
-            {% if two_step_login and login_username %}
+            {% if (two_step_login or totp_step) and login_username %}
             <div class="mb-3">
                 <small class="text-muted">Signing in as</small>
                 <span class="fw-semibold">{{ login_username }}</span>
@@ -196,7 +216,7 @@
                (#323 review round 1, before-merge 4: this must not change
                existing horizontal-layout clients that never opt into
                two_step_login). #}
-            <div class="row g-4 {{ 'align-items-start' if (two_step_login and login_username) else 'align-items-center' }}">
+            <div class="row g-4 {{ 'align-items-start' if ((two_step_login or totp_step) and login_username) else 'align-items-center' }}">
                 <div class="col-md-6">
                     {{ client_info_block() }}
                 </div>

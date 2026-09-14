@@ -1,14 +1,17 @@
 """
-Login-session contract (#301): session['user'] and session['auth_method']
-have exactly one writer, routes/_auth.establish_login_session, and
-'auth_method' exactly one reader, session_authenticated_via_persona.
+Login-session contract (#301, extended #348): session['user'] and
+session['auth_method'] have exactly one writer, routes/_auth.
+establish_login_session, and 'auth_method' exactly one reader,
+session_auth_method.
 
-The SAML assertion's AuthnContextClassRef is derived from 'auth_method'.
-Before #301 the dashboard's /login and SAML's inline login each wrote both
-keys by hand; a third login surface that set 'user' alone would have made
-every persona login through it claim PasswordProtectedTransport, with no
-test able to notice. The unit tests here pin what the helper writes; the
-structural test holds every other module in src/nanoidp to calling it.
+The SAML assertion's AuthnContextClassRef, and (once threaded through
+token issuance) the OIDC amr claim, are both derived from 'auth_method'
+via AuthMethod.saml_context / .amr. Before #301 the dashboard's /login and
+SAML's inline login each wrote both keys by hand; a third login surface
+that set 'user' alone would have made every persona login through it
+claim PasswordProtectedTransport, with no test able to notice. The unit
+tests here pin what the helper writes; the structural test holds every
+other module in src/nanoidp to calling it.
 
 The structural test is a tripwire, not a proof. It walks the AST of every
 module under src/nanoidp (the same rglob tests/test_token_issuance_parity.py
@@ -42,8 +45,9 @@ from pathlib import Path
 from flask import session
 
 from nanoidp.routes._auth import (
+    AuthMethod,
     establish_login_session,
-    session_authenticated_via_persona,
+    session_auth_method,
 )
 
 SRC_ROOT = Path(__file__).resolve().parent.parent / "src" / "nanoidp"
@@ -155,21 +159,32 @@ def _offends(snippet: str) -> bool:
 class TestEstablishLoginSession:
     def test_persona_login_records_persona(self, app):
         with app.test_request_context():
-            establish_login_session("admin", persona_mode=True)
+            establish_login_session("admin", method=AuthMethod.PERSONA)
 
             assert session["user"] == "admin"
             assert session["auth_method"] == "persona"
             assert session.permanent is True
-            assert session_authenticated_via_persona() is True
+            assert session_auth_method() is AuthMethod.PERSONA
 
     def test_password_login_records_password(self, app):
         with app.test_request_context():
-            establish_login_session("admin", persona_mode=False)
+            establish_login_session("admin", method=AuthMethod.PASSWORD)
 
             assert session["user"] == "admin"
             assert session["auth_method"] == "password"
             assert session.permanent is True
-            assert session_authenticated_via_persona() is False
+            assert session_auth_method() is AuthMethod.PASSWORD
+
+    def test_password_otp_login_records_password_otp(self, app):
+        """#348: the declarative TOTP second factor records a third
+        method, distinct from a plain password login."""
+        with app.test_request_context():
+            establish_login_session("admin", method=AuthMethod.PASSWORD_OTP)
+
+            assert session["user"] == "admin"
+            assert session["auth_method"] == "password_otp"
+            assert session.permanent is True
+            assert session_auth_method() is AuthMethod.PASSWORD_OTP
 
     def test_absent_key_means_password(self, app):
         """Sessions predating the persona feature, and tests that seed only
@@ -177,7 +192,7 @@ class TestEstablishLoginSession:
         with app.test_request_context():
             session["user"] = "admin"
 
-            assert session_authenticated_via_persona() is False
+            assert session_auth_method() is AuthMethod.PASSWORD
 
 
 class TestSingleWriter:
@@ -196,7 +211,7 @@ class TestSingleWriter:
         assert not offenders, (
             "session['user'] and session['auth_method'] must only be written through "
             "routes/_auth.establish_login_session and read through "
-            "session_authenticated_via_persona (#301), so a login surface cannot record "
+            "session_auth_method (#301, #348), so a login surface cannot record "
             "a user without recording how it authenticated. Direct access found in:\n  "
             + "\n  ".join(offenders)
         )
@@ -251,3 +266,14 @@ class TestSingleWriter:
         assert not _offends("session[key] = username")
         assert not _offends("session.update(**fields)")
         assert not _offends('from flask import session as s\ns["user"] = username')
+
+
+class TestUnknownAuthMethodValue:
+    def test_a_value_outside_the_enum_reads_as_password(self, app):
+        """A cookie written by a build with a method this one does not know
+        must not turn a SAML response into a 500 (review of #348)."""
+        with app.test_request_context():
+            session["user"] = "admin"
+            session["auth_method"] = "something-newer"
+
+            assert session_auth_method() is AuthMethod.PASSWORD

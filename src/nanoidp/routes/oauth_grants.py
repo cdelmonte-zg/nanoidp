@@ -9,7 +9,7 @@ stays one-way and there is no cycle.
 """
 
 from dataclasses import dataclass
-from typing import Callable, Dict, List, Optional, Tuple, Union
+from typing import Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 from flask import (
     jsonify,
@@ -40,6 +40,13 @@ class _GrantOutcome:
     nonce: Optional[str] = None
     scope: Optional[str] = None
     auth_time: Optional[int] = None
+    # OIDC amr (RFC 8176 §2, #348): how the login behind this grant
+    # authenticated. Carried the same way auth_time is - from an
+    # authorization code, a device grant, or a refresh token's payload -
+    # so a refreshed ID Token keeps honouring it (#112's pattern). None
+    # for grants with no interactive login (client_credentials) or under
+    # persona mode, which checks no password.
+    amr: Optional[Sequence[str]] = None
     refresh_family: Optional[str] = None
     # Claim names requested via the OIDC `claims` parameter (§5.5, #104).
     id_token_claims: Optional[list] = None
@@ -341,6 +348,11 @@ def _grant_refresh_token(ctx: _GrantContext) -> GrantResult:
     # A refreshed ID Token must carry the ORIGINAL authentication time
     # (OIDC Core §12.2), persisted in the refresh token claims (#42).
     auth_time = payload.get("auth_time")
+    # amr (RFC 8176 §2, #348) travels the same way, so a refreshed ID
+    # Token keeps claiming the same authentication method(s). Taken as-is
+    # here - a hand-crafted refresh token may carry anything - create_token
+    # runs it through _sanitize_amr before use (#348 review, cleanup).
+    amr = payload.get("amr")
 
     # Claim names requested via the OIDC `claims` parameter are persisted in
     # the refresh token like scope/auth_time (#112), so the refreshed ID Token
@@ -413,6 +425,7 @@ def _grant_refresh_token(ctx: _GrantContext) -> GrantResult:
         username=username,
         scope=scope,
         auth_time=auth_time,
+        amr=amr,
         refresh_family=refresh_family,
         id_token_claims=id_token_claims,
         userinfo_claims=userinfo_claims,
@@ -637,6 +650,9 @@ def _grant_authorization_code(ctx: _GrantContext) -> GrantResult:
         # The user authenticated at the login page when the code was created,
         # not at this token exchange - use that moment as auth_time (#42).
         auth_time=int(auth_code.created_at.timestamp()),
+        # How that login authenticated (#348) - set at /authorize, None
+        # under persona mode.
+        amr=auth_code.amr,
         # Claims the client asked for through the OIDC `claims` parameter (#104).
         id_token_claims=requested_claims.get("id_token"),
         userinfo_claims=requested_claims.get("userinfo"),
@@ -847,6 +863,9 @@ def _grant_device_code(ctx: _GrantContext) -> GrantResult:
             username=user.username,
             scope=device_scope,
             auth_time=grant.auth_time,
+            # How the /device login authenticated (#348) - set by
+            # DeviceCodeStore.verify(), None under persona mode.
+            amr=grant.amr,
             resource=resource,
             # Full original grant on the refresh token (RFC 8707 §2.2).
             refresh_resource=grant.resource or None,

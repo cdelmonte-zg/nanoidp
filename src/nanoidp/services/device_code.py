@@ -10,8 +10,10 @@ Concurrency semantics are unchanged from #43: the polling client races against
 the user's verification and against its own retries, so every compound
 lookup-check-transition runs under one lock - ``poll`` cannot double-issue an
 authorized code, ``verify`` cannot double-claim a pending one. Credential
-verification during ``verify`` intentionally happens inside the lock, exactly
-as before, so a concurrent poll can never observe a half-transitioned entry.
+verification itself runs in the caller, before ``verify`` is called (#348
+review, cleanup) - ``verify`` only takes the already-resolved user and does
+the atomic check-status + transition under the lock, so a concurrent poll can
+never observe a half-transitioned entry.
 """
 
 import logging
@@ -20,7 +22,7 @@ import threading
 import time
 from dataclasses import dataclass
 from enum import Enum
-from typing import TYPE_CHECKING, Callable, Dict, Optional, Tuple
+from typing import TYPE_CHECKING, Callable, Dict, Optional, Sequence, Tuple
 
 if TYPE_CHECKING:
     # From the model's real home (#285): config only re-exports it for
@@ -64,6 +66,11 @@ class DeviceCodeGrant:
     status: str = "pending"  # pending, authorized, denied, expired
     username: Optional[str] = None
     auth_time: Optional[int] = None
+    # OIDC amr (RFC 8176 §2, #348): how the interactive login at /device
+    # authenticated - set by verify() on a successful authorization, from
+    # the caller's own TOTP-phase check (this store has no TOTP logic of
+    # its own, same "no mode of its own" contract as username/password).
+    amr: Optional[Sequence[str]] = None
     # RFC 8707 resource indicators requested at /device_authorization (#187).
     resource: Optional[list] = None
 
@@ -172,45 +179,79 @@ class DeviceCodeStore:
                 return DevicePollOutcome.AUTHORIZED, user, grant
             return DevicePollOutcome.UNKNOWN_STATUS, None, None
 
+    @staticmethod
+    def _status_of(grant: Optional[DeviceCodeGrant]) -> Optional[DeviceVerifyOutcome]:
+        """Classify a user code's grant: ``None`` when it is pending and
+        live, else the outcome ``pending_status``/``verify`` reports for it -
+        the one rule both read, so the oracle guard and the transition
+        cannot drift onto two spellings of the same classification (#348
+        review, cleanup). Must be called under ``self._lock``.
+        """
+        if not grant:
+            return DeviceVerifyOutcome.INVALID_CODE
+        if grant.status != "pending":
+            return DeviceVerifyOutcome.ALREADY_USED
+        if time.time() > grant.expires_at:
+            return DeviceVerifyOutcome.EXPIRED
+        return None
+
+    def pending_status(self, user_code: str) -> Optional[DeviceVerifyOutcome]:
+        """Non-mutating look at a user code: ``None`` when it is pending and
+        live, else the outcome verify() would report for it (#348 review).
+
+        Lets /device decide whether a submission is even worth a credential
+        check before it runs one: without this, the TOTP pre-check ran the
+        password before the code was looked at, so a correct password
+        answered with the code screen and a wrong one with "invalid code" -
+        a password oracle needing no live device code. Nothing transitions
+        here - an expired entry is reported, not marked - so a concurrent
+        poll observes the same state it did before.
+        """
+        with self._lock:
+            device_code = self._by_user_code.get(user_code)
+            grant = self._codes.get(device_code) if device_code else None
+            return self._status_of(grant)
+
     def verify(
         self,
         user_code: str,
         action: str,
-        username: str,
-        password: str,
-        authenticate: Callable[[str, str], Optional["User"]],
+        user: Optional["User"],
+        *,
+        amr: Optional[Sequence[str]] = None,
     ) -> Tuple[DeviceVerifyOutcome, Optional["User"]]:
         """User verification at /device: atomic check-status + transition (#43).
 
-        The credential check runs inside the lock, as it always did, so two
-        concurrent verifications cannot both claim the same pending code.
-        ``authenticate`` is the single choke point for both password and
-        persona login (see ``ConfigManager.interactive_authenticate``) - this
-        store no longer needs to know which mode is active.
+        The credential check itself runs in the caller, before this call
+        (routes/_auth's TOTP-aware ``authenticate_interactively``) - this
+        store receives the already-resolved ``user`` (``None`` on a
+        failed, incomplete, or "deny" attempt) and only does the atomic
+        check-status + transition, so two concurrent verifications still
+        cannot both claim the same pending code. ``amr`` (#348) is likewise
+        decided entirely by the caller - this store has no TOTP logic of
+        its own, it only records what it is given on a successful
+        authorization.
         """
         with self._lock:
             device_code = self._by_user_code.get(user_code)
             grant = self._codes.get(device_code) if device_code else None
             if not grant:
                 return DeviceVerifyOutcome.INVALID_CODE, None
-            if grant.status != "pending":
-                return DeviceVerifyOutcome.ALREADY_USED, None
-            if time.time() > grant.expires_at:
+            status = self._status_of(grant)
+            if status is DeviceVerifyOutcome.EXPIRED:
                 grant.status = "expired"
-                return DeviceVerifyOutcome.EXPIRED, None
+            if status is not None:
+                return status, None
             if action == "deny":
                 grant.status = "denied"
                 return DeviceVerifyOutcome.DENIED, None
-
-            if not username:
-                return DeviceVerifyOutcome.MISSING_CREDENTIALS, None
-            user = authenticate(username, password)
 
             if not user:
                 return DeviceVerifyOutcome.INVALID_CREDENTIALS, None
             grant.status = "authorized"
             grant.username = user.username
             grant.auth_time = int(time.time())
+            grant.amr = amr
             return DeviceVerifyOutcome.AUTHORIZED, user
 
     def prune_expired(self) -> int:

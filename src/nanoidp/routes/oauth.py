@@ -6,7 +6,7 @@ import json
 import logging
 import os
 from dataclasses import dataclass, replace
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import jwt as pyjwt
 from flask import (
@@ -24,7 +24,7 @@ from flask import (
 from flask.typing import ResponseReturnValue
 
 from ..branding import effective_logos_dir, resolve_client_logo
-from ..config import ConfigManager, OAuthClient, get_config
+from ..config import ConfigManager, OAuthClient, User, get_config
 from ..services import (
     DeviceVerifyOutcome,
     build_discovery_document,
@@ -49,7 +49,13 @@ from ..services.resource import resolve_resources
 from ..services.scope import resolve_scope
 from ..services.token import resolve_user_claim, sanitize_claim_names
 from ._audit import audit_event
-from ._auth import TwoStepPhase, two_step_phase
+from ._auth import (
+    SecondFactorPhase,
+    TwoStepPhase,
+    authenticate_interactively,
+    no_store,
+    two_step_phase,
+)
 from ._issuer import effective_issuer
 from ._oauth_error import invalid_client_error, oauth_error
 from .oauth_grants import _GRANT_HANDLERS, _GrantContext, _GrantOutcome
@@ -550,14 +556,21 @@ def _validate_authorize_resources(
 
 
 def _issue_authorization_code(
-    config: ConfigManager, p: _AuthorizeParams, username: str, *, auto_login: bool = False
+    config: ConfigManager,
+    p: _AuthorizeParams,
+    username: str,
+    *,
+    auto_login: bool = False,
+    amr: Optional[Sequence[str]] = None,
 ) -> ResponseReturnValue:
     """Mint the code, clear the oauth_ session scratch data, audit success
     and redirect to the client - shared by a normal inline login
     (``_handle_authorize_login``) and #250's persona auto-login
     (``_try_persona_auto_login``), which are otherwise indistinguishable on
     the wire once a persona is known. ``auto_login`` only affects the audit
-    record and log line.
+    record and log line. ``amr`` (#348) is the OIDC amr for the login that
+    produced this code - ``None`` for a persona/auto-login, since no
+    password was checked.
     """
     auth_code_store = get_auth_code_store()
     code = auth_code_store.create_code(
@@ -571,6 +584,7 @@ def _issue_authorization_code(
         state=p.state if p.state else None,
         claims=_parse_claims_parameter(p.claims_param),
         resource=list(p.resources) if p.resources else None,
+        amr=amr,
     )
 
     # Clear OAuth session data
@@ -669,10 +683,11 @@ def _try_persona_auto_login(
 
 def _handle_authorize_login(
     config: ConfigManager, p: _AuthorizeParams
-) -> Tuple[Optional[str], Optional[ResponseReturnValue]]:
-    """The POST login leg: (None, redirect) on success, (error_msg, None) to
-    fall through to the login page (failed, or the password not yet
-    submitted).
+) -> Tuple[Optional[str], Optional[ResponseReturnValue], bool]:
+    """The POST login leg: (None, redirect, False) on success,
+    (error_msg, None, totp_step) to fall through to the login page (failed,
+    the password not yet submitted, or - #348 - the further TOTP code
+    screen after a successful password check).
 
     Stateless (#323 review round 1): the step is derived from what THIS
     request submits, not a login_step/session sentinel. A POST that carries
@@ -688,7 +703,9 @@ def _handle_authorize_login(
     ``login.two_step`` (#322/#323 review round 2) is a global setting, not
     per-client - ``client`` only feeds the branding shown alongside it. The
     step-detection rule itself lives in ``_auth.two_step_phase`` (#323
-    review round 2, before-merge 5), shared by every password-form surface.
+    review round 2, before-merge 5), shared by every password-form surface;
+    the declarative TOTP second factor (#348) rides the same machinery via
+    ``_auth.authenticate_interactively``.
     """
     username = request.form.get("username", "").strip()
     password_submitted = "password" in request.form
@@ -702,20 +719,36 @@ def _handle_authorize_login(
         password_submitted=password_submitted,
     )
     if phase is TwoStepPhase.USERNAME_REQUIRED:
-        return "Username is required", None
+        return "Username is required", None, False
     if phase is TwoStepPhase.PASSWORD_REQUIRED:
         # The password screen was resubmitted with a blank password.
-        return "Password is required", None
+        return "Password is required", None, False
     if phase is TwoStepPhase.USERNAME_STEP:
         # Nothing to authenticate yet - step 1 never verifies the username
         # exists - fall through to render the password screen with this
         # username carried forward.
-        return None, None
+        return None, None, False
 
-    user = config.interactive_authenticate(username, password)
+    login = authenticate_interactively(config, username=username, password=password)
 
-    if user:
-        return None, _issue_authorization_code(config, p, user.username)
+    if login.phase.pending:
+        if login.phase is SecondFactorPhase.CODE_INVALID:
+            audit_event(
+                "authorization_request",
+                "failed",
+                endpoint="/authorize",
+                username=username,
+                client_id=p.client_id,
+                details={"reason": login.phase.error},
+            )
+        return login.phase.error, None, True
+
+    if login.user:
+        return (
+            None,
+            _issue_authorization_code(config, p, login.user.username, amr=login.amr),
+            False,
+        )
 
     if (persona_mode and username) or (username and password):
         # A real (failed) selection/login attempt, not just missing input
@@ -727,11 +760,11 @@ def _handle_authorize_login(
             client_id=p.client_id,
             details={"reason": "Invalid credentials"},
         )
-        return "Invalid username or password", None
+        return "Invalid username or password", None, False
 
     if persona_mode:
-        return "Select a user", None
-    return "Username and password are required", None
+        return "Select a user", None, False
+    return "Username and password are required", None, False
 
 
 def _authorize_query_params(p: _AuthorizeParams) -> Dict[str, Any]:
@@ -771,12 +804,21 @@ def _render_authorize_login(
     client: Optional[OAuthClient],
     error_msg: Optional[str],
     login_username: str = "",
+    *,
+    totp_step: bool = False,
+    login_password: str = "",
 ) -> ResponseReturnValue:
     """The login page (GET, or a POST that did not authenticate).
 
     ``login_username`` is this request's username field, not a value
     remembered from a previous one (#323 review round 1) - "" on a GET,
-    the just-submitted value on a POST.
+    the just-submitted value on a POST. ``totp_step``/``login_password``
+    (#348) render the further code screen after a successful password
+    check; the password travels forward as a hidden field the same way
+    the username does, since nothing is stored server-side. no_store is
+    applied here, not by the caller (#348 review, cleanup): this is the
+    one place that knows totp_step is set, the same shape /login,
+    /saml/sso and /device use.
     """
     logo_url = None
     if client:
@@ -784,7 +826,7 @@ def _render_authorize_login(
         if resolve_client_logo(logos_dir, client.client_id):
             logo_url = url_for("oauth.client_logo", client_id=client.client_id)
 
-    return render_template(
+    response = render_template(
         "authorize.html",
         client_id=p.client_id,
         client=client,
@@ -794,9 +836,12 @@ def _render_authorize_login(
         persona_mode=config.settings.persona_mode_enabled,
         two_step_login=config.settings.two_step_login_active,
         login_username=login_username,
+        totp_step=totp_step,
+        login_password=login_password,
         change_username_url=url_for("oauth.authorize", **_authorize_query_params(p)),
         users=config.persona_picker_entries(),
     )
+    return no_store(response) if totp_step else response
 
 
 @oauth_bp.route("/authorize", methods=["GET", "POST"])
@@ -879,13 +924,24 @@ def authorize() -> ResponseReturnValue:
 
     error_msg = None
     login_username = ""
+    login_password = ""
+    totp_step = False
     if request.method == "POST":
         login_username = request.form.get("username", "").strip()
-        error_msg, response = _handle_authorize_login(config, p)
+        login_password = request.form.get("password", "")
+        error_msg, response, totp_step = _handle_authorize_login(config, p)
         if response is not None:
             return response
 
-    return _render_authorize_login(config, p, client, error_msg, login_username)
+    return _render_authorize_login(
+        config,
+        p,
+        client,
+        error_msg,
+        login_username,
+        totp_step=totp_step,
+        login_password=login_password,
+    )
 
 
 @oauth_bp.route("/client-logos/<client_id>")
@@ -1241,6 +1297,7 @@ def token() -> ResponseReturnValue:
         scope=result.scope,
         client_id=client_id,
         auth_time=result.auth_time,
+        amr=result.amr,
         refresh_family=result.refresh_family,
         id_token_claims=result.id_token_claims,
         userinfo_claims=result.userinfo_claims,
@@ -1905,6 +1962,33 @@ def device_verify() -> ResponseReturnValue:
     user_code = request.args.get("user_code", "")
     login_username = ""
 
+    def render_device(
+        error: Optional[str],
+        *,
+        success: Optional[str] = None,
+        totp_step: bool = False,
+        login_password: str = "",
+    ) -> ResponseReturnValue:
+        # One render for the three exits below (#348 review), the same
+        # closure /login and /saml/sso already use. no_store applied here,
+        # not by each caller (#348 review, cleanup): the code screen
+        # carries the password forward as a hidden field, so every response
+        # rendering it must be uncacheable, and this is the one place that
+        # knows totp_step is set.
+        response = render_template(
+            "device.html",
+            user_code=user_code,
+            error=error,
+            success=success,
+            persona_mode=persona_mode,
+            two_step_login=two_step_login,
+            login_username=login_username,
+            totp_step=totp_step,
+            login_password=login_password,
+            users=config.persona_picker_entries(),
+        )
+        return no_store(response) if totp_step else response
+
     if request.method == "POST":
         user_code = request.form.get("user_code", "").upper().strip()
         username = request.form.get("username", "").strip()
@@ -1939,16 +2023,7 @@ def device_verify() -> ResponseReturnValue:
                 error_msg = "Username is required"
             elif phase is TwoStepPhase.PASSWORD_REQUIRED:
                 error_msg = "Password is required"
-            return render_template(
-                "device.html",
-                user_code=user_code,
-                error=error_msg,
-                success=None,
-                persona_mode=persona_mode,
-                two_step_login=two_step_login,
-                login_username=login_username,
-                users=config.persona_picker_entries(),
-            )
+            return render_device(error_msg)
 
         # Message-only: whether this is a "nothing filled in" attempt rather
         # than a wrong selection/credential, so the two outcomes get distinct
@@ -1957,17 +2032,50 @@ def device_verify() -> ResponseReturnValue:
             (persona_mode and not username) or (not persona_mode and (not username or not password))
         )
 
+        # Declarative TOTP second factor (#348), riding the same phase
+        # machinery as two_step above. The credential check runs here, once,
+        # and only for a code that is pending and live (pending_status is a
+        # non-mutating look): a dead user_code must not turn /device into a
+        # password oracle, and verify() below reports it exactly as it always
+        # has. A code screen returns early WITHOUT touching the store -
+        # .verify() is the atomic check-status + transition (#43), and a
+        # code-step render has no business touching a pending code's
+        # status, exactly like the username-only step above. store.verify()
+        # takes the already-resolved user (``None`` on a failed, incomplete,
+        # or "deny" attempt) rather than a credential-check callback, so the
+        # check above runs exactly once - it used to be rebound only on
+        # success via a closure, so a wrong password was checked twice (once
+        # here, once by store.verify()'s own call to the original
+        # authenticate, serialized inside the store's lock) - under
+        # password_hashing that was two bcrypt rounds per attempt instead of
+        # one (#348 review, cleanup).
+        store = get_device_code_store()
+        decided_user: Optional[User] = None
+        amr = None
+        if action != "deny" and not missing_input and store.pending_status(user_code) is None:
+            login = authenticate_interactively(config, username=username, password=password)
+            if login.phase.pending:
+                if login.phase is SecondFactorPhase.CODE_INVALID:
+                    audit_event(
+                        "device_verification",
+                        "failed",
+                        endpoint="/device",
+                        username=username,
+                        details={"user_code": user_code, "reason": login.phase.error},
+                    )
+                return render_device(login.phase.error, totp_step=True, login_password=password)
+            decided_user = login.user
+            amr = login.amr
+
         # The store runs check-status + transition atomically so two
         # concurrent verifications can't both claim the same pending code
-        # (issue #43); credential validation happens inside its lock, as
-        # it did when this logic lived here. Persona vs. password login is
-        # decided once in interactive_authenticate(), not here.
-        outcome, user = get_device_code_store().verify(
+        # (issue #43). Persona vs. password login is decided once in
+        # interactive_authenticate(), not here.
+        outcome, user = store.verify(
             user_code,
             action,
-            username,
-            password,
-            config.interactive_authenticate,
+            decided_user,
+            amr=amr,
         )
         if outcome is DeviceVerifyOutcome.INVALID_CREDENTIALS and missing_input:
             outcome = DeviceVerifyOutcome.MISSING_CREDENTIALS
@@ -2009,13 +2117,4 @@ def device_verify() -> ResponseReturnValue:
             )
             logger.info(f"Device authorized for user '{user.username}', user_code: {user_code}")
 
-    return render_template(
-        "device.html",
-        user_code=user_code,
-        error=error_msg,
-        success=success_msg,
-        persona_mode=persona_mode,
-        two_step_login=two_step_login,
-        login_username=login_username,
-        users=config.persona_picker_entries(),
-    )
+    return render_device(error_msg, success=success_msg)

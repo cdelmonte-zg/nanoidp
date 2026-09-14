@@ -65,7 +65,7 @@
             </div>
             {% endif %}
 
-            {% if two_step_login and login_username %}
+            {% if (two_step_login or totp_step) and login_username %}
             <div class="mb-3">
                 <small class="text-muted">Signing in as</small>
                 <span class="fw-semibold">{{ login_username }}</span>
@@ -83,6 +83,25 @@
                 {% endif %}
 
                 {{ macros.persona_picker(users, "Persona login - select a user to sign in.") }}
+            </form>
+            {% elif totp_step %}
+            {# Declarative TOTP second factor (#348): a further phase after
+               a successful password check, riding two_step's machinery.
+               The "Change username" control is shared with the password
+               step below the chain. #}
+            <form method="POST">
+                {% if saml_request %}
+                <input type="hidden" name="SAMLRequest" value="{{ saml_request|e }}">
+                <input type="hidden" name="saml_original_verb" value="{{ original_verb|e }}">
+                {% endif %}
+                {% if relay_state %}
+                <input type="hidden" name="RelayState" value="{{ relay_state|e }}">
+                {% endif %}
+                {{ macros.totp_code_fields(login_username, login_password) }}
+
+                <button type="submit" class="btn btn-primary w-100 py-2">
+                    <i class="bi bi-box-arrow-in-right me-2"></i>Verify
+                </button>
             </form>
             {% elif two_step_login and not login_username %}
             <form method="POST">
@@ -137,26 +156,6 @@
                     <i class="bi bi-box-arrow-in-right me-2"></i>Sign In
                 </button>
             </form>
-            {% if saml_request %}
-            {# SAML's inline login has no GET to link back to (the
-               SAMLRequest is a POST body, not stored anywhere), so this
-               resubmits the same hidden fields with no username instead -
-               _sso_authenticate_inline already renders the blank username
-               screen for a POST that carries none (#323 review round 2,
-               before-merge 3). #}
-            <form method="POST" class="text-center mt-3">
-                <input type="hidden" name="SAMLRequest" value="{{ saml_request|e }}">
-                <input type="hidden" name="saml_original_verb" value="{{ original_verb|e }}">
-                {% if relay_state %}
-                <input type="hidden" name="RelayState" value="{{ relay_state|e }}">
-                {% endif %}
-                <button type="submit" class="btn btn-link p-0">Change username</button>
-            </form>
-            {% else %}
-            <div class="text-center mt-3">
-                <a href="{{ url_for('ui.login') }}" class="btn btn-link p-0">Change username</a>
-            </div>
-            {% endif %}
             {% else %}
             <form method="POST">
                 {% if saml_request %}
@@ -193,6 +192,31 @@
                     </button>
                     {% endfor %}
                 </div>
+            </div>
+            {% endif %}
+            {% endif %}
+
+            {% if (two_step_login or totp_step) and login_username %}
+            {# "Change username" for the password step and the TOTP step
+               alike - one block, so the two screens cannot drift. SAML's
+               inline login has no GET to link back to (the SAMLRequest is
+               a POST body, not stored anywhere), so it resubmits the same
+               hidden fields with no username instead -
+               _sso_authenticate_inline already renders the blank username
+               screen for a POST that carries none (#323 review round 2,
+               before-merge 3). #}
+            {% if saml_request %}
+            <form method="POST" class="text-center mt-3">
+                <input type="hidden" name="SAMLRequest" value="{{ saml_request|e }}">
+                <input type="hidden" name="saml_original_verb" value="{{ original_verb|e }}">
+                {% if relay_state %}
+                <input type="hidden" name="RelayState" value="{{ relay_state|e }}">
+                {% endif %}
+                <button type="submit" class="btn btn-link p-0">Change username</button>
+            </form>
+            {% else %}
+            <div class="text-center mt-3">
+                <a href="{{ url_for('ui.login') }}" class="btn btn-link p-0">Change username</a>
             </div>
             {% endif %}
             {% endif %}
