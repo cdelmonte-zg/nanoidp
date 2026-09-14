@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.1.0] - 2026-09-14
+
 ### Migration notes
 
 Nothing below changes a supported API. This release stays a minor: the
@@ -32,6 +34,14 @@ upgrade is collected here.
   (or `chown -R 1000:0` on the host directory of a bind mount). A read-only
   config mount needs nothing. To run an older image tag with the chart,
   set `securityContext.runAsNonRoot=false` and `securityContext.runAsUser=0`.
+- **`/authorize` contract corrections** (#325, #328, #331, details under
+  Fixed): the POST leg reads the OAuth parameters from its own query
+  string, never from the form body; a request carrying any OAuth parameter
+  is a complete request and no longer borrows missing fields from the
+  session; a rejected request no longer replaces the pending one. *Migration:*
+  a client that packed the OAuth parameters into a single `POST /authorize`
+  body with no preceding GET must send them on the query string instead.
+  Browser flows are unaffected.
 
 ### Added
 - **Declarative TOTP second factor** (#348, opt-in, off by default):
@@ -1723,6 +1733,7 @@ previous leniency allowed - needs a one-time adjustment.
 - Key rotation with JWKS support for multiple keys
 - External key import support
 
+[3.1.0]: https://github.com/cdelmonte-zg/nanoidp/compare/v3.0.0...v3.1.0
 [3.0.0]: https://github.com/cdelmonte-zg/nanoidp/compare/v2.8.0...v3.0.0
 [2.8.0]: https://github.com/cdelmonte-zg/nanoidp/compare/v2.7.0...v2.8.0
 [2.7.0]: https://github.com/cdelmonte-zg/nanoidp/compare/v2.6.0...v2.7.0
