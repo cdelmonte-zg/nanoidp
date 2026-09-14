@@ -72,6 +72,11 @@ Copy and paste these prompts directly into Claude Code.
 **Create a test user on the fly:**
 > "Create a new user 'testuser' with password 'test123', roles ['USER', 'TESTER'], groups ['ENGINEERING'], and identity_class 'EXTERNAL' using nanoidp"
 
+The new user exists in the MCP server's copy of the configuration: token
+generation for it works right away, but a nanoidp server running
+separately lets it log in only after `save_config` and a reload of that
+server (see [The MCP server and a running nanoidp server](https://cdelmonte-zg.github.io/nanoidp/reference/mcp.html#the-mcp-server-and-a-running-nanoidp-server)).
+
 **List users and their roles:**
 > "List all nanoidp users and show their roles and groups"
 
