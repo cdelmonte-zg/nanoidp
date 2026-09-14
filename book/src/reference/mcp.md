@@ -38,6 +38,32 @@ readonly mode, and the exposure warnings, see the
 | `get_keys_info` | Get signing key info (active kid, previous keys) |
 | `rotate_keys` | Rotate signing keys (old key stays valid for verification) |
 
+## The MCP server and a running nanoidp server
+
+`nanoidp-mcp` (or `python -m nanoidp.mcp_server`) is its own process. It
+loads its own copy of the configuration from `NANOIDP_CONFIG_DIR` and does
+not talk to a nanoidp server started separately on the same directory. What
+the tools change, and who sees it:
+
+- `create_*`, `update_*`, `delete_*` and `update_settings` change the MCP
+  server's in-memory copy only. The tools answering from that copy see the
+  change immediately: `list_users`, `get_user`, and `generate_token` for a
+  user created a moment ago. Tokens are signed with the keys in `keys_dir`,
+  so a resource server that validates against the running server's JWKS
+  accepts them.
+- A running nanoidp server does not see the change. A user created through
+  MCP cannot log in there, and the password grant answers `invalid_grant`,
+  until `save_config` writes the YAML files **and** that server reloads
+  them (`POST /api/config/reload`, or a restart). The server does not watch
+  the files. Once saved, the change is declared configuration like any
+  other entry.
+- `reload_config` rebuilds the MCP server's copy from the files, dropping
+  every change not saved yet. `save_config` writes the whole copy: every
+  pending user, client and setting at once, not only the last change.
+- `get_audit_log`, `get_audit_stats` and `clear_audit_log` act on the MCP
+  server's own audit log. The events of a running nanoidp server are in
+  that server's `/api/audit`.
+
 ## Conflict-checked saves
 
 The declared configuration can have several writers at once: the web UI,
