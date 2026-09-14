@@ -190,7 +190,9 @@ class OAuthClient(BaseModel):
     """Represents an OAuth client."""
     # Validate on direct attribute assignment too (e.g. MCP update_client), so the
     # field constraints below are enforced beyond construction time (#37).
-    model_config = ConfigDict(validate_assignment=True)
+    # hide_input_in_errors: a rejected client_secret never appears in the
+    # error text, like User's secrets (#352).
+    model_config = ConfigDict(validate_assignment=True, hide_input_in_errors=True)
 
     client_id: str = Field(..., min_length=1, description="OAuth client ID")
     client_secret: Optional[str] = Field(
@@ -324,6 +326,11 @@ class OAuthClient(BaseModel):
 
 class Settings(BaseModel):
     """Application settings with validation."""
+    # secret_key and management_secret are validated here; a rejected value
+    # (the printable-ASCII rule on management_secret) must not reappear as
+    # input_value=... in the error (#352).
+    model_config = ConfigDict(hide_input_in_errors=True)
+
     # Server
     host: str = Field(default="127.0.0.1", description="Server host address")
     port: int = Field(default=8000, ge=1, le=65535, description="Server port")
