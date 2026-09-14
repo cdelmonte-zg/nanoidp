@@ -52,6 +52,11 @@ logger = logging.getLogger(__name__)
 DocumentT = TypeVar("DocumentT", bound=BaseModel)
 
 _FORBID = ConfigDict(extra="forbid")
+# The document roots. pydantic honours hide_input_in_errors on the outermost
+# model of a validation, so the flag on a root covers every nested section:
+# a rejected value, a secret included, never appears as input_value=... in
+# the error the loader chains its own message to (#352, #350).
+_ROOT = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
 # Accepted values of the top-level ``config_validation`` key (#175 piece 4).
 VALIDATION_MODES = ("warn", "strict")
@@ -270,7 +275,7 @@ _SECTIONS = ("server", "oauth", "saml", "jwt", "session", "logging", "login")
 class SettingsDocument(BaseModel):
     """Top-level shape of ``settings.yaml``."""
 
-    model_config = _FORBID
+    model_config = _ROOT
 
     # Validated by serialization.check_config_version before the document is
     # built; declared so the key is known.
@@ -427,7 +432,7 @@ class BootstrapDocument(BaseModel):
     allowed, validated by the same section models; anything else is refused
     so the file cannot quietly grow into a second settings file."""
 
-    model_config = _FORBID
+    model_config = _ROOT
 
     hooks: HooksSection = Field(default_factory=HooksSection)
     plugins: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
@@ -463,12 +468,9 @@ class UserEntry(BaseModel):
     to ``["USER"]``, ``email`` to ``<username>@example.org`` (filled in by
     ``to_user`` because it needs the key)."""
 
-    # hide_input_in_errors matches User's own model_config (models.py): a
-    # totp_secret that YAML reads as a number (an unquoted all-digit Base32
-    # value) fails string_type here, before it ever reaches User, and
-    # without the flag pydantic would echo it via input_value=... in the
-    # startup traceback (#348 review round 2).
-    model_config = ConfigDict(extra="allow", hide_input_in_errors=True)
+    # No hide_input_in_errors of its own: an entry is only ever validated
+    # inside UsersDocument, whose _ROOT flag is the one pydantic applies.
+    model_config = ConfigDict(extra="allow")
 
     # Missing -> default, explicit null -> validation error, exactly like the
     # old ``user_data.get(key, default)`` followed by the domain model's
@@ -520,10 +522,7 @@ class UserEntry(BaseModel):
 class UsersDocument(BaseModel):
     """Top-level shape of ``users.yaml``."""
 
-    # hide_input_in_errors too, so a rejected totp_secret stays out of the
-    # traceback whether pydantic-core attributes the error to the nested
-    # UserEntry or to this document (see UserEntry.model_config above).
-    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+    model_config = _ROOT
 
     config_version: Optional[int] = None
     default_user: str = "admin"

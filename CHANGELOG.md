@@ -36,6 +36,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `claims` parameter is no longer resolved, whether `login.totp` is on or
   off (#110).
 
+### Fixed
+- **A rejected configuration value no longer echoes a secret** (#352). The
+  loader raises its own message from pydantic's validation error, and that
+  error rendered the offending input as `input_value=...`, so the value
+  reached every place that prints the chained traceback: the startup
+  output, the server log on `POST /api/config/reload` and the MCP server's
+  log on `reload_config`. Affected: a `client_secret`, `session.secret_key`
+  or `session.management_secret` that YAML reads as a number, a
+  `management_secret` rejected for a non-ASCII character (that one also
+  appeared in `nanoidp validate-config` and in both MCP tool results), and
+  the settings of every plugin when one `plugins:` entry is malformed, in
+  `settings.yaml` or `bootstrap.yaml`. The three document roots and the
+  `Settings` and `OAuthClient` models now hide the input; the error still
+  names the file, the field and the rule. #350 had closed the same gap for
+  `users.yaml`.
+
 ## [3.1.0] - 2026-09-14
 
 ### Migration notes
