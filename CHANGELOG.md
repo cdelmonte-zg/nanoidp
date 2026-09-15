@@ -52,6 +52,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lowered `max_previous_keys` trims the JWKS as soon as it is applied.
 
 ### Changed
+- **Users and clients resolve through one identity resolver** (#235), in
+  preparation for runtime-created test identities (#192). Every login,
+  grant, client authentication and SAML lookup resolves users and clients
+  through `nanoidp.services.identities`, which composes the declared
+  configuration with an in-memory runtime identity store, declared first;
+  a reload that declares a name a runtime object holds removes the runtime
+  one with a warning. Nothing creates runtime objects yet, so no HTTP, UI
+  or MCP behaviour changes. The management surfaces (UI pages and forms,
+  the persona picker, `/api/users` including its token endpoint, MCP) stay
+  on the declared configuration until #192. For code embedding nanoidp:
+  `ConfigManager.authenticate`, `interactive_authenticate` and
+  `check_client` moved to `IdentityResolver` (`identities_for(config)`);
+  `ConfigManager.get_user` and `get_client` stay, and return declared
+  objects only; `init_config` gains `after_load`, which `create_app` uses
+  for the reconciliation.
 - **One `ConfigManager` per process** (#230). The MCP server no longer keeps
   a configuration global of its own next to `nanoidp.config`'s; its tools,
   the HTTP routes and the token service resolve the same manager, and

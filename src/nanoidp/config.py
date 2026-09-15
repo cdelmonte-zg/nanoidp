@@ -7,8 +7,9 @@ Uses Pydantic for validation and schema enforcement.
 import logging
 import os
 import threading
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 import yaml
 
@@ -49,6 +50,12 @@ logger = logging.getLogger(__name__)
 # can fail any more. Supplied by the process composition, because config
 # must not import services.
 Activation = Callable[[Settings], Callable[[], None]]
+
+# Called with the manager after every successful load, inside the load, once
+# the new configuration is assigned (#235: the runtime identity store drops
+# the runtime objects a reload has just declared). Supplied by the process
+# composition, like the activation step.
+AfterLoad = Callable[["ConfigManager"], None]
 
 
 class ConfigurationRejected(ValueError):
@@ -98,9 +105,11 @@ class ConfigManager:
         profile_override: Optional[str] = None,
         strict_config: Optional[bool] = None,
         activate: Optional[Activation] = None,
+        after_load: Optional[AfterLoad] = None,
     ) -> None:
         self.config_dir = Path(config_dir or self._find_config_dir())
         self._activate = activate
+        self._after_load = after_load
         # One load at a time (#359): two concurrent loads would each prepare
         # a signing service (and generate keys into the same fresh keys_dir
         # over each other), and could publish one load's service next to the
@@ -226,6 +235,8 @@ class ConfigManager:
                     f"{self.config_dir / 'settings.yaml'}: {exc}", kind="activation"
                 ) from exc
         self._commit_directory(staged, publish)
+        if self._after_load is not None:
+            self._after_load(self)
         logger.info(f"Loaded configuration from {self.config_dir}")
         logger.info(f"Loaded {len(self.users)} users")
 
@@ -468,7 +479,8 @@ class ConfigManager:
         }
 
     def get_user(self, username: str) -> Optional[User]:
-        """Get a user by username."""
+        """The declared user with that name. Logins and grants resolve users
+        through services.identities, which also sees runtime users (#235)."""
         return self.users.get(username)
 
     def persona_picker_entries(self) -> List[Tuple[str, str]]:
@@ -477,86 +489,30 @@ class ConfigManager:
         they can never drift on what's shown next to a user's name."""
         return [(username, user.description) for username, user in self.users.items()]
 
-    def authenticate(self, username: str, password: str) -> Optional[User]:
-        """Authenticate a user. Supports bcrypt when password_hashing is enabled.
-
-        A password-less user (``password is None``) never authenticates here.
-        A stored password that isn't valid bcrypt-hash format falls back to
-        plaintext comparison unless enforce_password_check is on, in which
-        case it's rejected outright (see Settings.enforce_password_check).
-        """
-        user = self.get_user(username)
-        if not user or user.password is None:
-            return None
-
-        if self.settings.password_hashing:
-            import bcrypt
-            try:
-                # Password stored as bcrypt hash
-                if bcrypt.checkpw(password.encode("utf-8"), user.password.encode("utf-8")):
-                    return user
-            except (ValueError, TypeError):
-                # Invalid hash format
-                if self.settings.enforce_password_check:
-                    logger.warning(
-                        f"Invalid bcrypt hash for user {username}, rejecting login "
-                        "(enforce_password_check)"
-                    )
-                    return None
-                # Fall back to plaintext comparison
-                logger.warning(f"Invalid bcrypt hash for user {username}, falling back to plaintext")
-                if user.password == password:
-                    return user
-        else:
-            # Plaintext comparison (dev mode)
-            if user.password == password:
-                return user
-
-        return None
-
-    def interactive_authenticate(self, username: str, password: str) -> Optional[User]:
-        """Single choke point for the four interactive login surfaces (UI
-        ``/login``, OIDC ``/authorize``, SAML ``/saml/sso``, device
-        ``/device``): consults ``persona_mode_enabled`` so the persona/
-        password branch isn't hand-copied at each call site.
-
-        Persona mode: identity selection only, a non-empty ``username``
-        selects the user - no credential check. Password mode: unchanged,
-        delegates to ``authenticate()`` and requires both fields.
-        """
-        if self.settings.persona_mode_enabled:
-            return self.get_user(username) if username else None
-        return self.authenticate(username, password) if username and password else None
-
     def hash_password(self, password: str) -> str:
         """Hash a password using bcrypt."""
         import bcrypt
         return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
 
-    def check_client(self, client_id: Optional[str], client_secret: Optional[str]) -> bool:
-        """Check client credentials.
-
-        Accepts ``None`` (Flask's ``request.authorization`` fields are
-        Optional) and fails closed: missing credentials never match.
-        """
-        if client_id is None or client_secret is None:
-            return False
-        for client in self.settings.clients:
-            # A public client (token_endpoint_auth_method 'none', #188) can
-            # never authenticate: a stored-but-ignored secret must not
-            # become a credential, and client.client_secret may be None.
-            if client.is_public or client.client_secret is None:
-                continue
-            if client.client_id == client_id and client.client_secret == client_secret:
-                return True
-        return False
-
     def get_client(self, client_id: str) -> Optional[OAuthClient]:
-        """Get a client by ID."""
+        """The declared client with that id. Client checks resolve clients
+        through services.identities, which also sees runtime clients (#235)."""
         for client in self.settings.clients:
             if client.client_id == client_id:
                 return client
         return None
+
+    @contextmanager
+    def holding_loads(self) -> Iterator[None]:
+        """No load of this manager runs while the block does.
+
+        For a caller whose check against the declared configuration and the
+        action that depends on it must not straddle a reload (#235: creating a
+        runtime object under a name a concurrent reload is about to declare).
+        Reentrant, like the load itself.
+        """
+        with self._load_lock:
+            yield
 
     def reload(self) -> None:
         """Reload configuration from files: the EXTERNAL reload.
@@ -751,6 +707,7 @@ def init_config(
     profile_override: Optional[str] = None,
     strict_config: Optional[bool] = None,
     activate: Optional[Activation] = None,
+    after_load: Optional[AfterLoad] = None,
 ) -> ConfigManager:
     """Initialize the global config instance.
 
@@ -759,7 +716,9 @@ def init_config(
     reload() without ever being persisted (#172). strict_config is the CLI
     --strict-config, with the same contract over config_validation (#175).
     activate is the activation step every load of this manager runs (#359);
-    the server and the MCP server pass the signing service's.
+    the server and the MCP server pass the signing service's. after_load
+    runs after every successful load (#235); the server passes the runtime
+    identity reconciliation.
     """
     global _config
     _config = ConfigManager(
@@ -767,5 +726,6 @@ def init_config(
         profile_override=profile_override,
         strict_config=strict_config,
         activate=activate,
+        after_load=after_load,
     )
     return _config

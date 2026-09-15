@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional, Sequence, Union
 
 from ..config import ConfigManager, Settings, User, get_config
 from .crypto import CryptoService, get_crypto_service
+from .identities import identities_for
 
 logger = logging.getLogger(__name__)
 
@@ -213,9 +214,9 @@ class TokenService:
             return settings.audience, None
 
         resource_audience = settings.audience
-        # From the response's settings snapshot, not config.get_client(),
-        # which reads the current settings.
-        client = next((c for c in settings.clients if c.client_id == client_id), None)
+        # Declared clients from the response's settings snapshot, then the
+        # runtime ones (#235).
+        client = identities_for(self.config).get_client(client_id, settings)
         extras = client.additional_audiences if client else []
 
         aud = [client_id]

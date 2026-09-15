@@ -11,6 +11,7 @@ import pytest
 
 from nanoidp import wizard
 from nanoidp.config import ConfigManager
+from nanoidp.services.identities import identities_for
 
 
 @pytest.fixture
@@ -66,7 +67,7 @@ class TestWizardHappyPath:
         assert manager.settings.token_expiry_minutes == 60
         client = manager.get_client("demo-client")
         assert client is not None and client.client_secret == "demo-secret"
-        assert manager.authenticate("admin", "admin") is not None
+        assert identities_for(manager).authenticate("admin", "admin") is not None
         assert manager.default_user == "admin"
         assert (tmp_path / "wizard-config" / "keys").is_dir()
 
@@ -98,7 +99,7 @@ class TestWizardHappyPath:
         assert manager.settings.audience == "custom-app"
         assert manager.settings.token_expiry_minutes == 120
         assert manager.get_client("my-client").description == "My client"
-        assert manager.authenticate("alice", "wonder") is not None
+        assert identities_for(manager).authenticate("alice", "wonder") is not None
         user = manager.get_user("alice")
         assert user.email == "alice@example.org"
 

@@ -16,7 +16,7 @@ from lxml import etree
 
 from ..config import get_config
 from ..exceptions import SAMLSignatureError
-from ..services import get_crypto_service
+from ..services import get_crypto_service, identities_for
 from ..services.saml_attributes import (
     append_attribute_statement,
     resolve_saml_attributes,
@@ -696,7 +696,7 @@ def sso() -> ResponseReturnValue:
         return login_page
     assert username is not None  # _sso_authenticate_inline returns one or the other
 
-    user = config.get_user(username)
+    user = identities_for(config).get_user(username)
     if not user:
         audit_event(
             "saml_request",
@@ -962,7 +962,7 @@ def attribute_query() -> ResponseReturnValue:
         logger.info(f"AttributeQuery for user: {user_id}")
 
         # Get user from config
-        user = config.get_user(user_id)
+        user = identities_for(config).get_user(user_id)
 
         if user:
             # Shared resolver (#302). Two behavior changes vs the old inline

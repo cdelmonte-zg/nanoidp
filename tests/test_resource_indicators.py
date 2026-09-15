@@ -17,6 +17,7 @@ import pytest
 
 from nanoidp.config import get_config
 from nanoidp.models import OAuthClient
+from nanoidp.services.identities import identities_for
 from nanoidp.services.resource import is_valid_resource_indicator, resolve_resources
 
 RES_A = "https://mcp-a.example/server"
@@ -356,7 +357,7 @@ class TestDeviceFlow:
             store = get_device_code_store()
             store.verify(
                 start["user_code"], "approve",
-                get_config().interactive_authenticate("admin", "admin"),
+                identities_for(get_config()).interactive_authenticate("admin", "admin"),
             )
         resp = client.post(
             "/token",
@@ -384,7 +385,7 @@ class TestDeviceFlow:
         with app.app_context():
             get_device_code_store().verify(
                 start["user_code"], "approve",
-                get_config().interactive_authenticate("admin", "admin"),
+                identities_for(get_config()).interactive_authenticate("admin", "admin"),
             )
         resp = client.post(
             "/token",

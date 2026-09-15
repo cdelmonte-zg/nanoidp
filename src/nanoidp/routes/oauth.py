@@ -33,6 +33,7 @@ from ..services import (
     get_device_code_store,
     get_revocation_store,
     get_token_service,
+    identities_for,
 )
 from ..services.device_code import (
     DEVICE_CODE_EXPIRES_IN,
@@ -342,7 +343,7 @@ def _validate_authorize_client(
             400,
         )
 
-    client = config.get_client(p.client_id)
+    client = identities_for(config).get_client(p.client_id)
     if not client:
         return None, _authorize_reject(
             p.client_id, "Unknown client", "invalid_client", "Unknown client_id"
@@ -666,7 +667,7 @@ def _try_persona_auto_login(
         return None
 
     username = p.login_hint[len(_AUTO_LOGIN_HINT_PREFIX) :]
-    user = config.interactive_authenticate(username, "")
+    user = identities_for(config).interactive_authenticate(username, "")
     if user is None:
         return _authorize_error_redirect(
             config,
@@ -1054,7 +1055,7 @@ def _enforce_token_endpoint_auth(
     request may proceed. RFC 7591 method semantics, RFC 6749 §3.2.1
     (confidential clients MUST authenticate, authorization_code included).
     """
-    token_client = config.get_client(client_id)
+    token_client = identities_for(config).get_client(client_id)
 
     # Public client (token_endpoint_auth_method 'none'): identified by
     # client_id alone; any presented secret is ignored, never validated.
@@ -1118,7 +1119,7 @@ def _enforce_registered_client_auth(
     client_secret_basic, the default); the wrong channel for the registered
     method is rejected instead of silently accepted.
     """
-    client = config.get_client(client_id) if client_id else None
+    client = identities_for(config).get_client(client_id) if client_id else None
     method = client.token_endpoint_auth_method if client is not None else "client_secret_basic"
 
     # client_secret_post: credentials in the body only; Basic is rejected.
@@ -1129,7 +1130,7 @@ def _enforce_registered_client_auth(
                 "'client_secret_post'; use client_id and client_secret in the "
                 "request body, not HTTP Basic"
             )
-        if not body_client_secret or not config.check_client(client_id, body_client_secret):
+        if not body_client_secret or not identities_for(config).check_client(client_id, body_client_secret):
             return "Invalid client credentials"
         return None
 
@@ -1146,7 +1147,7 @@ def _enforce_registered_client_auth(
         )
     if auth is None:
         return "Client authentication required"
-    if not config.check_client(auth.username, auth.password):
+    if not identities_for(config).check_client(auth.username, auth.password):
         return "Invalid client credentials"
     return None
 
@@ -1277,6 +1278,7 @@ def token() -> ResponseReturnValue:
 
     ctx = _GrantContext(
         config=config,
+        identities=identities_for(config),
         client_id=client_id,
         grant_type=grant_type,
     )
@@ -1401,7 +1403,7 @@ def userinfo() -> ResponseReturnValue:
 
     # Get user info
     username = payload.get("sub")
-    user = config.get_user(username) if username else None
+    user = identities_for(config).get_user(username) if username else None
 
     # Build response
     response = {
@@ -1486,7 +1488,7 @@ def introspect() -> ResponseReturnValue:
     auth = identity.auth
     body_client_secret = identity.body_client_secret
     client_id = identity.client_id
-    introspect_client = config.get_client(client_id) if client_id else None
+    introspect_client = identities_for(config).get_client(client_id) if client_id else None
     if identity.mismatch:
         # One request, two claimed identities (#277) - same rejection as
         # /token, where this check has always lived.
@@ -1601,7 +1603,7 @@ def revoke() -> ResponseReturnValue:
     auth = identity.auth
     body_client_secret = identity.body_client_secret
     client_id = identity.client_id
-    revoking_client = config.get_client(client_id) if client_id else None
+    revoking_client = identities_for(config).get_client(client_id) if client_id else None
     is_public = revoking_client is not None and revoking_client.is_public
 
     # A confidential client authenticates as at the token endpoint (#262):
@@ -1792,7 +1794,7 @@ def device_authorization() -> ResponseReturnValue:
     auth = identity.auth
     body_client_secret = identity.body_client_secret
     resolved_client_id = identity.client_id
-    device_client = config.get_client(resolved_client_id) if resolved_client_id else None
+    device_client = identities_for(config).get_client(resolved_client_id) if resolved_client_id else None
     if identity.mismatch:
         # One request, two claimed identities (#277) - same rejection as
         # /token, for public and confidential clients alike.
@@ -1830,7 +1832,7 @@ def device_authorization() -> ResponseReturnValue:
 
     # Scope validation (issue #186), same rule as /authorize including the
     # "openid" default when omitted on an unrestricted client.
-    client = config.get_client(client_id)
+    client = identities_for(config).get_client(client_id)
     if client is not None:
         scope_result = resolve_scope(
             requested_scope,

@@ -25,6 +25,7 @@ from ..services import (
     get_device_code_store,
     get_revocation_store,
 )
+from ..services.identities import IdentityResolver
 from ..services.resource import resolve_resources
 from ..services.scope import resolve_scope
 from ._audit import audit_event
@@ -72,6 +73,8 @@ class _GrantContext:
     """Request-scoped facts shared by every grant handler."""
 
     config: ConfigManager
+    # Users and clients resolve here, declared first, then runtime (#235).
+    identities: IdentityResolver
     # token() rejects requests without a client identity before dispatching,
     # so handlers always see a concrete id.
     client_id: str
@@ -257,7 +260,7 @@ def _grant_refresh_token(ctx: _GrantContext) -> GrantResult:
     if not username:
         return _oauth_error("invalid_grant", "Refresh token carries no subject")
 
-    user = ctx.config.get_user(username)
+    user = ctx.identities.get_user(username)
     if not user:
         audit_event(
             "token_request",
@@ -318,7 +321,7 @@ def _grant_refresh_token(ctx: _GrantContext) -> GrantResult:
     # before allowed_scopes was set) - it must stay absent, not be defaulted
     # to the client's current full allowed set, or a refresh could silently
     # GRANT MORE than the original authorization ever did (#186 review, B1).
-    client = ctx.config.get_client(ctx.client_id)
+    client = ctx.identities.get_client(ctx.client_id)
     if client is not None:
         scope_result = resolve_scope(
             scope,
@@ -475,7 +478,7 @@ def _grant_password(ctx: _GrantContext) -> GrantResult:
         )
         return _oauth_error("invalid_request", "username and password are required for the password grant")
 
-    user = ctx.config.authenticate(username, password)
+    user = ctx.identities.authenticate(username, password)
     if not user:
         audit_event(
             "token_request",
@@ -488,7 +491,7 @@ def _grant_password(ctx: _GrantContext) -> GrantResult:
         return _oauth_error("invalid_grant", "Invalid resource owner credentials")
 
     # Scope validation (issue #186), same rule as every other grant.
-    client = ctx.config.get_client(ctx.client_id)
+    client = ctx.identities.get_client(ctx.client_id)
     requested_scope = request.form.get("scope")
     if client is not None:
         scope_result = resolve_scope(
@@ -583,7 +586,7 @@ def _grant_authorization_code(ctx: _GrantContext) -> GrantResult:
 
     # Get the user from the authorization code
     username = auth_code.username
-    user = ctx.config.get_user(username)
+    user = ctx.identities.get_user(username)
     if not user:
         audit_event(
             "token_request",
@@ -605,7 +608,7 @@ def _grant_authorization_code(ctx: _GrantContext) -> GrantResult:
     # minting a code - but kept safe against a future refactor, same
     # reasoning as the refresh grant's re-check, #186 review B1).
     code_scope: Optional[str] = auth_code.scope if auth_code.scope is not None else None
-    client = ctx.config.get_client(ctx.client_id)
+    client = ctx.identities.get_client(ctx.client_id)
     if client is not None:
         scope_result = resolve_scope(
             code_scope,
@@ -675,7 +678,7 @@ def _grant_client_credentials(ctx: _GrantContext) -> GrantResult:
     granted or rejected. Validated the same as every other grant now.
     """
     requested_scope = request.form.get("scope")
-    client = ctx.config.get_client(ctx.client_id)
+    client = ctx.identities.get_client(ctx.client_id)
     if client is not None:
         scope_result = resolve_scope(
             requested_scope,
@@ -714,7 +717,7 @@ def _grant_client_credentials(ctx: _GrantContext) -> GrantResult:
 
     # Use default user for client credentials
     default_username = ctx.config.default_user
-    user = ctx.config.get_user(default_username)
+    user = ctx.identities.get_user(default_username)
     if not user:
         # Create a minimal service account user. No password: it never
         # authenticates with one, and User.password rejects "" since #158
@@ -762,7 +765,7 @@ def _grant_device_code(ctx: _GrantContext) -> GrantResult:
     # two concurrent polls can't both claim the same authorized code
     # (one-time use, issue #43).
     outcome, user, grant = get_device_code_store().poll(
-        device_code, ctx.client_id, ctx.config.get_user
+        device_code, ctx.client_id, ctx.identities.get_user
     )
 
     if outcome is DevicePollOutcome.NOT_FOUND:
@@ -824,7 +827,7 @@ def _grant_device_code(ctx: _GrantContext) -> GrantResult:
         # a prior authorization the same way. validate_only=True: an absent
         # stored scope stays absent, never defaulted (#186 review, B1).
         device_scope: Optional[str] = grant.scope
-        device_client = ctx.config.get_client(ctx.client_id)
+        device_client = ctx.identities.get_client(ctx.client_id)
         if device_client is not None:
             scope_result = resolve_scope(
                 device_scope,
@@ -856,7 +859,7 @@ def _grant_device_code(ctx: _GrantContext) -> GrantResult:
                 )
             device_scope = scope_result.granted
         resource, resource_error = _resolve_token_resource(
-            ctx, ctx.config.get_client(ctx.client_id), grant.resource or []
+            ctx, ctx.identities.get_client(ctx.client_id), grant.resource or []
         )
         if resource_error is not None:
             return resource_error
