@@ -285,9 +285,9 @@ def _build_saml_response(
     xml = etree.tostring(resp, xml_declaration=True, encoding="UTF-8")
 
     if sign and SIGNXML_AVAILABLE:
-        cert_path = crypto.keys_dir / "idp-cert.pem"
-        with open(cert_path, "rb") as f:
-            cert_pem = f.read()
+        # The published service's certificate, the one for the key it signs
+        # with (#358), not the idp-cert.pem file re-read per request.
+        cert_pem = crypto.cert_pem
 
         c14n_algo = _get_c14n_algorithm(settings.saml_c14n_algorithm)
         signer = XMLSigner(
@@ -857,9 +857,9 @@ def _sign_attribute_query_response(response_xml: str, sign: bool = True) -> str:
 
         root = secure_fromstring(response_xml.encode("utf-8"))
 
-        cert_path = crypto.keys_dir / "idp-cert.pem"
-        with open(cert_path, "rb") as f:
-            cert_pem = f.read()
+        # The published service's certificate, the one for the key it signs
+        # with (#358), not the idp-cert.pem file re-read per request.
+        cert_pem = crypto.cert_pem
 
         c14n_algo = _get_c14n_algorithm(settings.saml_c14n_algorithm)
         signer = XMLSigner(

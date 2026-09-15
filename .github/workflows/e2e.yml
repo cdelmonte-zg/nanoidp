@@ -176,6 +176,55 @@ jobs:
           NANOIDP_E2E_TOTP_PASSWORD: password
         run: python e2e/test_agent.py --url http://localhost:8004
 
+      - name: Prepare external signing keys config
+        # jwt.external_keys (#358) can only come from files, so the agent
+        # cannot set it up itself: NANOIDP_E2E_EXTERNAL_KID unlocks
+        # test_external_signing_keys (JWKS serves only that key, tokens name
+        # it and verify with the public PEM, rotation answers 409), and
+        # test_key_rotation skips on this server.
+        run: |
+          cp -r config e2e-extkeys-config
+          python - <<'EOF'
+          import yaml
+          from cryptography.hazmat.primitives import serialization
+          from cryptography.hazmat.primitives.asymmetric import rsa
+          key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+          open("e2e-extkeys.key.pem", "wb").write(key.private_bytes(
+              serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+              serialization.NoEncryption()))
+          open("e2e-extkeys.pub.pem", "wb").write(key.public_key().public_bytes(
+              serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo))
+          path = "e2e-extkeys-config/settings.yaml"
+          doc = yaml.safe_load(open(path))
+          doc["jwt"] = {
+              "algorithm": "RS256",
+              "keys_dir": "e2e-extkeys-keys",
+              "external_keys": {
+                  "private_key": "e2e-extkeys.key.pem",
+                  "public_key": "e2e-extkeys.pub.pem",
+                  "kid": "e2e-external",
+              },
+          }
+          yaml.safe_dump(doc, open(path, "w"), sort_keys=False)
+          EOF
+
+      - name: Start external signing keys server
+        run: |
+          PORT=8005 NANOIDP_CONFIG_DIR=e2e-extkeys-config python -m nanoidp > server-extkeys.log 2>&1 &
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:8005/api/health && exit 0
+            sleep 1
+          done
+          echo "External signing keys server did not become healthy" >&2
+          cat server-extkeys.log >&2
+          exit 1
+
+      - name: Run external signing keys suite
+        env:
+          NANOIDP_E2E_EXTERNAL_KID: e2e-external
+          NANOIDP_E2E_EXTERNAL_PUBLIC_KEY: e2e-extkeys.pub.pem
+        run: python e2e/test_agent.py --url http://localhost:8005
+
       - name: Server log on failure
         if: failure()
         run: |
@@ -190,6 +239,8 @@ jobs:
           cat mock-mcp.log 2>/dev/null || true
           echo "===== TOTP server ====="
           cat server-totp.log 2>/dev/null || true
+          echo "===== external signing keys server ====="
+          cat server-extkeys.log 2>/dev/null || true
 
   mcp-e2e:
     runs-on: ubuntu-latest

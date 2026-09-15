@@ -2,7 +2,12 @@
 
 from .audit import AuditLog, get_audit_log
 from .auth_code import AuthCodeStore, AuthorizationCode, get_auth_code_store
-from .crypto import CryptoService, activate_crypto_service, get_crypto_service
+from .crypto import (
+    CryptoService,
+    ExternalKeysNotRotatable,
+    activate_crypto_service,
+    get_crypto_service,
+)
 from .device_code import (
     DeviceCodeGrant,
     DeviceCodeStore,
@@ -18,6 +23,7 @@ from .yaml_writer import YamlWriter, get_yaml_writer
 __all__ = [
     "build_discovery_document",
     "CryptoService",
+    "ExternalKeysNotRotatable",
     "get_crypto_service",
     "activate_crypto_service",
     "TokenService",

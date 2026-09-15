@@ -27,6 +27,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   signing service instead of rebuilding it, and loads now run one at a time,
   so two concurrent reloads can no longer generate keys into a new
   `keys_dir` over each other.
+- **`jwt.external_keys` and `jwt.max_previous_keys` are read from
+  `settings.yaml`** (#358). Both were documented in the security guide, but
+  the loader ignored them as unknown keys, so an operator's own signing key
+  was silently replaced by a generated one and the retention stayed at 2.
+  They are now part of the settings document and the JSON schema, and they
+  are signing inputs of #359's activation: the configured key signs tokens
+  and is the only key the JWKS serves, the MCP server signs with it too, and
+  a reload that changes either setting reinitialises the signing service.
+  `private_key` and `public_key` are given together; a missing, unreadable
+  or malformed key file, or a public key that does not belong to the private
+  key, rejects the configuration. Without `kid`, the key id is the RFC 7638
+  thumbprint of the public key (the docs promised a fingerprint; a random id
+  was generated on every start). Rotation is refused for external keys
+  (`409` from `POST /api/keys/rotate`, an error on the keys page and from
+  MCP `rotate_keys`) instead of replacing the operator's key with a
+  generated one. The key files are not watched: a key replaced at the same
+  paths is read at the next start. The SAML certificate for an external key
+  lives in its own file (`external-cert-<thumbprint>.pem`, stable across
+  starts), so switching back to generated keys no longer leaves SAML
+  signing with a certificate for the wrong key; a certificate that does not
+  belong to the signing key is regenerated, SAML signing uses the published
+  service's certificate instead of re-reading the file per request, and a
+  lowered `max_previous_keys` trims the JWKS as soon as it is applied.
 
 ### Changed
 - **One `ConfigManager` per process** (#230). The MCP server no longer keeps

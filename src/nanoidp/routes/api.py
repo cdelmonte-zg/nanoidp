@@ -9,7 +9,12 @@ from flask.typing import ResponseReturnValue
 
 from ..config import ConfigurationRejected, get_config
 from ..hooks import HookError
-from ..services import get_audit_log, get_crypto_service, get_token_service
+from ..services import (
+    ExternalKeysNotRotatable,
+    get_audit_log,
+    get_crypto_service,
+    get_token_service,
+)
 from ._auth import management_secret_required_for_api
 from ._issuer import effective_issuer, effective_saml_entity_id, effective_saml_sso_url
 
@@ -265,7 +270,11 @@ def rotate_keys() -> ResponseReturnValue:
     """
     crypto = get_crypto_service()
 
-    result = crypto.rotate_keys()
+    try:
+        result = crypto.rotate_keys()
+    except ExternalKeysNotRotatable as exc:
+        # Operator-provided keys (#358): nothing was rotated.
+        return jsonify({"success": False, "error": str(exc)}), 409
 
     # Log to audit
     audit = get_audit_log()

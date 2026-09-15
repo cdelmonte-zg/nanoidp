@@ -183,11 +183,26 @@ class SamlSection(BaseModel):
     strict_binding: bool = False
 
 
+class ExternalKeysSection(BaseModel):
+    """Operator-provided RSA signing keys (#358): both PEM paths together, or
+    no ``external_keys`` block at all."""
+
+    model_config = _FORBID
+
+    private_key: str = Field(min_length=1)
+    public_key: str = Field(min_length=1)
+    # Omitted: the key id is the RFC 7638 thumbprint of the public key.
+    kid: Optional[str] = Field(default=None, min_length=1)
+
+
 class JwtSection(BaseModel):
     model_config = _FORBID
 
     algorithm: str = "RS256"
     keys_dir: str = "./keys"
+    external_keys: Optional[ExternalKeysSection] = None
+    # Same bounds as Settings.max_previous_keys.
+    max_previous_keys: int = Field(default=2, ge=0, le=10)
 
 
 class SessionSection(BaseModel):
@@ -394,6 +409,14 @@ class SettingsDocument(BaseModel):
             strict_saml_binding=self.saml.strict_binding,
             jwt_algorithm=self.jwt.algorithm,
             keys_dir=self.jwt.keys_dir,
+            external_private_key=(
+                self.jwt.external_keys.private_key if self.jwt.external_keys else None
+            ),
+            external_public_key=(
+                self.jwt.external_keys.public_key if self.jwt.external_keys else None
+            ),
+            external_key_id=self.jwt.external_keys.kid if self.jwt.external_keys else None,
+            max_previous_keys=self.jwt.max_previous_keys,
             login_mode=self.login.mode,
             auto_login=self.login.auto_login,
             two_step=self.login.two_step,

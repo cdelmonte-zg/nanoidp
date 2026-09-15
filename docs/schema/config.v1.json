@@ -185,6 +185,41 @@
         "title": "ClientEntry",
         "type": "object"
       },
+      "ExternalKeysSection": {
+        "additionalProperties": false,
+        "description": "Operator-provided RSA signing keys (#358): both PEM paths together, or\nno ``external_keys`` block at all.",
+        "properties": {
+          "kid": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Kid"
+          },
+          "private_key": {
+            "minLength": 1,
+            "title": "Private Key",
+            "type": "string"
+          },
+          "public_key": {
+            "minLength": 1,
+            "title": "Public Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "private_key",
+          "public_key"
+        ],
+        "title": "ExternalKeysSection",
+        "type": "object"
+      },
       "HooksSection": {
         "additionalProperties": false,
         "description": "``hooks:`` (#185): shell commands run at the three extension points.\n\nAbsent = no hooks. ``strict`` applies to plugins too; ``timeout_seconds``\nis for shell hooks only (a plugin manages its own timeouts). Policy\nvalues declared here override ``bootstrap.yaml``'s; undeclared ones do\nnot (``model_fields_set`` decides). YAML-only (and ``bootstrap.yaml``/env): never settable from the UI\nor MCP, since a command editable through the surface it observes would\nbe a remote-execution primitive.",
@@ -248,10 +283,28 @@
             "title": "Algorithm",
             "type": "string"
           },
+          "external_keys": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ExternalKeysSection"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "keys_dir": {
             "default": "./keys",
             "title": "Keys Dir",
             "type": "string"
+          },
+          "max_previous_keys": {
+            "default": 2,
+            "maximum": 10,
+            "minimum": 0,
+            "title": "Max Previous Keys",
+            "type": "integer"
           }
         },
         "title": "JwtSection",
