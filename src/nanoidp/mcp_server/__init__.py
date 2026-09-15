@@ -56,7 +56,7 @@ from mcp.types import (
 )
 
 from .. import __version__
-from ..config import ConfigManager, init_config
+from ..config import ConfigManager, get_config_if_loaded, init_config
 from ..security import verify_secret
 from ..services import get_audit_log, init_crypto_service
 
@@ -66,9 +66,10 @@ from ..services import get_audit_log, init_crypto_service
 # every name tests/src/e2e actually use (derived by AST walk at split
 # time). Arbitrary internal symbols of the old monolith are not a
 # compatibility surface - this is an internal module (#296 review).
-# The two MUTABLE globals (_config, _readonly_mode) are DEFINED here, in the
-# package module itself, because tests and conftest reset/monkeypatch them by
-# attribute assignment on `nanoidp.mcp_server`.
+# The one MUTABLE global (_readonly_mode) is DEFINED here, in the package
+# module itself, because tests monkeypatch it by attribute assignment on
+# `nanoidp.mcp_server`. The configuration is not a global of this package:
+# the process has one ConfigManager, nanoidp.config's (#230).
 from .handlers_clients import (  # noqa: F401
     _tool_create_client,
     _tool_delete_client,
@@ -132,9 +133,6 @@ logger = logging.getLogger(__name__)
 # The MCP server itself is constructed at the bottom of this module: the SDK
 # takes its handlers as constructor arguments, so they must be defined first.
 
-# Global config - initialized on startup
-_config: ConfigManager | None = None
-
 # Global readonly mode flag
 _readonly_mode: bool = False
 
@@ -160,18 +158,10 @@ def _check_admin_secret(
 ) -> Tuple[bool, str]:
     """Check if the management secret is required and valid for this tool.
 
-    Source of truth is the caller's own ConfigManager (config.settings.
-    management_secret), NOT routes._auth.get_management_secret(). That
-    helper reads nanoidp.config.get_config()'s module-global singleton, which
-    is a different object from mcp_server._config whenever anything (a test,
-    or a future code path) sets mcp_server._config directly instead of via
-    init_config() - in production the two happen to be the same object today,
-    but this function must not depend on that (#163 review, blocking: was
-    silently evaluating the gate against whichever ConfigManager get_config()
-    last built, not the one actually serving this MCP request). Callers pass
-    _ensure_config()'s return value. Still only gates MUTATING_TOOLS and
-    still pops 'admin_secret' off arguments so downstream tool schemas never
-    see it.
+    Reads the ConfigManager it is given (callers pass _ensure_config()'s
+    return value) rather than looking one up, like every tool handler. Only
+    gates MUTATING_TOOLS, and pops 'admin_secret' off arguments so downstream
+    tool schemas never see it.
 
     Args:
         config: The ConfigManager serving this request (from _ensure_config())
@@ -237,13 +227,18 @@ def _log_mcp_tool(tool_name: str, success: bool, details: Optional[dict] = None)
 
 
 def _ensure_config() -> ConfigManager:
-    """Ensure config is initialized."""
-    global _config
-    if _config is None:
-        config_dir = os.getenv("NANOIDP_CONFIG_DIR", "./config")
-        _config = init_config(config_dir)
-        init_crypto_service(_config.settings.keys_dir)
-    return _config
+    """The process's ConfigManager, loaded from NANOIDP_CONFIG_DIR on first use.
+
+    One manager per process (#230): the tools, the token service and the
+    audit log all resolve the same nanoidp.config instance, so a tool can
+    never act on a configuration different from the one tokens are minted
+    from.
+    """
+    config = get_config_if_loaded()
+    if config is None:
+        config = init_config(os.getenv("NANOIDP_CONFIG_DIR", "./config"))
+        init_crypto_service(config.settings.keys_dir)
+    return config
 
 
 

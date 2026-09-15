@@ -277,12 +277,10 @@ class TestDiscoveryAdvertisement:
     def test_mcp_discovery_carries_the_metadata(self, app):
         import asyncio
 
-        import nanoidp.mcp_server as mcp
-        from nanoidp.config import ConfigManager
         from tests.conftest import call_mcp_tool
 
-        with app.app_context():
-            mcp._config = ConfigManager(get_config().config_dir)
+        # No separate MCP configuration to set up: the tools resolve the
+        # ConfigManager the app fixture was built with (#230).
 
         async def _call():
             result = await call_mcp_tool("get_oidc_discovery", {})

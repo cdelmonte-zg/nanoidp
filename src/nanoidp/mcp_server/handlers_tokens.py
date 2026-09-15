@@ -9,7 +9,7 @@ from typing import Any
 import jwt as pyjwt
 
 from ..config import ConfigManager
-from ..services import get_crypto_service, get_token_service
+from ..services import TokenService, get_crypto_service
 from .normalize import _normalize_str_list
 
 
@@ -28,7 +28,7 @@ def _tool_generate_token(arguments: dict[str, Any], config: ConfigManager) -> di
     if client_id is not None and config.get_client(client_id) is None:
         return {"success": False, "error": f"Client '{client_id}' not found"}
 
-    token_service = get_token_service()
+    token_service = TokenService(config)
     token_response = token_service.create_token(
         user=user,
         exp_minutes=arguments.get("expires_in_minutes", config.settings.token_expiry_minutes),

@@ -367,8 +367,7 @@ class TestIntrospection:
         assert block["shell_hooks"][0]["source"] == SOURCE_SETTINGS
         assert block["plugins"] == []
 
-        import nanoidp.mcp_server as mcp
-        mcp._config = ConfigManager(str(tmp_path))
+        init_config(str(tmp_path))
         result = asyncio.run(mcp_call_tool("get_settings", {}))
         payload = yaml.safe_load(result.content[0].text)
         assert payload["hooks"] == block
@@ -464,7 +463,6 @@ class TestSecretsNeverLeaveTheProcess:
     def test_api_config_and_mcp_expose_no_command(self, tmp_path, monkeypatch, mcp_call_tool):
         import asyncio
 
-        import nanoidp.mcp_server as mcp
 
         app = self._app(tmp_path, monkeypatch)
         with app.test_client() as client:
@@ -473,7 +471,7 @@ class TestSecretsNeverLeaveTheProcess:
         assert self.SECRET not in body
         assert all("command" not in h for h in block["shell_hooks"])
         assert set(block["shell_hooks"][0]) == {"hook", "source", "failures", "once"}
-        mcp._config = ConfigManager(str(tmp_path))
+        init_config(str(tmp_path))
         result = asyncio.run(mcp_call_tool("get_settings", {}))
         assert self.SECRET not in result.content[0].text
         assert "command" not in result.content[0].text
@@ -730,14 +728,13 @@ class TestReviewBeforeRc4:
     def test_mcp_reload_returns_error_result_on_hook_error(self, tmp_path, mcp_call_tool):
         import asyncio
 
-        import nanoidp.mcp_server as mcp
 
         cfg = _write(tmp_path)
-        mcp._config = ConfigManager(cfg)
+        manager = init_config(cfg)
         doc = yaml.safe_load((tmp_path / "settings.yaml").read_text())
         doc["hooks"] = {"on_before_load": "false", "strict": True}
         (tmp_path / "settings.yaml").write_text(yaml.safe_dump(doc))
-        mcp._config.reload()
+        manager.reload()
         result = asyncio.run(mcp_call_tool("reload_config", {}))
         payload = yaml.safe_load(result.content[0].text)
         assert payload["success"] is False
@@ -799,14 +796,13 @@ class TestReviewBeforeRc4:
     def test_mcp_get_settings_carries_the_profile_keys_of_api_config(self, tmp_path, mcp_call_tool):
         import asyncio
 
-        import nanoidp.mcp_server as mcp
         from nanoidp.app import create_app
 
         app = create_app(config_dir=_write(tmp_path), profile="stricter-dev")
         app.config["TESTING"] = True
         with app.test_client() as client:
             api = client.get("/api/config").get_json()
-        mcp._config = ConfigManager(str(tmp_path), profile_override="stricter-dev")
+        init_config(str(tmp_path), profile_override="stricter-dev")
         result = asyncio.run(mcp_call_tool("get_settings", {}))
         payload = yaml.safe_load(result.content[0].text)
         for key in ("security_profile", "profile_override", "effective", "config_version", "config_validation", "hooks"):

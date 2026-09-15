@@ -206,7 +206,7 @@ class TestMcpLeg:
 
         with app.app_context():
             config = get_config()
-        monkeypatch.setattr(mcp, "_config", config)
+        monkeypatch.setattr("nanoidp.config._config", config)
         monkeypatch.setattr(mcp, "_readonly_mode", False)
         monkeypatch.delenv("NANOIDP_MCP_ADMIN_SECRET", raising=False)
         monkeypatch.delenv("NANOIDP_MANAGEMENT_SECRET", raising=False)

@@ -23,10 +23,8 @@ from nanoidp.hooks import HookError
 
 @pytest.fixture
 def mcp_config(tmp_path, monkeypatch):
-    """A ConfigManager on its own config dir, installed as the MCP singleton.
-
-    Mirrors the pattern of tests/test_mcp.py: the MCP server keeps its own
-    config global, so tests install theirs and clear the gate env vars.
+    """A ConfigManager on its own config dir, installed as the process's one
+    manager (#230), which the MCP tools resolve; the gate env vars cleared.
     keys_dir points into tmp_path because generate_token/rotate_keys build
     a real crypto service.
     """
@@ -57,17 +55,10 @@ def mcp_config(tmp_path, monkeypatch):
     )
 
     config = ConfigManager(str(config_dir))
-    monkeypatch.setattr(mcp, "_config", config)
+    monkeypatch.setattr("nanoidp.config._config", config)
     monkeypatch.setattr(mcp, "_readonly_mode", False)
     monkeypatch.delenv("NANOIDP_MCP_ADMIN_SECRET", raising=False)
     monkeypatch.delenv("NANOIDP_MANAGEMENT_SECRET", raising=False)
-    # generate_token goes through get_token_service(), which builds from the
-    # GLOBAL config discovery, not from mcp_server's own ConfigManager (the
-    # same global-vs-own coupling family as #176's B5 finding, latent in
-    # production because both usually resolve the same directory). Point the
-    # discovery at this test's directory so the two agree here too - and so
-    # the token service can never touch the repo's ./keys.
-    monkeypatch.setenv("NANOIDP_CONFIG_DIR", str(config_dir))
     return config
 
 

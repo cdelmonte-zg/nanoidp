@@ -10,13 +10,11 @@ from typing import Optional
 import pytest
 
 import nanoidp.config as config_module
-import nanoidp.mcp_server as mcp_server_module
 import nanoidp.services.audit as audit_module
 import nanoidp.services.auth_code as auth_code_module
 import nanoidp.services.crypto as crypto_module
 import nanoidp.services.device_code as device_code_module
 import nanoidp.services.revocation as revocation_module
-import nanoidp.services.token as token_module
 import nanoidp.services.yaml_writer as yaml_writer_module
 from nanoidp.app import create_app
 from nanoidp.config import OAuthClient, User
@@ -90,11 +88,6 @@ def reset_singletons():
     """Reset service singletons before and after each test.
 
     This ensures test isolation by preventing state leakage between tests.
-    The token service is reset too so it never holds a reference to a stale
-    config singleton (relevant when a test mutates the active configuration).
-    mcp_server keeps its own separate config singleton (populated via
-    _ensure_config()), which must be reset the same way or a test that drives
-    it caches a ConfigManager into that global for the rest of the session.
     get_yaml_writer()'s singleton resolves config_dir from whichever
     ConfigManager is active when it's first constructed and then keeps
     writing there forever; left unreset, a test that builds its own
@@ -122,8 +115,6 @@ def _reset_process_singletons() -> None:
     """
     crypto_module._crypto_service = None
     config_module._config = None
-    token_module._token_service = None
-    mcp_server_module._config = None
     yaml_writer_module._yaml_writer = None
     audit_module._audit_log = None
     auth_code_module._auth_code_store = None
