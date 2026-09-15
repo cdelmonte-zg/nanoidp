@@ -343,33 +343,60 @@ NanoIDP uses RSA keys for JWT signing. Keys can be auto-generated, imported from
 
 ### Auto-generated Keys
 
-By default, NanoIDP generates RSA keys on first startup and stores them in the `keys/` directory:
+By default, NanoIDP generates RSA keys on first startup and stores them in
+`jwt.keys_dir` (default `./keys`, relative to the working directory):
 
 ```
-config/
-└── keys/
-    ├── private.pem      # RSA private key (signing)
-    ├── public.pem       # RSA public key (verification)
-    └── kid.txt          # Key ID
+keys/
+├── rsa_private.pem   # RSA private key (signing)
+├── rsa_public.pem    # RSA public key (verification)
+├── kid.txt           # Key ID
+├── idp-cert.pem      # self-signed certificate for SAML
+├── keys.json         # previous keys kept for rotation
+└── previous/         # public keys of the previous keys
 ```
 
 ### External Keys
 
-You can use your own RSA keys instead of auto-generated ones:
+You can use your own RSA key pair instead of generated keys:
 
 ```yaml
 # settings.yaml
 jwt:
+  keys_dir: ./keys                    # hosts the SAML certificate for the key
   external_keys:
     private_key: /path/to/private.pem
     public_key: /path/to/public.pem
-    kid: "my-custom-key-id"
+    kid: "my-custom-key-id"           # optional
 ```
 
 Requirements:
-- Private key: PEM format, PKCS8 encoding
+- Private key: PEM format, PKCS8 encoding, unencrypted
 - Public key: PEM format, SubjectPublicKeyInfo encoding
-- Key ID (optional): If not provided, one is generated from the key fingerprint
+- `private_key` and `public_key` are given together, and the public key must
+  belong to the private key; a missing, unreadable or malformed file, or a
+  mismatched pair, is a configuration error
+- Key ID (optional): if not provided, it is the RFC 7638 JWK thumbprint of the
+  public key, so the same pair keeps the same `kid` across restarts
+- Paths accept `${VAR}` placeholders; relative paths resolve against the
+  working directory, like `keys_dir`
+
+The SAML certificate for an external key is generated once into
+`keys_dir/external-cert-<thumbprint>.pem` and reused on later starts, so an SP
+that pins it keeps working; the generated keys' `idp-cert.pem` is left alone,
+and a configuration that drops `external_keys` again signs SAML with a
+certificate for the generated key.
+
+A configuration that names keys nanoidp cannot use is never activated: at
+startup the process exits with `error: configuration rejected: ...`, and
+`POST /api/config/reload` (or MCP `reload_config`) answers `422`, keeping the
+running key. A reload that changes the key paths or the `kid` switches
+signing to the new pair; the files are not watched, so a key replaced at the
+same paths is read at the next start, not on reload.
+
+External keys are not rotated by nanoidp: `POST /api/keys/rotate`, the keys
+page and MCP `rotate_keys` refuse (`409` on the API) and leave the key in
+place. To change them, point `external_keys` at a new pair and reload.
 
 ### Key Rotation
 
@@ -397,8 +424,15 @@ curl http://localhost:8000/api/keys/info
 ```yaml
 # settings.yaml
 jwt:
-  max_previous_keys: 2  # Number of previous keys to keep in JWKS
+  max_previous_keys: 2  # Number of previous keys to keep in JWKS (0-10)
 ```
+
+The value applies whenever the signing service is built, at startup and on a
+reload that changes it: lowering it trims the JWKS immediately, keeping the
+newest previous keys. Public-key files that are no longer retained may remain
+in `keys_dir/previous/`; they are not served. The next rotation rewrites
+`keys.json` with the retained set (until then, raising the value again serves
+the dropped keys again).
 
 ---
 

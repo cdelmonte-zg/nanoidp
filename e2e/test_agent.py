@@ -4246,8 +4246,76 @@ class NanoIDPTestAgent:
         except Exception as e:
             return self._add_result("Key Info", TestCategory.KEYS, False, str(e))
 
+    def test_external_signing_keys(self) -> TestResult:
+        """Operator-provided signing keys (#358: `jwt.external_keys`).
+
+        Runs when NANOIDP_E2E_EXTERNAL_KID names the kid of the key the
+        server under test was configured with (and, optionally,
+        NANOIDP_E2E_EXTERNAL_PUBLIC_KEY the path of its public PEM); skipped,
+        not failed, otherwise. The key comes from files only, so this agent
+        cannot configure it itself. Checks that the JWKS serves exactly that
+        key, that a password-grant token names it and verifies with the
+        public PEM, and that rotation is refused (409) leaving it in place.
+        """
+        expected_kid = os.environ.get("NANOIDP_E2E_EXTERNAL_KID")
+        if not expected_kid:
+            return self._add_result(
+                "External Signing Keys", TestCategory.KEYS, True,
+                "skipped: set NANOIDP_E2E_EXTERNAL_KID for a server configured with jwt.external_keys",
+                {"skipped": True},
+            )
+        try:
+            checks = {}
+            jwks = self.session.get(f"{self.base_url}/.well-known/jwks.json", timeout=5)
+            served = [k.get("kid") for k in jwks.json().get("keys", [])] if jwks.status_code == 200 else []
+            checks["jwks_serves_only_the_configured_key"] = served == [expected_kid]
+
+            token_response = self.session.post(
+                f"{self.base_url}/token",
+                data={"grant_type": "password", "username": self.username, "password": self.password},
+                auth=(self.client_id, self.client_secret),
+                timeout=5,
+            )
+            token = token_response.json().get("access_token", "") if token_response.status_code == 200 else ""
+            header = json.loads(base64.urlsafe_b64decode(token.split(".")[0] + "==")) if token else {}
+            checks["token_names_the_configured_kid"] = header.get("kid") == expected_kid
+
+            public_key_path = os.environ.get("NANOIDP_E2E_EXTERNAL_PUBLIC_KEY")
+            if public_key_path and jwt is not None and token:
+                with open(public_key_path, "rb") as f:
+                    public_pem = f.read()
+                try:
+                    jwt.decode(token, public_pem, algorithms=["RS256"], options={"verify_aud": False})
+                    checks["token_verifies_with_the_public_pem"] = True
+                except Exception:
+                    checks["token_verifies_with_the_public_pem"] = False
+
+            rotate = self.session.post(f"{self.base_url}/api/keys/rotate", timeout=10)
+            checks["rotation_refused_409"] = rotate.status_code == 409
+            after = self.session.get(f"{self.base_url}/api/keys/info", timeout=5)
+            checks["kid_unchanged_after_refusal"] = (
+                after.status_code == 200 and after.json().get("active_kid") == expected_kid
+            )
+
+            failed = [name for name, ok in checks.items() if not ok]
+            return self._add_result(
+                "External Signing Keys", TestCategory.KEYS, not failed,
+                "all checks passed" if not failed else f"failed: {', '.join(failed)}",
+                checks,
+            )
+        except Exception as e:
+            return self._add_result("External Signing Keys", TestCategory.KEYS, False, str(e))
+
     def test_key_rotation(self) -> TestResult:
         """Key rotation functionality."""
+        if os.environ.get("NANOIDP_E2E_EXTERNAL_KID"):
+            # Operator-provided keys are not rotated by nanoidp (#358);
+            # test_external_signing_keys asserts the refusal.
+            return self._add_result(
+                "Key Rotation", TestCategory.KEYS, True,
+                "skipped: the server signs with jwt.external_keys, rotation is refused by design",
+                {"skipped": True},
+            )
         try:
             # Get current key info before rotation
             before = self.session.get(f"{self.base_url}/api/keys/info", timeout=5)
@@ -5653,6 +5721,7 @@ class NanoIDPTestAgent:
             ]),
             (TestCategory.KEYS, "Key Management", [
                 self.test_key_info,
+                self.test_external_signing_keys,
                 self.test_key_rotation,
                 self.test_token_after_rotation,
             ]),

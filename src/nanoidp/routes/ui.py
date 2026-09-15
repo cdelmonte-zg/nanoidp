@@ -28,7 +28,14 @@ from ..branding import effective_logos_dir
 from ..config import OAuthClient, User, get_config
 from ..config_writer import ConflictError, current_revision
 from ..hooks import HookError
-from ..services import get_audit_log, get_crypto_service, get_token_service, get_yaml_writer
+from ..services import (
+    EXTERNAL_KEYS_NOT_ROTATABLE,
+    ExternalKeysNotRotatable,
+    get_audit_log,
+    get_crypto_service,
+    get_token_service,
+    get_yaml_writer,
+)
 from ._audit import audit_event
 from ._auth import (
     SecondFactorPhase,
@@ -931,6 +938,9 @@ def keys_regenerate() -> ResponseReturnValue:
         flash("Keys and certificate regenerated successfully", "success")
         return redirect(url_for("ui.keys"))
 
+    except ExternalKeysNotRotatable:
+        flash(EXTERNAL_KEYS_NOT_ROTATABLE, "error")
+        return redirect(url_for("ui.keys"))
     except Exception as e:
         logger.exception("Failed to regenerate keys")
         flash(f"Failed to regenerate keys: {e}", "error")

@@ -8,8 +8,11 @@ Supports:
 """
 
 import base64
+import hashlib
 import json
 import logging
+import os
+import tempfile
 import threading
 import uuid
 from dataclasses import dataclass, field
@@ -43,6 +46,17 @@ class KeyInfo:
     priv_pem: Optional[bytes] = None  # Only active key has private key
     is_active: bool = False
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+
+
+# Fixed text, returned as is by every surface that refuses the rotation.
+EXTERNAL_KEYS_NOT_ROTATABLE = (
+    "The signing keys come from jwt.external_keys: to change them, point it at a new "
+    "key pair and reload (a key replaced at the same paths is read at the next start)"
+)
+
+
+class ExternalKeysNotRotatable(ValueError):
+    """Rotation was requested for operator-provided signing keys (#358)."""
 
 
 def _signing_inputs(
@@ -161,8 +175,10 @@ class CryptoService:
         # Load previous keys from metadata
         self._load_previous_keys(keys_meta_path)
 
-        # Generate X.509 certificate if missing
-        if not cert_path.exists() or new_generated:
+        # Generate the X.509 certificate if missing, or if it does not belong
+        # to the signing key (a certificate left behind by another key would
+        # make every SAML signature fail verification against the metadata).
+        if new_generated or not self._certificate_matches(cert_path):
             self._generate_certificate(cert_path)
 
         with open(cert_path, "rb") as f:
@@ -189,17 +205,34 @@ class CryptoService:
 
         # Validate keys are valid RSA
         try:
-            serialization.load_pem_private_key(self.priv_pem, password=None)
-            serialization.load_pem_public_key(self.pub_pem)
+            private_key = serialization.load_pem_private_key(self.priv_pem, password=None)
+            public_key = serialization.load_pem_public_key(self.pub_pem)
         except Exception as e:
             raise ValueError(f"Invalid PEM key format: {e}") from e
+        if not isinstance(private_key, rsa.RSAPrivateKey) or not isinstance(
+            public_key, rsa.RSAPublicKey
+        ):
+            raise ValueError("External keys must be RSA keys")
+        # Two valid keys from different pairs would sign tokens with one key
+        # while the JWKS serves the other (#358).
+        if private_key.public_key().public_numbers() != public_key.public_numbers():
+            raise ValueError(
+                f"External public key {pub_path} does not belong to the private key {priv_path}"
+            )
 
-        self.kid = self._external_key_id or uuid.uuid4().hex
+        # Without a configured kid, the RFC 7638 thumbprint: the same key
+        # pair has the same kid across restarts and reloads.
+        self.kid = self._external_key_id or self._jwk_thumbprint(self.pub_pem)
         logger.info(f"Loaded external keys with KID: {self.kid}")
 
-        # Generate certificate for SAML
-        cert_path = self.keys_dir / "idp-cert.pem"
-        self._generate_certificate(cert_path)
+        # The SAML certificate for this key, in a file of its own (#358): never
+        # the generated keys' idp-cert.pem, which a later configuration without
+        # external keys signs against, and stable across restarts for SPs that
+        # pin it. Named by the public key's thumbprint, not the kid, which the
+        # operator may reuse for another key.
+        cert_path = self.keys_dir / f"external-cert-{self._jwk_thumbprint(self.pub_pem)}.pem"
+        if not self._certificate_matches(cert_path):
+            self._generate_certificate(cert_path)
         with open(cert_path, "rb") as f:
             self.cert_pem = f.read()
 
@@ -228,6 +261,12 @@ class CryptoService:
             logger.info(f"Loaded {len(self.previous_keys)} previous keys for JWKS")
         except Exception as e:
             logger.warning(f"Failed to load previous keys: {e}")
+        # The retention applies as soon as the service is built, not only at
+        # the next rotation (#358): keys.json lists the newest first. Only the
+        # served list is trimmed: the public-key files of keys dropped here
+        # stay on disk, unserved, and the next rotation rewrites keys.json
+        # with the retained set.
+        del self.previous_keys[self.max_previous_keys:]
 
     def _save_keys_metadata(self) -> None:
         """Save keys metadata to file."""
@@ -241,6 +280,15 @@ class CryptoService:
         }
         with open(keys_meta_path, "w") as f:
             json.dump(metadata, f, indent=2)
+
+    def _certificate_matches(self, cert_path: Path) -> bool:
+        """Whether ``cert_path`` holds a certificate for the signing key."""
+        try:
+            certificate = x509.load_pem_x509_certificate(cert_path.read_bytes())
+            signing = serialization.load_pem_public_key(self.pub_pem)
+            return bool(certificate.public_key().public_numbers() == signing.public_numbers())  # type: ignore[union-attr]
+        except (OSError, ValueError, AttributeError):
+            return False
 
     def _generate_certificate(self, cert_path: Path) -> None:
         """Generate a self-signed X.509 certificate."""
@@ -279,8 +327,12 @@ class CryptoService:
             .sign(private_key, hashes.SHA256())
         )
 
-        with open(cert_path, "wb") as f:
-            f.write(cert.public_bytes(Encoding.PEM))
+        # Written beside the target and moved into place, so a reader never
+        # sees a partly written certificate.
+        with tempfile.NamedTemporaryFile(dir=cert_path.parent, delete=False) as tmp:
+            tmp.write(cert.public_bytes(Encoding.PEM))
+        os.chmod(tmp.name, 0o644)  # a certificate is public
+        os.replace(tmp.name, cert_path)
 
         logger.info("Certificate generated successfully")
 
@@ -307,6 +359,15 @@ class CryptoService:
             "n": b64url_uint(numbers.n),
             "e": b64url_uint(numbers.e),
         }
+
+    def _jwk_thumbprint(self, pub_pem: bytes) -> str:
+        """RFC 7638 JWK thumbprint (SHA-256) of an RSA public key."""
+        jwk = self._pem_to_jwk(pub_pem, kid="")
+        members = json.dumps(
+            {"e": jwk["e"], "kty": jwk["kty"], "n": jwk["n"]}, separators=(",", ":"), sort_keys=True
+        )
+        digest = hashlib.sha256(members.encode("utf-8")).digest()
+        return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
 
     def get_jwk(self) -> Dict[str, Any]:
         """Get the active public key as a JWK."""
@@ -419,7 +480,13 @@ class CryptoService:
 
         Returns:
             Dictionary with old_kid, new_kid, and rotation details.
+
+        Raises:
+            ExternalKeysNotRotatable: the service signs with operator-provided
+                keys, which only the operator replaces.
         """
+        if self.uses_external_keys:
+            raise ExternalKeysNotRotatable(EXTERNAL_KEYS_NOT_ROTATABLE)
         old_kid = self.kid
 
         # Move current active key to previous (only public key)
