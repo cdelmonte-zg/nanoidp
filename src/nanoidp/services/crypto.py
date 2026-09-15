@@ -575,8 +575,7 @@ def activate_crypto_service(settings: Settings) -> Callable[[], None]:
         service = prepare_crypto_service(settings)
     except Exception as exc:
         raise ValueError(
-            f"jwt.keys_dir {settings.keys_dir!r}: the signing service cannot be built "
-            f"({type(exc).__name__}: {exc})"
+            f"JWT signing configuration cannot be activated ({type(exc).__name__}: {exc})"
         ) from exc
     return lambda: publish_crypto_service(service)
 

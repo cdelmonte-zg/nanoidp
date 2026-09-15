@@ -1347,7 +1347,9 @@ def userinfo() -> ResponseReturnValue:
     if not token:
         return jsonify({"error": "invalid_token", "error_description": "Missing Bearer token"}), 401
 
-    # Verify token
+    # Verify token. Settings before the signing service (#359): see
+    # get_crypto_service().
+    settings = config.settings
     crypto = get_crypto_service()
     try:
         # /userinfo is the OP's own protected resource, so a token must be
@@ -1356,7 +1358,7 @@ def userinfo() -> ResponseReturnValue:
         # at its resource server, not here - it is used against /introspect
         # by that server instead. A client that needs UserInfo requests a
         # token without a resource.
-        payload = crypto.verify_jwt(token, config.settings.audience)
+        payload = crypto.verify_jwt(token, settings.audience)
     except ValueError as e:
         audit_event(
             "userinfo_request",
@@ -1414,7 +1416,7 @@ def userinfo() -> ResponseReturnValue:
         # change for existing setups (#102). The granted scope is read from the
         # access token's `scope` claim (RFC 9068 §2.2.3).
         granted_scopes = set((payload.get("scope") or "").split())
-        strict_scopes = config.settings.security_profile in ("stricter-dev", "oauth21")
+        strict_scopes = settings.security_profile in ("stricter-dev", "oauth21")
 
         # The scope-gated standard claims and the nanoidp-specific claims below
         # all resolve through resolve_user_claim - the same resolver that backs

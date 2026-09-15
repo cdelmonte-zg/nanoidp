@@ -212,6 +212,115 @@ class TestActivationOrder:
         assert introspection.get_json()["active"] is True
 
 
+class TestReadersTakeSettingsBeforeTheSigningService:
+    """The rule get_crypto_service() documents, held by every reader.
+
+    The activation publishes the signing service before the settings, so a
+    reader that took the service first and the settings after could pair
+    newer settings with an older service.
+    """
+
+    def test_no_function_reads_settings_after_resolving_the_signing_service(self):
+        import ast
+
+        offenders = []
+        for path in sorted((_REPO / "src" / "nanoidp").rglob("*.py")):
+            tree = ast.parse(path.read_text())
+            for fn in ast.walk(tree):
+                if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                if fn.name in ("get_crypto_service", "crypto"):
+                    continue
+                resolved = [
+                    node.lineno
+                    for node in ast.walk(fn)
+                    if (
+                        isinstance(node, ast.Call)
+                        and getattr(node.func, "id", getattr(node.func, "attr", None))
+                        == "get_crypto_service"
+                    )
+                    or (
+                        isinstance(node, ast.Attribute)
+                        and node.attr == "crypto"
+                        and isinstance(node.value, ast.Name)
+                        and node.value.id == "self"
+                    )
+                ]
+                if not resolved:
+                    continue
+                first = min(resolved)
+                late = sorted(
+                    {
+                        node.lineno
+                        for node in ast.walk(fn)
+                        if isinstance(node, ast.Attribute)
+                        and node.attr == "settings"
+                        and node.lineno >= first
+                    }
+                )
+                if late:
+                    offenders.append(f"{path.relative_to(_REPO)}:{fn.name} reads settings at {late}")
+        assert offenders == []
+
+    @staticmethod
+    def _reload_audience_after_the_service_is_resolved(monkeypatch, module, config_dir):
+        """Wrap the module's get_crypto_service so a reload changing
+        oauth.audience lands right after the service is resolved: a reader
+        that reads its settings after that sees the new audience."""
+        real = module.get_crypto_service
+        reloaded = []
+
+        def resolve_then_reload():
+            service = real()
+            if not reloaded:
+                reloaded.append(True)
+                _set_settings(config_dir, lambda doc: doc["oauth"].update(audience="moved-audience"))
+                get_config().reload()
+            return service
+
+        monkeypatch.setattr(module, "get_crypto_service", resolve_then_reload)
+        return reloaded
+
+    def test_userinfo_verifies_with_the_settings_it_read_first(self, tmp_path, monkeypatch):
+        import nanoidp.routes.oauth as oauth_module
+
+        config_dir = _config_dir(tmp_path, str(tmp_path / "keys"))
+        app, client = _app(config_dir)
+        token = _token(client)
+        reloaded = self._reload_audience_after_the_service_is_resolved(
+            monkeypatch, oauth_module, config_dir
+        )
+
+        response = client.get("/userinfo", headers={"Authorization": f"Bearer {token}"})
+
+        assert reloaded
+        assert response.status_code == 200, response.get_data(as_text=True)
+
+    def test_the_refresh_grant_verifies_with_the_settings_it_read_first(self, tmp_path, monkeypatch):
+        import nanoidp.routes.oauth_grants as grants_module
+
+        config_dir = _config_dir(tmp_path, str(tmp_path / "keys"))
+        app, client = _app(config_dir)
+        issued = client.post(
+            "/token",
+            data={"grant_type": "password", "username": "admin", "password": "admin"},
+            headers=_AUTH,
+        ).get_json()
+        assert "refresh_token" in issued
+        reloaded = self._reload_audience_after_the_service_is_resolved(
+            monkeypatch, grants_module, config_dir
+        )
+
+        response = client.post(
+            "/token",
+            data={"grant_type": "refresh_token", "refresh_token": issued["refresh_token"]},
+            headers=_AUTH,
+        )
+
+        assert reloaded
+        assert response.status_code == 200, response.get_data(as_text=True)
+
+
 class TestConcurrentLoads:
     def test_loads_run_one_at_a_time(self, tmp_path):
         """Two concurrent loads moving keys_dir to a fresh directory would each
