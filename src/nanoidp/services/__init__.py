@@ -2,7 +2,7 @@
 
 from .audit import AuditLog, get_audit_log
 from .auth_code import AuthCodeStore, AuthorizationCode, get_auth_code_store
-from .crypto import CryptoService, get_crypto_service, init_crypto_service
+from .crypto import CryptoService, activate_crypto_service, get_crypto_service
 from .device_code import (
     DeviceCodeGrant,
     DeviceCodeStore,
@@ -19,7 +19,7 @@ __all__ = [
     "build_discovery_document",
     "CryptoService",
     "get_crypto_service",
-    "init_crypto_service",
+    "activate_crypto_service",
     "TokenService",
     "get_token_service",
     "AuditLog",

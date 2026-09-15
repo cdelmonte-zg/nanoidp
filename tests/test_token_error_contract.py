@@ -35,7 +35,7 @@ AUTH = _basic("demo-client", "demo-secret")
 
 def _sign(app, claims):
     with app.app_context():
-        crypto = get_crypto_service(get_config().settings.keys_dir)
+        crypto = get_crypto_service()
     return pyjwt.encode(claims, crypto.priv_pem, algorithm="RS256")
 
 
@@ -249,7 +249,7 @@ class TestTokenErrorContract:
         touched the Authorization header: 400 invalid_client, and no Basic
         challenge for a client whose registered method is not Basic
         (#310 round 2 - the case that makes the 400/401 split matter)."""
-        from nanoidp.config import OAuthClient, get_config
+        from nanoidp.config import OAuthClient
 
         with app.app_context():
             settings = get_config().settings
@@ -299,7 +299,6 @@ class TestTokenErrorContract:
     def test_password_grant_disabled_by_oauth21_is_unsupported_grant_type(
         self, client, app
     ):
-        from nanoidp.config import get_config
 
         with app.app_context():
             settings = get_config().settings

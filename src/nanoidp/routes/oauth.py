@@ -112,8 +112,7 @@ def jwks() -> ResponseReturnValue:
 
     Returns all keys including previous keys for rotation support.
     """
-    config = get_config()
-    crypto = get_crypto_service(config.settings.keys_dir)
+    crypto = get_crypto_service()
     return jsonify(crypto.get_jwks())
 
 
@@ -1349,7 +1348,7 @@ def userinfo() -> ResponseReturnValue:
         return jsonify({"error": "invalid_token", "error_description": "Missing Bearer token"}), 401
 
     # Verify token
-    crypto = get_crypto_service(config.settings.keys_dir)
+    crypto = get_crypto_service()
     try:
         # /userinfo is the OP's own protected resource, so a token must be
         # audienced to oauth.audience here (OIDC Core §5.3). A resource-bound
@@ -1514,7 +1513,7 @@ def introspect() -> ResponseReturnValue:
 
     # Try to verify the token (token_type_hint is intentionally ignored: with a
     # single signing key there is nothing to disambiguate, per RFC 7662 §2.1)
-    crypto = get_crypto_service(config.settings.keys_dir)
+    crypto = get_crypto_service()
     try:
         # Resource-bound access tokens (#187) carry an RFC 8707 resource as
         # aud, not oauth.audience; verify signature+expiry, not audience.
@@ -1639,7 +1638,7 @@ def revoke() -> ResponseReturnValue:
     # an oracle for a token's validity or owner. Audience is NOT verified: a
     # resource-bound access token (#187) carries an RFC 8707 resource as aud,
     # and the client is still entitled to revoke it.
-    crypto = get_crypto_service(config.settings.keys_dir)
+    crypto = get_crypto_service()
     try:
         payload = crypto.verify_jwt(token, None)
     except ValueError:

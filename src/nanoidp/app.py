@@ -15,7 +15,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 from . import __version__
 from .config import get_config, init_config
 from .routes import api_bp, oauth_bp, saml_bp, ui_bp
-from .services import init_crypto_service
+from .services import activate_crypto_service
 
 # Global limiter instance (initialized in create_app)
 limiter: Optional[Limiter] = None
@@ -44,7 +44,12 @@ def create_app(
     # --strict-config follows the same contract (#175 piece 4): given, it
     # wins over settings.yaml's config_validation for this run only; omitted
     # (None), the file decides.
-    config = init_config(config_dir, profile_override=profile, strict_config=strict_config)
+    config = init_config(
+        config_dir,
+        profile_override=profile,
+        strict_config=strict_config,
+        activate=activate_crypto_service,
+    )
     settings = config.settings
 
     # Configure logging
@@ -53,15 +58,6 @@ def create_app(
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
     logger = logging.getLogger(__name__)
-
-    # Initialize crypto service with external key support
-    init_crypto_service(
-        keys_dir=settings.keys_dir,
-        external_private_key=settings.external_private_key,
-        external_public_key=settings.external_public_key,
-        external_key_id=settings.external_key_id,
-        max_previous_keys=settings.max_previous_keys,
-    )
 
     # Create Flask app
     app = Flask(

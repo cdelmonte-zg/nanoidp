@@ -146,6 +146,12 @@ error result, never as an HTML error page. Such a reload fails without
 commit: the running settings, the profile hardening and the registered
 plugins stay exactly as they were until a later reload succeeds.
 
+A reload whose files cannot be read or do not validate, or whose signing configuration
+cannot be used (a `jwt.keys_dir` that cannot be created, for instance),
+fails the same way, as a JSON `422` with `kind` `invalid` or `activation`
+(an error result with the same `kind` from `reload_config`); at startup the
+same condition prints `error: configuration rejected: ...` and exits 1.
+
 ## Worked example: version every change in git
 
 ```yaml

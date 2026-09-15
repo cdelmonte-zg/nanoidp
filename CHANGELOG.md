@@ -15,6 +15,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   signing with the old key while the JWKS, introspection and `/userinfo`
   already used the new one: tokens issued after the reload failed
   verification until a restart.
+- **A reload no longer activates a configuration whose signing service
+  cannot be built** (#359). `POST /api/config/reload` accepted a
+  `jwt.keys_dir` the process could not create and answered 200, after which
+  the JWKS answered 500 and `/token` failed (before #357 it kept signing with
+  a key the JWKS no longer served). The load now prepares the signing
+  service from the candidate settings before it commits anything: a
+  configuration that cannot build it is rejected and the running one stays
+  in effect, on `POST /api/config/reload`, on MCP `reload_config` and on
+  the refresh that follows a UI write. An unrelated reload reuses the running
+  signing service instead of rebuilding it, and loads now run one at a time,
+  so two concurrent reloads can no longer generate keys into a new
+  `keys_dir` over each other.
 
 ### Changed
 - **One `ConfigManager` per process** (#230). The MCP server no longer keeps
@@ -25,6 +37,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   embedding nanoidp: `nanoidp.mcp_server._config` no longer exists (use
   `nanoidp.config.init_config`), and `TokenService()` now needs the
   manager, `TokenService(config)`; `get_token_service()` is unchanged.
+- **A rejected reload answers a JSON `422`** (#359): `{"status": "error",
+  "error": ..., "kind": "invalid" | "activation"}` from
+  `POST /api/config/reload`, and an error result with the same `kind` from
+  MCP `reload_config`, for files that cannot be read or do not validate as
+  well as for a signing configuration that cannot be used. Such a file used
+  to answer Flask's HTML 500. A strict hook or plugin failure keeps its
+  `503`. At startup the same conditions print
+  `error: configuration rejected: ...` and exit 1 instead of a traceback.
+  For code embedding nanoidp: a failed load raises
+  `nanoidp.config.ConfigurationRejected` (a `ValueError`, with the original
+  error as its cause); `get_crypto_service()` takes no argument and returns
+  the service the configuration published; `init_crypto_service` is replaced
+  by the activation step `activate_crypto_service`, passed as
+  `init_config(..., activate=...)`.
 
 ## [3.2.0] - 2026-09-15
 

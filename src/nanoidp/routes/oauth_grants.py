@@ -162,7 +162,7 @@ def _grant_refresh_token(ctx: _GrantContext) -> GrantResult:
         return _oauth_error("invalid_request", "refresh_token is required")
 
     # Verify and decode refresh token
-    crypto = get_crypto_service(ctx.config.settings.keys_dir)
+    crypto = get_crypto_service()
     try:
         payload = crypto.verify_jwt(refresh_token, ctx.config.settings.audience)
     except Exception as e:

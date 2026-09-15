@@ -42,6 +42,7 @@ import asyncio
 import json
 import logging
 import os
+import sys
 from typing import Any, Callable, Optional, Tuple
 
 from jsonschema.exceptions import best_match
@@ -56,9 +57,9 @@ from mcp.types import (
 )
 
 from .. import __version__
-from ..config import ConfigManager, get_config_if_loaded, init_config
+from ..config import ConfigManager, ConfigurationRejected, get_config_if_loaded, init_config
 from ..security import verify_secret
-from ..services import get_audit_log, init_crypto_service
+from ..services import activate_crypto_service, get_audit_log
 
 # Split into a package (#286); these re-imports keep the EXPLICITLY listed
 # names importable as before: `from nanoidp.mcp_server import <name>` and
@@ -236,8 +237,9 @@ def _ensure_config() -> ConfigManager:
     """
     config = get_config_if_loaded()
     if config is None:
-        config = init_config(os.getenv("NANOIDP_CONFIG_DIR", "./config"))
-        init_crypto_service(config.settings.keys_dir)
+        config = init_config(
+            os.getenv("NANOIDP_CONFIG_DIR", "./config"), activate=activate_crypto_service
+        )
     return config
 
 
@@ -472,7 +474,13 @@ Examples:
         logger.info("Starting NanoIDP MCP Server...")
 
     # Initialize config
-    _ensure_config()
+    try:
+        _ensure_config()
+    except ConfigurationRejected as exc:
+        # A configuration error, not a crash (#359). stdout is the MCP
+        # protocol stream, so the message goes to stderr.
+        print(f"error: configuration rejected: {exc.message}", file=sys.stderr)
+        sys.exit(1)
 
     # Run the server. stdio_server() is an async context manager yielding the
     # (read, write) streams the Server pumps messages through - the previous

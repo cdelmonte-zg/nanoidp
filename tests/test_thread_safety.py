@@ -137,11 +137,11 @@ class TestSingletonConcurrency:
         crypto_module._crypto_service = None
 
         def crypto_stub(stub, keys_dir, *args, **kwargs):
-            # What get_crypto_service reads on a published instance (#281):
-            # the keys_dir it was built for, and whether it hosts external
-            # keys. CryptoService sets both before the getter can publish it.
+            # The attributes a built CryptoService carries: the lazy first
+            # build (no activation step) runs through prepare_crypto_service.
             stub.keys_dir = Path(keys_dir)
             stub.uses_external_keys = False
+            stub.inputs = ()
 
         self._assert_single_instance(
             crypto_module,

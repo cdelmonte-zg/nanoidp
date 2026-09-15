@@ -886,7 +886,7 @@ def settings() -> ResponseReturnValue:
 def keys() -> ResponseReturnValue:
     """Keys and certificates management page."""
     config = get_config()
-    crypto = get_crypto_service(config.settings.keys_dir)
+    crypto = get_crypto_service()
 
     # Get key file modification time as proxy for creation date
     keys_dir = Path(config.settings.keys_dir)
@@ -920,9 +920,8 @@ def keys() -> ResponseReturnValue:
 @ui_bp.route("/keys/regenerate", methods=["POST"])
 def keys_regenerate() -> ResponseReturnValue:
     """Regenerate RSA keys and certificate."""
-    config = get_config()
     try:
-        crypto = get_crypto_service(config.settings.keys_dir)
+        crypto = get_crypto_service()
         crypto.regenerate_keys()
 
         flash("Keys and certificate regenerated successfully", "success")
@@ -937,8 +936,7 @@ def keys_regenerate() -> ResponseReturnValue:
 @ui_bp.route("/keys/download/<key_type>")
 def keys_download(key_type: str) -> ResponseReturnValue:
     """Download key or certificate."""
-    config = get_config()
-    crypto = get_crypto_service(config.settings.keys_dir)
+    crypto = get_crypto_service()
 
     if key_type == "public_key":
         return Response(

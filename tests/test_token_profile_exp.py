@@ -18,13 +18,12 @@ import time
 import jwt as pyjwt
 import pytest
 
-from nanoidp.config import get_config
 from nanoidp.services.crypto import get_crypto_service
 
 
 def _mint(app, claims):
     with app.app_context():
-        crypto = get_crypto_service(get_config().settings.keys_dir)
+        crypto = get_crypto_service()
     return pyjwt.encode(claims, crypto.priv_pem, algorithm="RS256")
 
 
@@ -51,14 +50,14 @@ class TestVerifyJwtRequiresExp:
     def test_signed_token_without_exp_is_rejected(self, app):
         token = _mint(app, _base_claims())
         with app.app_context():
-            crypto = get_crypto_service(get_config().settings.keys_dir)
+            crypto = get_crypto_service()
         with pytest.raises(ValueError):
             crypto.verify_jwt(token, None)
 
     def test_signed_token_with_future_exp_is_accepted(self, app):
         token = _mint(app, _base_claims(exp=int(time.time()) + 300))
         with app.app_context():
-            crypto = get_crypto_service(get_config().settings.keys_dir)
+            crypto = get_crypto_service()
         payload = crypto.verify_jwt(token, None)
         assert payload["sub"] == "admin"
 

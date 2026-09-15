@@ -762,7 +762,9 @@ beyond it:
   `NANOIDP_CONFIG_DIR` before start (an init container, a mounted volume, a
   script), then `POST /api/config/reload` or the MCP `reload_config` tool
   to pick up a later change without a restart. Reloading re-reads the
-  files, re-expands placeholders and re-applies the CLI `--profile`.
+  files, re-expands placeholders and re-applies the CLI `--profile`. A
+  reload that does not validate, or whose signing configuration cannot be
+  used, answers `422` and leaves the running configuration in place.
 
 NanoIDP does not read from or write to any store other than these files;
 a sync with an external system is the deploy's job, on either side of the
