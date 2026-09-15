@@ -15,7 +15,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import jwt
 from cryptography import x509
@@ -30,6 +30,8 @@ from cryptography.hazmat.primitives.serialization import (
 )
 from cryptography.x509.oid import NameOID
 
+from ..config import Settings, get_config
+
 logger = logging.getLogger(__name__)
 
 
@@ -41,6 +43,22 @@ class KeyInfo:
     priv_pem: Optional[bytes] = None  # Only active key has private key
     is_active: bool = False
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+
+
+def _signing_inputs(
+    keys_dir: str,
+    external_private_key: Optional[str],
+    external_public_key: Optional[str],
+    external_key_id: Optional[str],
+    max_previous_keys: int,
+) -> Tuple[Any, ...]:
+    return (
+        str(Path(keys_dir)),
+        external_private_key,
+        external_public_key,
+        external_key_id,
+        max_previous_keys,
+    )
 
 
 class CryptoService:
@@ -56,6 +74,10 @@ class CryptoService:
     ):
         self.keys_dir = Path(keys_dir)
         self.max_previous_keys = max_previous_keys
+        # What this service was built from (see signing_inputs()).
+        self.inputs = _signing_inputs(
+            keys_dir, external_private_key, external_public_key, external_key_id, max_previous_keys
+        )
 
         # Active key (used for signing)
         self.priv_pem: bytes = b""
@@ -76,7 +98,7 @@ class CryptoService:
     @property
     def uses_external_keys(self) -> bool:
         """True when this service signs with operator-provided PEM keys
-        (loaded by init_crypto_service) rather than keys_dir-generated ones."""
+        rather than keys_dir-generated ones."""
         return bool(self._external_private_key and self._external_public_key)
 
     def _ensure_keys(self) -> None:
@@ -491,60 +513,93 @@ class CryptoService:
         return self.rotate_keys()
 
 
-# Global crypto service instance
+# The signing service of this process. Published by the configuration's
+# activation step (#359), never rebuilt behind it by a reader.
 _crypto_service: Optional[CryptoService] = None
 _crypto_service_lock = threading.Lock()
 
 
-def get_crypto_service(keys_dir: str = "./keys") -> CryptoService:
-    """Get or create the global crypto service (thread-safe lazy init, #43).
+def signing_inputs(settings: Settings) -> Tuple[Any, ...]:
+    """Every setting a CryptoService is built from.
 
-    The requested ``keys_dir`` is honoured on EVERY call, not only the first
-    (#281): when a config reload changes ``keys_dir``, the next call recreates
-    the service for the new directory instead of silently signing and serving
-    JWKS from the old one. External keys are the exception - they are loaded
-    from their own PEM paths by ``init_crypto_service`` and merely hosted
-    alongside ``keys_dir``, so an externally-keyed service is never discarded
-    over a ``keys_dir`` change (init stays authoritative).
+    Two configurations with equal inputs share one signing service; any
+    difference, including ``max_previous_keys``, means a new one.
+    """
+    return _signing_inputs(
+        settings.keys_dir,
+        settings.external_private_key,
+        settings.external_public_key,
+        settings.external_key_id,
+        settings.max_previous_keys,
+    )
+
+
+def prepare_crypto_service(settings: Settings) -> CryptoService:
+    """The signing service a candidate configuration needs, built but not
+    published.
+
+    Returns the published service itself when the candidate's inputs are
+    unchanged, so an unrelated reload neither rebuilds it nor touches its
+    keys. Otherwise constructs a new one, which creates ``keys_dir`` and
+    generates keys there if none exist, or loads the external keys; any
+    failure raises, and the caller rejects the configuration.
+    """
+    published = _crypto_service
+    if published is not None and published.inputs == signing_inputs(settings):
+        return published
+    return CryptoService(
+        keys_dir=settings.keys_dir,
+        external_private_key=settings.external_private_key,
+        external_public_key=settings.external_public_key,
+        external_key_id=settings.external_key_id,
+        max_previous_keys=settings.max_previous_keys,
+    )
+
+
+def publish_crypto_service(service: CryptoService) -> None:
+    """Make ``service`` the one every reader gets from get_crypto_service()."""
+    global _crypto_service
+    with _crypto_service_lock:
+        _crypto_service = service
+
+
+def activate_crypto_service(settings: Settings) -> Callable[[], None]:
+    """The configuration activation step for the signing service (#359).
+
+    Handed to ``init_config(activate=...)`` by the process composition: the
+    load prepares the candidate's service before it commits anything, and
+    calls the returned function to publish it once nothing can fail any
+    more.
+    """
+    try:
+        service = prepare_crypto_service(settings)
+    except Exception as exc:
+        raise ValueError(
+            f"JWT signing configuration cannot be activated ({type(exc).__name__}: {exc})"
+        ) from exc
+    return lambda: publish_crypto_service(service)
+
+
+def get_crypto_service() -> CryptoService:
+    """The published signing service.
+
+    Readers that also use settings read them first and this second: the
+    activation publishes the service before the settings, so a request can
+    pair older settings with a newer service, never newer settings with an
+    older one.
+
+    A process whose configuration was loaded without the activation step
+    (a ConfigManager built directly, as tests do) gets a service built
+    from the current settings on first use.
     """
     global _crypto_service
     service = _crypto_service
-    if service is not None and (
-        service.keys_dir == Path(keys_dir) or service.uses_external_keys
-    ):
+    if service is not None:
         return service
+    settings = get_config().settings
     with _crypto_service_lock:
         service = _crypto_service
-        if service is None or (
-            service.keys_dir != Path(keys_dir) and not service.uses_external_keys
-        ):
-            service = CryptoService(keys_dir)
+        if service is None:
+            service = prepare_crypto_service(settings)
             _crypto_service = service
         return service
-
-
-def init_crypto_service(
-    keys_dir: str,
-    external_private_key: Optional[str] = None,
-    external_public_key: Optional[str] = None,
-    external_key_id: Optional[str] = None,
-    max_previous_keys: int = 2,
-) -> CryptoService:
-    """Initialize the global crypto service.
-
-    Args:
-        keys_dir: Directory for storing generated keys
-        external_private_key: Path to external private PEM key (optional)
-        external_public_key: Path to external public PEM key (optional)
-        external_key_id: Key ID for external keys (optional)
-        max_previous_keys: Maximum number of previous keys to keep in JWKS
-    """
-    global _crypto_service
-    _crypto_service = CryptoService(
-        keys_dir=keys_dir,
-        external_private_key=external_private_key,
-        external_public_key=external_public_key,
-        external_key_id=external_key_id,
-        max_previous_keys=max_previous_keys,
-    )
-    return _crypto_service

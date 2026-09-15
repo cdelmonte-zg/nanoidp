@@ -8,7 +8,7 @@ import logging
 import os
 import threading
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import yaml
 
@@ -43,6 +43,29 @@ from .serialization import expand_env_vars as _expand_env_vars
 logger = logging.getLogger(__name__)
 
 
+# The activation step of a load (#359): given the candidate Settings, build
+# what the configuration needs before anything is committed (raising rejects
+# the configuration) and return the function that publishes it once nothing
+# can fail any more. Supplied by the process composition, because config
+# must not import services.
+Activation = Callable[[Settings], Callable[[], None]]
+
+
+class ConfigurationRejected(ValueError):
+    """A load refused the configuration; the running one stays in effect.
+
+    ``kind`` is ``"invalid"`` when the files do not validate and
+    ``"activation"`` when they do but a service the configuration needs
+    (the signing service) cannot be built from them. A ValueError, so
+    callers that already handled a failed load keep doing so.
+    """
+
+    def __init__(self, message: str, kind: str) -> None:
+        super().__init__(message)
+        self.message = message
+        self.kind = kind
+
+
 class ReloadAfterSaveError(RuntimeError):
     """save() wrote both files successfully, but the runtime could not
     adopt them afterward (#229 review round on phase 2, blocking).
@@ -74,8 +97,16 @@ class ConfigManager:
         config_dir: Optional[str] = None,
         profile_override: Optional[str] = None,
         strict_config: Optional[bool] = None,
+        activate: Optional[Activation] = None,
     ) -> None:
         self.config_dir = Path(config_dir or self._find_config_dir())
+        self._activate = activate
+        # One load at a time (#359): two concurrent loads would each prepare
+        # a signing service (and generate keys into the same fresh keys_dir
+        # over each other), and could publish one load's service next to the
+        # other load's settings. Reentrant, so a hook that reloads from
+        # inside a load cannot deadlock the process.
+        self._load_lock = threading.RLock()
         # A transient CLI/programmatic `--profile` (#172). Kept here, not on
         # Settings, because it must survive every reload() - which rebuilds
         # Settings from YAML - and must never be written back to the file.
@@ -171,14 +202,30 @@ class ConfigManager:
         settings, users, default_user, strict_config, config_version, the
         profile hardening and the hook registry exactly as they were.
         """
+        with self._load_lock:
+            self._load_config_locked(run_before_load)
+
+    def _load_config_locked(self, run_before_load: bool) -> None:
         # on_before_load: bootstrap hooks run once (first load only), the
         # settings.yaml-declared ones on every load. The registry enforces
         # the once-only rule; under hooks.strict a failure raises HookError
         # here, before anything is read.
         if run_before_load:
             self.hooks.run_before_load(self.config_dir)
-        staged = self._stage_directory()
-        self._commit_directory(staged)
+        try:
+            staged = self._stage_directory()
+        except (OSError, ValueError, yaml.YAMLError) as exc:
+            # OSError: a file that exists but cannot be read (permissions).
+            raise ConfigurationRejected(str(exc), kind="invalid") from exc
+        publish: Optional[Callable[[], None]] = None
+        if self._activate is not None:
+            try:
+                publish = self._activate(staged["settings"])
+            except Exception as exc:
+                raise ConfigurationRejected(
+                    f"{self.config_dir / 'settings.yaml'}: {exc}", kind="activation"
+                ) from exc
+        self._commit_directory(staged, publish)
         logger.info(f"Loaded configuration from {self.config_dir}")
         logger.info(f"Loaded {len(self.users)} users")
 
@@ -297,12 +344,18 @@ class ConfigManager:
             ).to_users()
         return staged
 
-    def _commit_directory(self, staged: Dict[str, Any]) -> None:
+    def _commit_directory(
+        self, staged: Dict[str, Any], publish: Optional[Callable[[], None]] = None
+    ) -> None:
         """Promote a fully validated staging to the runtime.
 
         The hook registry goes first because it is the only step that can
         still fail (strict plugin load), and replace_source() rolls itself
-        back on failure (#200 review); everything after is plain assignment.
+        back on failure (#200 review). Then the activation's publish (the
+        signing service, #359), and only then the settings: readers take the
+        settings before the signing service, so a request can pair older
+        settings with the newer service but never the reverse. Nothing after
+        the publish can fail; everything after it is plain assignment.
         """
         if staged["settings_missing"]:
             # A vanished settings.yaml takes its hooks, plugins and policy
@@ -311,6 +364,8 @@ class ConfigManager:
             self._hooks_snapshot = None
         else:
             self._configure_hooks_from(staged["hooks_section"], staged["plugins"])
+        if publish is not None:
+            publish()
         self.settings = staged["settings"]
         self._declared = staged["declared"]
         self.strict_config = staged["strict"]
@@ -695,6 +750,7 @@ def init_config(
     config_dir: Optional[str] = None,
     profile_override: Optional[str] = None,
     strict_config: Optional[bool] = None,
+    activate: Optional[Activation] = None,
 ) -> ConfigManager:
     """Initialize the global config instance.
 
@@ -702,9 +758,14 @@ def init_config(
     security_profile for the life of the process and is re-applied on every
     reload() without ever being persisted (#172). strict_config is the CLI
     --strict-config, with the same contract over config_validation (#175).
+    activate is the activation step every load of this manager runs (#359);
+    the server and the MCP server pass the signing service's.
     """
     global _config
     _config = ConfigManager(
-        config_dir, profile_override=profile_override, strict_config=strict_config
+        config_dir,
+        profile_override=profile_override,
+        strict_config=strict_config,
+        activate=activate,
     )
     return _config

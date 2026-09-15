@@ -71,7 +71,7 @@ class TestRefreshTokenClientBinding:
         with app.app_context():
             from nanoidp.services import get_crypto_service
             settings = get_config().settings
-            legacy = get_crypto_service(settings.keys_dir).create_jwt(
+            legacy = get_crypto_service().create_jwt(
                 sub="admin",
                 issuer=settings.issuer,
                 audience=settings.audience,

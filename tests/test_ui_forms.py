@@ -406,7 +406,7 @@ class TestKeysPages:
 
         app, client = keys_client
         with app.app_context():
-            kid = get_crypto_service(get_config().settings.keys_dir).kid
+            kid = get_crypto_service().kid
         resp = client.get("/keys")
         assert resp.status_code == 200
         assert kid.encode() in resp.data
@@ -416,11 +416,11 @@ class TestKeysPages:
 
         app, client = keys_client
         with app.app_context():
-            kid_before = get_crypto_service(get_config().settings.keys_dir).kid
+            kid_before = get_crypto_service().kid
         resp = client.post("/keys/regenerate")
         assert resp.status_code == 302
         with app.app_context():
-            kid_after = get_crypto_service(get_config().settings.keys_dir).kid
+            kid_after = get_crypto_service().kid
         assert kid_after != kid_before
         # Not only the in-memory singleton the route just mutated: the new
         # kid must be on disk, or a restart reverts to the old key and

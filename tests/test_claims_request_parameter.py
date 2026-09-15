@@ -423,7 +423,7 @@ class TestClaimsPersistAcrossRefresh:
 
         client = _dev_client()
         config = get_config()
-        crypto = get_crypto_service(config.settings.keys_dir)
+        crypto = get_crypto_service()
         forged = crypto.create_jwt(
             sub="admin",
             issuer=config.settings.issuer,
@@ -475,7 +475,7 @@ class TestClaimsPersistAcrossRefresh:
 
         client = _dev_client()
         config = get_config()
-        crypto = get_crypto_service(config.settings.keys_dir)
+        crypto = get_crypto_service()
         for bad in (5, "email", {"email": None}):
             token = crypto.create_jwt(
                 sub="admin",

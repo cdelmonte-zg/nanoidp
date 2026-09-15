@@ -161,10 +161,12 @@ def _grant_refresh_token(ctx: _GrantContext) -> GrantResult:
         )
         return _oauth_error("invalid_request", "refresh_token is required")
 
-    # Verify and decode refresh token
-    crypto = get_crypto_service(ctx.config.settings.keys_dir)
+    # Verify and decode refresh token. Settings before the signing service
+    # (#359): see get_crypto_service().
+    settings = ctx.config.settings
+    crypto = get_crypto_service()
     try:
-        payload = crypto.verify_jwt(refresh_token, ctx.config.settings.audience)
+        payload = crypto.verify_jwt(refresh_token, settings.audience)
     except Exception as e:
         audit_event(
             "token_request",
@@ -321,8 +323,8 @@ def _grant_refresh_token(ctx: _GrantContext) -> GrantResult:
         scope_result = resolve_scope(
             scope,
             client,
-            ctx.config.settings.scopes_supported,
-            ctx.config.settings.scope_enforcement_active,
+            settings.scopes_supported,
+            settings.scope_enforcement_active,
             validate_only=True,
         )
         if not scope_result.ok:
@@ -386,7 +388,7 @@ def _grant_refresh_token(ctx: _GrantContext) -> GrantResult:
     # client authentication, sender-constraining is unavailable, so one-time
     # refresh tokens with reuse detection are the only leash. Confidential
     # clients follow the refresh_token_rotation setting as before.
-    rotation_enabled = ctx.config.settings.rotation_enabled or (
+    rotation_enabled = settings.rotation_enabled or (
         client is not None and client.is_public
     )
     reuse_detected = get_revocation_store().check_and_claim_refresh(

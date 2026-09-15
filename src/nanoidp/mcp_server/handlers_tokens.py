@@ -95,7 +95,7 @@ def _tool_decode_token(arguments: dict[str, Any], config: ConfigManager) -> dict
 
 def _tool_verify_token(arguments: dict[str, Any], config: ConfigManager) -> dict[str, Any]:
     token = arguments["token"]
-    crypto = get_crypto_service(config.settings.keys_dir)
+    crypto = get_crypto_service()
     # audience: optional (#187). Omitted -> verify signature and expiry only
     # and return the claims (the aud is in them), so a resource-bound access
     # token (aud = an RFC 8707 resource, not oauth.audience) is not falsely

@@ -191,8 +191,9 @@ def _build_saml_response(
     claiming PasswordProtectedTransport for that login would be false (#persona
     login design contract, point 6).
     """
-    config = get_config()
-    crypto = get_crypto_service(config.settings.keys_dir)
+    # Settings before the signing service (#359): see get_crypto_service().
+    settings = get_config().settings
+    crypto = get_crypto_service()
 
     now = datetime.now(timezone.utc)
 
@@ -288,7 +289,7 @@ def _build_saml_response(
         with open(cert_path, "rb") as f:
             cert_pem = f.read()
 
-        c14n_algo = _get_c14n_algorithm(config.settings.saml_c14n_algorithm)
+        c14n_algo = _get_c14n_algorithm(settings.saml_c14n_algorithm)
         signer = XMLSigner(
             method=methods.enveloped,
             signature_algorithm="rsa-sha256",
@@ -312,9 +313,8 @@ def _build_saml_response(
 @saml_bp.route("/metadata")
 def metadata() -> ResponseReturnValue:
     """SAML IdP Metadata endpoint."""
-    config = get_config()
-    crypto = get_crypto_service(config.settings.keys_dir)
-    settings = config.settings
+    settings = get_config().settings
+    crypto = get_crypto_service()
 
     NS = {
         "md": "urn:oasis:names:tc:SAML:2.0:metadata",
@@ -366,8 +366,7 @@ def metadata() -> ResponseReturnValue:
 @saml_bp.route("/cert.pem")
 def cert() -> ResponseReturnValue:
     """Download the IdP certificate."""
-    config = get_config()
-    crypto = get_crypto_service(config.settings.keys_dir)
+    crypto = get_crypto_service()
     return Response(crypto.cert_pem, mimetype="application/x-pem-file")
 
 
@@ -853,8 +852,8 @@ def _sign_attribute_query_response(response_xml: str, sign: bool = True) -> str:
         return response_xml
 
     try:
-        config = get_config()
-        crypto = get_crypto_service(config.settings.keys_dir)
+        settings = get_config().settings
+        crypto = get_crypto_service()
 
         root = secure_fromstring(response_xml.encode("utf-8"))
 
@@ -862,7 +861,7 @@ def _sign_attribute_query_response(response_xml: str, sign: bool = True) -> str:
         with open(cert_path, "rb") as f:
             cert_pem = f.read()
 
-        c14n_algo = _get_c14n_algorithm(config.settings.saml_c14n_algorithm)
+        c14n_algo = _get_c14n_algorithm(settings.saml_c14n_algorithm)
         signer = XMLSigner(
             method=methods.enveloped,
             signature_algorithm="rsa-sha256",

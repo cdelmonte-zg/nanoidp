@@ -112,8 +112,7 @@ def jwks() -> ResponseReturnValue:
 
     Returns all keys including previous keys for rotation support.
     """
-    config = get_config()
-    crypto = get_crypto_service(config.settings.keys_dir)
+    crypto = get_crypto_service()
     return jsonify(crypto.get_jwks())
 
 
@@ -1348,8 +1347,10 @@ def userinfo() -> ResponseReturnValue:
     if not token:
         return jsonify({"error": "invalid_token", "error_description": "Missing Bearer token"}), 401
 
-    # Verify token
-    crypto = get_crypto_service(config.settings.keys_dir)
+    # Verify token. Settings before the signing service (#359): see
+    # get_crypto_service().
+    settings = config.settings
+    crypto = get_crypto_service()
     try:
         # /userinfo is the OP's own protected resource, so a token must be
         # audienced to oauth.audience here (OIDC Core §5.3). A resource-bound
@@ -1357,7 +1358,7 @@ def userinfo() -> ResponseReturnValue:
         # at its resource server, not here - it is used against /introspect
         # by that server instead. A client that needs UserInfo requests a
         # token without a resource.
-        payload = crypto.verify_jwt(token, config.settings.audience)
+        payload = crypto.verify_jwt(token, settings.audience)
     except ValueError as e:
         audit_event(
             "userinfo_request",
@@ -1415,7 +1416,7 @@ def userinfo() -> ResponseReturnValue:
         # change for existing setups (#102). The granted scope is read from the
         # access token's `scope` claim (RFC 9068 §2.2.3).
         granted_scopes = set((payload.get("scope") or "").split())
-        strict_scopes = config.settings.security_profile in ("stricter-dev", "oauth21")
+        strict_scopes = settings.security_profile in ("stricter-dev", "oauth21")
 
         # The scope-gated standard claims and the nanoidp-specific claims below
         # all resolve through resolve_user_claim - the same resolver that backs
@@ -1514,7 +1515,7 @@ def introspect() -> ResponseReturnValue:
 
     # Try to verify the token (token_type_hint is intentionally ignored: with a
     # single signing key there is nothing to disambiguate, per RFC 7662 §2.1)
-    crypto = get_crypto_service(config.settings.keys_dir)
+    crypto = get_crypto_service()
     try:
         # Resource-bound access tokens (#187) carry an RFC 8707 resource as
         # aud, not oauth.audience; verify signature+expiry, not audience.
@@ -1639,7 +1640,7 @@ def revoke() -> ResponseReturnValue:
     # an oracle for a token's validity or owner. Audience is NOT verified: a
     # resource-bound access token (#187) carries an RFC 8707 resource as aud,
     # and the client is still entitled to revoke it.
-    crypto = get_crypto_service(config.settings.keys_dir)
+    crypto = get_crypto_service()
     try:
         payload = crypto.verify_jwt(token, None)
     except ValueError:

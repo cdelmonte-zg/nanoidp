@@ -9,7 +9,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence, Union
 
-from ..config import ConfigManager, User, get_config
+from ..config import ConfigManager, Settings, User, get_config
 from .crypto import CryptoService, get_crypto_service
 
 logger = logging.getLogger(__name__)
@@ -133,17 +133,21 @@ class TokenService:
 
     @property
     def crypto(self) -> CryptoService:
-        """The signing service for the configuration's current ``keys_dir``.
+        """The published signing service (#359).
 
         Resolved on every use, not kept from construction: a reload that
         changes ``keys_dir`` would otherwise leave tokens signed with the old
         key while the JWKS and introspection already use the new one.
         """
-        return get_crypto_service(self.config.settings.keys_dir)
+        return get_crypto_service()
 
-    def build_authorities(self, user: User) -> List[str]:
-        """Build authorities array from user attributes."""
-        prefixes = self.config.settings.authority_prefixes
+    def build_authorities(self, user: User, settings: Optional[Settings] = None) -> List[str]:
+        """Build authorities array from user attributes.
+
+        ``settings`` is the snapshot a token is being built from; omitted,
+        the current settings.
+        """
+        prefixes = (settings or self.config.settings).authority_prefixes
         authorities = []
 
         # Add ROLE_ prefix for user roles
@@ -182,7 +186,7 @@ class TokenService:
         return authorities
 
     def _resolve_id_token_audience(
-        self, client_id: Optional[str]
+        self, client_id: Optional[str], settings: Settings
     ) -> tuple[Any, Optional[str]]:
         """Resolve the (aud, azp) pair for an ID Token.
 
@@ -206,10 +210,12 @@ class TokenService:
         access-token endpoints, letting it be spent as an access token (issue #34).
         """
         if not client_id:
-            return self.config.settings.audience, None
+            return settings.audience, None
 
-        resource_audience = self.config.settings.audience
-        client = self.config.get_client(client_id)
+        resource_audience = settings.audience
+        # From the response's settings snapshot, not config.get_client(),
+        # which reads the current settings.
+        client = next((c for c in settings.clients if c.client_id == client_id), None)
         extras = client.additional_audiences if client else []
 
         aud = [client_id]
@@ -306,9 +312,13 @@ class TokenService:
         ``ValueError``. When no refresh JWT is minted the response carries no
         ``refresh_token`` key at all.
         """
-        # One signing service for the whole response: a reload that moves
-        # keys_dir while this runs must not sign the access token and the
-        # ID or refresh token with two different keys.
+        # One settings snapshot, then one signing service, for the whole
+        # response. Settings first (#359): a reload publishes the signing
+        # service before the settings, so this pairs the settings with the
+        # service they were published with or a newer one, never an older
+        # one; and a reload landing mid-response cannot sign the access token
+        # and the ID or refresh token with two different keys.
+        settings = self.config.settings
         crypto = self.crypto
         if issue_refresh_token and not client_id:
             raise ValueError(
@@ -317,7 +327,6 @@ class TokenService:
             )
         if issue_refresh_token is None:
             issue_refresh_token = client_id is not None
-        settings = self.config.settings
         effective_issuer = issuer or settings.issuer
 
         if exp_minutes is None:
@@ -348,7 +357,7 @@ class TokenService:
             extra["attributes"] = user.attributes
 
         # Build authorities
-        authorities = self.build_authorities(user)
+        authorities = self.build_authorities(user, settings)
         if authorities:
             extra["authorities"] = authorities
 
@@ -421,7 +430,7 @@ class TokenService:
                 if auth_time is not None
                 else int(datetime.now(timezone.utc).timestamp())
             )
-            id_aud, azp = self._resolve_id_token_audience(client_id)
+            id_aud, azp = self._resolve_id_token_audience(client_id, settings)
             id_extra = {
                 "token_use": "id",
                 "auth_time": effective_auth_time,

@@ -7,7 +7,7 @@ import logging
 from flask import Blueprint, jsonify, request
 from flask.typing import ResponseReturnValue
 
-from ..config import get_config
+from ..config import ConfigurationRejected, get_config
 from ..hooks import HookError
 from ..services import get_audit_log, get_crypto_service, get_token_service
 from ._auth import management_secret_required_for_api
@@ -242,6 +242,11 @@ def reload_config() -> ResponseReturnValue:
         # the registry's synthetic text (never a command, stderr or plugin
         # exception text) and exc.kind names the phase that failed.
         return jsonify({"status": "error", "error": exc.message, "kind": exc.kind}), 503
+    except ConfigurationRejected as exc:
+        # The files do not validate, or a service they need (the signing
+        # service) cannot be built from them (#359): nothing was committed and
+        # the running configuration stays in effect.
+        return jsonify({"status": "error", "error": exc.message, "kind": exc.kind}), 422
     return jsonify({
         "status": "reloaded",
         "users_count": len(config.users),
@@ -258,8 +263,7 @@ def rotate_keys() -> ResponseReturnValue:
     Returns:
         JSON with old_kid, new_kid, and rotation details.
     """
-    config = get_config()
-    crypto = get_crypto_service(config.settings.keys_dir)
+    crypto = get_crypto_service()
 
     result = crypto.rotate_keys()
 
@@ -285,8 +289,7 @@ def rotate_keys() -> ResponseReturnValue:
 @api_bp.route("/keys/info")
 def keys_info() -> ResponseReturnValue:
     """Get information about current cryptographic keys."""
-    config = get_config()
-    crypto = get_crypto_service(config.settings.keys_dir)
+    crypto = get_crypto_service()
 
     return jsonify({
         "active_kid": crypto.kid,

@@ -11,7 +11,7 @@ from flask.sessions import SecureCookieSessionInterface
 from pydantic import ValidationError
 
 from nanoidp.app import create_app
-from nanoidp.config import ConfigManager, get_config
+from nanoidp.config import ConfigManager, ConfigurationRejected, get_config
 from nanoidp.models import Settings
 
 
@@ -309,8 +309,11 @@ class TestManagementSecretMustBeAscii:
 
     def test_non_ascii_secret_in_settings_yaml_fails_at_load(self, tmp_path):
         _write_settings(tmp_path, session_overrides={"management_secret": "segretò"})
-        with pytest.raises(ValidationError, match="ASCII"):
+        # A rejected load (#359), with pydantic's error as the cause.
+        with pytest.raises(ConfigurationRejected, match="ASCII") as excinfo:
             ConfigManager(str(tmp_path))
+        assert excinfo.value.kind == "invalid"
+        assert isinstance(excinfo.value.__cause__, ValidationError)
 
 
 class TestManagementSecretSessionForgeryResistant:

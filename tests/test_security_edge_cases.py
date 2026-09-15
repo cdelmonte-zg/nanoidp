@@ -42,7 +42,7 @@ class TestTokenExpiration:
         from nanoidp.services import get_crypto_service
 
         config = get_config()
-        crypto = get_crypto_service(config.settings.keys_dir)
+        crypto = get_crypto_service()
 
         # Create expired token (exp in the past)
         expired_payload = {
@@ -72,7 +72,7 @@ class TestTokenExpiration:
         from nanoidp.services import get_crypto_service
 
         config = get_config()
-        crypto = get_crypto_service(config.settings.keys_dir)
+        crypto = get_crypto_service()
 
         # Create expired token
         expired_payload = {
@@ -106,7 +106,7 @@ class TestTokenExpiration:
         from nanoidp.services import get_crypto_service
 
         config = get_config()
-        crypto = get_crypto_service(config.settings.keys_dir)
+        crypto = get_crypto_service()
 
         # Create token expiring in 30 seconds
         valid_payload = {
@@ -141,7 +141,7 @@ class TestAudienceMismatch:
         from nanoidp.services import get_crypto_service
 
         config = get_config()
-        crypto = get_crypto_service(config.settings.keys_dir)
+        crypto = get_crypto_service()
 
         # Create token with wrong audience
         wrong_aud_payload = {
@@ -210,7 +210,7 @@ class TestIssuerMismatch:
         from nanoidp.services import get_crypto_service
 
         config = get_config()
-        crypto = get_crypto_service(config.settings.keys_dir)
+        crypto = get_crypto_service()
 
         # Create token with wrong issuer but valid signature
         wrong_iss_payload = {

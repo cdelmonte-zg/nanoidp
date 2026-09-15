@@ -431,51 +431,88 @@ class TestKeyRotationAPI:
         assert old_kid in new_kids
 
 
-class TestKeysDirFollowsConfig:
-    """#281: get_crypto_service used to ignore keys_dir once the singleton
-    existed - after a config reload changing keys_dir, all 19 call sites kept
-    signing and serving JWKS from the old directory."""
+class TestSigningServiceActivation:
+    """#359: the signing service is prepared from a candidate configuration,
+    reused while its inputs are unchanged, and published by the load, never
+    rebuilt behind it by a reader (#281 had readers rebuild on keys_dir)."""
 
-    @pytest.fixture(autouse=True)
-    def _isolate_singleton(self):
-        from nanoidp.services import crypto
+    @staticmethod
+    def _settings(tmp_path, keys="k1", **overrides):
+        from nanoidp.config import Settings
 
-        crypto._crypto_service = None
-        yield
-        crypto._crypto_service = None
+        return Settings(keys_dir=str(tmp_path / keys), **overrides)
 
-    def test_same_keys_dir_returns_same_instance(self, tmp_path):
-        from nanoidp.services.crypto import get_crypto_service
+    def test_unchanged_inputs_reuse_the_published_service(self, tmp_path):
+        from nanoidp.services.crypto import prepare_crypto_service, publish_crypto_service
 
-        first = get_crypto_service(str(tmp_path / "k1"))
-        assert get_crypto_service(str(tmp_path / "k1")) is first
+        published = prepare_crypto_service(self._settings(tmp_path))
+        publish_crypto_service(published)
+        assert prepare_crypto_service(self._settings(tmp_path)) is published
 
-    def test_changed_keys_dir_recreates_the_service(self, tmp_path):
-        from pathlib import Path
+    def test_a_changed_keys_dir_prepares_a_new_service_without_publishing_it(self, tmp_path):
+        from nanoidp.services.crypto import (
+            get_crypto_service,
+            prepare_crypto_service,
+            publish_crypto_service,
+        )
 
-        from nanoidp.services.crypto import get_crypto_service
+        published = prepare_crypto_service(self._settings(tmp_path))
+        publish_crypto_service(published)
 
-        first = get_crypto_service(str(tmp_path / "k1"))
-        second = get_crypto_service(str(tmp_path / "k2"))
-        assert second is not first
-        assert second.keys_dir == Path(str(tmp_path / "k2"))
-        # And the new service signs with the NEW directory's key.
+        candidate = prepare_crypto_service(self._settings(tmp_path, keys="k2"))
+        assert candidate is not published
         assert (tmp_path / "k2" / "rsa_private.pem").exists()
+        assert get_crypto_service() is published
 
-    def test_external_keys_are_never_discarded_over_keys_dir(self, tmp_path):
-        """init_crypto_service (external PEMs) stays authoritative: a
-        keys_dir-only divergence must not silently swap the operator's keys
-        for generated ones."""
-        from nanoidp.services.crypto import CryptoService, get_crypto_service, init_crypto_service
+        publish_crypto_service(candidate)
+        assert get_crypto_service() is candidate
 
-        # Generate a pair to stand in for operator-provided PEMs.
-        seed = CryptoService(str(tmp_path / "seed"))
-        assert seed is not None
-        external = init_crypto_service(
-            keys_dir=str(tmp_path / "hosted"),
+    def test_a_changed_max_previous_keys_prepares_a_new_service(self, tmp_path):
+        from nanoidp.services.crypto import prepare_crypto_service, publish_crypto_service
+
+        published = prepare_crypto_service(self._settings(tmp_path))
+        publish_crypto_service(published)
+        candidate = prepare_crypto_service(self._settings(tmp_path, max_previous_keys=5))
+        assert candidate is not published
+        assert candidate.max_previous_keys == 5
+
+    def test_external_key_inputs_are_part_of_the_identity(self, tmp_path):
+        from nanoidp.services.crypto import (
+            CryptoService,
+            prepare_crypto_service,
+            publish_crypto_service,
+        )
+
+        CryptoService(str(tmp_path / "seed"))  # a pair to stand in for operator PEMs
+        external = self._settings(
+            tmp_path,
+            keys="hosted",
             external_private_key=str(tmp_path / "seed" / "rsa_private.pem"),
             external_public_key=str(tmp_path / "seed" / "rsa_public.pem"),
             external_key_id="op-key",
         )
-        assert external.uses_external_keys
-        assert get_crypto_service(str(tmp_path / "elsewhere")) is external
+        published = prepare_crypto_service(external)
+        publish_crypto_service(published)
+        assert published.uses_external_keys and published.kid == "op-key"
+
+        assert prepare_crypto_service(external) is published
+        assert prepare_crypto_service(self._settings(tmp_path, keys="hosted")) is not published
+
+    def test_readers_never_rebuild_over_the_published_service(self, tmp_path):
+        from nanoidp.config import init_config
+        from nanoidp.services.crypto import (
+            get_crypto_service,
+            prepare_crypto_service,
+            publish_crypto_service,
+        )
+
+        published = prepare_crypto_service(self._settings(tmp_path))
+        publish_crypto_service(published)
+        # A manager loaded without the activation step, on another keys_dir:
+        # get_crypto_service() still answers the published service.
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        (config_dir / "settings.yaml").write_text(f'jwt:\n  keys_dir: "{tmp_path / "other"}"\n')
+        init_config(str(config_dir))
+        assert get_crypto_service() is published
+        assert not (tmp_path / "other").exists()

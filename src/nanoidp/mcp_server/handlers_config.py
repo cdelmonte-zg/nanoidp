@@ -7,7 +7,7 @@ normalizer table contract (tests/test_settings_plumbing_parity.py).
 
 from typing import Any
 
-from ..config import ConfigManager, ReloadAfterSaveError
+from ..config import ConfigManager, ConfigurationRejected, ReloadAfterSaveError
 from ..config_validation import validate_config_result
 from ..config_writer import ConflictError, LockUnavailableError
 from ..hooks import HookError
@@ -92,6 +92,9 @@ def _tool_reload_config(arguments: dict[str, Any], config: ConfigManager) -> dic
     try:
         config.reload()
     except HookError as exc:
+        return {"success": False, "error": f"Reload failed: {exc.message}", "kind": exc.kind}
+    except ConfigurationRejected as exc:
+        # Nothing committed; the running configuration stays (#359).
         return {"success": False, "error": f"Reload failed: {exc.message}", "kind": exc.kind}
     # Fresh revisions right in the response (#229 phase 5): after a
     # save_config conflict, reload -> reapply the change -> save with
@@ -235,7 +238,7 @@ def _tool_get_oidc_discovery(arguments: dict[str, Any], config: ConfigManager) -
 
 
 def _tool_get_jwks(arguments: dict[str, Any], config: ConfigManager) -> dict[str, Any]:
-    crypto = get_crypto_service(config.settings.keys_dir)
+    crypto = get_crypto_service()
     return crypto.get_jwks()
 
 
@@ -261,7 +264,7 @@ def _tool_clear_audit_log(arguments: dict[str, Any], config: ConfigManager) -> d
 
 # Key management (mirrors /api/keys*, issue #48)
 def _tool_get_keys_info(arguments: dict[str, Any], config: ConfigManager) -> dict[str, Any]:
-    crypto = get_crypto_service(config.settings.keys_dir)
+    crypto = get_crypto_service()
     return {
         "active_kid": crypto.kid,
         "previous_keys_count": len(crypto.previous_keys),
@@ -271,7 +274,7 @@ def _tool_get_keys_info(arguments: dict[str, Any], config: ConfigManager) -> dic
 
 
 def _tool_rotate_keys(arguments: dict[str, Any], config: ConfigManager) -> dict[str, Any]:
-    crypto = get_crypto_service(config.settings.keys_dir)
+    crypto = get_crypto_service()
     result = crypto.rotate_keys()
     get_audit_log().log(
         event_type="key_rotation",

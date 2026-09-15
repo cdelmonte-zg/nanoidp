@@ -885,11 +885,14 @@ def settings() -> ResponseReturnValue:
 @ui_bp.route("/keys")
 def keys() -> ResponseReturnValue:
     """Keys and certificates management page."""
-    config = get_config()
-    crypto = get_crypto_service(config.settings.keys_dir)
+    # Settings before the signing service (#359): see get_crypto_service().
+    # What describes the key (its directory, the retention) comes from the
+    # service itself, so the page never mixes two configurations.
+    settings = get_config().settings
+    crypto = get_crypto_service()
 
     # Get key file modification time as proxy for creation date
-    keys_dir = Path(config.settings.keys_dir)
+    keys_dir = crypto.keys_dir
     kid_file = keys_dir / "kid.txt"
     key_created = None
     if kid_file.exists():
@@ -908,21 +911,21 @@ def keys() -> ResponseReturnValue:
         kid=crypto.kid,
         public_key_pem=crypto.pub_pem.decode("utf-8"),
         certificate_pem=crypto.cert_pem.decode("utf-8") if crypto.cert_pem else None,
-        keys_dir=config.settings.keys_dir,
-        settings=config.settings,
+        # The operator's spelling while it names the service's directory.
+        keys_dir=settings.keys_dir if Path(settings.keys_dir) == keys_dir else str(keys_dir),
+        settings=settings,
         current_user=session.get("user"),
         key_created=key_created,
         previous_keys=previous_keys,
-        max_previous_keys=config.settings.max_previous_keys,
+        max_previous_keys=crypto.max_previous_keys,
     )
 
 
 @ui_bp.route("/keys/regenerate", methods=["POST"])
 def keys_regenerate() -> ResponseReturnValue:
     """Regenerate RSA keys and certificate."""
-    config = get_config()
     try:
-        crypto = get_crypto_service(config.settings.keys_dir)
+        crypto = get_crypto_service()
         crypto.regenerate_keys()
 
         flash("Keys and certificate regenerated successfully", "success")
@@ -937,8 +940,7 @@ def keys_regenerate() -> ResponseReturnValue:
 @ui_bp.route("/keys/download/<key_type>")
 def keys_download(key_type: str) -> ResponseReturnValue:
     """Download key or certificate."""
-    config = get_config()
-    crypto = get_crypto_service(config.settings.keys_dir)
+    crypto = get_crypto_service()
 
     if key_type == "public_key":
         return Response(

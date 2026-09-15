@@ -355,6 +355,7 @@ def main() -> None:
 
     # Run server
     from nanoidp.app import run_app
+    from nanoidp.config import ConfigurationRejected
 
     print(f"""
     ╔══════════════════════════════════════════╗
@@ -363,15 +364,21 @@ def main() -> None:
     ╚══════════════════════════════════════════╝
     """)
 
-    run_app(
-        host=args.host,
-        port=args.port,
-        debug=args.debug,
-        config_dir=args.config,
-        profile=args.profile,
-        # Only a given flag is an override; without it settings.yaml decides.
-        strict_config=True if args.strict_config else None,
-    )
+    try:
+        run_app(
+            host=args.host,
+            port=args.port,
+            debug=args.debug,
+            config_dir=args.config,
+            profile=args.profile,
+            # Only a given flag is an override; without it settings.yaml decides.
+            strict_config=True if args.strict_config else None,
+        )
+    except ConfigurationRejected as exc:
+        # A configuration error, not a crash: the message names the file and
+        # the problem (#359).
+        print(f"error: configuration rejected: {exc.message}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

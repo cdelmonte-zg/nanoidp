@@ -85,7 +85,7 @@ class TestTokenService:
         )
         # A reload moving keys_dir in the middle of create_token: every lookup
         # after the first would see the other key.
-        monkeypatch.setattr(token_module, "get_crypto_service", lambda keys_dir: next(services))
+        monkeypatch.setattr(token_module, "get_crypto_service", lambda: next(services))
 
         response = get_token_service().create_token(
             config.get_user("admin"), scope="openid", client_id="demo-client", issue_refresh_token=True

@@ -125,7 +125,16 @@ There are exactly two kinds of state, and they never share a store:
 
 `ConfigManager.load()` is transactional: parse and validate first,
 swap the live objects only on success. A failed reload leaves the
-previous configuration serving.
+previous configuration serving. The transaction includes the signing
+service (#359): a configuration becomes active only if its signing
+service can be built. The load prepares that service from the candidate
+settings (reusing the running one when its inputs are unchanged), then
+applies the hooks and plugins, the last step that can fail, then publishes
+the service, then the settings. Readers take the settings first and the
+signing service second (`get_crypto_service()` has no arguments), so a
+request can pair older settings with a newer key but never newer settings
+with an older key. `create_app` and the MCP server pass that activation
+step to `init_config`; `config` itself never imports `services`.
 
 ## The five modules to know before changing anything
 
