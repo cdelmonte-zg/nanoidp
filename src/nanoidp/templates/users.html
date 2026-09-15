@@ -41,7 +41,9 @@
                     </tr>
                 </thead>
                 <tbody id="usersTable">
-                    {% for username, user in users.items() %}
+                    {% for entry in users %}
+                    {% set user = entry.user %}
+                    {% set username = user.username %}
                     <tr class="user-row" data-search="{{ username }} {{ user.email }} {{ user.identity_class or '' }} {{ user.roles|join(' ') }} {{ user.groups|join(' ') }} {{ user.tenant }}">
                         <td>
                             <div class="d-flex align-items-center">
@@ -49,6 +51,9 @@
                                     {{ username[0]|upper }}
                                 </div>
                                 <strong>{{ username }}</strong>
+                                {% if entry.origin == 'runtime' %}
+                                <span class="badge bg-warning text-dark ms-2" title="Created through /api/runtime; not in users.yaml">runtime</span>
+                                {% endif %}
                             </div>
                         </td>
                         <td><small class="text-muted">{{ user.email }}</small></td>
@@ -93,9 +98,13 @@
                             </button>
                         </td>
                         <td>
+                            {% if entry.origin == 'runtime' %}
+                            <span class="text-muted small">managed through /api/runtime</span>
+                            {% else %}
                             <a href="{{ url_for('ui.user_detail', username=username) }}" class="btn btn-sm btn-outline-primary">
                                 <i class="bi bi-eye"></i> Details
                             </a>
+                            {% endif %}
                         </td>
                     </tr>
                     {% endfor %}

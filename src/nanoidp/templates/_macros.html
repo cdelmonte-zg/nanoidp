@@ -3,7 +3,7 @@
    flow's implicit-submission fix) exists in one place instead of three.
 
    ``users`` is a list of ``(username, description)`` pairs (see
-   ``ConfigManager.persona_picker_entries()``), so every surface shows the
+   ``IdentityResolver.persona_picker_entries()``), so every surface shows the
    same display-only context next to the name. ``description`` is plain
    text only - it goes through Jinja's autoescaping like any other value,
    never raw HTML.

@@ -659,6 +659,48 @@ def load_users_document(
     )
 
 
+def _entry_error(source: str, document_prefix: str, exc: ValueError) -> ValueError:
+    """One line naming the source and the entry's own field, for an entry
+    validated inside a whole document: a loader message loses the document
+    path (``users.<name>.`` / ``oauth.clients[0].``), a domain-model
+    ValidationError keeps only its first message."""
+    if isinstance(exc, ValidationError):
+        first = exc.errors()[0]
+        field = _dotted(first["loc"])
+        message = first["msg"].removeprefix("Value error, ")
+        return ValueError(f"{source}: {field + ': ' if field else ''}{message}")
+    return ValueError(str(exc).replace(document_prefix, ""))
+
+
+def parse_user_entry(username: str, data: Any, source: str) -> User:
+    """One user from a mapping shaped like a ``users.yaml`` entry (#192): the
+    same model, defaults and rules as a declared user, for a user created at
+    runtime. ``source`` names where the data came from in the error."""
+    if not isinstance(data, Mapping):
+        raise ValueError(f"{source}: expected a JSON object")
+    try:
+        document = _load_document(
+            UsersDocument, {"users": {username: dict(data)}}, Path(source), strict=True
+        )
+        return document.to_users()[0][username]
+    except ValueError as exc:
+        raise _entry_error(source, f"users.{username}.", exc) from None
+
+
+def parse_client_entry(data: Any, source: str) -> OAuthClient:
+    """One client from a mapping shaped like an ``oauth.clients[]`` entry
+    (#192): the same model, coercions and rules as a declared client."""
+    if not isinstance(data, Mapping):
+        raise ValueError(f"{source}: expected a JSON object")
+    try:
+        document = _load_document(
+            SettingsDocument, {"oauth": {"clients": [dict(data)]}}, Path(source), strict=True
+        )
+        return document.to_settings().clients[0]
+    except ValueError as exc:
+        raise _entry_error(source, "oauth.clients[0].", exc) from None
+
+
 def load_bootstrap_document(
     data: Dict[str, Any],
     file_path: Path,

@@ -58,9 +58,9 @@ never a fabricated assertion.
 | Endpoint | Description |
 |----------|-------------|
 | `GET /api/health` | Health check |
-| `GET /api/users` | List users |
-| `GET /api/users/{username}` | Get user details |
-| `POST /api/users/{username}/token` | Generate a token for a user (testing). Optional JSON body: `exp_minutes`, and `client_id` (must name a real client) which binds the token and issues a spendable `refresh_token`; without `client_id` the response is an access token only (no `refresh_token`, since one with no client binding is refused since 3.0, #73). |
+| `GET /api/users` | List the effective users, declared and runtime, each with its `origin` |
+| `GET /api/users/{username}` | Get user details, declared or runtime (`origin`) |
+| `POST /api/users/{username}/token` | Generate a token for a user (testing); the user and `client_id` resolve like any login, runtime ones included. Optional JSON body: `exp_minutes`, and `client_id` (must name a real client) which binds the token and issues a spendable `refresh_token`; without `client_id` the response is an access token only (no `refresh_token`, since one with no client binding is refused since 3.0, #73). |
 | `GET /api/audit` | Get audit log |
 | `GET /api/audit/stats` | Audit log statistics |
 | `POST /api/audit/clear` | Clear the audit log |
@@ -68,3 +68,23 @@ never a fabricated assertion.
 | `POST /api/config/reload` | Reload configuration |
 | `POST /api/keys/rotate` | Rotate cryptographic keys |
 | `GET /api/keys/info` | Get key information |
+
+### Runtime identities
+
+Disposable users and clients for a test run, created on the running IdP and
+never written to the declared files unless promoted; see
+[Disposable test identities](../guides/runtime-identities.md).
+
+| Endpoint | Description |
+|----------|-------------|
+| `POST /api/runtime/users` | Create a runtime user: a `users.yaml` entry plus `username` |
+| `GET /api/runtime/users` | List runtime users |
+| `GET /api/runtime/users/{username}` | Get a runtime user |
+| `DELETE /api/runtime/users/{username}` | Delete a runtime user |
+| `POST /api/runtime/users/{username}/promote` | Write it into `users.yaml` and retire the runtime object |
+| `POST /api/runtime/clients` | Create a runtime client: an `oauth.clients[]` entry |
+| `GET /api/runtime/clients` | List runtime clients |
+| `GET /api/runtime/clients/{client_id}` | Get a runtime client |
+| `DELETE /api/runtime/clients/{client_id}` | Delete a runtime client |
+| `POST /api/runtime/clients/{client_id}/promote` | Write it into `settings.yaml` and retire the runtime object |
+| `DELETE /api/runtime` | Remove every runtime user and client; answers `users_deleted` and `clients_deleted` |

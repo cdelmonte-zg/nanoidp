@@ -685,25 +685,56 @@ class TestEveryResolutionSite:
         assert "code=" in response.headers["Location"]
 
 
-class TestManagementSurfacesStayDeclared:
-    """Exposing runtime objects on management surfaces is #192's."""
+class TestEffectiveViews:
+    """#192: the observation surfaces show declared and runtime identities
+    with their origin; the declared-configuration views and MCP do not."""
 
     @pytest.fixture(autouse=True)
     def runtime_user(self, app_client):
-        get_identities().create_runtime_user(_user("ci-alice"))
+        get_identities().create_runtime_user(_user("ci-alice", password="alice-pw"))
+        get_identities().create_runtime_client(_client("ci-app", secret="app-secret"))
 
-    def test_api_users_lists_only_declared_users(self, app_client):
+    def test_api_users_lists_effective_users_with_their_origin(self, app_client):
         client, _ = app_client
-        listed = [user["username"] for user in client.get("/api/users").get_json()["users"]]
-        assert "ci-alice" not in listed
-        assert client.get("/api/users/ci-alice").status_code == 404
+        listed = {user["username"]: user["origin"] for user in client.get("/api/users").get_json()["users"]}
+        assert listed["ci-alice"] == "runtime"
+        assert listed["admin"] == "declared"
+        detail = client.get("/api/users/ci-alice").get_json()
+        assert detail["origin"] == "runtime"
+        assert "password" not in detail
 
-    def test_the_persona_picker_lists_only_declared_users(self, app_client):
-        assert "ci-alice" not in [name for name, _ in get_config().persona_picker_entries()]
+    def test_the_token_endpoint_resolves_runtime_users_and_clients(self, app_client):
+        client, _ = app_client
+        response = client.post("/api/users/ci-alice/token", json={"client_id": "ci-app"})
+        assert response.status_code == 200, response.get_data(as_text=True)
+        claims = json.loads(base64.urlsafe_b64decode(response.get_json()["access_token"].split(".")[1] + "=="))
+        assert claims["sub"] == "ci-alice" and claims["client_id"] == "ci-app"
+        assert client.post("/api/users/nobody/token", json={}).status_code == 404
+        assert client.post("/api/users/ci-alice/token", json={"client_id": "nope"}).status_code == 400
+
+    def test_the_persona_picker_lists_runtime_users(self, app_client):
+        assert "ci-alice" in [name for name, _ in get_identities().persona_picker_entries()]
+
+    def test_the_config_view_counts_only_declared_objects(self, app_client):
+        client, _ = app_client
+        body = client.get("/api/config").get_json()
+        assert body["users_count"] == len(get_config().users)
+        assert body["oauth"]["clients_count"] == len(get_config().settings.clients)
 
     def test_mcp_list_users_sees_only_declared_users(self, app_client, mcp_call_tool):
         result = json.loads(asyncio.run(mcp_call_tool("list_users", {})).content[0].text)
         assert "ci-alice" not in [user["username"] for user in result["users"]]
+
+    def test_ui_lists_runtime_objects_read_only(self, app_client):
+        client, _ = app_client
+        users_page = client.get("/users").get_data(as_text=True)
+        clients_page = client.get("/clients").get_data(as_text=True)
+        dashboard = client.get("/").get_data(as_text=True)
+
+        assert "ci-alice" in users_page and "managed through /api/runtime" in users_page
+        assert "/users/ci-alice" not in users_page  # no Details / edit link
+        assert "ci-app" in clients_page and "/clients/ci-app/edit" not in clients_page
+        assert f"{len(get_config().users)} declared, 1 runtime" in dashboard
 
 
 # ---------------------------------------------------------------------------
@@ -811,6 +842,29 @@ class TestReloadReconciliation:
         assert reloaded
         assert resolved is not None
         assert get_runtime_identity_store().users.get("ci-alice") is None
+
+    def test_a_listing_spanning_a_reload_that_declares_the_name_shows_one_of_the_two(
+        self, app_client, monkeypatch
+    ):
+        _, config_dir = app_client
+        manager = get_config()
+        get_identities().create_runtime_user(_user("ci-alice"))
+        repository = get_runtime_identity_store().users
+        real_list = repository.list
+        reloaded = []
+
+        def reload_then_list():
+            if not reloaded:
+                reloaded.append(True)
+                self._declare(config_dir, "ci-alice", "ci-alice-app")
+                manager.reload()
+            return real_list()
+
+        monkeypatch.setattr(repository, "list", reload_then_list)
+        names = [entry.user.username for entry in get_identities().list_users()]
+
+        assert reloaded
+        assert names.count("ci-alice") == 1
 
     def test_a_settings_snapshot_older_than_the_reload_still_finds_the_client(self, app_client):
         client, config_dir = app_client

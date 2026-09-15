@@ -108,6 +108,11 @@ def _login_settings_defaults() -> tuple[str, bool, bool, bool]:
     )
 
 
+class EntryAlreadyExists(ValueError):
+    """``is_new`` was set and the file already has an entry with that name.
+    Raised before anything is written."""
+
+
 class YamlWriter:
     """Service for safely writing YAML configuration files."""
 
@@ -202,7 +207,7 @@ class YamlWriter:
                 data["default_user"] = "admin"
             data.setdefault("users", {})
             if is_new and user.username in data["users"]:
-                raise ValueError(f"User '{user.username}' already exists")
+                raise EntryAlreadyExists(f"User '{user.username}' already exists")
             data["users"][user.username] = user_to_yaml(user)
 
         return self._atomic_write(self.users_file, mutate, expected_revision)
@@ -274,7 +279,7 @@ class YamlWriter:
                     break
 
             if is_new and existing_idx is not None:
-                raise ValueError(f"Client '{client.client_id}' already exists")
+                raise EntryAlreadyExists(f"Client '{client.client_id}' already exists")
 
             if existing_idx is not None:
                 clients[existing_idx] = merge_client_entry(clients[existing_idx], client)

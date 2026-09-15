@@ -9,7 +9,7 @@ import os
 import threading
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterator, Optional
 
 import yaml
 
@@ -485,12 +485,6 @@ class ConfigManager:
         """The declared user with that name. Logins and grants resolve users
         through services.identities, which also sees runtime users (#235)."""
         return self.users.get(username)
-
-    def persona_picker_entries(self) -> List[Tuple[str, str]]:
-        """(username, description) pairs for the persona login picker,
-        shared by all four interactive surfaces (UI, OAuth, SAML, device) so
-        they can never drift on what's shown next to a user's name."""
-        return [(username, user.description) for username, user in self.users.items()]
 
     def hash_password(self, password: str) -> str:
         """Hash a password using bcrypt."""
