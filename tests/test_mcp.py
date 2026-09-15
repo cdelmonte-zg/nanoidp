@@ -229,7 +229,7 @@ class TestMCPHandlerRegistration:
         )
 
         monkeypatch.setattr(mcp, "_readonly_mode", False)
-        monkeypatch.setattr(mcp, "_config", ConfigManager(str(config_dir)))
+        monkeypatch.setattr("nanoidp.config._config", ConfigManager(str(config_dir)))
         monkeypatch.delenv("NANOIDP_MCP_ADMIN_SECRET", raising=False)
 
         result = await mcp_call_tool("list_users", None)
@@ -435,11 +435,10 @@ class TestMCPAdminSecret:
 
     def test_reads_the_passed_config_not_the_global_singleton(self, monkeypatch, tmp_path):
         """#163 B5 regression: _check_admin_secret must key off the ConfigManager
-        it's given (what _ensure_config() actually returns), not
-        routes._auth.get_management_secret() - which reads
-        nanoidp.config.get_config()'s own global, a different object from
-        mcp_server._config whenever the two have been set independently (as
-        tests that monkeypatch mcp._config directly already do)."""
+        it's given (what _ensure_config() returns), not look one up through
+        routes._auth.get_management_secret(). Since #230 the process has one
+        manager, so the two agree in production; the gate still reads its
+        argument, like every tool handler."""
         import nanoidp.config as config_module
         from nanoidp.config import ConfigManager
         from nanoidp.mcp_server import _check_admin_secret
@@ -453,8 +452,7 @@ class TestMCPAdminSecret:
         # The global nanoidp.config singleton has no secret configured.
         monkeypatch.setattr(config_module, "_config", ConfigManager(str(no_secret_dir)))
 
-        # mcp_server's own config (what _ensure_config() would hand to
-        # call_tool) does - _check_admin_secret must gate off THIS.
+        # The manager passed in does - _check_admin_secret must gate off THIS.
         own_config = ConfigManager(str(has_secret_dir))
 
         allowed, error_msg = _check_admin_secret(own_config, "create_user", {})
@@ -695,7 +693,7 @@ class TestMCPClientAdditionalAudiences:
         (see TestGenerateTokenClaims), so its isinstance branch stays."""
         import nanoidp.mcp_server as mcp
 
-        monkeypatch.setattr(mcp, "_config", self._config(tmp_path))
+        monkeypatch.setattr("nanoidp.config._config", self._config(tmp_path))
         monkeypatch.setattr(mcp, "_readonly_mode", False)
         monkeypatch.delenv("NANOIDP_MCP_ADMIN_SECRET", raising=False)
 
@@ -762,7 +760,7 @@ class TestMCPPersonaLogin:
         it still requires a password argument."""
         import nanoidp.mcp_server as mcp
 
-        monkeypatch.setattr(mcp, "_config", self._config(tmp_path))
+        monkeypatch.setattr("nanoidp.config._config", self._config(tmp_path))
         monkeypatch.setattr(mcp, "_readonly_mode", False)
         monkeypatch.delenv("NANOIDP_MCP_ADMIN_SECRET", raising=False)
 
@@ -924,7 +922,7 @@ class TestMCPUserDescription:
         JSON schema even though the handler bypasses it in tests."""
         import nanoidp.mcp_server as mcp
 
-        monkeypatch.setattr(mcp, "_config", self._config(tmp_path))
+        monkeypatch.setattr("nanoidp.config._config", self._config(tmp_path))
         monkeypatch.setattr(mcp, "_readonly_mode", False)
         monkeypatch.delenv("NANOIDP_MCP_ADMIN_SECRET", raising=False)
 
@@ -1015,7 +1013,7 @@ class TestMCPUserDescription:
         before dispatch, as a clean MCP_INVALID_ARGUMENTS error."""
         import nanoidp.mcp_server as mcp
 
-        monkeypatch.setattr(mcp, "_config", self._config(tmp_path))
+        monkeypatch.setattr("nanoidp.config._config", self._config(tmp_path))
         monkeypatch.setattr(mcp, "_readonly_mode", False)
         monkeypatch.delenv("NANOIDP_MCP_ADMIN_SECRET", raising=False)
 
@@ -1069,7 +1067,7 @@ class TestMCPUserDescription:
         """Caught by the schema's "type": "boolean" constraint before dispatch."""
         import nanoidp.mcp_server as mcp
 
-        monkeypatch.setattr(mcp, "_config", self._config(tmp_path))
+        monkeypatch.setattr("nanoidp.config._config", self._config(tmp_path))
         monkeypatch.setattr(mcp, "_readonly_mode", False)
         monkeypatch.delenv("NANOIDP_MCP_ADMIN_SECRET", raising=False)
 
@@ -1123,7 +1121,7 @@ class TestMCPUserDescription:
         """Caught by the schema's "type": "boolean" constraint before dispatch."""
         import nanoidp.mcp_server as mcp
 
-        monkeypatch.setattr(mcp, "_config", self._config(tmp_path))
+        monkeypatch.setattr("nanoidp.config._config", self._config(tmp_path))
         monkeypatch.setattr(mcp, "_readonly_mode", False)
         monkeypatch.delenv("NANOIDP_MCP_ADMIN_SECRET", raising=False)
 

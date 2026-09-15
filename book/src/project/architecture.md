@@ -48,7 +48,7 @@ Entry points:
 |---|---|
 | `app.py` | `create_app()`: Flask app factory, blueprint registration, session cookie policy, startup warnings |
 | `__main__.py` | The `nanoidp` CLI: serve, `init`, `wizard`, `validate-config`, `config-schema`, `plugins` |
-| `mcp_server.py` | The `nanoidp-mcp` stdio server: tool declarations, handlers, and its own `ConfigManager` |
+| `mcp_server/` | The `nanoidp-mcp` stdio server: tool declarations and handlers. It keeps no configuration of its own: the tools resolve the process's `ConfigManager` (see `config.py`) |
 | `wizard.py` | The `nanoidp wizard` interactive configuration builder |
 
 HTTP surfaces (`routes/`), one blueprint per protocol surface:
@@ -88,7 +88,7 @@ The config layer and the pure bottom:
 
 | Module | What it is |
 |---|---|
-| `config.py` | `ConfigManager`: owns loading, reloading and handing out `Settings`/users; loads are transactional (a failed reload commits nothing) |
+| `config.py` | `ConfigManager`: owns loading, reloading and handing out `Settings`/users; loads are transactional (a failed reload commits nothing). One manager per process (`init_config`/`get_config`): the routes, the MCP tools and the token service all resolve it, and none of them keeps a manager, or a signing service derived from its settings, from the moment it was first built |
 | `config_documents.py` | Pydantic document models mirroring the YAML sections one to one; `to_settings()` / `to_users()` build the domain objects |
 | `config_schema.py` | JSON Schema generated from the document models; `docs/schema/config.v1.json` is the committed artifact and a test fails when they diverge |
 | `config_validation.py` | `nanoidp validate-config`: lint a config directory without starting anything (hooks never execute) |

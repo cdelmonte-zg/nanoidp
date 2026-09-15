@@ -425,14 +425,10 @@ class TestRegressionRound2:
         # directory first, then put the typo on disk: validate_config reads
         # the files, not the runtime.
         manager = init_config(str(tmp_path), strict_config=True)
-        mcp_server._config = manager
         (tmp_path / "settings.yaml").write_text(
             _yaml.safe_dump({"server": {"host": "127.0.0.1", "port": 8000}, "oauth": {"isuer": "x"}})
         )
-        try:
-            result = asyncio.run(mcp_server._execute_tool("validate_config", {}, manager))
-            assert result["valid"] is False  # warnings fail under the manager's strict mode
-            result = asyncio.run(mcp_server._execute_tool("validate_config", {"strict": False}, manager))
-            assert result["valid"] is True  # explicit argument still wins
-        finally:
-            mcp_server._config = None
+        result = asyncio.run(mcp_server._execute_tool("validate_config", {}, manager))
+        assert result["valid"] is False  # warnings fail under the manager's strict mode
+        result = asyncio.run(mcp_server._execute_tool("validate_config", {"strict": False}, manager))
+        assert result["valid"] is True  # explicit argument still wins

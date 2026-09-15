@@ -373,8 +373,8 @@ def verify_management_secret(candidate: object) -> bool:
 
     Used by ui_bp/api_bp, which both read config through
     nanoidp.config.get_config() (the same global create_app() initializes).
-    The MCP server keeps its own ConfigManager singleton and must not go
-    through this function - see mcp_server._check_admin_secret.
+    The MCP server gates its tools in mcp_server._check_admin_secret, off
+    the ConfigManager each call is handed.
     """
     return verify_secret(candidate, get_management_secret())
 

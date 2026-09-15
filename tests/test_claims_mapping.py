@@ -211,7 +211,7 @@ class TestAuthorityPrefixConfiguration:
 
     def test_build_authorities_with_default_prefixes(self):
         """Test authority building with default prefix configuration."""
-        from nanoidp.config import User
+        from nanoidp.config import User, get_config
         from nanoidp.services.token import TokenService
 
         user = User(
@@ -223,7 +223,7 @@ class TestAuthorityPrefixConfiguration:
             source_acl=["ACL_READ"]
         )
 
-        service = TokenService()
+        service = TokenService(get_config())
         authorities = service.build_authorities(user)
 
         # Check that authorities include properly prefixed values
@@ -267,7 +267,7 @@ class TestEmptyAndMissingFields:
 
     def test_user_with_empty_roles_generates_valid_token(self):
         """Test that users with empty roles still generate valid tokens."""
-        from nanoidp.config import User
+        from nanoidp.config import User, get_config
         from nanoidp.services.token import TokenService
 
         user = User(
@@ -279,7 +279,7 @@ class TestEmptyAndMissingFields:
             source_acl=[]
         )
 
-        service = TokenService()
+        service = TokenService(get_config())
         authorities = service.build_authorities(user)
 
         # Should return empty or minimal authorities
@@ -287,7 +287,7 @@ class TestEmptyAndMissingFields:
 
     def test_user_with_none_identity_class(self):
         """Test that users with None identity_class don't add spurious authorities."""
-        from nanoidp.config import User
+        from nanoidp.config import User, get_config
         from nanoidp.services.token import TokenService
 
         user = User(
@@ -297,7 +297,7 @@ class TestEmptyAndMissingFields:
             identity_class=None
         )
 
-        service = TokenService()
+        service = TokenService(get_config())
         authorities = service.build_authorities(user)
 
         # Should not have any IDENTITY_ prefixed entry

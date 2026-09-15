@@ -12,7 +12,6 @@ from pathlib import Path
 
 import nanoidp.config as config_module
 import nanoidp.services.crypto as crypto_module
-import nanoidp.services.token as token_module
 from nanoidp.services.auth_code import AuthCodeStore
 
 
@@ -132,12 +131,6 @@ class TestSingletonConcurrency:
         config_module._config = None
         self._assert_single_instance(
             config_module, "ConfigManager", config_module.get_config, monkeypatch
-        )
-
-    def test_get_token_service_creates_one_instance(self, monkeypatch):
-        token_module._token_service = None
-        self._assert_single_instance(
-            token_module, "TokenService", token_module.get_token_service, monkeypatch
         )
 
     def test_get_crypto_service_creates_one_instance(self, monkeypatch):

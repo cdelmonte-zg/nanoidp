@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Tokens are signed with the key the JWKS serves after a reload changes
+  `jwt.keys_dir`** (#230). The token service kept the signing key it was
+  built with, so after `POST /api/config/reload` had moved `keys_dir`,
+  every grant at `/token` and `POST /api/users/<username>/token` kept
+  signing with the old key while the JWKS, introspection and `/userinfo`
+  already used the new one: tokens issued after the reload failed
+  verification until a restart.
+
+### Changed
+- **One `ConfigManager` per process** (#230). The MCP server no longer keeps
+  a configuration global of its own next to `nanoidp.config`'s; its tools,
+  the HTTP routes and the token service resolve the same manager, and
+  `TokenService` takes that manager explicitly instead of looking it up and
+  caching it. No change to the MCP tools or to any HTTP surface. For code
+  embedding nanoidp: `nanoidp.mcp_server._config` no longer exists (use
+  `nanoidp.config.init_config`), and `TokenService()` now needs the
+  manager, `TokenService(config)`; `get_token_service()` is unchanged.
+
 ## [3.2.0] - 2026-09-15
 
 ### Added

@@ -5,13 +5,12 @@ Token service for generating JWT tokens with authorities.
 import base64
 import hashlib
 import logging
-import threading
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence, Union
 
-from ..config import User, get_config
-from .crypto import get_crypto_service
+from ..config import ConfigManager, User, get_config
+from .crypto import CryptoService, get_crypto_service
 
 logger = logging.getLogger(__name__)
 
@@ -129,9 +128,18 @@ def resolve_user_claim(user: User, name: str) -> tuple[bool, Any]:
 class TokenService:
     """Service for generating JWT tokens."""
 
-    def __init__(self) -> None:
-        self.config = get_config()
-        self.crypto = get_crypto_service(self.config.settings.keys_dir)
+    def __init__(self, config: ConfigManager) -> None:
+        self.config = config
+
+    @property
+    def crypto(self) -> CryptoService:
+        """The signing service for the configuration's current ``keys_dir``.
+
+        Resolved on every use, not kept from construction: a reload that
+        changes ``keys_dir`` would otherwise leave tokens signed with the old
+        key while the JWKS and introspection already use the new one.
+        """
+        return get_crypto_service(self.config.settings.keys_dir)
 
     def build_authorities(self, user: User) -> List[str]:
         """Build authorities array from user attributes."""
@@ -298,6 +306,10 @@ class TokenService:
         ``ValueError``. When no refresh JWT is minted the response carries no
         ``refresh_token`` key at all.
         """
+        # One signing service for the whole response: a reload that moves
+        # keys_dir while this runs must not sign the access token and the
+        # ID or refresh token with two different keys.
+        crypto = self.crypto
         if issue_refresh_token and not client_id:
             raise ValueError(
                 "issue_refresh_token=True requires client_id: a refresh token "
@@ -388,7 +400,7 @@ class TokenService:
             access_audience = resource[0] if len(resource) == 1 else list(resource)
 
         # Create access token JWT
-        token = self.crypto.create_jwt(
+        token = crypto.create_jwt(
             sub=user.username,
             issuer=effective_issuer,
             audience=access_audience,
@@ -432,7 +444,7 @@ class TokenService:
                 found, value = resolve_user_claim(user, claim_name)
                 if found:
                     id_extra.setdefault(claim_name, value)
-            id_token = self.crypto.create_jwt(
+            id_token = crypto.create_jwt(
                 sub=user.username,
                 issuer=effective_issuer,
                 audience=id_aud,
@@ -486,7 +498,7 @@ class TokenService:
             if rt_resources:
                 refresh_extra["resource"] = list(rt_resources)
             refresh_extra["rt_family"] = refresh_family or str(uuid.uuid4())
-            response["refresh_token"] = self.crypto.create_jwt(
+            response["refresh_token"] = crypto.create_jwt(
                 sub=user.username,
                 issuer=effective_issuer,
                 audience=settings.audience,
@@ -507,16 +519,10 @@ class TokenService:
         return response
 
 
-# Global token service instance
-_token_service: Optional[TokenService] = None
-_token_service_lock = threading.Lock()
-
-
 def get_token_service() -> TokenService:
-    """Get or create the global token service (thread-safe lazy init, #43)."""
-    global _token_service
-    if _token_service is None:
-        with _token_service_lock:
-            if _token_service is None:
-                _token_service = TokenService()
-    return _token_service
+    """A token service over the process's one ConfigManager.
+
+    Not a cached instance: the service holds nothing but that manager, and
+    a cached one kept whichever manager existed when it was first built.
+    """
+    return TokenService(get_config())
