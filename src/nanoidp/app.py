@@ -16,6 +16,7 @@ from . import __version__
 from .config import get_config, init_config
 from .routes import api_bp, oauth_bp, saml_bp, ui_bp
 from .services import activate_crypto_service
+from .services.identities import reconcile_runtime_identities
 
 # Global limiter instance (initialized in create_app)
 limiter: Optional[Limiter] = None
@@ -49,6 +50,7 @@ def create_app(
         profile_override=profile,
         strict_config=strict_config,
         activate=activate_crypto_service,
+        after_load=reconcile_runtime_identities,
     )
     settings = config.settings
 

@@ -17,12 +17,16 @@ from .device_code import (
     get_device_code_store,
 )
 from .discovery import build_discovery_document
+from .identities import IdentityResolver, get_identities, identities_for
 from .revocation import RevocationStore, get_revocation_store
 from .token import TokenService, get_token_service
 from .yaml_writer import YamlWriter, get_yaml_writer
 
 __all__ = [
     "build_discovery_document",
+    "IdentityResolver",
+    "get_identities",
+    "identities_for",
     "CryptoService",
     "EXTERNAL_KEYS_NOT_ROTATABLE",
     "ExternalKeysNotRotatable",

@@ -22,6 +22,7 @@ from ..config import ConfigManager, User, get_config
 # (#286) so the stdio MCP process stops importing Flask to reach it; this
 # module stays the import path its own callers and tests already use.
 from ..security import verify_secret  # noqa: F401
+from ..services.identities import identities_for
 from ..services.totp import verify_totp
 
 
@@ -299,7 +300,7 @@ def authenticate_interactively(
     failed attempt (#348 review, cleanup). Each route only renders what
     the returned ``InteractiveLogin`` says; the rule is here.
     """
-    user = config.interactive_authenticate(username, password)
+    user = identities_for(config).interactive_authenticate(username, password)
     if user is None:
         return InteractiveLogin(None, SecondFactorPhase.NOT_REQUIRED, AuthMethod.PASSWORD, None)
     if config.settings.persona_mode_enabled:
@@ -335,7 +336,7 @@ def is_ui_authenticated() -> bool:
 
     Set by establish_login_session, which ui.login's POST handler and the
     SAML SSO inline-login form (routes/saml.py) both call after
-    config.interactive_authenticate() succeeds, so either is sufficient
+    IdentityResolver.interactive_authenticate() succeeds, so either is sufficient
     here. Under login_mode: persona that call is identity selection only,
     not a credential check (see Settings.login_mode).
     """

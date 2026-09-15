@@ -74,6 +74,8 @@ single-purpose:
 | Module | What it is |
 |---|---|
 | `services/token.py` | JWT building: access tokens, ID Tokens, the `/token` response body |
+| `services/identities.py` | The effective identities: declared users and clients composed with runtime ones. Every login, grant and client check resolves users and clients here (`identities_for(config)`), with the rules in one place: declared first, no runtime object under a declared name, declared wins on reload. Management surfaces (UI forms, `/api/users`, MCP) still work on the declared configuration |
+| `services/runtime_identities.py` | The runtime identity store: users and clients created while the IdP runs, in memory, two repositories behind one lock. Holds nothing else |
 | `services/auth_code.py` | Authorization-code store (PKCE data rides on the code) |
 | `services/device_code.py` | Device-flow code store |
 | `services/revocation.py` | In-memory revocation and refresh-rotation family state |
@@ -118,7 +120,8 @@ There are exactly two kinds of state, and they never share a store:
   (last write wins), stated as such.
 - **Runtime state** lives in memory inside `services/`: authorization
   codes, device codes, revocation and rotation families, the audit
-  log, and Flask sessions. It is lost on restart by design; an
+  log, runtime users and clients (`services/runtime_identities.py`), and
+  Flask sessions. It is lost on restart by design; an
   instance is disposable (see [Vision](vision.md)). If you are about
   to persist runtime state to disk, stop and re-read the
   database-persistence non-goal.

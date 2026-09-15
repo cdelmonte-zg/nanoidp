@@ -15,6 +15,7 @@ import nanoidp.services.auth_code as auth_code_module
 import nanoidp.services.crypto as crypto_module
 import nanoidp.services.device_code as device_code_module
 import nanoidp.services.revocation as revocation_module
+import nanoidp.services.runtime_identities as runtime_identities_module
 import nanoidp.services.yaml_writer as yaml_writer_module
 from nanoidp.app import create_app
 from nanoidp.config import OAuthClient, User
@@ -108,7 +109,7 @@ def _reset_process_singletons() -> None:
     """Every process-wide singleton, services and runtime stores alike.
 
     The list is the singleton inventory of the #230 audit; a store added
-    later (there will be one, #192) belongs here, or its state leaks across
+    later belongs here (the runtime identity store of #235 is one), or its state leaks across
     tests as order-dependent flakes. Until #305 the three runtime stores
     were missing and test files that touched them carried their own
     autouse cleanup fixtures; any new file that forgot one leaked.
@@ -120,6 +121,7 @@ def _reset_process_singletons() -> None:
     auth_code_module._auth_code_store = None
     device_code_module._device_code_store = None
     revocation_module._revocation_store = None
+    runtime_identities_module._runtime_identity_store = None
 
 
 @pytest.fixture
