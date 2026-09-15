@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.2.0] - 2026-09-15
+
 ### Added
 - **Declarative TOTP second factor** (#348, opt-in, off by default):
   `login.totp: true` requires a time-based one-time code after a successful
@@ -1760,6 +1762,7 @@ previous leniency allowed - needs a one-time adjustment.
 - Key rotation with JWKS support for multiple keys
 - External key import support
 
+[3.2.0]: https://github.com/cdelmonte-zg/nanoidp/compare/v3.1.0...v3.2.0
 [3.1.0]: https://github.com/cdelmonte-zg/nanoidp/compare/v3.0.0...v3.1.0
 [3.0.0]: https://github.com/cdelmonte-zg/nanoidp/compare/v2.8.0...v3.0.0
 [2.8.0]: https://github.com/cdelmonte-zg/nanoidp/compare/v2.7.0...v2.8.0
