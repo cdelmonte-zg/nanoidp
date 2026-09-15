@@ -101,18 +101,45 @@ class TestRepositoryContract:
         assert repo.list() == []
         assert repo.delete_all() == 0
 
-    def test_the_stored_object_is_independent_of_the_callers_instance(self, factory, repository):
+    @staticmethod
+    def _mutate(attr, obj):
+        """Change a list field of a user or client in place."""
+        (obj.roles if attr == "users" else obj.redirect_uris).append("MUTATED")
+
+    @staticmethod
+    def _mutated(attr, obj):
+        return "MUTATED" in (obj.roles if attr == "users" else obj.redirect_uris)
+
+    def test_changing_the_instance_handed_to_create_does_not_change_the_repository(
+        self, factory, repository
+    ):
         attr, make, _ = repository
         repo = getattr(factory(), attr)
         obj = make("isolated")
         repo.create(obj)
 
-        if attr == "users":
-            obj.roles.append("MUTATED")
-            assert "MUTATED" not in repo.get("isolated").roles
-        else:
-            obj.redirect_uris.append("http://mutated.test/cb")
-            assert "http://mutated.test/cb" not in repo.get("isolated").redirect_uris
+        self._mutate(attr, obj)
+
+        assert not self._mutated(attr, repo.get("isolated"))
+
+    @pytest.mark.parametrize("returned_by", ["create", "get", "list"])
+    def test_changing_a_returned_object_does_not_change_the_repository(
+        self, factory, repository, returned_by
+    ):
+        """By value, as a backend that serializes would be (#354)."""
+        attr, make, _ = repository
+        repo = getattr(factory(), attr)
+        created = repo.create(make("isolated"))
+        returned = {
+            "create": lambda: created,
+            "get": lambda: repo.get("isolated"),
+            "list": lambda: repo.list()[0],
+        }[returned_by]()
+
+        self._mutate(attr, returned)
+
+        assert not self._mutated(attr, repo.get("isolated"))
+        assert not self._mutated(attr, repo.list()[0])
 
     def test_concurrent_creates_of_one_name_let_exactly_one_through(self, factory, repository):
         attr, make, _ = repository
@@ -350,8 +377,15 @@ def _runtime_client(client_id: str, **fields) -> OAuthClient:
     return OAuthClient(client_id=client_id, redirect_uris=[REDIRECT], **fields)
 
 
-def _stored_client(client_id: str) -> OAuthClient:
-    return get_runtime_identity_store().clients.get(client_id)
+def _replace_runtime_client(client_id: str, **policy) -> None:
+    """Change a runtime client's policy the way #192 can: the repository is
+    by value, so a change is a delete and a create of the replacement."""
+    store = get_runtime_identity_store()
+    current = store.clients.get(client_id)
+    assert store.clients.delete(client_id)
+    get_identities().create_runtime_client(
+        OAuthClient.model_validate({**current.model_dump(), **policy})
+    )
 
 
 def _authorization_code(client, client_id: str, scope: str = "openid", **extra) -> str:
@@ -409,13 +443,13 @@ class TestEveryResolutionSite:
 
     def test_password_grant_applies_the_runtime_clients_scope_ceiling(self, app_client):
         client, _ = app_client
-        _stored_client("ci-app").allowed_scopes = ["openid"]
+        _replace_runtime_client("ci-app", allowed_scopes=["openid"])
         response = self._password_tokens(client, scope="openid email")
         assert response.status_code == 400 and response.get_json()["error"] == "invalid_scope"
 
     def test_client_credentials_applies_the_runtime_clients_scope_ceiling(self, app_client):
         client, _ = app_client
-        _stored_client("ci-app").allowed_scopes = ["openid"]
+        _replace_runtime_client("ci-app", allowed_scopes=["openid"])
         response = client.post(
             "/token",
             data={"grant_type": "client_credentials", "scope": "email"},
@@ -426,7 +460,7 @@ class TestEveryResolutionSite:
     def test_code_redemption_rechecks_the_runtime_clients_scope_ceiling(self, app_client):
         client, _ = app_client
         code = _authorization_code(client, "ci-app", scope="openid email")
-        _stored_client("ci-app").allowed_scopes = ["openid"]
+        _replace_runtime_client("ci-app", allowed_scopes=["openid"])
         response = client.post(
             "/token",
             data={
@@ -449,7 +483,7 @@ class TestEveryResolutionSite:
         )
         assert refreshed.status_code == 200, refreshed.get_data(as_text=True)
 
-        _stored_client("ci-app").allowed_scopes = ["openid"]
+        _replace_runtime_client("ci-app", allowed_scopes=["openid"])
         narrowed = client.post(
             "/token",
             data={"grant_type": "refresh_token", "refresh_token": refreshed.get_json()["refresh_token"]},
@@ -544,7 +578,6 @@ class TestEveryResolutionSite:
             data={"user_code": codes["user_code"], "username": "ci-alice", "password": "alice-pw", "action": "authorize"},
         )
         assert approved.status_code == 200
-        _stored_client("ci-tv").allowed_scopes = ["openid", "email"]
         tokens = client.post(
             "/token",
             data={"grant_type": DEVICE_GRANT, "device_code": codes["device_code"], "client_id": "ci-tv"},
@@ -569,7 +602,7 @@ class TestEveryResolutionSite:
             "/device",
             data={"user_code": codes["user_code"], "username": "ci-alice", "password": "alice-pw", "action": "authorize"},
         )
-        _stored_client("ci-tv").allowed_resources = ["https://other.runtime.test"]
+        _replace_runtime_client("ci-tv", allowed_resources=["https://other.runtime.test"])
 
         response = client.post(
             "/token",
@@ -590,7 +623,7 @@ class TestEveryResolutionSite:
             "/device",
             data={"user_code": codes["user_code"], "username": "ci-alice", "password": "alice-pw", "action": "authorize"},
         )
-        _stored_client("ci-tv").allowed_scopes = ["openid"]
+        _replace_runtime_client("ci-tv", allowed_scopes=["openid"])
 
         response = client.post(
             "/token",

@@ -54,7 +54,10 @@ Activation = Callable[[Settings], Callable[[], None]]
 # Called with the manager after every successful load, inside the load, once
 # the new configuration is assigned (#235: the runtime identity store drops
 # the runtime objects a reload has just declared). Supplied by the process
-# composition, like the activation step.
+# composition, like the activation step. A post-commit callback: it must not
+# raise, since the configuration is already in effect when it runs, and a
+# raise would report a load that did happen as failed. A fallible backend
+# (#354) has to revisit this.
 AfterLoad = Callable[["ConfigManager"], None]
 
 

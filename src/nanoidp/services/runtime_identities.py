@@ -26,7 +26,11 @@ class RuntimeObjectExists(ValueError):
 
 class RuntimeRepository(Protocol[T]):
     """The operations a runtime repository offers; a later durable backend
-    (#354) implements the same contract (tests/test_runtime_identities.py)."""
+    (#354) implements the same contract (tests/test_runtime_identities.py).
+
+    By value: every object handed in or out is a copy, so changing one never
+    changes the repository. A change is a delete and a create.
+    """
 
     def create(self, obj: T) -> T:
         """Store ``obj``; raises RuntimeObjectExists when its name is taken."""
@@ -57,18 +61,20 @@ class MemoryRuntimeRepository(Generic[T]):
         with self._lock:
             if name in self._objects:
                 raise RuntimeObjectExists(f"runtime object {name!r} already exists")
-            # A copy: the caller's instance can change without changing the store.
+            # By value, both ways: neither the caller's instance nor the one
+            # returned is the stored one, as with a backend that serializes.
             stored = obj.model_copy(deep=True)
             self._objects[name] = stored
-            return stored
+            return stored.model_copy(deep=True)
 
     def get(self, name: str) -> Optional[T]:
         with self._lock:
-            return self._objects.get(name)
+            stored = self._objects.get(name)
+            return stored.model_copy(deep=True) if stored is not None else None
 
     def list(self) -> List[T]:
         with self._lock:
-            return list(self._objects.values())
+            return [obj.model_copy(deep=True) for obj in self._objects.values()]
 
     def delete(self, name: str) -> bool:
         with self._lock:
