@@ -12,6 +12,7 @@ from ..config_validation import validate_config_result
 from ..config_writer import ConflictError, LockUnavailableError
 from ..hooks import HookError
 from ..services import (
+    EXTERNAL_KEYS_NOT_ROTATABLE,
     ExternalKeysNotRotatable,
     build_discovery_document,
     get_audit_log,
@@ -278,9 +279,9 @@ def _tool_rotate_keys(arguments: dict[str, Any], config: ConfigManager) -> dict[
     crypto = get_crypto_service()
     try:
         result = crypto.rotate_keys()
-    except ExternalKeysNotRotatable as exc:
+    except ExternalKeysNotRotatable:
         # Operator-provided keys (#358): nothing was rotated.
-        return {"success": False, "error": str(exc)}
+        return {"success": False, "error": EXTERNAL_KEYS_NOT_ROTATABLE}
     get_audit_log().log(
         event_type="key_rotation",
         endpoint="mcp:rotate_keys",

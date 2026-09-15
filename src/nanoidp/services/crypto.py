@@ -48,6 +48,13 @@ class KeyInfo:
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 
+# Fixed text, returned as is by every surface that refuses the rotation.
+EXTERNAL_KEYS_NOT_ROTATABLE = (
+    "The signing keys come from jwt.external_keys: to change them, point it at a new "
+    "key pair and reload (a key replaced at the same paths is read at the next start)"
+)
+
+
 class ExternalKeysNotRotatable(ValueError):
     """Rotation was requested for operator-provided signing keys (#358)."""
 
@@ -256,7 +263,9 @@ class CryptoService:
             logger.warning(f"Failed to load previous keys: {e}")
         # The retention applies as soon as the service is built, not only at
         # the next rotation (#358): keys.json lists the newest first. Only the
-        # served list is trimmed; rotate_keys removes the files.
+        # served list is trimmed: the public-key files of keys dropped here
+        # stay on disk, unserved, and the next rotation rewrites keys.json
+        # with the retained set.
         del self.previous_keys[self.max_previous_keys:]
 
     def _save_keys_metadata(self) -> None:
@@ -477,11 +486,7 @@ class CryptoService:
                 keys, which only the operator replaces.
         """
         if self.uses_external_keys:
-            raise ExternalKeysNotRotatable(
-                "The signing keys come from jwt.external_keys: to change them, point it "
-                "at a new key pair and reload (a key replaced at the same paths is read "
-                "at the next start)"
-            )
+            raise ExternalKeysNotRotatable(EXTERNAL_KEYS_NOT_ROTATABLE)
         old_kid = self.kid
 
         # Move current active key to previous (only public key)

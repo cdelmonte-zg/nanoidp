@@ -10,6 +10,7 @@ from flask.typing import ResponseReturnValue
 from ..config import ConfigurationRejected, get_config
 from ..hooks import HookError
 from ..services import (
+    EXTERNAL_KEYS_NOT_ROTATABLE,
     ExternalKeysNotRotatable,
     get_audit_log,
     get_crypto_service,
@@ -272,9 +273,10 @@ def rotate_keys() -> ResponseReturnValue:
 
     try:
         result = crypto.rotate_keys()
-    except ExternalKeysNotRotatable as exc:
-        # Operator-provided keys (#358): nothing was rotated.
-        return jsonify({"success": False, "error": str(exc)}), 409
+    except ExternalKeysNotRotatable:
+        # Operator-provided keys (#358): nothing was rotated. The fixed
+        # message, not the exception's text.
+        return jsonify({"success": False, "error": EXTERNAL_KEYS_NOT_ROTATABLE}), 409
 
     # Log to audit
     audit = get_audit_log()

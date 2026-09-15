@@ -428,9 +428,11 @@ jwt:
 ```
 
 The value applies whenever the signing service is built, at startup and on a
-reload that changes it: the JWKS serves at most that many previous keys,
-newest first. The files of keys beyond the limit are deleted at the next
-rotation; until then, raising the value again serves them again.
+reload that changes it: lowering it trims the JWKS immediately, keeping the
+newest previous keys. Public-key files that are no longer retained may remain
+in `keys_dir/previous/`; they are not served. The next rotation rewrites
+`keys.json` with the retained set (until then, raising the value again serves
+the dropped keys again).
 
 ---
 
