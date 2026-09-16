@@ -7,10 +7,11 @@ import logging
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from ..config import ConfigurationRejected, OAuthClient, Settings, User, get_config
+from ..config import ConfigurationRejected, OAuthClient, User, get_config
 from ..config_documents import document_defaults
 from ..config_writer import compare_and_replace
 from ..hooks import HookError
+from ..models import validate_login_mode, validate_saml_c14n_algorithm
 from ..serialization import (
     OWNED_SETTINGS,
     client_id_matches,
@@ -403,6 +404,8 @@ class YamlWriter:
         Blank clears entity_id/sso_url: absent = derived from the effective
         issuer (#181), the same "present-but-blank = clear" contract as #131.
         """
+        if c14n_algorithm:
+            validate_saml_c14n_algorithm(c14n_algorithm)
         return self._apply_provided_settings(
             "saml",
             {
@@ -475,7 +478,7 @@ class YamlWriter:
         than rejected when ``login.mode`` isn't what it needs.
         """
         if mode:
-            Settings.validate_login_mode(mode)
+            validate_login_mode(mode)
         login_mode_default, auto_login_default, two_step_default, totp_default = (
             _login_settings_defaults()
         )
@@ -537,7 +540,9 @@ class YamlWriter:
         see ``update_login_settings`` above.
         """
         if login_mode:
-            Settings.validate_login_mode(login_mode)
+            validate_login_mode(login_mode)
+        if saml_fields.get("c14n_algorithm"):
+            validate_saml_c14n_algorithm(saml_fields["c14n_algorithm"])
         login_mode_default, auto_login_default, two_step_default, totp_default = (
             _login_settings_defaults()
         )

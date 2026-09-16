@@ -8,7 +8,7 @@ the YAML shape coercers used when loading them. Persistence lives in
 which re-exports everything here for compatibility.
 """
 
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, Tuple, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
@@ -19,12 +19,33 @@ _SAML_ATTR_NAME_DEFAULTS = {
     "saml_groups_attr_name": "groups",
 }
 
+# The two closed sets, written once for both the domain model and the
+# configuration document that feeds it (#297).
+LoginMode = Literal["password", "persona"]
+SamlC14nAlgorithm = Literal["exc_c14n", "c14n", "c14n11"]
+SAML_C14N_DEFAULT: SamlC14nAlgorithm = "exc_c14n"
+
 
 def normalize_saml_attr_name(field_name: str, v: Any) -> str:
     """Missing or blank falls back to the default name; the export flags,
     not the name, decide whether the attribute is emitted."""
     name = (v or "").strip() if isinstance(v, (str, type(None))) else v
     return name or _SAML_ATTR_NAME_DEFAULTS[field_name]
+
+
+def normalize_saml_c14n_algorithm(v: Any) -> Any:
+    """Missing or blank keeps the default algorithm.
+
+    Same contract as the two attribute names above, and what lets the
+    closed set be introduced without breaking a configuration that loaded
+    before: ``config.py`` expands ``${VAR}`` before the document is
+    validated and an unset variable expands to "", so a
+    ``c14n_algorithm: ${SAML_C14N}`` that used to mean "the default" keeps
+    meaning it. A non-empty value is checked against the set.
+    """
+    if isinstance(v, str) and not v.strip():
+        return SAML_C14N_DEFAULT
+    return v
 
 
 def _coerce_client_str_list(raw: Any, client_id: str, field: str) -> List[str]:
@@ -458,8 +479,12 @@ class Settings(BaseModel):
         default="groups",
         description="SAML attribute name carrying the groups when saml_export_groups is on",
     )
-    saml_c14n_algorithm: str = Field(
-        default="exc_c14n",
+    # A closed set in the type, not only in a tool schema (#297): an unknown
+    # value used to reach routes/saml.py, which silently signed with
+    # Exclusive C14N, so a typo changed the algorithm without a word. Blank
+    # still means the default - see normalize_saml_c14n_algorithm.
+    saml_c14n_algorithm: SamlC14nAlgorithm = Field(
+        default=SAML_C14N_DEFAULT,
         description="XML canonicalization algorithm: 'exc_c14n' (Exclusive 1.0, default), 'c14n' (1.0), or 'c14n11' (1.1)"
     )
     saml_want_authn_requests_signed: bool = Field(
@@ -561,7 +586,7 @@ class Settings(BaseModel):
     verbose_logging: bool = Field(default=True, description="Include usernames/client_ids in logs (dev convenience)")
 
     # Login (persona mode, local dev convenience)
-    login_mode: str = Field(
+    login_mode: LoginMode = Field(
         default="password",
         description="Interactive login mode: 'password' (default) requires "
         "the configured password on /login, /authorize, /saml/sso and the "
@@ -648,6 +673,11 @@ class Settings(BaseModel):
     def _validate_saml_attr_name(cls, v: Any, info: ValidationInfo) -> str:
         return normalize_saml_attr_name(str(info.field_name), v)
 
+    @field_validator("saml_c14n_algorithm", mode="before")
+    @classmethod
+    def _normalize_saml_c14n_algorithm(cls, v: Any) -> Any:
+        return normalize_saml_c14n_algorithm(v)
+
     def resolve_saml_entity_id(self, issuer: str) -> str:
         """The entityID to advertise for ``issuer``: explicit value, else derived (#181)."""
         return self.saml_entity_id or f"{issuer.rstrip('/')}/saml"
@@ -662,15 +692,6 @@ class Settings(BaseModel):
         """Validate security profile."""
         if v not in SECURITY_PROFILES:
             raise ValueError(f"Security profile must be one of: {set(SECURITY_PROFILES)}")
-        return v
-
-    @field_validator("login_mode")
-    @classmethod
-    def validate_login_mode(cls, v: str) -> str:
-        """Validate login mode."""
-        valid_modes = {"password", "persona"}
-        if v not in valid_modes:
-            raise ValueError(f"Login mode must be one of: {valid_modes}")
         return v
 
     @field_validator("management_secret")
@@ -779,3 +800,36 @@ class Settings(BaseModel):
         if v.upper() not in valid_levels:
             raise ValueError(f"Log level must be one of: {valid_levels}")
         return v.upper()
+
+
+def login_modes() -> Tuple[str, ...]:
+    """The accepted ``login_mode`` values, read from the type itself so the
+    closed set is written once (#297)."""
+    return get_args(LoginMode)
+
+
+def validate_login_mode(value: str) -> str:
+    """Check a login mode for a caller that writes YAML without building a
+    Settings first (services.yaml_writer), so an invalid value never reaches
+    the file."""
+    if value not in login_modes():
+        raise ValueError(f"Login mode must be one of: {set(login_modes())}")
+    return value
+
+
+def saml_c14n_algorithms() -> Tuple[str, ...]:
+    """The accepted ``saml_c14n_algorithm`` values (see ``login_modes``)."""
+    return get_args(SamlC14nAlgorithm)
+
+
+def validate_saml_c14n_algorithm(value: str) -> str:
+    """Check a canonicalization algorithm for the same caller and the same
+    reason as ``validate_login_mode``, with one more consequence since #297
+    closed the set: the writer replaces settings.yaml before the load that
+    would reject the value, so an unchecked typo leaves behind a file the
+    next process cannot load at all."""
+    if value not in saml_c14n_algorithms():
+        raise ValueError(
+            f"SAML canonicalization algorithm must be one of: {set(saml_c14n_algorithms())}"
+        )
+    return value

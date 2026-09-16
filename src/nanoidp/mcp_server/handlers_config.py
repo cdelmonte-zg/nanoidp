@@ -125,10 +125,13 @@ def _tool_validate_config(arguments: dict[str, Any], config: ConfigManager) -> d
 def _tool_update_settings(arguments: dict[str, Any], config: ConfigManager) -> dict[str, Any]:
     settings = config.settings
 
-    # Settings (unlike OAuthClient) has no validate_assignment, but the
-    # tool's input_schema declares "enum": ["password", "persona"] for
-    # login_mode, so call_tool()'s jsonschema pass already rejects an
-    # invalid value before this handler ever runs.
+    # Settings (unlike OAuthClient) has no validate_assignment, so this
+    # setattr loop writes whatever reaches it and the tool's input_schema is
+    # the only check there is. Since #297 that schema carries each field's
+    # own shape, so call_tool()'s jsonschema pass rejects the value before
+    # this handler runs - not only the two enums it used to declare, which
+    # is how an out-of-range token_expiry_minutes used to be applied and
+    # reported as a success.
     updated = []
     for field in _UPDATE_SETTINGS_FIELDS:
         if field not in arguments:

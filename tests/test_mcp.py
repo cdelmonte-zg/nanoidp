@@ -154,6 +154,44 @@ default_user: admin
         assert config.settings.verbose_logging is False
 
 
+class TestUpdateSettingsIsOnlyGuardedByItsSchema:
+    """``_tool_update_settings`` writes with ``setattr`` and ``Settings`` has
+    no ``validate_assignment``, so the tool schema is the only check between
+    an argument and the running configuration (#297). Before the shapes came
+    from the fields, that check was two enums, and an out-of-range
+    ``token_expiry_minutes`` was applied and reported as a success.
+    """
+
+    def _config_dir(self, tmp_path):
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        (config_dir / "settings.yaml").write_text(
+            'oauth:\n  issuer: "http://localhost:8000"\n  token_expiry_minutes: 60\n'
+        )
+        (config_dir / "users.yaml").write_text('users:\n  admin:\n    password: "admin"\n')
+        return config_dir
+
+    @pytest.mark.parametrize("value", [0, 99999])
+    @pytest.mark.asyncio
+    async def test_an_expiry_outside_the_field_range_never_reaches_the_settings(
+        self, tmp_path, monkeypatch, mcp_call_tool, value
+    ):
+        import nanoidp.mcp_server as mcp
+        from nanoidp.config import ConfigManager
+
+        config = ConfigManager(str(self._config_dir(tmp_path)))
+        monkeypatch.setattr("nanoidp.config._config", config)
+        monkeypatch.setattr(mcp, "_readonly_mode", False)
+        monkeypatch.delenv("NANOIDP_MCP_ADMIN_SECRET", raising=False)
+
+        result = await mcp_call_tool("update_settings", {"token_expiry_minutes": value})
+
+        payload = json.loads(result.content[0].text)
+        assert payload["code"] == "MCP_INVALID_ARGUMENTS"
+        assert "token_expiry_minutes" in payload["error"]
+        assert config.settings.token_expiry_minutes == 60
+
+
 class TestMCPToolSchema:
     """Tests for MCP tool schema definitions."""
 
