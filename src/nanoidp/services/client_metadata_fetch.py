@@ -74,6 +74,20 @@ def _deadline_remaining(deadline: float) -> float:
     return remaining
 
 
+def tls_context() -> ssl.SSLContext:
+    """The TLS this module will speak, said rather than inherited.
+
+    ``create_default_context`` leaves the floor to whatever OpenSSL policy
+    the machine happens to carry: ``minimum_version`` comes back as
+    MINIMUM_SUPPORTED, which is usually TLS 1.2 on a current distribution
+    and is not a promise the code makes. For a connection to a host a
+    client chose, the floor belongs in the code.
+    """
+    context = ssl.create_default_context()
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    return context
+
+
 class _DeadlineSocket:
     """A socket whose read timeout is re-derived from one deadline.
 
@@ -144,7 +158,7 @@ class _PinnedConnection:
         try:
             raw.settimeout(_deadline_remaining(self.deadline))
             raw.connect((self.address, self.port))
-            context = ssl.create_default_context()
+            context = tls_context()
             # The certificate is checked against the name the client gave,
             # never against the address dialled: pinning the address must
             # not weaken what the name has to prove.

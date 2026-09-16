@@ -11,6 +11,7 @@ drive, because it is the seam an attacker would.
 """
 
 import socket
+import ssl
 import time
 from pathlib import Path
 
@@ -453,6 +454,16 @@ class TestTheLoopbackException:
 
 
 class TestTls:
+    def test_the_floor_is_tls_1_2_and_it_is_said_here(self):
+        """Not left to whatever policy the machine carries:
+        create_default_context leaves minimum_version at MINIMUM_SUPPORTED,
+        and this connects to a host a client chose."""
+        context = fetcher.tls_context()
+
+        assert context.minimum_version == ssl.TLSVersion.TLSv1_2
+        assert context.verify_mode == ssl.CERT_REQUIRED
+        assert context.check_hostname is True
+
     def test_an_untrusted_certificate_is_refused(self, origin, resolves_to_loopback, monkeypatch):
         monkeypatch.delenv("SSL_CERT_FILE", raising=False)
         client_id = _client_id(origin)
