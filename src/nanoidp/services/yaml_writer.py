@@ -7,7 +7,7 @@ import logging
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from ..config import OAuthClient, Settings, User, get_config
+from ..config import ConfigurationRejected, OAuthClient, Settings, User, get_config
 from ..config_documents import document_defaults
 from ..config_writer import compare_and_replace
 from ..hooks import HookError
@@ -108,6 +108,17 @@ def _login_settings_defaults() -> tuple[str, bool, bool, bool]:
     )
 
 
+class PostWriteError(RuntimeError):
+    """Something failed AFTER the file was replaced, and it is not one of the
+    two conditions callers already classify (a strict on_config_saved hook,
+    HookError; a configuration the reload refuses, ConfigurationRejected).
+
+    The distinction matters to a caller that must know whether its entry
+    reached the file: everything raised before the replace means it did not
+    (#192 promotion).
+    """
+
+
 class EntryAlreadyExists(ValueError):
     """``is_new`` was set and the file already has an entry with that name.
     Raised before anything is written."""
@@ -162,16 +173,27 @@ class YamlWriter:
         after the first would always look conflicted.
         """
         new_revision = compare_and_replace(file_path, expected_revision, mutate)
-        kind = "users" if file_path.name == "users.yaml" else "settings"
-        config = get_config()
-        hook_error: Optional[HookError] = None
+        # Past this line the file IS written: every remaining failure that
+        # callers do not already classify is wrapped, so none of them can be
+        # read as "nothing was written" (#192 review).
         try:
-            config.notify_saved(file_path, kind)
-        except HookError as exc:
-            hook_error = exc
-        config.reload_local()
-        if hook_error is not None:
-            raise hook_error
+            kind = "users" if file_path.name == "users.yaml" else "settings"
+            config = get_config()
+            hook_error: Optional[HookError] = None
+            try:
+                config.notify_saved(file_path, kind)
+            except HookError as exc:
+                hook_error = exc
+            config.reload_local()
+            if hook_error is not None:
+                raise hook_error
+        except (HookError, ConfigurationRejected):
+            raise
+        except Exception as exc:
+            raise PostWriteError(
+                f"{file_path} was written, but the state after the write could not be "
+                f"completed: {type(exc).__name__}: {exc}"
+            ) from exc
         return new_revision
 
     def _load_settings_yaml(self) -> Dict[str, Any]:

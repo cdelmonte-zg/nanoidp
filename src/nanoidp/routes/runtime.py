@@ -30,6 +30,7 @@ from ..services.identities import (
     identities_for,
 )
 from ..services.runtime_identities import RuntimeObjectExists
+from ..services.yaml_writer import PostWriteError
 from ._audit import audit_event
 from ._auth import management_secret_required_for_api
 from ._identity_views import client_summary, user_summary
@@ -212,6 +213,16 @@ def _promote(
         )
     except LockUnavailableError:
         return _error(503, f"{file_name} is locked by another write; try again", "lock_unavailable")
+    except PostWriteError as exc:
+        # Written, but the state after the write did not complete; the object
+        # stays marked until a reload succeeds (#192).
+        current_app.logger.error("Promotion of runtime %s %r: %s", kind, name, exc)
+        return _error(
+            500,
+            f"{name!r} was written to {file_name}, but the configuration could not be "
+            f"reloaded; a successful reload completes the promotion",
+            "reload_failed",
+        )
     except (ConfigurationRejected, HookError) as exc:
         # The entry is in the file; the configuration around it did not load.
         # The runtime object stays until a reload succeeds, which retires it

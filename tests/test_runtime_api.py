@@ -486,6 +486,36 @@ class TestPromotionAcrossFailuresAndConcurrency:
         assert len(_events("runtime_identity_removed_on_reload")) == 1
         assert get_identities().resolve_user("ci-alice").user.password == "declared-by-ui"
 
+    def test_an_unexpected_failure_after_the_write_keeps_the_promotion(self, idp, monkeypatch):
+        """The file is replaced before the notify/reload steps: a failure
+        there must not be reported as "nothing was written", or the mark
+        would be dropped and the entry become a plain collision later."""
+        client, config_dir = idp
+        _create_both(client)
+        manager = get_config()
+        real_reload_local = manager.reload_local
+        failed = []
+
+        def reload_local_once_broken():
+            if not failed:
+                failed.append(True)
+                raise RuntimeError("something unexpected after the write")
+            return real_reload_local()
+
+        monkeypatch.setattr(manager, "reload_local", reload_local_once_broken)
+        response = client.post("/api/runtime/users/ci-alice/promote")
+        monkeypatch.setattr(manager, "reload_local", real_reload_local)
+
+        assert failed
+        assert response.status_code == 500 and response.get_json()["kind"] == "reload_failed"
+        assert "ci-alice" in yaml.safe_load((config_dir / "users.yaml").read_text())["users"]
+        assert client.delete("/api/runtime/users/ci-alice").status_code == 409  # still marked
+
+        assert client.post("/api/config/reload").status_code == 200
+        assert client.get("/api/runtime/users/ci-alice").status_code == 404
+        assert len(_events("runtime_identity_promoted")) == 1
+        assert _events("runtime_identity_removed_on_reload") == []
+
     def test_a_malformed_file_on_disk_is_a_json_write_failure(self, idp):
         client, config_dir = idp
         _create_both(client)

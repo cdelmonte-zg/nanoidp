@@ -19,8 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   configuration declares answers `409`; a reload that declares a runtime
   object's name removes it with a warning and an audit event; a promotion
   records exactly one `runtime_identity_promoted` event, holds reloads off
-  while it runs, and a promotion whose reload failed resolves on the next
-  successful load (promoted, or abandoned with a warning). Runtime objects
+  while it runs, and a promotion whose entry reached the file but whose
+  reload failed resolves on the next successful load (promoted, or abandoned
+  with a warning). Runtime objects
   survive reloads, not restarts. `GET /api/users`, `GET /api/users/{username}`,
   the token endpoint, the persona picker and the web UI's users and clients
   pages now show the effective identities, runtime ones marked with their

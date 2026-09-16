@@ -34,7 +34,7 @@ from ..config import ConfigManager, ConfigurationRejected, OAuthClient, Settings
 from ..hooks import HookError
 from .audit import get_audit_log
 from .runtime_identities import MemoryRuntimeIdentityStore, get_runtime_identity_store
-from .yaml_writer import EntryAlreadyExists, get_yaml_writer
+from .yaml_writer import EntryAlreadyExists, PostWriteError, get_yaml_writer
 
 logger = logging.getLogger(__name__)
 
@@ -265,8 +265,10 @@ class IdentityResolver:
            with no collision warning.
         4. A strict on_config_saved hook failing after the write and the
            reload does not undo the promotion (PromotionOutcome.mirror_error).
-           A reload that fails (the configuration is rejected, or a strict
-           plugin does not load) leaves the object marked as written; the
+           A failure after the file was replaced (the configuration is
+           rejected, a strict plugin does not load, or anything else the
+           writer reports as a PostWriteError) leaves the object marked as
+           written; the
            next successful load retires it as promoted, or, if the entry is
            no longer declared by then, abandons the promotion with a warning.
         """
@@ -293,7 +295,8 @@ class IdentityResolver:
                     return PromotionOutcome(mirror_error=exc.message)
                 _mark_written(key)  # the reload after the write failed
                 raise
-            except ConfigurationRejected:
+            except (ConfigurationRejected, PostWriteError):
+                # The entry reached the file; only what follows it failed.
                 _mark_written(key)
                 raise
             except EntryAlreadyExists as exc:

@@ -100,10 +100,11 @@ warning. The declared entry is then the only copy.
 - While a promotion runs, deleting or promoting the same object answers `409`.
 - A strict `on_config_saved` hook that fails after the write does not undo it:
   the response carries `mirror_hook_error`, and the object is declared.
-- If the file is written but the configuration then fails to reload (another
-  file broken meanwhile, a strict plugin that does not load), the response is
-  `500` (`reload_failed`) and the runtime object stays, marked, until a reload
-  succeeds. That reload retires it as promoted, or, if the entry is no longer
+- If the file is written but what follows the write fails (the configuration
+  is rejected, a strict plugin does not load, anything unexpected), the
+  response is `500` (`reload_failed`) and the runtime object stays, marked,
+  until a reload succeeds. A failure after the entry reached the file is never
+  reported as a failure to write it. That reload retires it as promoted, or, if the entry is no longer
   in the file by then, abandons the promotion with a warning and leaves the
   runtime object as it was.
 - If the file cannot be written at all (it is malformed on disk, an I/O
