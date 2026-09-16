@@ -109,6 +109,21 @@ on for one run, wins over the file, and is never written back:
 nanoidp --strict-config          # unknown key -> refuse to start
 ```
 
+The same validation runs the other way round as well: before any surface
+that writes configuration replaces a file, the document it composed is
+parsed exactly as a load would parse it, and a document the models refuse
+is refused instead of written. So the settings form, `/api/runtime`
+promotion, the MCP `save_config` tool and `nanoidp init` cannot leave behind
+a `settings.yaml` the next process would fail to start from. What you get is
+an error naming the file and the key, with the file unchanged. The check
+expands `${VAR}` into a copy, the way a load does, so what is written keeps
+its placeholders and what is checked is what the next load will read.
+
+It is a check of the document, not of the running server: whether the
+configuration can be parsed into settings and users, not whether every
+service could be built from it. A configuration that parses but whose
+signing keys cannot be used is still refused at load, where it belongs.
+
 To check a directory without starting anything:
 
 ```bash

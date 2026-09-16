@@ -22,6 +22,7 @@ from .config_documents import (
     document_defaults,
     load_settings_document,
     load_users_document,
+    reject_unloadable,
 )
 from .config_writer import compare_and_replace, compare_and_replace_many, revision_of_bytes
 from .hooks import SOURCE_SETTINGS, HookError, HookRegistry, bootstrap_registry
@@ -605,7 +606,11 @@ class ConfigManager:
                         doc, self.persistable_settings(), defaults=document_defaults()
                     ),
                 ),
-            ]
+            ],
+            # Both documents are checked together, before either is
+            # written (#366): a save that would leave a file the next
+            # process cannot load is refused with nothing on disk.
+            validate=reject_unloadable,
         )
 
         hook_error: Optional[HookError] = None
@@ -651,6 +656,7 @@ class ConfigManager:
             users_file,
             expected_revision,
             lambda doc: apply_users_document(doc, self.users, self.default_user),
+            validate=reject_unloadable,
         )
         self.notify_saved(users_file, "users")
 
@@ -670,6 +676,10 @@ class ConfigManager:
             lambda doc: apply_settings_document(
                 doc, self.persistable_settings(), defaults=document_defaults()
             ),
+            # The same refusal save() gets (#366): one class, one contract,
+            # rather than a second way in that still writes what will not
+            # load back.
+            validate=reject_unloadable,
         )
         self.notify_saved(settings_file, "settings")
 

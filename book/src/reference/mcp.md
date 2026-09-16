@@ -113,6 +113,14 @@ whose revision no longer matches the file is refused with
 `reload_config`, reapply the change on the fresh state, and save again
 with the revisions from its response.
 
+A save is refused the same way, with `{"success": false, "kind":
+"unloadable"}` and nothing written, when the configuration this server
+holds would not load back. `update_settings` writes onto a model that does
+not validate on assignment, so a value no tool schema can describe reaches
+it: `issuer` is checked by a rule rather than by a bound on the field, and
+`update_settings(issuer="not-a-url")` succeeds where `save_config` then
+refuses. The message names the key.
+
 `save_config` always writes both files, so there are exactly two modes.
 Omitting both revisions keeps the save unconditional (last write wins),
 same as before. Supplying either revision makes the whole save

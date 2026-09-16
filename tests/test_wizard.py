@@ -164,41 +164,78 @@ class TestPromptHelpers:
 
 class TestValidateAndWrite:
     """#282: the wizard used to write raw f-strings with open() - no
-    validation, no atomicity. _validate_and_write validates through the
-    document models BEFORE anything touches disk and then writes through
-    the shared temp-then-replace primitive."""
+    validation, no atomicity. _validate_and_write validates BEFORE anything
+    touches disk and then writes through the shared temp-then-replace
+    primitive.
+
+    Since #366 it validates the way a load does, through
+    ``reject_unloadable``, rather than through the document model alone: the
+    document model accepts values the domain model refuses, which is how the
+    wizard used to finish by writing a directory that would not load. The
+    refusal is a DocumentRejected, the same one every other writer raises.
+    """
 
     def test_valid_settings_template_lands_and_loads(self, tmp_path):
         from nanoidp.wizard import _validate_and_write
 
         text = 'config_version: 1\noauth:\n  issuer: "http://localhost:1234"\n'
         target = tmp_path / "settings.yaml"
-        _validate_and_write(str(target), text, kind="settings")
+        _validate_and_write([(str(target), text)])
         # Byte-exact: no re-serialization of the template.
         assert target.read_text() == text
 
     def test_invalid_template_raises_and_writes_nothing(self, tmp_path):
-        import pydantic
         import pytest as _pytest
 
+        from nanoidp.config_documents import DocumentRejected
         from nanoidp.wizard import _validate_and_write
 
         target = tmp_path / "settings.yaml"
-        with _pytest.raises(pydantic.ValidationError):
-            _validate_and_write(
-                str(target), "config_version: 1\noauth: not-a-mapping\n", kind="settings"
-            )
+        with _pytest.raises(DocumentRejected):
+            _validate_and_write([(str(target), "config_version: 1\noauth: not-a-mapping\n")])
         assert not target.exists()
 
     def test_invalid_users_template_raises(self, tmp_path):
-        import pydantic
         import pytest as _pytest
 
+        from nanoidp.config_documents import DocumentRejected
         from nanoidp.wizard import _validate_and_write
 
         target = tmp_path / "users.yaml"
-        with _pytest.raises(pydantic.ValidationError):
+        with _pytest.raises(DocumentRejected):
+            _validate_and_write([(str(target), "config_version: 1\nusers: not-a-mapping\n")])
+        assert not target.exists()
+
+    def test_a_value_only_the_domain_model_refuses_is_caught(self, tmp_path):
+        """The gap #366 closed: a document-legal string that is not a URL."""
+        import pytest as _pytest
+
+        from nanoidp.config_documents import DocumentRejected
+        from nanoidp.wizard import _validate_and_write
+
+        target = tmp_path / "settings.yaml"
+        with _pytest.raises(DocumentRejected):
             _validate_and_write(
-                str(target), "config_version: 1\nusers: not-a-mapping\n", kind="users"
+                [(str(target), 'config_version: 1\noauth:\n  issuer: "localhost:1234"\n')]
             )
         assert not target.exists()
+
+    def test_nothing_is_written_when_the_second_file_is_refused(self, tmp_path):
+        """Both files are checked before either is written, so a bad answer
+        leaves no half-configured directory."""
+        import pytest as _pytest
+
+        from nanoidp.config_documents import DocumentRejected
+        from nanoidp.wizard import _validate_and_write
+
+        users = tmp_path / "users.yaml"
+        settings = tmp_path / "settings.yaml"
+        with _pytest.raises(DocumentRejected):
+            _validate_and_write(
+                [
+                    (str(users), 'config_version: 1\nusers:\n  admin:\n    password: "x"\n'),
+                    (str(settings), "config_version: 1\noauth: not-a-mapping\n"),
+                ]
+            )
+        assert not users.exists()
+        assert not settings.exists()

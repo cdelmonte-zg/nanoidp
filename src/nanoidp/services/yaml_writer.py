@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from ..config import ConfigurationRejected, OAuthClient, User, get_config
-from ..config_documents import document_defaults
+from ..config_documents import document_defaults, reject_unloadable
 from ..config_writer import compare_and_replace
 from ..hooks import HookError
 from ..models import validate_login_mode, validate_saml_c14n_algorithm
@@ -173,7 +173,9 @@ class YamlWriter:
         stale one the page was rendered with - otherwise every write
         after the first would always look conflicted.
         """
-        new_revision = compare_and_replace(file_path, expected_revision, mutate)
+        new_revision = compare_and_replace(
+            file_path, expected_revision, mutate, validate=reject_unloadable
+        )
         # Past this line the file IS written: every remaining failure that
         # callers do not already classify is wrapped, so none of them can be
         # read as "nothing was written" (#192 review).

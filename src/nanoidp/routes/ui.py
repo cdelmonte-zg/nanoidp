@@ -26,6 +26,7 @@ from flask.typing import ResponseReturnValue
 
 from ..branding import effective_logos_dir
 from ..config import OAuthClient, User, get_config
+from ..config_documents import DocumentRejected
 from ..config_writer import ConflictError, current_revision
 from ..hooks import HookError
 from ..services import (
@@ -880,6 +881,11 @@ def settings() -> ResponseReturnValue:
 
     except ConflictError as e:
         flash(_conflict_message(e), "error")
+        return redirect(url_for("ui.settings"))
+    except DocumentRejected as e:
+        # Refused before the file was touched (#366), so the page can say
+        # what is wrong with the value rather than that the save failed.
+        flash(f"Settings not saved: {e.message}", "error")
         return redirect(url_for("ui.settings"))
     except HookError as e:
         # The local write and the reload already happened (#185): the form's

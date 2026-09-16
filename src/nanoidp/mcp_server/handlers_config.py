@@ -8,6 +8,7 @@ normalizer table contract (tests/test_settings_plumbing_parity.py).
 from typing import Any
 
 from ..config import ConfigManager, ConfigurationRejected, ReloadAfterSaveError
+from ..config_documents import DocumentRejected
 from ..config_validation import validate_config_result
 from ..config_writer import ConflictError, LockUnavailableError
 from ..hooks import HookError
@@ -209,6 +210,13 @@ def _tool_save_config(arguments: dict[str, Any], config: ConfigManager) -> dict[
             "users_revision": config.users_revision,
             "settings_revision": config.settings_revision,
         }
+    except DocumentRejected as exc:
+        # Nothing was written - the configuration this runtime holds would
+        # not load back (#366). update_settings writes onto a model without
+        # validate_assignment, so a value no tool schema can refuse gets
+        # this far; it is refused here rather than persisted and discovered
+        # by the next process.
+        return {"success": False, "error": exc.message, "kind": "unloadable"}
     except ConflictError as exc:
         # Nothing was written - a supplied expected_*_revision was stale.
         return {"success": False, "error": exc.message, "kind": exc.kind}
