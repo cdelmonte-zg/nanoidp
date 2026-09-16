@@ -17,7 +17,7 @@
 | `POST /device_authorization` | Device Authorization (RFC 8628; alias: `/device/code`) |
 | `GET/POST /device` | Device verification page |
 
-The two discovery paths return the same bytes: nanoidp is one server with
+The two discovery paths return the same document: nanoidp is one server with
 one set of endpoints, and a client that speaks only OAuth looks under the
 RFC 8414 name. Both derive the issuer the same way, so `issuer_from_request`
 applies to both. The metadata is served at the root form of the name only,

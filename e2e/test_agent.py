@@ -311,7 +311,7 @@ class NanoIDPTestAgent:
         A client that speaks OAuth and not OIDC looks here first. The two
         names are one handler, so what this checks on a running server is
         that the second rule is actually registered and answers the same
-        bytes, not that two documents were kept in step.
+        document, not that two documents were kept in step.
         """
         try:
             oauth = self.session.get(
