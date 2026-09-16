@@ -35,6 +35,7 @@ from ..services import (
     get_crypto_service,
     get_token_service,
     get_yaml_writer,
+    identities_for,
 )
 from ._audit import audit_event
 from ._auth import (
@@ -82,10 +83,14 @@ def index() -> ResponseReturnValue:
     """Dashboard home page."""
     config = get_config()
     audit = get_audit_log()
+    users = identities_for(config).list_users()
+    runtime_users = sum(1 for entry in users if entry.origin == "runtime")
 
     return render_template(
         "index.html",
-        users_count=len(config.users),
+        users_count=len(users),
+        runtime_users_count=runtime_users,
+        declared_users_count=len(users) - runtime_users,
         saml_entity_id=effective_saml_entity_id(config.settings),
         stats=audit.get_stats(),
         settings=config.settings,
@@ -121,7 +126,7 @@ def login() -> ResponseReturnValue:
         response = render_template(
             "login.html",
             error=error,
-            users=config.persona_picker_entries(),
+            users=identities_for(config).persona_picker_entries(),
             persona_mode=persona_mode,
             two_step_login=two_step_login,
             login_username=login_username,
@@ -267,11 +272,12 @@ def management_unlock() -> ResponseReturnValue:
 
 @ui_bp.route("/users")
 def users() -> ResponseReturnValue:
-    """Users management page."""
+    """Users management page: declared users, and runtime ones (#192) shown
+    read-only, since their lifecycle is /api/runtime's."""
     config = get_config()
     return render_template(
         "users.html",
-        users=config.users,
+        users=identities_for(config).list_users(),
         current_user=session.get("user"),
     )
 
@@ -473,11 +479,12 @@ def user_delete(username: str) -> ResponseReturnValue:
 
 @ui_bp.route("/clients")
 def clients() -> ResponseReturnValue:
-    """OAuth clients management page."""
+    """OAuth clients management page: declared clients, and runtime ones
+    (#192) shown read-only, since their lifecycle is /api/runtime's."""
     config = get_config()
     return render_template(
         "clients.html",
-        clients=config.settings.clients,
+        clients=identities_for(config).list_clients(),
         current_user=session.get("user"),
         revision=current_revision(get_yaml_writer().settings_file),
     )

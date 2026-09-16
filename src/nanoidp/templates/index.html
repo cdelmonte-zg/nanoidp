@@ -25,6 +25,9 @@
                     <div>
                         <h6 class="text-muted mb-2">Total Users</h6>
                         <div class="stat-value">{{ users_count }}</div>
+                        {% if runtime_users_count %}
+                        <small class="text-muted">{{ declared_users_count }} declared, {{ runtime_users_count }} runtime</small>
+                        {% endif %}
                     </div>
                     <div class="text-primary opacity-50">
                         <i class="bi bi-people" style="font-size: 2.5rem;"></i>

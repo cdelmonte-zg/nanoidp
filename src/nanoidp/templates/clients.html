@@ -23,9 +23,15 @@
                     </tr>
                 </thead>
                 <tbody>
-                    {% for client in clients %}
+                    {% for entry in clients %}
+                    {% set client = entry.client %}
                     <tr>
-                        <td><code>{{ client.client_id }}</code></td>
+                        <td>
+                            <code>{{ client.client_id }}</code>
+                            {% if entry.origin == 'runtime' %}
+                            <span class="badge bg-warning text-dark ms-2" title="Created through /api/runtime; not in settings.yaml">runtime</span>
+                            {% endif %}
+                        </td>
                         <td>{{ client.description or '-' }}</td>
                         <td>
                             {% if client.is_public %}
@@ -37,6 +43,9 @@
                             {% endif %}
                         </td>
                         <td>
+                            {% if entry.origin == 'runtime' %}
+                            <span class="text-muted small">managed through /api/runtime</span>
+                            {% else %}
                             <div class="btn-group btn-group-sm">
                                 <a href="{{ url_for('ui.client_edit', client_id=client.client_id) }}" class="btn btn-outline-primary">
                                     <i class="bi bi-pencil"></i>
@@ -56,6 +65,7 @@
                                     </button>
                                 </form>
                             </div>
+                            {% endif %}
                         </td>
                     </tr>
                     {% else %}

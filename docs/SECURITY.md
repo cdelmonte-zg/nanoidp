@@ -14,7 +14,7 @@ By design, NanoIDP prioritizes developer convenience over security hardening. It
 
 NanoIDP binds to `127.0.0.1` (loopback only) by default, so out of the box it is reachable only from the local machine.
 
-This matters because the management API (`/api/*`) is **unauthenticated by design** (see [MCP Server Security](#mcp-server-security) for the equivalent concern on the MCP side). Those endpoints can mint a validly signed access token for any user, including `admin`, rotate the signing keys, and clear the audit log. Loopback binding keeps that surface off the network. If you need it reachable by more than one host, also consider [`management_secret`](#management-secret), which requires a shared secret for these mutating calls specifically (reads stay open either way).
+This matters because the management API (`/api/*`) is **unauthenticated by design** (see [MCP Server Security](#mcp-server-security) for the equivalent concern on the MCP side). Those endpoints can mint a validly signed access token for any user, including `admin`, rotate the signing keys, clear the audit log, and create runtime users and clients that authenticate on every protocol surface (`/api/runtime`, see [Disposable test identities](https://cdelmonte-zg.github.io/nanoidp/guides/runtime-identities.html)). Loopback binding keeps that surface off the network. If you need it reachable by more than one host, also consider [`management_secret`](#management-secret), which requires a shared secret for these mutating calls specifically (reads stay open either way).
 
 ### Exposing on a network
 

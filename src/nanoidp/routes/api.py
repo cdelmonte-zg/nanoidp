@@ -15,8 +15,10 @@ from ..services import (
     get_audit_log,
     get_crypto_service,
     get_token_service,
+    identities_for,
 )
 from ._auth import management_secret_required_for_api
+from ._identity_views import user_summary
 from ._issuer import effective_issuer, effective_saml_entity_id, effective_saml_sso_url
 
 logger = logging.getLogger(__name__)
@@ -33,37 +35,28 @@ def health() -> ResponseReturnValue:
 
 @api_bp.route("/users")
 def list_users() -> ResponseReturnValue:
-    """List all configured users (without passwords)."""
-    config = get_config()
-    users = []
-    for username, user in config.users.items():
-        users.append({
-            "username": username,
-            "description": user.description,
-            "email": user.email,
-            "identity_class": user.identity_class,
-            "roles": user.roles,
-            "groups": user.groups,
-            "tenant": user.tenant,
-            "has_acl": len(user.source_acl) > 0,
-            "has_entitlements": len(user.entitlements) > 0,
-        })
+    """List the effective users (without passwords): declared and runtime
+    (#192), each with its ``origin``."""
+    resolved = identities_for(get_config()).list_users()
+    users = [user_summary(entry.user, entry.origin) for entry in resolved]
     return jsonify({"users": users, "count": len(users)})
 
 
 @api_bp.route("/users/<username>")
 def get_user(username: str) -> ResponseReturnValue:
-    """Get details for a specific user."""
+    """Get details for an effective user, declared or runtime (#192)."""
     config = get_config()
-    user = config.get_user(username)
-    if not user:
+    resolved = identities_for(config).resolve_user(username)
+    if resolved is None:
         return jsonify({"error": "User not found"}), 404
+    user = resolved.user
 
     token_service = get_token_service()
     authorities = token_service.build_authorities(user)
 
     return jsonify({
         "username": user.username,
+        "origin": resolved.origin,
         "description": user.description,
         "email": user.email,
         "identity_class": user.identity_class,
@@ -79,9 +72,11 @@ def get_user(username: str) -> ResponseReturnValue:
 
 @api_bp.route("/users/<username>/token", methods=["POST"])
 def generate_token(username: str) -> ResponseReturnValue:
-    """Generate a token for a user (for testing)."""
+    """Generate a token for a user (for testing). The user and the optional
+    client resolve like any protocol lookup, runtime ones included (#192)."""
     config = get_config()
-    user = config.get_user(username)
+    identities = identities_for(config)
+    user = identities.get_user(username)
     if not user:
         return jsonify({"error": "User not found"}), 404
 
@@ -93,7 +88,7 @@ def generate_token(username: str) -> ResponseReturnValue:
     # issued follows from the binding inside create_token itself (#278):
     # bound token -> spendable refresh token, unbound -> none.
     client_id = body.get("client_id")
-    if client_id is not None and config.get_client(client_id) is None:
+    if client_id is not None and identities.get_client(client_id) is None:
         return jsonify({"error": f"Client '{client_id}' not found"}), 400
 
     token_service = get_token_service()

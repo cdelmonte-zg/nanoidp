@@ -14,7 +14,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 
 from . import __version__
 from .config import get_config, init_config
-from .routes import api_bp, oauth_bp, saml_bp, ui_bp
+from .routes import api_bp, oauth_bp, runtime_bp, saml_bp, ui_bp
 from .services import activate_crypto_service
 from .services.identities import reconcile_runtime_identities
 
@@ -142,6 +142,7 @@ def create_app(
     app.register_blueprint(saml_bp)
     app.register_blueprint(ui_bp)
     app.register_blueprint(api_bp)
+    app.register_blueprint(runtime_bp)
 
     # Actually APPLY the /token rate limit (#304). Until 3.0 the limiter
     # was created with default_limits=[] and no view ever decorated, so
@@ -242,7 +243,8 @@ def run_app(
             logging.getLogger(__name__).warning(
                 "Binding to %s exposes NanoIDP on all network interfaces. "
                 "management_secret is configured, so /api/* mutations "
-                "(minting admin tokens, rotating signing keys, etc.) require "
+                "(minting admin tokens, rotating signing keys, creating runtime "
+                "users and clients under /api/runtime, etc.) require "
                 "it - but reads and the UI dashboard remain open to any "
                 "reachable host. Use 127.0.0.1 unless you intend network "
                 "exposure (e.g. inside a container).",
@@ -252,7 +254,8 @@ def run_app(
             logging.getLogger(__name__).warning(
                 "Binding to %s exposes NanoIDP on all network interfaces. The "
                 "/api/* management endpoints are unauthenticated by design, so any "
-                "reachable host can mint admin tokens and rotate signing keys. Use "
+                "reachable host can mint admin tokens, rotate signing keys and "
+                "create runtime users and clients under /api/runtime. Use "
                 "127.0.0.1 unless you intend network exposure (e.g. inside a "
                 "container), or set management_secret to require a shared secret "
                 "for mutations.",

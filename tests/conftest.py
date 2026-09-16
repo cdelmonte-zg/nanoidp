@@ -14,6 +14,7 @@ import nanoidp.services.audit as audit_module
 import nanoidp.services.auth_code as auth_code_module
 import nanoidp.services.crypto as crypto_module
 import nanoidp.services.device_code as device_code_module
+import nanoidp.services.identities as identities_module
 import nanoidp.services.revocation as revocation_module
 import nanoidp.services.runtime_identities as runtime_identities_module
 import nanoidp.services.yaml_writer as yaml_writer_module
@@ -122,6 +123,7 @@ def _reset_process_singletons() -> None:
     device_code_module._device_code_store = None
     revocation_module._revocation_store = None
     runtime_identities_module._runtime_identity_store = None
+    identities_module._promoting.clear()
 
 
 @pytest.fixture

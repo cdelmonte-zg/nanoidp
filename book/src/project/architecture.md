@@ -74,7 +74,8 @@ single-purpose:
 | Module | What it is |
 |---|---|
 | `services/token.py` | JWT building: access tokens, ID Tokens, the `/token` response body |
-| `services/identities.py` | The effective identities: declared users and clients composed with runtime ones. Every login, grant and client check resolves users and clients here (`identities_for(config)`), with the rules in one place: declared first, no runtime object under a declared name, declared wins on reload. Management surfaces (UI forms, `/api/users`, MCP) still work on the declared configuration |
+| `services/identities.py` | The effective identities: declared users and clients composed with runtime ones. Every login, grant and client check resolves users and clients here (`identities_for(config)`), with the rules in one place: declared first, no runtime object under a declared name, declared wins on reload. The observation surfaces (`/api/users`, the persona picker, the UI lists) show declared and runtime objects with their origin; the edit forms and MCP work on the declared configuration. The lifecycle rules (promotion order, reconciliation with its audit) live here too |
+| `routes/runtime.py` | `/api/runtime`: create, read, delete, reset and promote runtime users and clients, mapped onto the resolver's rules; no update (the store is by value). Same management gate as `/api` |
 | `services/runtime_identities.py` | The runtime identity store: users and clients created while the IdP runs, in memory, two repositories behind one lock. Holds nothing else |
 | `services/auth_code.py` | Authorization-code store (PKCE data rides on the code) |
 | `services/device_code.py` | Device-flow code store |

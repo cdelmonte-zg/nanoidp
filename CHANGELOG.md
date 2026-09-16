@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Disposable runtime users and clients: `/api/runtime`** (#192). A CI job or
+  an integration test creates users and clients on a running IdP, uses them in
+  every protocol flow, and removes them without touching `users.yaml` or
+  `settings.yaml`: `POST /api/runtime/users` and `/api/runtime/clients` (the
+  body is a declared entry, validated by the same models), `GET` and `DELETE`
+  per object, `DELETE /api/runtime` for all of them (answers the counts), and
+  `POST .../promote` to write one into the declared file through the web UI's
+  writer and retire the runtime copy. There is no update. A name the
+  configuration declares answers `409`; a reload that declares a runtime
+  object's name removes it with a warning and an audit event; a promotion
+  records exactly one `runtime_identity_promoted` event, holds reloads off
+  while it runs, and a promotion whose entry reached the file but whose
+  reload failed resolves on the next successful load (promoted, or abandoned
+  with a warning). Runtime objects
+  survive reloads, not restarts. `GET /api/users`, `GET /api/users/{username}`,
+  the token endpoint, the persona picker and the web UI's users and clients
+  pages now show the effective identities, runtime ones marked with their
+  origin and read-only in the UI; the dashboard counts them separately;
+  `GET /api/config` and the MCP server stay on the declared configuration.
+  Writes follow the `management_secret` gate of `/api`. See the new guide,
+  "Disposable test identities".
+
 ### Fixed
 - **Tokens are signed with the key the JWKS serves after a reload changes
   `jwt.keys_dir`** (#230). The token service kept the signing key it was
