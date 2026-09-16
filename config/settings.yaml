@@ -60,6 +60,12 @@ oauth:
   # dynamic_registration:
   #   enabled: true
   #   max_clients: 100
+  # Client ID Metadata Documents (#196), off by default: a client whose id
+  # is an https URL publishes its own metadata there, and this server
+  # fetches it. Enabling it makes nanoidp request a URL a client chose;
+  # the fetch is not implemented yet.
+  # client_id_metadata_documents:
+  #   enabled: true
 saml:
   # entity_id / sso_url: absent = derived from the effective issuer as
   # <issuer>/saml and <issuer>/saml/sso (follows issuer_from_request); set

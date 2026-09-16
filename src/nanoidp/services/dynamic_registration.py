@@ -21,13 +21,13 @@ import secrets
 import threading
 import time
 from typing import Any, Dict, List, Optional, Sequence, Tuple
-from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field
 
 from ..config import OAuthClient
 from ..security import verify_secret
 from .identities import IdentityResolver
+from .redirect_uri import redirect_uri_rejection_reason
 from .runtime_identities import MemoryRuntimeRepository, get_runtime_identity_store
 
 logger = logging.getLogger(__name__)
@@ -252,14 +252,13 @@ def translate_registration_request(
             "invalid_redirect_uri", "at least one redirect_uri is required"
         )
     for uri in redirect_uris:
-        parsed = urlparse(uri)
-        if not parsed.scheme or not (parsed.netloc or parsed.path):
-            # A value /authorize could never match. Answering here says
-            # which half of the registration is wrong, instead of leaving
-            # the client to discover it as an opaque 400 later.
-            raise RegistrationRejected(
-                "invalid_redirect_uri", "redirect_uris must be absolute URIs"
-            )
+        # Through the gate /authorize applies, not a second reading of it
+        # (#196 review): services.redirect_uri exists to be the only home
+        # for this, and it knows what this had missed - RFC 6749 forbids a
+        # fragment, and RFC 8252 has a rule for private-use schemes.
+        rejection = redirect_uri_rejection_reason(uri)
+        if rejection is not None:
+            raise RegistrationRejected("invalid_redirect_uri", rejection)
 
     entry: Dict[str, Any] = {
         "client_id": "",  # the caller fills in the id the server picked

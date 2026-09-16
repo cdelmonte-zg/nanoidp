@@ -33,24 +33,30 @@ from typing import Any, Callable, Dict, List, Literal, Optional, Tuple
 from ..config import ConfigManager, ConfigurationRejected, OAuthClient, Settings, User, get_config
 from ..hooks import HookError
 from .audit import get_audit_log
+from .client_metadata import cached_client, looks_like_client_id_url
 from .runtime_identities import MemoryRuntimeIdentityStore, get_runtime_identity_store
 from .yaml_writer import EntryAlreadyExists, PostWriteError, get_yaml_writer
 
 logger = logging.getLogger(__name__)
 
-Origin = Literal["declared", "runtime"]
+# Where an identity came from. The two are not the same list: a client can
+# also come from a metadata document the client itself publishes (#196),
+# and there is no such thing for a user. One alias for both would make
+# ResolvedUser(origin="cimd") expressible, which is not a state.
+UserOrigin = Literal["declared", "runtime"]
+ClientOrigin = Literal["declared", "runtime", "cimd"]
 
 
 @dataclass(frozen=True)
 class ResolvedUser:
     user: User
-    origin: Origin
+    origin: UserOrigin
 
 
 @dataclass(frozen=True)
 class ResolvedClient:
     client: OAuthClient
-    origin: Origin
+    origin: ClientOrigin
 
 
 class DeclaredNameCollision(ValueError):
@@ -161,6 +167,18 @@ class IdentityResolver:
         snapshot can predate the reload that removed a runtime client, so
         when neither the snapshot nor the store has it, the current settings
         are consulted too.
+
+        Precedence is declared, then runtime, then a cached metadata
+        document (#196). A client an operator declared, or a test created,
+        wins over one that published its own metadata under the same name,
+        and is answered without the cache being consulted at all: an
+        ``https`` client_id does not by itself make a client a CIMD one, and
+        the draft contemplates pre-registered client identifier URLs.
+
+        **This method never fetches.** It reads a cache that something else
+        fills: nothing does yet, and when one does it will be ``/authorize``
+        and only ``/authorize``. Every other caller, ``/token`` included,
+        reads what is there or gets nothing.
         """
         runtime = self.store.clients.get(client_id)
         declared = _find_client(settings or self.config.settings, client_id)
@@ -168,7 +186,34 @@ class IdentityResolver:
             declared = _find_client(self.config.settings, client_id)
         if declared is not None:
             return ResolvedClient(declared, "declared")
-        return ResolvedClient(runtime, "runtime") if runtime is not None else None
+        if runtime is not None:
+            return ResolvedClient(runtime, "runtime")
+        return self._resolve_cimd(client_id, settings)
+
+    def _resolve_cimd(
+        self, client_id: str, settings: Optional[Settings]
+    ) -> Optional[ResolvedClient]:
+        """A client from a metadata document, if one is cached and the
+        feature is on.
+
+        Unlike a client registered through #190, which keeps working as an
+        ordinary client when dynamic registration is switched off, this one
+        stops resolving: it is a cached copy of a document belonging to
+        someone else, and the switch is what says whether such documents are
+        honoured at all.
+        """
+        # The switch is the server's, not the request's: read from the
+        # current settings even when the caller holds a snapshot, so
+        # turning the feature off takes effect at the same moment on every
+        # path. A snapshot exists to keep a token response consistent with
+        # the settings it was built from, which is about values, not about
+        # whether a capability is offered.
+        if not self.config.settings.client_id_metadata_documents_enabled:
+            return None
+        if not looks_like_client_id_url(client_id):
+            return None
+        cached = cached_client(client_id)
+        return ResolvedClient(cached, "cimd") if cached is not None else None
 
     def get_client(
         self, client_id: str, settings: Optional[Settings] = None
