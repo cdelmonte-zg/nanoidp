@@ -15,9 +15,10 @@ the draft MCP 2026-07-28 references.
 """
 
 import logging
+import threading
 import time
 from typing import Any, Dict, List, Optional
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 from pydantic import BaseModel
 
@@ -40,6 +41,22 @@ DEFAULT_LIFETIME_SECONDS = 3600
 MIN_LIFETIME_SECONDS = 60
 MAX_LIFETIME_SECONDS = 86400
 
+# How many documents this server will hold at once. The entries are filled
+# by an unauthenticated endpoint from client-chosen URLs, so a bound per
+# entry is not a bound: without this, distinct URLs pin memory for as long
+# as their lifetimes allow. At the cap the oldest fetch is evicted rather
+# than the newest refused, because this is a cache and a client that is
+# actually being used will simply be fetched again.
+MAX_CACHED_DOCUMENTS = 100
+
+# The cache is read and written by concurrent requests, and a write is
+# several visits to the repository (sweep, evict, replace). One at a time.
+cache_lock = threading.Lock()
+
+# The scheme, spelled once, so "is this worth fetching" and "is this a legal
+# identifier" cannot disagree about the same string.
+_SCHEME = "https://"
+
 
 class ClientIdUrlInvalid(ValueError):
     """The ``client_id`` is not a Client Identifier URL.
@@ -61,9 +78,6 @@ class CachedClient(BaseModel):
     client: OAuthClient
     fetched_at: float
     expires_at: float
-    # What the document said, for a read surface to show without keeping a
-    # second copy of the parsed client.
-    document_url: str = ""
 
     def is_fresh(self, now: Optional[float] = None) -> bool:
         return (now if now is not None else time.time()) < self.expires_at
@@ -76,7 +90,7 @@ def looks_like_client_id_url(client_id: str) -> bool:
     else is a name. Whether the candidate is a *valid* Client Identifier URL
     is ``reject_invalid_client_id_url``'s answer, which says why.
     """
-    return client_id.startswith("https://")
+    return client_id.startswith(_SCHEME)
 
 
 def reject_invalid_client_id_url(client_id: str) -> None:
@@ -86,6 +100,15 @@ def reject_invalid_client_id_url(client_id: str) -> None:
     specification never allowed and so each rule has somewhere to be tested
     without a socket.
     """
+    # urlsplit strips surrounding whitespace, drops embedded tab/CR/LF and
+    # lowercases the scheme, so validating what it returns would approve a
+    # string that is not the identifier. The identifier is what becomes the
+    # cache key, the fetch target, and the value the document must equal by
+    # simple string comparison, so it is checked as given.
+    if client_id != client_id.strip() or any(ch.isspace() for ch in client_id):
+        raise ClientIdUrlInvalid("a client identifier URL must contain no whitespace")
+    if not client_id.startswith(_SCHEME):
+        raise ClientIdUrlInvalid("a client identifier URL must use https")
     parts = urlsplit(client_id)
     if parts.scheme != "https":
         raise ClientIdUrlInvalid("a client identifier URL must use https")
@@ -97,14 +120,21 @@ def reject_invalid_client_id_url(client_id: str) -> None:
         raise ClientIdUrlInvalid("a client identifier URL must name a host")
     if not parts.path or parts.path == "/":
         raise ClientIdUrlInvalid("a client identifier URL must have a path")
-    if any(segment in (".", "..") for segment in parts.path.split("/")):
+    # Percent-decoded first: %2e is '.' (RFC 3986), and the rule exists so
+    # that nothing between here and the origin can normalise the request
+    # target into a different resource than the identifier names.
+    if any(unquote(segment) in (".", "..") for segment in parts.path.split("/")):
         raise ClientIdUrlInvalid(
             "a client identifier URL must have no '.' or '..' path segments"
         )
     if parts.query:
-        # SHOULD NOT in the draft. A test IdP is where a client should find
-        # out, so it is refused rather than quietly tolerated.
-        raise ClientIdUrlInvalid("a client identifier URL should carry no query")
+        # SHOULD NOT, not MUST NOT. A conforming client may still carry one
+        # (a multi-tenant host, say), and refusing would lock it out of this
+        # IdP entirely, so it is accepted and said out loud instead.
+        logger.warning(
+            "Client identifier URL carries a query, which the specification "
+            "discourages: %s", client_id
+        )
 
 
 def client_from_document(
@@ -139,6 +169,13 @@ def client_from_document(
         raise DocumentInvalid("the document must list at least one redirect_uri")
     if not all(isinstance(uri, str) and uri for uri in redirect_uris):
         raise DocumentInvalid("redirect_uris must be a list of strings")
+    for uri in redirect_uris:
+        # The same answer #190 gives a registration: a value /authorize
+        # could never match is named here, rather than found later as an
+        # opaque refusal.
+        parsed = urlsplit(uri)
+        if not parsed.scheme or not (parsed.netloc or parsed.path):
+            raise DocumentInvalid("redirect_uris must be absolute URIs")
 
     entry: Dict[str, Any] = {
         "client_id": client_id,
@@ -194,6 +231,35 @@ def cache() -> MemoryRuntimeRepository[CachedClient]:
     )
 
 
+def prune_expired() -> int:
+    """Drop every entry past its lifetime, and say how many.
+
+    A read only expires the entry it was asked for, so without this a URL
+    nobody asks for again is held until the process ends. Called on the way
+    into a write, which is the only moment anything grows.
+    """
+    now = time.time()
+    dropped = 0
+    for entry in cache().list():
+        if not entry.is_fresh(now) and cache().delete(entry.client_id):
+            dropped += 1
+    return dropped
+
+
+def _evict_oldest(room_for: int) -> int:
+    """Make room at the cap by dropping the least recently fetched."""
+    entries = sorted(cache().list(), key=lambda entry: entry.fetched_at)
+    dropped = 0
+    while len(entries) - dropped > MAX_CACHED_DOCUMENTS - room_for:
+        if cache().delete(entries[dropped].client_id):
+            logger.info(
+                "Dropped the oldest cached client metadata document to stay "
+                "within %d entries", MAX_CACHED_DOCUMENTS
+            )
+        dropped += 1
+    return dropped
+
+
 def remember(client_id: str, client: OAuthClient, lifetime: Optional[float]) -> CachedClient:
     """Cache a document that was fetched and accepted.
 
@@ -201,18 +267,29 @@ def remember(client_id: str, client: OAuthClient, lifetime: Optional[float]) -> 
     invalid document MUST NOT be, and there is deliberately no negative
     cache here: a bad answer must not be able to stick. Protecting the
     server from a client that keeps failing is rate limiting, elsewhere.
+
+    The identifier is checked here rather than trusted from the caller, so
+    the rules this module states are the rules the cache actually holds to:
+    nothing can be remembered under a URL the specification does not allow.
+
+    Sweep, evict and replace are one critical section. They are three visits
+    to the repository, and two requests for the same uncached URL would
+    otherwise both fetch and collide on the create.
     """
+    reject_invalid_client_id_url(client_id)
     now = time.time()
-    forget(client_id)
-    return cache().create(
-        CachedClient(
-            client_id=client_id,
-            client=client,
-            fetched_at=now,
-            expires_at=now + bounded_lifetime(lifetime),
-            document_url=client_id,
+    with cache_lock:
+        prune_expired()
+        forget(client_id)
+        _evict_oldest(room_for=1)
+        return cache().create(
+            CachedClient(
+                client_id=client_id,
+                client=client,
+                fetched_at=now,
+                expires_at=now + bounded_lifetime(lifetime),
+            )
         )
-    )
 
 
 def cached_client(client_id: str) -> Optional[OAuthClient]:
@@ -224,10 +301,15 @@ def cached_client(client_id: str) -> Optional[OAuthClient]:
     entry = cache().get(client_id)
     if entry is None:
         return None
-    if not entry.is_fresh():
-        cache().delete(client_id)
-        return None
-    return entry.client
+    if entry.is_fresh():
+        return entry.client
+    with cache_lock:
+        # Re-read under the lock: a concurrent remember may have replaced
+        # the expired entry with a fresh one between the check and here.
+        current = cache().get(client_id)
+        if current is not None and not current.is_fresh():
+            cache().delete(client_id)
+        return current.client if current is not None and current.is_fresh() else None
 
 
 def forget(client_id: str) -> bool:

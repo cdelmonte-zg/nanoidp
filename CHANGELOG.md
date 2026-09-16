@@ -21,6 +21,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   method and those are two of the three nanoidp supports.
   `oauth.client_id_metadata_documents.enabled` is off by default and set in
   the file only, like `dynamic_registration`.
+  Only successes are cached, at most 100 documents at a time with the
+  oldest fetch evicted at the cap and expired entries swept on every write:
+  the entries will come from client-chosen URLs on an unauthenticated
+  endpoint, so a lifetime per entry is not a bound. There is deliberately
+  no negative cache, which the draft forbids.
   **Nothing fetches yet**: the resolver reads the cache and never fills it,
   which is what keeps network I/O out of `/token` and the other fifteen
   places that resolve a client. The fetcher and the wiring to `/authorize`

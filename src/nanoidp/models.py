@@ -413,10 +413,12 @@ class Settings(BaseModel):
     client_id_metadata_documents_enabled: bool = Field(
         default=False,
         description="Accept a Client ID Metadata Document as a client source "
-        "(#196): an https client_id whose document /authorize fetches and "
-        "caches. Off by default, because it makes this server fetch a URL a "
-        "client chose. Cached clients live in process memory, are lost on "
-        "restart, and are never written to settings.yaml.",
+        "(#196): an https client_id whose metadata this server reads from a "
+        "document the client publishes. Off by default, because honouring "
+        "one means fetching a URL the client chose. Cached documents live "
+        "in process memory, are lost on restart, and are never written to "
+        "settings.yaml. The fetch itself is not implemented yet, so turning "
+        "this on has no effect on its own.",
     )
     dynamic_registration_enabled: bool = Field(
         default=False,

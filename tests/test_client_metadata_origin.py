@@ -22,6 +22,7 @@ from nanoidp.app import create_app
 from nanoidp.config import OAuthClient, get_config
 from nanoidp.services.client_metadata import (
     DEFAULT_LIFETIME_SECONDS,
+    MAX_CACHED_DOCUMENTS,
     MAX_LIFETIME_SECONDS,
     MIN_LIFETIME_SECONDS,
     CachedClient,
@@ -42,6 +43,20 @@ from nanoidp.services.identities import get_identities
 _REPO = Path(__file__).resolve().parent.parent
 URL = "https://client.example/metadata.json"
 REDIRECT = "http://localhost:3000/callback"
+
+
+def _expire(client_id):
+    """Put a cached entry's lifetime in the past, keeping everything else."""
+    entry = cache().get(client_id)
+    cache().delete(client_id)
+    cache().create(
+        CachedClient(
+            client_id=entry.client_id,
+            client=entry.client,
+            fetched_at=entry.fetched_at,
+            expires_at=time.time() - 1,
+        )
+    )
 
 
 def _document(**overrides):
@@ -86,7 +101,17 @@ class TestTheClientIdentifierUrl:
             ("https://client.example/", "path"),
             ("https://client.example/./m.json", "path segments"),
             ("https://client.example/a/../m.json", "path segments"),
-            ("https://client.example/m.json?x=1", "query"),
+            # %2e is '.' (RFC 3986), so the rule has to look past the
+            # encoding or nothing stops an intermediary normalising the
+            # request target into another resource.
+            ("https://client.example/a/%2e%2e/m.json", "path segments"),
+            ("https://client.example/.%2E/m.json", "path segments"),
+            # urlsplit strips these before parsing, so validating what it
+            # returns would approve a string that is not the identifier.
+            (" https://client.example/m.json", "whitespace"),
+            ("https://client.example/m.json\n", "whitespace"),
+            ("https://client.ex\tample/m.json", "whitespace"),
+            ("HTTPS://client.example/m.json", "https"),
         ],
     )
     def test_every_rule_has_its_own_refusal(self, client_id, reason):
@@ -95,6 +120,19 @@ class TestTheClientIdentifierUrl:
 
     def test_a_well_formed_url_passes(self):
         reject_invalid_client_id_url(URL)
+
+    def test_a_query_is_discouraged_rather_than_refused(self):
+        """SHOULD NOT, not MUST NOT: refusing would lock a conforming
+        client out of this IdP entirely."""
+        reject_invalid_client_id_url("https://client.example/m.json?tenant=a")
+
+    def test_the_two_gates_agree_about_the_same_string(self):
+        """One says whether a client_id is worth looking at, the other
+        whether it is legal. A string the second accepts and the first
+        rejects could never resolve, and would be a rule with no effect."""
+        for candidate in (URL, "https://client.example/a/b/m.json"):
+            assert looks_like_client_id_url(candidate)
+            reject_invalid_client_id_url(candidate)
 
 
 class TestTheDocument:
@@ -120,6 +158,12 @@ class TestTheDocument:
         this is the only method a CIMD client can have."""
         with pytest.raises(DocumentInvalid, match="authenticates with"):
             client_from_document(URL, _document(token_endpoint_auth_method=method), [])
+
+    def test_a_relative_redirect_uri_is_refused(self):
+        """The same answer #190 gives a registration: a value /authorize
+        could never match is named here rather than found later."""
+        with pytest.raises(DocumentInvalid, match="absolute"):
+            client_from_document(URL, _document(redirect_uris=["/cb"]), [])
 
     @pytest.mark.parametrize("value", [None, [], "not-a-list", [""], [1]])
     def test_redirect_uris_must_be_a_non_empty_list_of_strings(self, value):
@@ -175,22 +219,76 @@ class TestTheCache:
 
     def test_an_expired_entry_is_gone_and_dropped(self, app):
         with app.app_context():
-            client = client_from_document(URL, _document(), ["openid"])
-            remember(URL, client, None)
-            entry = cache().get(URL)
-            cache().delete(URL)
-            cache().create(
-                CachedClient(
-                    client_id=URL,
-                    client=entry.client,
-                    fetched_at=entry.fetched_at,
-                    expires_at=time.time() - 1,
-                    document_url=URL,
-                )
-            )
+            remember(URL, client_from_document(URL, _document(), ["openid"]), None)
+            _expire(URL)
 
             assert cached_client(URL) is None
             assert cache().get(URL) is None, "the expired entry was not dropped"
+
+    def test_expired_entries_nobody_asks_about_are_swept_on_a_write(self, app):
+        """A read expires only the entry it was asked for, so without a
+        sweep a URL nobody requests again is held until the process ends."""
+        with app.app_context():
+            for index in range(3):
+                url = f"https://client.example/{index}.json"
+                remember(url, client_from_document(url, _document(client_id=url), []), None)
+                _expire(url)
+
+            remember(URL, client_from_document(URL, _document(), []), None)
+
+            assert [entry.client_id for entry in cache().list()] == [URL]
+
+    def test_the_cache_does_not_grow_past_its_cap(self, app):
+        """The entries come from client-chosen URLs on an unauthenticated
+        endpoint, so a bound per entry is not a bound. At the cap the oldest
+        fetch goes, not the newest client."""
+        with app.app_context():
+            for index in range(MAX_CACHED_DOCUMENTS + 5):
+                url = f"https://client.example/{index}.json"
+                remember(url, client_from_document(url, _document(client_id=url), []), None)
+
+            entries = cache().list()
+            assert len(entries) == MAX_CACHED_DOCUMENTS
+            newest = f"https://client.example/{MAX_CACHED_DOCUMENTS + 4}.json"
+            assert cached_client(newest) is not None
+            assert cached_client("https://client.example/0.json") is None
+
+    def test_concurrent_writes_for_one_url_do_not_collide(self, app):
+        """remember() is a sweep, an evict and a create: two requests for
+        the same uncached URL would otherwise both get there and the second
+        would raise the repository's "that name is taken" out of a request."""
+        import threading
+
+        with app.app_context():
+            client = client_from_document(URL, _document(), [])
+            barrier = threading.Barrier(8)
+            failures = []
+
+            def write():
+                barrier.wait()
+                try:
+                    remember(URL, client, None)
+                except Exception as exc:  # noqa: BLE001 - the point of the test
+                    failures.append(exc)
+
+            threads = [threading.Thread(target=write) for _ in range(8)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+
+            assert failures == []
+            assert len(cache().list()) == 1
+
+    def test_a_url_the_rules_refuse_cannot_be_remembered(self, app):
+        """The rules are this module's, so the cache holds to them rather
+        than trusting whoever calls it."""
+        with app.app_context():
+            bad = "https://client.example/m.json#frag"
+            with pytest.raises(ClientIdUrlInvalid):
+                remember(bad, client_from_document(URL, _document(), []), None)
+
+            assert cache().list() == []
 
     def test_forgetting_says_whether_there_was_an_entry(self, app):
         with app.app_context():
@@ -209,11 +307,14 @@ class TestTheCache:
             assert cached_client(URL).description == "renamed"
 
     def test_only_fresh_entries_are_listed(self, app):
+        """Expiry, not deletion: a read surface showing an entry nothing
+        would use would be a lie about what is in effect."""
         with app.app_context():
             remember(URL, client_from_document(URL, _document(), []), None)
             assert [entry.client_id for entry in cached_entries()] == [URL]
 
-            cache().delete(URL)
+            _expire(URL)
+
             assert cached_entries() == []
 
     @pytest.mark.parametrize(
@@ -272,6 +373,19 @@ class TestPrecedence:
             resolved = get_identities().resolve_client(URL)
 
             assert resolved.origin == "runtime"
+
+    def test_an_ordinary_client_never_touches_the_cimd_cache(self, app, monkeypatch):
+        """Not only answered first: not looked up at all. The cache is for
+        client_ids that are URLs, and a declared client's resolution must
+        not depend on anything this feature owns."""
+        with app.app_context():
+            monkeypatch.setattr(
+                "nanoidp.services.client_metadata.cache",
+                lambda: pytest.fail("an ordinary resolution consulted the CIMD cache"),
+            )
+
+            assert get_identities().resolve_client("demo-client") is not None
+            assert get_identities().resolve_client("no-such-client") is None
 
     def test_an_unknown_url_resolves_to_nothing(self, app):
         with app.app_context():

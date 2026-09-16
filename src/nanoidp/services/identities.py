@@ -175,9 +175,10 @@ class IdentityResolver:
         ``https`` client_id does not by itself make a client a CIMD one, and
         the draft contemplates pre-registered client identifier URLs.
 
-        **This method never fetches.** The cache is filled by ``/authorize``,
-        the one surface allowed to reach the network; every other caller,
-        ``/token`` included, reads what is there or gets nothing.
+        **This method never fetches.** It reads a cache that something else
+        fills: nothing does yet, and when one does it will be ``/authorize``
+        and only ``/authorize``. Every other caller, ``/token`` included,
+        reads what is there or gets nothing.
         """
         runtime = self.store.clients.get(client_id)
         declared = _find_client(settings or self.config.settings, client_id)
@@ -201,8 +202,13 @@ class IdentityResolver:
         someone else, and the switch is what says whether such documents are
         honoured at all.
         """
-        effective = settings or self.config.settings
-        if not effective.client_id_metadata_documents_enabled:
+        # The switch is the server's, not the request's: read from the
+        # current settings even when the caller holds a snapshot, so
+        # turning the feature off takes effect at the same moment on every
+        # path. A snapshot exists to keep a token response consistent with
+        # the settings it was built from, which is about values, not about
+        # whether a capability is offered.
+        if not self.config.settings.client_id_metadata_documents_enabled:
             return None
         if not looks_like_client_id_url(client_id):
             return None
