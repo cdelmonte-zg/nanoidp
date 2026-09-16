@@ -168,3 +168,51 @@ class TestTheAlgorithmNeverReachesTheFileUnchecked:
         writer.update_saml_settings(c14n_algorithm="")
         saml = yaml.safe_load((tmp_path / "settings.yaml").read_text())["saml"]
         assert "c14n_algorithm" not in saml
+
+
+class TestASettingOffTheTableSurvivesTheWriters:
+    """Not being in OWNED_SETTINGS means "not managed by the settings form
+    and the MCP update_settings tool", never "dropped by the next save".
+
+    ``oauth.dynamic_registration`` (#190) is deliberately off the table: it
+    opens an unauthenticated mutation endpoint, so it is a decision for the
+    file. That only holds if a plain settings save leaves it alone, through
+    both write paths: the form's own writer, and ConfigManager.save(), which
+    is what the MCP save_config tool calls.
+    """
+
+    def _seed(self, tmp_path):
+        import shutil
+        from pathlib import Path
+
+        from nanoidp.config import ConfigManager
+
+        repo_config = Path(__file__).resolve().parent.parent / "config"
+        for name in ("settings.yaml", "users.yaml"):
+            shutil.copy(repo_config / name, tmp_path / name)
+        text = (tmp_path / "settings.yaml").read_text()
+        text = text.replace(
+            "oauth:\n",
+            "oauth:\n  dynamic_registration:\n    enabled: true\n    max_clients: 7\n",
+            1,
+        )
+        (tmp_path / "settings.yaml").write_text(text)
+        return ConfigManager(str(tmp_path))
+
+    def _block(self, tmp_path):
+        import yaml
+
+        document = yaml.safe_load((tmp_path / "settings.yaml").read_text())
+        return document["oauth"].get("dynamic_registration")
+
+    def test_the_form_writer_leaves_it_alone(self, tmp_path):
+        self._seed(tmp_path)
+        YamlWriter(str(tmp_path)).update_oauth_settings(audience="something-else")
+        assert self._block(tmp_path) == {"enabled": True, "max_clients": 7}
+
+    def test_config_save_leaves_it_alone(self, tmp_path):
+        config = self._seed(tmp_path)
+        config.settings.verbose_logging = False
+        config.save()
+        assert self._block(tmp_path) == {"enabled": True, "max_clients": 7}
+        assert config.settings.dynamic_registration_max_clients == 7

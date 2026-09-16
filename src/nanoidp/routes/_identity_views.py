@@ -4,7 +4,7 @@ origin (#192): one spelling for ``/api/users`` and ``/api/runtime``.
 Never a password, a client secret or a TOTP secret.
 """
 
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from ..config import OAuthClient, User
 
@@ -24,10 +24,16 @@ def user_summary(user: User, origin: str) -> Dict[str, Any]:
     }
 
 
-def client_summary(client: OAuthClient, origin: str) -> Dict[str, Any]:
+def client_summary(
+    client: OAuthClient, origin: str, source: Optional[str] = None
+) -> Dict[str, Any]:
+    """``source`` says how a runtime client got here when that is known:
+    ``dcr`` for one a client registered itself (#190), absent for one an
+    operator created through ``/api/runtime``."""
     return {
         "client_id": client.client_id,
         "origin": origin,
+        **({"source": source} if source else {}),
         "description": client.description,
         "token_endpoint_auth_method": client.token_endpoint_auth_method,
         "redirect_uris": client.redirect_uris,

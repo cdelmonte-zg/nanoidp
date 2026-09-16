@@ -13,10 +13,11 @@ from flask_limiter.util import get_remote_address
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 from . import __version__
-from .config import get_config, init_config
-from .routes import api_bp, oauth_bp, runtime_bp, saml_bp, ui_bp
+from .config import ConfigManager, get_config, init_config
+from .routes import api_bp, oauth_bp, registration_bp, runtime_bp, saml_bp, ui_bp
 from .services import activate_crypto_service
-from .services.identities import reconcile_runtime_identities
+from .services.dynamic_registration import prune_stale_registrations
+from .services.identities import identities_for, reconcile_runtime_identities
 
 # Global limiter instance (initialized in create_app)
 limiter: Optional[Limiter] = None
@@ -26,6 +27,34 @@ limiter: Optional[Limiter] = None
 # trusted, not fine once require_ui_login or management_secret's UI leg asks
 # the session to hold something meaningful (#163 review).
 _DEFAULT_SECRET_KEY = "dev-secret-key-change-in-production"
+
+
+def _after_load(config: ConfigManager) -> None:
+    """What runs after every successful configuration load, in order.
+
+    The reconciliation retires runtime identities the file now declares
+    (#235/#192); the sweep then drops the registration records whose runtime
+    client that just removed (#190). They are composed here, in the
+    composition root, rather than by teaching either side about the other:
+    ``services.identities`` knows nothing about registration, and the
+    registration service knows nothing about when a load happens.
+
+    The order matters. A promotion is exactly the case where a record would
+    otherwise outlive its client without anyone noticing: the lazy checks
+    only fire when someone asks for that registration, so until then the
+    record would still be there to be inherited by the next client to hold
+    the name.
+
+    ``after_load`` runs post-commit and must not raise (config.py), so the
+    sweep is best effort, like the reconciliation it follows.
+    """
+    reconcile_runtime_identities(config)
+    try:
+        prune_stale_registrations(identities_for(config))
+    except Exception:  # pragma: no cover - defensive, same contract as above
+        logging.getLogger(__name__).exception(
+            "Could not sweep dynamic registration records after a config load"
+        )
 
 
 def create_app(
@@ -50,7 +79,7 @@ def create_app(
         profile_override=profile,
         strict_config=strict_config,
         activate=activate_crypto_service,
-        after_load=reconcile_runtime_identities,
+        after_load=_after_load,
     )
     settings = config.settings
 
@@ -127,7 +156,10 @@ def create_app(
             storage_uri="memory://",
             headers_enabled=True,  # RateLimit-*/Retry-After on 429 (#304)
         )
-        logger.info(f"  - Rate limiting: enabled ({settings.rate_limit_token_endpoint} on /token)")
+        logger.info(
+            f"  - Rate limiting: enabled ({settings.rate_limit_token_endpoint} "
+            "on /token, and on /register when registration is on)"
+        )
     else:
         # Create a no-op limiter for compatibility
         limiter = Limiter(
@@ -143,6 +175,7 @@ def create_app(
     app.register_blueprint(ui_bp)
     app.register_blueprint(api_bp)
     app.register_blueprint(runtime_bp)
+    app.register_blueprint(registration_bp)
 
     # Actually APPLY the /token rate limit (#304). Until 3.0 the limiter
     # was created with default_limits=[] and no view ever decorated, so
@@ -181,6 +214,30 @@ def create_app(
             settings.rate_limit_token_endpoint,
             on_breach=_token_rate_limited,
         )(app.view_functions["oauth.token"])
+
+        # /register is unauthenticated by design when it is on (#190), and
+        # its only other bound is max_clients, which does not heal by
+        # itself: a script can spend every slot in seconds and leave the
+        # endpoint useless for the life of the process. The operator's own
+        # rate applies here too rather than a second setting for the same
+        # intent.
+        def _registration_rate_limited(request_limit: Any) -> Response:
+            response = jsonify(
+                {
+                    "error": "rate_limit_exceeded",
+                    "error_description": (
+                        "Too many registration requests; retry after the "
+                        "interval in the Retry-After header"
+                    ),
+                }
+            )
+            response.status_code = 429
+            return response
+
+        app.view_functions["registration.register"] = limiter.limit(  # type: ignore[assignment]
+            settings.rate_limit_token_endpoint,
+            on_breach=_registration_rate_limited,
+        )(app.view_functions["registration.register"])
 
     # Context processor to inject version into all templates
     @app.context_processor

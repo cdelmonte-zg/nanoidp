@@ -69,6 +69,13 @@ def build_discovery_document(
         "end_session_endpoint": f"{issuer}/logout",
         "device_authorization_endpoint": f"{issuer}/device_authorization",
         "jwks_uri": f"{issuer}/.well-known/jwks.json",
+        # Advertised only while registration is accepted (#190): metadata
+        # never promises an endpoint that answers 404.
+        **(
+            {"registration_endpoint": f"{issuer}/register"}
+            if settings.dynamic_registration_enabled
+            else {}
+        ),
         # 'none' = public clients (#188). Deliberately NOT in the
         # introspection list: RFC 7662 requires an authenticated caller,
         # and a public client_id is not authentication.

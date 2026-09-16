@@ -13,7 +13,7 @@ promotion order, the reconciliation on reload) live in
 every other management write (#163): the same gate as ``/api``.
 """
 
-from typing import Any, Callable, Dict
+from typing import Any, Callable, Dict, Optional
 
 from flask import Blueprint, current_app, jsonify, request
 from flask.typing import ResponseReturnValue
@@ -22,8 +22,14 @@ from ..config import ConfigurationRejected, get_config
 from ..config_documents import EntryInvalid, parse_client_entry, parse_user_entry
 from ..config_writer import ConflictError, LockUnavailableError
 from ..hooks import HookError
+from ..services.dynamic_registration import (
+    forget_registration,
+    live_registration,
+    prune_stale_registrations,
+)
 from ..services.identities import (
     DeclaredNameCollision,
+    IdentityResolver,
     PromotionInProgress,
     PromotionOutcome,
     RuntimeObjectNotFound,
@@ -121,18 +127,34 @@ def create_client() -> ResponseReturnValue:
                    lambda created: client_summary(created, "runtime"))
 
 
+def _source_of(client_id: str, resolver: IdentityResolver) -> Optional[str]:
+    """``dcr`` when a live registration record manages this client (#190).
+
+    Read from the record rather than from the shape of the id, which is only
+    a hint for a human reading a log - and through the liveness check, so a
+    record that outlived its client cannot label the next client to hold
+    that name as one somebody registered.
+    """
+    return "dcr" if live_registration(client_id, resolver) is not None else None
+
+
 @runtime_bp.route("/clients")
 def list_clients() -> ResponseReturnValue:
-    clients = [client_summary(c, "runtime") for c in identities_for(get_config()).store.clients.list()]
+    resolver = identities_for(get_config())
+    clients = [
+        client_summary(c, "runtime", _source_of(c.client_id, resolver))
+        for c in resolver.store.clients.list()
+    ]
     return jsonify({"clients": clients, "count": len(clients)})
 
 
 @runtime_bp.route("/clients/<client_id>")
 def get_client(client_id: str) -> ResponseReturnValue:
-    client = identities_for(get_config()).store.clients.get(client_id)
+    resolver = identities_for(get_config())
+    client = resolver.store.clients.get(client_id)
     if client is None:
         return _error(404, f"no runtime client {client_id!r}", "not_found")
-    return jsonify(client_summary(client, "runtime"))
+    return jsonify(client_summary(client, "runtime", _source_of(client_id, resolver)))
 
 
 @runtime_bp.route("/clients/<client_id>", methods=["DELETE"])
@@ -155,7 +177,11 @@ def promote_client(client_id: str) -> ResponseReturnValue:
 def reset() -> ResponseReturnValue:
     """Remove every runtime user and client. Never touches the declared
     configuration."""
-    users_deleted, clients_deleted = identities_for(get_config()).reset_runtime_identities()
+    resolver = identities_for(get_config())
+    users_deleted, clients_deleted = resolver.reset_runtime_identities()
+    # Same reason as in _delete: a record must not outlive its client and be
+    # inherited by the next one to hold that id (#190).
+    prune_stale_registrations(resolver)
     audit_event(
         "runtime_identities_reset",
         "success",
@@ -186,6 +212,13 @@ def _delete(kind: str, name: str, delete: Callable[[str], None]) -> ResponseRetu
         return _error(404, f"no runtime {kind} {name!r}", "not_found")
     except PromotionInProgress:
         return _error(409, f"runtime {kind} {name!r} is being promoted", "promotion_in_progress")
+    if kind == "client":
+        # The registration record goes with the client, rather than waiting
+        # for the next sweep (#190): a client created again under the same
+        # id would otherwise inherit it, and the credential handed to
+        # whoever registered the first one would read and delete the
+        # second, operator-created one.
+        forget_registration(name)
     _audit("runtime_identity_deleted", kind, name)
     return jsonify({"deleted": name, "kind": kind})
 

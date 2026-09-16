@@ -19,6 +19,7 @@ import yaml
 
 from nanoidp.app import create_app
 from nanoidp.config import OAuthClient, User, get_config
+from nanoidp.services.dynamic_registration import DynamicRegistration
 from nanoidp.services.identities import (
     DeclaredNameCollision,
     ResolvedClient,
@@ -57,10 +58,45 @@ def _basic(client_id: str, secret: str) -> dict:
 # (#354) runs the same tests by adding its factory here.
 # ---------------------------------------------------------------------------
 
+def _registration(client_id: str) -> DynamicRegistration:
+    return DynamicRegistration(
+        client_id=client_id,
+        registration_token_hash="0" * 64,
+        client_id_issued_at=0,
+        grant_types=["authorization_code"],
+    )
+
+
 STORE_FACTORIES = [pytest.param(MemoryRuntimeIdentityStore, id="memory")]
+# Each entry: how to reach the repository on a store, how to make an object,
+# its name, and a list field to mutate in place. The third one is a record
+# type the store does not know (#190): it is lent the same machinery through
+# repository(), so it owes the same contract.
 REPOSITORIES = [
-    pytest.param(("users", _user, lambda u: u.username), id="users"),
-    pytest.param(("clients", _client, lambda c: c.client_id), id="clients"),
+    pytest.param(
+        (lambda store: store.users, _user, lambda u: u.username, lambda u: u.roles),
+        id="users",
+    ),
+    pytest.param(
+        (
+            lambda store: store.clients,
+            _client,
+            lambda c: c.client_id,
+            lambda c: c.redirect_uris,
+        ),
+        id="clients",
+    ),
+    pytest.param(
+        (
+            lambda store: store.repository(
+                "dynamic_registrations", lambda r: r.client_id
+            ),
+            _registration,
+            lambda r: r.client_id,
+            lambda r: r.grant_types,
+        ),
+        id="dynamic_registrations",
+    ),
 ]
 
 
@@ -68,8 +104,8 @@ REPOSITORIES = [
 @pytest.mark.parametrize("repository", REPOSITORIES)
 class TestRepositoryContract:
     def test_create_get_list_delete(self, factory, repository):
-        attr, make, name_of = repository
-        repo = getattr(factory(), attr)
+        get_repo, make, name_of, _ = repository
+        repo = get_repo(factory())
 
         first, second = make("first"), make("second")
         repo.create(first)
@@ -83,8 +119,8 @@ class TestRepositoryContract:
         assert [name_of(obj) for obj in repo.list()] == ["second"]
 
     def test_a_taken_name_is_refused(self, factory, repository):
-        attr, make, _ = repository
-        repo = getattr(factory(), attr)
+        get_repo, make, _, _field = repository
+        repo = get_repo(factory())
         repo.create(make("taken"))
 
         with pytest.raises(RuntimeObjectExists):
@@ -92,8 +128,8 @@ class TestRepositoryContract:
         assert len(repo.list()) == 1
 
     def test_delete_all_returns_the_count(self, factory, repository):
-        attr, make, _ = repository
-        repo = getattr(factory(), attr)
+        get_repo, make, _, _field = repository
+        repo = get_repo(factory())
         for name in ("a", "b", "c"):
             repo.create(make(name))
 
@@ -102,33 +138,33 @@ class TestRepositoryContract:
         assert repo.delete_all() == 0
 
     @staticmethod
-    def _mutate(attr, obj):
-        """Change a list field of a user or client in place."""
-        (obj.roles if attr == "users" else obj.redirect_uris).append("MUTATED")
+    def _mutate(field, obj):
+        """Change one of the object's list fields in place."""
+        field(obj).append("MUTATED")
 
     @staticmethod
-    def _mutated(attr, obj):
-        return "MUTATED" in (obj.roles if attr == "users" else obj.redirect_uris)
+    def _mutated(field, obj):
+        return "MUTATED" in field(obj)
 
     def test_changing_the_instance_handed_to_create_does_not_change_the_repository(
         self, factory, repository
     ):
-        attr, make, _ = repository
-        repo = getattr(factory(), attr)
+        get_repo, make, _, field = repository
+        repo = get_repo(factory())
         obj = make("isolated")
         repo.create(obj)
 
-        self._mutate(attr, obj)
+        self._mutate(field, obj)
 
-        assert not self._mutated(attr, repo.get("isolated"))
+        assert not self._mutated(field, repo.get("isolated"))
 
     @pytest.mark.parametrize("returned_by", ["create", "get", "list"])
     def test_changing_a_returned_object_does_not_change_the_repository(
         self, factory, repository, returned_by
     ):
         """By value, as a backend that serializes would be (#354)."""
-        attr, make, _ = repository
-        repo = getattr(factory(), attr)
+        get_repo, make, _, field = repository
+        repo = get_repo(factory())
         created = repo.create(make("isolated"))
         returned = {
             "create": lambda: created,
@@ -136,14 +172,14 @@ class TestRepositoryContract:
             "list": lambda: repo.list()[0],
         }[returned_by]()
 
-        self._mutate(attr, returned)
+        self._mutate(field, returned)
 
-        assert not self._mutated(attr, repo.get("isolated"))
-        assert not self._mutated(attr, repo.list()[0])
+        assert not self._mutated(field, repo.get("isolated"))
+        assert not self._mutated(field, repo.list()[0])
 
     def test_concurrent_creates_of_one_name_let_exactly_one_through(self, factory, repository):
-        attr, make, _ = repository
-        repo = getattr(factory(), attr)
+        get_repo, make, _, _field = repository
+        repo = get_repo(factory())
         barrier = threading.Barrier(8)
         outcomes = []
 
@@ -164,13 +200,26 @@ class TestRepositoryContract:
         assert outcomes.count("created") == 1
         assert len(repo.list()) == 1
 
-    def test_the_two_repositories_are_separate(self, factory, repository):
+    def test_the_repositories_are_separate(self, factory, repository):
         store = factory()
+        lent = store.repository("dynamic_registrations", lambda r: r.client_id)
         store.users.create(_user("same-name"))
         store.clients.create(_client("same-name"))
+        lent.create(_registration("same-name"))
 
         assert store.users.delete_all() == 1
         assert [c.client_id for c in store.clients.list()] == ["same-name"]
+        assert [r.client_id for r in lent.list()] == ["same-name"]
+
+    def test_a_lent_repository_is_the_same_one_every_time(self, factory, repository):
+        """Asked for twice, it is one repository, not two views (#190)."""
+        store = factory()
+        store.repository("dynamic_registrations", lambda r: r.client_id).create(
+            _registration("once")
+        )
+
+        again = store.repository("dynamic_registrations", lambda r: r.client_id)
+        assert [r.client_id for r in again.list()] == ["once"]
 
 
 # ---------------------------------------------------------------------------

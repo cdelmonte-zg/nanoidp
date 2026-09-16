@@ -8,6 +8,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Dynamic client registration** (#190), RFC 7591 with the read and delete
+  of RFC 7592, behind `oauth.dynamic_registration.enabled` (off by default).
+  `POST /register` issues a client from the metadata a host sends and is
+  open when enabled: the flag is the gate, not `management_secret`, because
+  a client that was handed only a server URL has nothing else to present.
+  A registered client is a runtime client (#235): in memory, listed by
+  `GET /api/runtime/clients` with `"source": "dcr"`, gone on restart, and
+  written to `settings.yaml` only if an operator promotes it through
+  `/api/runtime` - registering never writes the operator's file. The
+  registration access token is shown once and stored only as a hash;
+  promotion, deletion or a reload that declares the name ends RFC 7592
+  management of that client. `oauth.dynamic_registration.max_clients`
+  (default 100) bounds live registrations and answers `429
+  registration_limit_reached`, a nanoidp name, since RFC 7591's error codes
+  describe metadata. `grant_types` are validated and echoed but do not
+  restrict the client: nanoidp has no per-client grant enforcement, which
+  is also why `redirect_uris` are required for every registration and not
+  only for the authorization code grant. With `rate_limit_enabled`, the
+  rate configured for `/token` applies to `/register` as well.
+  The flag is deliberately absent from the settings form and from the MCP
+  `update_settings` tool.
 - **RFC 8414 authorization server metadata** (#190).
   `/.well-known/oauth-authorization-server` serves the same document as
   `/.well-known/openid-configuration`, from the same builder and the same

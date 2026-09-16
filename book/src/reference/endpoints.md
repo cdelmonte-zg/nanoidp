@@ -16,6 +16,8 @@
 | `GET /ui/logout` | Dashboard session logout (the web UI's Logout button) |
 | `POST /device_authorization` | Device Authorization (RFC 8628; alias: `/device/code`) |
 | `GET/POST /device` | Device verification page |
+| `POST /register` | Dynamic client registration (RFC 7591), opt-in |
+| `GET/DELETE /register/<client_id>` | Read or remove a registration (RFC 7592) |
 
 The two discovery paths return the same document: nanoidp is one server with
 one set of endpoints, and a client that speaks only OAuth looks under the
@@ -24,6 +26,11 @@ applies to both. The metadata is served at the root form of the name only,
 which is the correct one for an issuer without a path component; an issuer
 with a path would want RFC 8414's path-suffixed form, and nanoidp's OIDC
 document has always assumed the root form too.
+
+The two `/register` paths exist only while
+`oauth.dynamic_registration.enabled` is set, and are open when they do:
+the flag is the gate, not the `management_secret`. See
+[Dynamic client registration](../guides/dynamic-client-registration.md).
 
 `POST /authorize` (the login form submit) reads its OAuth request
 parameters (`response_type`, `client_id`, `redirect_uri`, `scope`, `state`,
