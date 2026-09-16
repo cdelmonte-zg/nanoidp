@@ -32,14 +32,22 @@ from ..services.dynamic_registration import (
     new_registration_token,
     prune_stale_registrations,
     record_registration,
+    registration_lock,
     registration_response,
     registrations,
     token_matches,
     translate_registration_request,
 )
-from ..services.identities import DeclaredNameCollision, IdentityResolver, identities_for
+from ..services.identities import (
+    DeclaredNameCollision,
+    IdentityResolver,
+    PromotionInProgress,
+    RuntimeObjectNotFound,
+    identities_for,
+)
 from ..services.runtime_identities import RuntimeObjectExists
 from ._audit import audit_event
+from ._auth import no_store
 from ._issuer import effective_issuer
 
 registration_bp = Blueprint("registration", __name__)
@@ -142,42 +150,50 @@ def register() -> ResponseReturnValue:
         _audit("client_registration_refused", "failure", "", error=rejected.error)
         return _error(400, rejected.error, rejected.description)
 
-    # Before the capacity check, so the limit counts registrations whose
-    # client is still there rather than the records of promoted or deleted
-    # ones.
-    prune_stale_registrations(identities)
-    if len(registrations().list()) >= settings.dynamic_registration_max_clients:
-        _audit("client_registration_refused", "failure", "", error=REGISTRATION_LIMIT_REACHED)
-        return _error(
-            429,
-            REGISTRATION_LIMIT_REACHED,
-            "this server is holding as many dynamic registrations as it accepts",
-        )
-
-    client_id = new_client_id(identities)
-    entry["client_id"] = client_id
     include_secret = entry["token_endpoint_auth_method"] != "none"
-    if include_secret:
-        entry["client_secret"] = new_client_secret()
 
-    try:
-        client = parse_client_entry(entry, "POST /register")
-    except EntryInvalid as invalid:
-        # The metadata passed the translation but not the client model, e.g.
-        # a client_name longer than a description may be.
-        _audit("client_registration_refused", "failure", "", error="invalid_client_metadata")
-        return _error(400, "invalid_client_metadata", invalid.message)
+    # The sweep, the capacity check and the two creates are separate visits
+    # to the store; under a threaded server they would interleave and let
+    # more registrations through than the limit allows, and the limit is
+    # the only bound an open endpoint has.
+    with registration_lock:
+        # Sweeping first means the limit counts registrations whose client
+        # is still there, not the records of promoted or deleted ones.
+        prune_stale_registrations(identities)
+        if len(registrations().list()) >= settings.dynamic_registration_max_clients:
+            _audit(
+                "client_registration_refused", "failure", "", error=REGISTRATION_LIMIT_REACHED
+            )
+            return _error(
+                429,
+                REGISTRATION_LIMIT_REACHED,
+                "this server is holding as many dynamic registrations as it accepts",
+            )
 
-    try:
-        created = identities.create_runtime_client(client)
-    except (DeclaredNameCollision, RuntimeObjectExists):
-        # new_client_id checked, so this is a client that appeared in
-        # between. Nothing is half-created: the record comes after.
-        current_app.logger.warning("Registration lost a race for %s", client_id)
-        return _error(400, "invalid_client_metadata", "could not register, please retry")
+        client_id = new_client_id(identities)
+        entry["client_id"] = client_id
+        if include_secret:
+            entry["client_secret"] = new_client_secret()
 
-    token = new_registration_token()
-    registration = record_registration(client_id, grant_types, token)
+        try:
+            client = parse_client_entry(entry, "POST /register")
+        except EntryInvalid as invalid:
+            # The metadata passed the translation but not the client model.
+            _audit(
+                "client_registration_refused", "failure", "", error="invalid_client_metadata"
+            )
+            return _error(400, "invalid_client_metadata", invalid.message)
+
+        try:
+            created = identities.create_runtime_client(client)
+        except (DeclaredNameCollision, RuntimeObjectExists):
+            # new_client_id checked, so this is a client that appeared in
+            # between. Nothing is half-created: the record comes after.
+            current_app.logger.warning("Registration lost a race for %s", client_id)
+            return _error(400, "invalid_client_metadata", "could not register, please retry")
+
+        token = new_registration_token()
+        registration = record_registration(client_id, grant_types, token)
     _audit(
         "client_registered",
         "success",
@@ -188,7 +204,7 @@ def register() -> ResponseReturnValue:
     body = registration_response(
         created, registration, token, effective_issuer(settings), include_secret
     )
-    return jsonify(body), 201
+    return no_store(jsonify(body)), 201
 
 
 @registration_bp.route("/register/<client_id>", methods=["GET"])
@@ -201,7 +217,10 @@ def read_registration(client_id: str) -> ResponseReturnValue:
     identities = identities_for(get_config())
     authenticated = _authenticated(client_id, identities)
     if authenticated is None:
-        _audit("client_registration_read_refused", "failure", client_id)
+        # Not audited: the audit is a bounded deque, and anyone can reach
+        # this branch without a credential, so recording it would let a
+        # short loop evict every real entry, this endpoint's own
+        # client_registered records included.
         return _unauthorized()
     client, registration, token = authenticated
     body = registration_response(
@@ -211,7 +230,7 @@ def read_registration(client_id: str) -> ResponseReturnValue:
         effective_issuer(get_config().settings),
         include_secret=client.client_secret is not None,
     )
-    return jsonify(body), 200
+    return no_store(jsonify(body)), 200
 
 
 @registration_bp.route("/register/<client_id>", methods=["DELETE"])
@@ -219,9 +238,21 @@ def delete_registration(client_id: str) -> ResponseReturnValue:
     """RFC 7592 delete: the client goes with the registration."""
     identities = identities_for(get_config())
     if _authenticated(client_id, identities) is None:
-        _audit("client_registration_delete_refused", "failure", client_id)
         return _unauthorized()
-    identities.delete_runtime_client(client_id)
+    try:
+        identities.delete_runtime_client(client_id)
+    except PromotionInProgress:
+        # The operator is writing this client into the declared
+        # configuration right now; the same 409 /api/runtime answers.
+        return _error(
+            409, "invalid_request", "this client is being promoted, try again"
+        )
+    except RuntimeObjectNotFound:
+        # It went away between the check and the delete. Nothing to manage,
+        # and the caller learns no more than it would about any other
+        # unknown registration.
+        forget_registration(client_id)
+        return _unauthorized()
     forget_registration(client_id)
     _audit("client_registration_deleted", "success", client_id)
     return "", 204

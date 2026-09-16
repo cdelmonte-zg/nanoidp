@@ -127,7 +127,10 @@ def create_app(
             storage_uri="memory://",
             headers_enabled=True,  # RateLimit-*/Retry-After on 429 (#304)
         )
-        logger.info(f"  - Rate limiting: enabled ({settings.rate_limit_token_endpoint} on /token)")
+        logger.info(
+            f"  - Rate limiting: enabled ({settings.rate_limit_token_endpoint} "
+            "on /token, and on /register when registration is on)"
+        )
     else:
         # Create a no-op limiter for compatibility
         limiter = Limiter(
@@ -182,6 +185,30 @@ def create_app(
             settings.rate_limit_token_endpoint,
             on_breach=_token_rate_limited,
         )(app.view_functions["oauth.token"])
+
+        # /register is unauthenticated by design when it is on (#190), and
+        # its only other bound is max_clients, which does not heal by
+        # itself: a script can spend every slot in seconds and leave the
+        # endpoint useless for the life of the process. The operator's own
+        # rate applies here too rather than a second setting for the same
+        # intent.
+        def _registration_rate_limited(request_limit: Any) -> Response:
+            response = jsonify(
+                {
+                    "error": "rate_limit_exceeded",
+                    "error_description": (
+                        "Too many registration requests; retry after the "
+                        "interval in the Retry-After header"
+                    ),
+                }
+            )
+            response.status_code = 429
+            return response
+
+        app.view_functions["registration.register"] = limiter.limit(  # type: ignore[assignment]
+            settings.rate_limit_token_endpoint,
+            on_breach=_registration_rate_limited,
+        )(app.view_functions["registration.register"])
 
     # Context processor to inject version into all templates
     @app.context_processor

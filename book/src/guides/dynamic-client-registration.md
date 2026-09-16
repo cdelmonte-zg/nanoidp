@@ -96,11 +96,16 @@ The metadata nanoidp understands is `redirect_uris`,
 Anything else in the request is ignored rather than refused, as RFC 7591
 asks of a server for metadata it does not understand.
 
-- `redirect_uris` must be present for the `authorization_code` grant. Its
-  matching rules are a declared client's.
+- `redirect_uris` must be present and must be absolute URIs, whatever the
+  grant types say. A declared client may leave the list empty to mean "any
+  redirect URI"; a registration may not, since the grant types it sends are
+  recorded rather than enforced and would otherwise be a way around the
+  requirement. Matching rules are a declared client's.
 - `scope` is narrowed to the server's vocabulary and the granted subset is
   echoed back. A `scope` naming nothing the server supports is refused
-  rather than registered as "any scope".
+  rather than registered as "any scope". Asking for no scope at all grants
+  the vocabulary as it stands, written out in the registration, so a scope
+  added to the server later does not widen a client registered earlier.
 - `client_name` becomes the client's description.
 - `grant_types` are checked against what the server supports and returned as
   registered, but **they do not restrict the client**: nanoidp has no
@@ -115,7 +120,19 @@ asks of a server for metadata it does not understand.
 | Missing `redirect_uris` with `authorization_code` | `400 invalid_redirect_uri` |
 | `max_clients` live registrations reached | `429 registration_limit_reached` |
 | Wrong or missing registration access token | `401 invalid_token` |
+| Too many requests, with `rate_limit_enabled` | `429 rate_limit_exceeded` |
 
 `registration_limit_reached` is nanoidp's own name: RFC 7591's error codes
 describe metadata, and none of them means "no more room". A promotion or a
 delete frees a slot straight away.
+
+**The limit does not heal on its own.** Registrations have no expiry, so
+slots are freed only by deleting, promoting or resetting the clients that
+hold them, or by restarting the process. On an instance anyone can reach,
+that means anyone can fill it: with `rate_limit_enabled`, the rate
+configured for `/token` applies to `/register` as well, which is what makes
+filling it slow rather than instant. `DELETE /api/runtime` clears every
+runtime client, registrations included.
+
+The two responses that carry credentials, the registration and the RFC 7592
+read, are sent with `Cache-Control: no-store`.

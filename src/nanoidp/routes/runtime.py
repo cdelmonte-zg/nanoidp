@@ -22,7 +22,11 @@ from ..config import ConfigurationRejected, get_config
 from ..config_documents import EntryInvalid, parse_client_entry, parse_user_entry
 from ..config_writer import ConflictError, LockUnavailableError
 from ..hooks import HookError
-from ..services.dynamic_registration import registrations
+from ..services.dynamic_registration import (
+    forget_registration,
+    prune_stale_registrations,
+    registrations,
+)
 from ..services.identities import (
     DeclaredNameCollision,
     PromotionInProgress,
@@ -168,7 +172,11 @@ def promote_client(client_id: str) -> ResponseReturnValue:
 def reset() -> ResponseReturnValue:
     """Remove every runtime user and client. Never touches the declared
     configuration."""
-    users_deleted, clients_deleted = identities_for(get_config()).reset_runtime_identities()
+    resolver = identities_for(get_config())
+    users_deleted, clients_deleted = resolver.reset_runtime_identities()
+    # Same reason as in _delete: a record must not outlive its client and be
+    # inherited by the next one to hold that id (#190).
+    prune_stale_registrations(resolver)
     audit_event(
         "runtime_identities_reset",
         "success",
@@ -199,6 +207,13 @@ def _delete(kind: str, name: str, delete: Callable[[str], None]) -> ResponseRetu
         return _error(404, f"no runtime {kind} {name!r}", "not_found")
     except PromotionInProgress:
         return _error(409, f"runtime {kind} {name!r} is being promoted", "promotion_in_progress")
+    if kind == "client":
+        # The registration record goes with the client, rather than waiting
+        # for the next sweep (#190): a client created again under the same
+        # id would otherwise inherit it, and the credential handed to
+        # whoever registered the first one would read and delete the
+        # second, operator-created one.
+        forget_registration(name)
     _audit("runtime_identity_deleted", kind, name)
     return jsonify({"deleted": name, "kind": kind})
 

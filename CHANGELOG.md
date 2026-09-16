@@ -23,7 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (default 100) bounds live registrations and answers `429
   registration_limit_reached`, a nanoidp name, since RFC 7591's error codes
   describe metadata. `grant_types` are validated and echoed but do not
-  restrict the client: nanoidp has no per-client grant enforcement.
+  restrict the client: nanoidp has no per-client grant enforcement, which
+  is also why `redirect_uris` are required for every registration and not
+  only for the authorization code grant. With `rate_limit_enabled`, the
+  rate configured for `/token` applies to `/register` as well.
   The flag is deliberately absent from the settings form and from the MCP
   `update_settings` tool.
 - **RFC 8414 authorization server metadata** (#190).

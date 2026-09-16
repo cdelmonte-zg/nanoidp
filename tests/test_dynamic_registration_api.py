@@ -138,6 +138,29 @@ class TestWhatComesBack:
 
         assert body["client_name"] == "An MCP host"
 
+    def test_a_registration_never_gets_the_any_redirect_uri_marker(self, tmp_path):
+        """An empty redirect_uris list means "any redirect URI" on the
+        model. Refused at registration, so /authorize cannot be talked into
+        sending a code to an address the client never registered."""
+        application = _app(tmp_path)
+        client = application.test_client()
+
+        refused = client.post("/register", json={"grant_types": ["client_credentials"]})
+
+        assert refused.status_code == 400
+        with application.app_context():
+            assert get_identities().store.clients.list() == []
+
+    @pytest.mark.parametrize("scope", [None, "", "   "])
+    def test_asking_for_no_scope_writes_the_vocabulary_out(self, client, scope):
+        """Leaving allowed_scopes empty would mean "every scope" (#186),
+        including scopes added to the server later. The grant is written
+        out instead, so the registration says what it gave."""
+        metadata = {} if scope is None else {"scope": scope}
+        body = _register(client, **metadata).get_json()
+
+        assert body["scope"] == "openid profile email offline_access"
+
     def test_scopes_are_narrowed_to_the_vocabulary_and_echoed(self, client):
         """RFC 7591 lets a server register a subset. What it must not do is
         say nothing: an empty allowed_scopes means "any scope" here (#186)."""
@@ -172,6 +195,11 @@ class TestWhatIsRefused:
         [
             ({"redirect_uris": []}, "invalid_redirect_uri"),
             ({}, "invalid_redirect_uri"),
+            # Grant types are recorded and not enforced, so a registration
+            # naming only client_credentials must not skip the requirement
+            # and end up with the "any redirect URI" marker.
+            ({"grant_types": ["client_credentials"]}, "invalid_redirect_uri"),
+            ({"redirect_uris": ["not-a-uri"]}, "invalid_redirect_uri"),
             ({"redirect_uris": [REDIRECT], "grant_types": ["implicit"]}, "invalid_client_metadata"),
             (
                 {"redirect_uris": [REDIRECT], "token_endpoint_auth_method": "private_key_jwt"},
@@ -237,6 +265,20 @@ class TestCapacity:
         assert _register(client).status_code == 201
 
 
+class TestCredentialsAreNotCacheable:
+    def test_the_two_responses_that_carry_credentials_say_no_store(self, client):
+        registered_response = _register(client)
+        registered = registered_response.get_json()
+
+        read = client.get(
+            f"/register/{registered['client_id']}",
+            headers=_bearer(registered["registration_access_token"]),
+        )
+
+        assert registered_response.headers["Cache-Control"] == "no-store"
+        assert read.headers["Cache-Control"] == "no-store"
+
+
 class TestManagingARegistration:
     def test_a_read_returns_the_registration_and_the_presented_token(self, client):
         registered = _register(client, client_name="Readable").get_json()
@@ -299,6 +341,64 @@ class TestManagingARegistration:
 
         with application.app_context():
             assert get_identities().resolve_client(registered["client_id"]) is not None
+
+    def test_a_recreated_client_of_the_same_id_is_not_inherited(self, tmp_path):
+        """The record goes when its client does, rather than waiting for a
+        sweep: otherwise the credential handed to whoever registered the
+        first client would read and delete the operator's replacement."""
+        application = _app(tmp_path)
+        client = application.test_client()
+        registered = _register(client).get_json()
+        client_id = registered["client_id"]
+        token = _bearer(registered["registration_access_token"])
+
+        client.delete(f"/api/runtime/clients/{client_id}")
+        recreated = client.post(
+            "/api/runtime/clients",
+            json={
+                "client_id": client_id,
+                "client_secret": "operator-secret",
+                "redirect_uris": [REDIRECT],
+            },
+        )
+
+        assert recreated.status_code == 201
+        assert client.get(f"/register/{client_id}", headers=token).status_code == 401
+        assert client.delete(f"/register/{client_id}", headers=token).status_code == 401
+        with application.app_context():
+            assert get_identities().resolve_client(client_id) is not None
+
+    def test_a_reset_also_ends_management(self, tmp_path):
+        application = _app(tmp_path)
+        client = application.test_client()
+        registered = _register(client).get_json()
+
+        client.delete("/api/runtime")
+
+        assert client.get(
+            f"/register/{registered['client_id']}",
+            headers=_bearer(registered["registration_access_token"]),
+        ).status_code == 401
+
+    def test_a_delete_during_a_promotion_answers_409(self, tmp_path):
+        """The operator is writing this client into the declared
+        configuration; the same answer /api/runtime gives, not a 500."""
+        from nanoidp.services import identities as identities_module
+
+        application = _app(tmp_path)
+        client = application.test_client()
+        registered = _register(client).get_json()
+        key = ("client", registered["client_id"])
+        identities_module._promoting[key] = identities_module._Promotion({"source": "test"})
+        try:
+            response = client.delete(
+                f"/register/{registered['client_id']}",
+                headers=_bearer(registered["registration_access_token"]),
+            )
+        finally:
+            identities_module._promoting.pop(key, None)
+
+        assert response.status_code == 409
 
     def test_management_ends_when_the_client_is_promoted(self, tmp_path):
         """The operator owns a declared client; a credential handed to

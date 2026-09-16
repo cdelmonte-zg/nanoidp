@@ -18,8 +18,10 @@ therefore derived from a live record, never from the shape of its id.
 import hashlib
 import logging
 import secrets
+import threading
 import time
 from typing import Any, Dict, List, Optional, Sequence, Tuple
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field
 
@@ -175,7 +177,10 @@ DEFAULT_GRANT_TYPES = ("authorization_code",)
 # RFC 7591 section 2: absent means client_secret_basic, so a secret is issued
 # unless the client asks to be public.
 DEFAULT_AUTH_METHOD = "client_secret_basic"
-_REDIRECT_GRANTS = frozenset({"authorization_code"})
+# One registration at a time: the sweep, the capacity check and the create
+# are three separate visits to the store, and the limit is the only bound
+# this endpoint has, so they must not interleave.
+registration_lock = threading.Lock()
 
 
 def _string_list(data: Dict[str, Any], field: str) -> List[str]:
@@ -226,14 +231,25 @@ def translate_registration_request(
         )
 
     redirect_uris = _string_list(data, "redirect_uris")
-    if not redirect_uris and _REDIRECT_GRANTS.intersection(grant_types):
-        # The model reads an empty list as "any redirect URI", a sensible
-        # default for an operator writing YAML and a bad one for metadata
-        # that arrived over the network.
+    if not redirect_uris:
+        # Never conditional on the grant types: those are recorded and not
+        # enforced, so a registration naming only client_credentials would
+        # otherwise get an empty list, which the model reads as "any
+        # redirect URI is acceptable". That is a fine default for an
+        # operator writing YAML and an open redirect for metadata that
+        # arrived over the network.
         raise RegistrationRejected(
-            "invalid_redirect_uri",
-            "redirect_uris is required for the authorization_code grant",
+            "invalid_redirect_uri", "at least one redirect_uri is required"
         )
+    for uri in redirect_uris:
+        parsed = urlparse(uri)
+        if not parsed.scheme or not (parsed.netloc or parsed.path):
+            # A value /authorize could never match. Answering here says
+            # which half of the registration is wrong, instead of leaving
+            # the client to discover it as an opaque 400 later.
+            raise RegistrationRejected(
+                "invalid_redirect_uri", "redirect_uris must be absolute URIs"
+            )
 
     entry: Dict[str, Any] = {
         "client_id": "",  # the caller fills in the id the server picked
@@ -242,19 +258,25 @@ def translate_registration_request(
     }
 
     scope = data.get("scope")
-    if scope is not None:
-        if not isinstance(scope, str):
-            raise RegistrationRejected("invalid_client_metadata", "scope must be a string")
-        requested = scope.split()
+    if scope is not None and not isinstance(scope, str):
+        raise RegistrationRejected("invalid_client_metadata", "scope must be a string")
+    requested = scope.split() if isinstance(scope, str) else []
+    if requested:
         granted = [name for name in requested if name in vocabulary]
-        if requested and not granted:
+        if not granted:
             # An empty allowed_scopes means "every scope" (#186), so
             # narrowing to nothing would widen the client instead.
             raise RegistrationRejected(
                 "invalid_client_metadata",
                 "scope names none of the scopes this server supports",
             )
-        entry["allowed_scopes"] = granted
+    else:
+        # Asked for nothing, or asked with an empty string: the scopes are
+        # still written out rather than left as the unrestricted marker, so
+        # the registration says what it granted and a vocabulary that grows
+        # later does not silently grow this client with it.
+        granted = list(vocabulary)
+    entry["allowed_scopes"] = granted
 
     name = data.get("client_name")
     if name is not None:
