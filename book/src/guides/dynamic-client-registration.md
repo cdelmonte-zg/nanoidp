@@ -117,7 +117,7 @@ asks of a server for metadata it does not understand.
 | --- | --- |
 | Disabled | `404` |
 | Metadata nanoidp cannot use | `400 invalid_client_metadata` |
-| Missing `redirect_uris` with `authorization_code` | `400 invalid_redirect_uri` |
+| Missing, empty or relative `redirect_uris` | `400 invalid_redirect_uri` |
 | `max_clients` live registrations reached | `429 registration_limit_reached` |
 | Wrong or missing registration access token | `401 invalid_token` |
 | Too many requests, with `rate_limit_enabled` | `429 rate_limit_exceeded` |
