@@ -13,10 +13,11 @@ from flask_limiter.util import get_remote_address
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 from . import __version__
-from .config import get_config, init_config
+from .config import ConfigManager, get_config, init_config
 from .routes import api_bp, oauth_bp, registration_bp, runtime_bp, saml_bp, ui_bp
 from .services import activate_crypto_service
-from .services.identities import reconcile_runtime_identities
+from .services.dynamic_registration import prune_stale_registrations
+from .services.identities import identities_for, reconcile_runtime_identities
 
 # Global limiter instance (initialized in create_app)
 limiter: Optional[Limiter] = None
@@ -26,6 +27,34 @@ limiter: Optional[Limiter] = None
 # trusted, not fine once require_ui_login or management_secret's UI leg asks
 # the session to hold something meaningful (#163 review).
 _DEFAULT_SECRET_KEY = "dev-secret-key-change-in-production"
+
+
+def _after_load(config: ConfigManager) -> None:
+    """What runs after every successful configuration load, in order.
+
+    The reconciliation retires runtime identities the file now declares
+    (#235/#192); the sweep then drops the registration records whose runtime
+    client that just removed (#190). They are composed here, in the
+    composition root, rather than by teaching either side about the other:
+    ``services.identities`` knows nothing about registration, and the
+    registration service knows nothing about when a load happens.
+
+    The order matters. A promotion is exactly the case where a record would
+    otherwise outlive its client without anyone noticing: the lazy checks
+    only fire when someone asks for that registration, so until then the
+    record would still be there to be inherited by the next client to hold
+    the name.
+
+    ``after_load`` runs post-commit and must not raise (config.py), so the
+    sweep is best effort, like the reconciliation it follows.
+    """
+    reconcile_runtime_identities(config)
+    try:
+        prune_stale_registrations(identities_for(config))
+    except Exception:  # pragma: no cover - defensive, same contract as above
+        logging.getLogger(__name__).exception(
+            "Could not sweep dynamic registration records after a config load"
+        )
 
 
 def create_app(
@@ -50,7 +79,7 @@ def create_app(
         profile_override=profile,
         strict_config=strict_config,
         activate=activate_crypto_service,
-        after_load=reconcile_runtime_identities,
+        after_load=_after_load,
     )
     settings = config.settings
 

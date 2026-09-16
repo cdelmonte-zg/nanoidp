@@ -101,7 +101,17 @@ def new_client_id(identities: IdentityResolver) -> str:
 
 
 def _client_is_gone(client_id: str, identities: IdentityResolver) -> bool:
-    """The registration outlived the runtime client it managed."""
+    """The registration outlived the runtime client it managed.
+
+    By name, which is all a record has: this cannot tell the client it was
+    issued for from a later one created under the same name. What keeps a
+    record from being inherited is that it never survives its client - every
+    surface that removes one drops the record with it, and the sweep after a
+    configuration load catches promotion, which is the case nothing else
+    would. Code embedding nanoidp that calls
+    ``IdentityResolver.delete_runtime_client`` directly, and creates another
+    client of that name before the next load, is the one path that would.
+    """
     resolved = identities.resolve_client(client_id)
     return resolved is None or resolved.origin != "runtime"
 

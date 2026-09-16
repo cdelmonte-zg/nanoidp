@@ -150,16 +150,16 @@ jobs:
           path = "e2e-dcr-config/settings.yaml"
           doc = yaml.safe_load(open(path))
           oauth = doc.setdefault("oauth", {})
-          oauth["issuer"] = "http://localhost:8005"
+          oauth["issuer"] = "http://localhost:8006"
           oauth["dynamic_registration"] = {"enabled": True, "max_clients": 10}
           yaml.safe_dump(doc, open(path, "w"), sort_keys=False)
           EOF
 
       - name: Start dynamic-registration nanoidp
         run: |
-          PORT=8005 NANOIDP_CONFIG_DIR=e2e-dcr-config python -m nanoidp > server-dcr.log 2>&1 &
+          PORT=8006 NANOIDP_CONFIG_DIR=e2e-dcr-config python -m nanoidp > server-dcr.log 2>&1 &
           for i in $(seq 1 30); do
-            curl -sf http://localhost:8005/api/health && exit 0
+            curl -sf http://localhost:8006/api/health && exit 0
             sleep 1
           done
           echo "dynamic-registration nanoidp did not become healthy" >&2
@@ -167,7 +167,7 @@ jobs:
           exit 1
 
       - name: Run dynamic client registration suite
-        run: python e2e/test_agent.py --url http://localhost:8005 --dcr
+        run: python e2e/test_agent.py --url http://localhost:8006 --dcr
 
       - name: Prepare TOTP config
         # NANOIDP_E2E_TOTP_SECRET only unlocks test_totp_login's

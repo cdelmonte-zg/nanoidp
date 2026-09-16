@@ -24,11 +24,12 @@ from ..config_writer import ConflictError, LockUnavailableError
 from ..hooks import HookError
 from ..services.dynamic_registration import (
     forget_registration,
+    live_registration,
     prune_stale_registrations,
-    registrations,
 )
 from ..services.identities import (
     DeclaredNameCollision,
+    IdentityResolver,
     PromotionInProgress,
     PromotionOutcome,
     RuntimeObjectNotFound,
@@ -126,30 +127,34 @@ def create_client() -> ResponseReturnValue:
                    lambda created: client_summary(created, "runtime"))
 
 
-def _source_of(client_id: str) -> Optional[str]:
+def _source_of(client_id: str, resolver: IdentityResolver) -> Optional[str]:
     """``dcr`` when a live registration record manages this client (#190).
 
     Read from the record rather than from the shape of the id, which is only
-    a hint for a human reading a log.
+    a hint for a human reading a log - and through the liveness check, so a
+    record that outlived its client cannot label the next client to hold
+    that name as one somebody registered.
     """
-    return "dcr" if registrations().get(client_id) is not None else None
+    return "dcr" if live_registration(client_id, resolver) is not None else None
 
 
 @runtime_bp.route("/clients")
 def list_clients() -> ResponseReturnValue:
+    resolver = identities_for(get_config())
     clients = [
-        client_summary(c, "runtime", _source_of(c.client_id))
-        for c in identities_for(get_config()).store.clients.list()
+        client_summary(c, "runtime", _source_of(c.client_id, resolver))
+        for c in resolver.store.clients.list()
     ]
     return jsonify({"clients": clients, "count": len(clients)})
 
 
 @runtime_bp.route("/clients/<client_id>")
 def get_client(client_id: str) -> ResponseReturnValue:
-    client = identities_for(get_config()).store.clients.get(client_id)
+    resolver = identities_for(get_config())
+    client = resolver.store.clients.get(client_id)
     if client is None:
         return _error(404, f"no runtime client {client_id!r}", "not_found")
-    return jsonify(client_summary(client, "runtime", _source_of(client_id)))
+    return jsonify(client_summary(client, "runtime", _source_of(client_id, resolver)))
 
 
 @runtime_bp.route("/clients/<client_id>", methods=["DELETE"])

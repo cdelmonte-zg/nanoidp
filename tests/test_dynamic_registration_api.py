@@ -380,6 +380,49 @@ class TestManagingARegistration:
             headers=_bearer(registered["registration_access_token"]),
         ).status_code == 401
 
+    def test_a_promotion_ends_the_authority_before_the_name_can_be_reused(self, tmp_path):
+        """The decisive case, and why the sweep runs after every load.
+
+        The lazy checks only fire when someone asks for that registration.
+        Nobody does here: the client is promoted, the operator then takes it
+        out of the file, and a plain runtime client is created under the same
+        name. If the record had survived, the credential issued for the first
+        client would manage the second one, which the operator owns.
+        """
+        application = _app(tmp_path)
+        client = application.test_client()
+        registered = _register(client).get_json()
+        client_id = registered["client_id"]
+        token = _bearer(registered["registration_access_token"])
+
+        assert client.post(f"/api/runtime/clients/{client_id}/promote").status_code == 200
+
+        settings = tmp_path / "config" / "settings.yaml"
+        document = yaml.safe_load(settings.read_text())
+        document["oauth"]["clients"] = [
+            entry for entry in document["oauth"]["clients"] if entry["client_id"] != client_id
+        ]
+        settings.write_text(yaml.safe_dump(document))
+        assert client.post("/api/config/reload").status_code == 200
+
+        recreated = client.post(
+            "/api/runtime/clients",
+            json={
+                "client_id": client_id,
+                "client_secret": "operator-secret",
+                "redirect_uris": [REDIRECT],
+            },
+        )
+
+        assert recreated.status_code == 201
+        assert client.get(f"/register/{client_id}", headers=token).status_code == 401
+        assert client.delete(f"/register/{client_id}", headers=token).status_code == 401
+        # A record that outlived its client would also label the operator's
+        # client as one somebody registered.
+        assert client.get(f"/api/runtime/clients/{client_id}").get_json().get("source") is None
+        with application.app_context():
+            assert get_identities().resolve_client(client_id) is not None
+
     def test_a_delete_during_a_promotion_answers_409(self, tmp_path):
         """The operator is writing this client into the declared
         configuration; the same answer /api/runtime gives, not a 500."""
