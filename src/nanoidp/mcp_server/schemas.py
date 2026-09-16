@@ -9,53 +9,32 @@ from typing import Any
 
 from jsonschema import Draft202012Validator
 from mcp.types import Tool
+from pydantic import BaseModel
+
+from ..models import OAuthClient, Settings, User
+from .field_schemas import field_property
+
+
+def _domain(model: type[BaseModel], field: str, description: str, **overrides: Any) -> dict[str, Any]:
+    """A tool property whose value shape is the domain field's (#297): the
+    model states type, enum, bounds, length, pattern and item type; the
+    description here states what the argument means for this tool."""
+    return field_property(model, field, description, overrides=overrides or None)
 
 # Shared by create_user's and create_persona_user's input_schema (#10): every
 # field but username/password is identical between the two tools, and
 # _build_user_from_arguments() reads all of these from either one - a
 # property missing here would be silently ignored on that tool alone.
 _USER_COMMON_PROPERTIES: dict[str, Any] = {
-    "description": {
-        "type": "string",
-        "maxLength": 200,
-        "description": "Display-only note shown in the persona login picker (optional, max 200 chars)",
-    },
-    "email": {
-        "type": "string",
-        "description": "Email address (optional)",
-    },
-    "roles": {
-        "type": "array",
-        "items": {"type": "string"},
-        "description": "List of roles (optional, default: ['USER'])",
-    },
-    "groups": {
-        "type": "array",
-        "items": {"type": "string"},
-        "description": "List of groups (optional)",
-    },
-    "tenant": {
-        "type": "string",
-        "description": "Tenant identifier (optional, default: 'default')",
-    },
-    "identity_class": {
-        "type": "string",
-        "description": "Identity class (e.g., INTERNAL, EXTERNAL)",
-    },
-    "entitlements": {
-        "type": "array",
-        "items": {"type": "string"},
-        "description": "List of entitlements",
-    },
-    "source_acl": {
-        "type": "array",
-        "items": {"type": "string"},
-        "description": "Source ACL entries for document-level security",
-    },
-    "attributes": {
-        "type": "object",
-        "description": "Custom key-value attributes (optional)",
-    },
+    "description": _domain(User, "description", "Display-only note shown in the persona login picker (optional, max 200 chars)"),
+    "email": _domain(User, "email", "Email address (optional)"),
+    "roles": _domain(User, "roles", "List of roles (optional, default: ['USER'])"),
+    "groups": _domain(User, "groups", "List of groups (optional)"),
+    "tenant": _domain(User, "tenant", "Tenant identifier (optional, default: 'default')"),
+    "identity_class": _domain(User, "identity_class", "Identity class (e.g., INTERNAL, EXTERNAL)"),
+    "entitlements": _domain(User, "entitlements", "List of entitlements"),
+    "source_acl": _domain(User, "source_acl", "Source ACL entries for document-level security"),
+    "attributes": _domain(User, "attributes", "Custom key-value attributes (optional)"),
 }
 
 
@@ -84,10 +63,7 @@ _TOOLS: list[Tool] = [
         input_schema={
             "type": "object",
             "properties": {
-                "username": {
-                    "type": "string",
-                    "description": "Username to look up",
-                },
+                "username": _domain(User, "username", "Username to look up"),
             },
             "required": ["username"],
         },
@@ -98,14 +74,8 @@ _TOOLS: list[Tool] = [
         input_schema={
             "type": "object",
             "properties": {
-                "username": {
-                    "type": "string",
-                    "description": "Username for the new user",
-                },
-                "password": {
-                    "type": "string",
-                    "description": "Password for the new user",
-                },
+                "username": _domain(User, "username", "Username for the new user"),
+                "password": _domain(User, "password", "Password for the new user"),
                 **_USER_COMMON_PROPERTIES,
             },
             "required": ["username", "password"],
@@ -125,10 +95,7 @@ _TOOLS: list[Tool] = [
         input_schema={
             "type": "object",
             "properties": {
-                "username": {
-                    "type": "string",
-                    "description": "Username for the new persona-mode-only user",
-                },
+                "username": _domain(User, "username", "Username for the new persona-mode-only user"),
                 **_USER_COMMON_PROPERTIES,
             },
             "required": ["username"],
@@ -140,10 +107,7 @@ _TOOLS: list[Tool] = [
         input_schema={
             "type": "object",
             "properties": {
-                "username": {
-                    "type": "string",
-                    "description": "Username to delete",
-                },
+                "username": _domain(User, "username", "Username to delete"),
             },
             "required": ["username"],
         },
@@ -154,58 +118,18 @@ _TOOLS: list[Tool] = [
         input_schema={
             "type": "object",
             "properties": {
-                "username": {
-                    "type": "string",
-                    "description": "Username to update",
-                },
-                "password": {
-                    "type": "string",
-                    "description": "New password (optional)",
-                },
-                "description": {
-                    "type": "string",
-                    "maxLength": 200,
-                    "description": "New display-only persona picker note (optional, max 200 chars)",
-                },
-                "email": {
-                    "type": "string",
-                    "description": "New email (optional)",
-                },
-                "roles": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "New roles list (optional)",
-                },
-                "groups": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "New groups list (optional)",
-                },
-                "tenant": {
-                    "type": "string",
-                    "description": "New tenant (optional)",
-                },
-                "identity_class": {
-                    "type": "string",
-                    "description": "New identity class (optional)",
-                },
-                "entitlements": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "New entitlements list (optional)",
-                },
-                "source_acl": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "New source ACL entries (optional)",
-                },
-                "attributes": {
-                    "type": "object",
-                    "description": (
-                        "New custom key-value attributes (optional; replaces the "
-                        "whole mapping, like every other field here - #280)"
-                    ),
-                },
+                "username": _domain(User, "username", "Username to update"),
+                "password": _domain(User, "password", "New password (optional)"),
+                "description": _domain(User, "description", "New display-only persona picker note (optional, max 200 chars)"),
+                "email": _domain(User, "email", "New email (optional)"),
+                "roles": _domain(User, "roles", "New roles list (optional)"),
+                "groups": _domain(User, "groups", "New groups list (optional)"),
+                "tenant": _domain(User, "tenant", "New tenant (optional)"),
+                "identity_class": _domain(User, "identity_class", "New identity class (optional)"),
+                "entitlements": _domain(User, "entitlements", "New entitlements list (optional)"),
+                "source_acl": _domain(User, "source_acl", "New source ACL entries (optional)"),
+                "attributes": _domain(User, "attributes", "New custom key-value attributes (optional; replaces the "
+                        "whole mapping, like every other field here - #280)"),
             },
             "required": ["username"],
         },
@@ -226,25 +150,17 @@ _TOOLS: list[Tool] = [
         input_schema={
             "type": "object",
             "properties": {
-                "username": {
-                    "type": "string",
-                    "description": "Username to generate token for",
-                },
+                "username": _domain(User, "username", "Username to generate token for"),
                 "expires_in_minutes": {
                     "type": "integer",
                     "description": "Token expiration in minutes (optional, default: 60)",
                 },
-                "client_id": {
-                    "type": "string",
-                    "description": (
-                        "Bind the token to this client (optional; must name a "
+                "client_id": _domain(OAuthClient, "client_id", "Bind the token to this client (optional; must name a "
                         "real client). Stamps the client_id claim and issues a "
                         "refresh token spendable by that client. Omit for an "
                         "unbound token: NO refresh token is issued (an unbound "
                         "one could not be spent since 3.0, #73), just an access "
-                        "token, fine for a one-shot test"
-                    ),
-                },
+                        "token, fine for a one-shot test"),
                 "extra_claims": {
                     "type": "object",
                     "description": "Additional claims to include in the token",
@@ -330,17 +246,21 @@ _TOOLS: list[Tool] = [
                     "type": "string",
                     "description": "JWT token to verify",
                 },
+                # Not Settings.audience: this is the audience the caller
+                # wants the token tested against, a resource server's own
+                # identifier. Deriving it would let a future constraint on
+                # the IdP's configured audience narrow what can be probed,
+                # and "" is the tool's way of asking for a match against
+                # the empty audience, which it answers with valid: false.
                 "audience": {
                     "type": "string",
-                    "description": (
-                        "Expected audience (#187). Omit to verify signature "
+                    "description": "Expected audience (#187). Omit to verify signature "
                         "and expiry only and return the claims (so a "
                         "resource-bound access token is not falsely reported "
                         "invalid). Provide a value to also require the token's "
                         "'aud' to match it - how you simulate a resource "
                         "server accepting a token for itself and rejecting one "
-                        "minted for another (optional)"
-                    ),
+                        "minted for another (optional)",
                 },
             },
             "required": ["token"],
@@ -362,10 +282,7 @@ _TOOLS: list[Tool] = [
         input_schema={
             "type": "object",
             "properties": {
-                "client_id": {
-                    "type": "string",
-                    "description": "Client ID to look up",
-                },
+                "client_id": _domain(OAuthClient, "client_id", "Client ID to look up"),
             },
             "required": ["client_id"],
         },
@@ -376,22 +293,10 @@ _TOOLS: list[Tool] = [
         input_schema={
             "type": "object",
             "properties": {
-                "client_id": {
-                    "type": "string",
-                    "description": "Unique client identifier",
-                },
-                "client_secret": {
-                    "type": "string",
-                    "description": (
-                        "Client secret for authentication. Required unless "
-                        "token_endpoint_auth_method is 'none'"
-                    ),
-                },
-                "token_endpoint_auth_method": {
-                    "type": "string",
-                    "enum": ["client_secret_basic", "client_secret_post", "none"],
-                    "description": (
-                        "How the client authenticates as a confidential client "
+                "client_id": _domain(OAuthClient, "client_id", "Unique client identifier"),
+                "client_secret": _domain(OAuthClient, "client_secret", "Client secret for authentication. Required unless "
+                        "token_endpoint_auth_method is 'none'", minLength=None),
+                "token_endpoint_auth_method": _domain(OAuthClient, "token_endpoint_auth_method", "How the client authenticates as a confidential client "
                         "(optional, default client_secret_basic). The method is "
                         "enforced at every client-authenticated endpoint - "
                         "/token, /introspect, /revoke, /device_authorization "
@@ -399,58 +304,18 @@ _TOOLS: list[Tool] = [
                         "request body, and the wrong channel is rejected. "
                         "'none' = public client (#188): no secret, PKCE S256 "
                         "mandatory on /authorize, client_credentials refused, "
-                        "refresh rotation forced"
-                    ),
-                },
-                "description": {
-                    "type": "string",
-                    "description": "Human-readable description (optional)",
-                },
-                "background_color": {
-                    "type": "string",
-                    "description": "Hex color (e.g. '#1a1a2e') behind the /authorize login card (optional)",
-                },
-                "header_color": {
-                    "type": "string",
-                    "description": "Hex color (e.g. '#0d6efd') for the /authorize login card header band (optional)",
-                },
-                "footer_color": {
-                    "type": "string",
-                    "description": "Hex color (e.g. '#ffffff') for the /authorize login card footer band (optional)",
-                },
-                "show_client_id": {
-                    "type": "boolean",
-                    "description": "Show client_id on the /authorize login page (optional, default true)",
-                },
-                "show_description": {
-                    "type": "boolean",
-                    "description": "Show description on the /authorize login page (optional, default false)",
-                },
-                "layout": {
-                    "type": "string",
-                    "enum": ["vertical", "horizontal"],
-                    "description": "/authorize login card composition (#249): 'vertical' (default) is the single-column card; 'horizontal' places the client info and the login form side by side, collapsing back to a single column on narrow viewports (optional, default vertical)",
-                },
-                "additional_audiences": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Extra audiences added to the ID Token 'aud' alongside the client_id (optional)",
-                },
-                "redirect_uris": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Registered redirect URIs; when non-empty, /authorize enforces exact matching, except a registered loopback URI (http://127.0.0.1:{port}/..., http://[::1]:{port}/...) matches any port per RFC 8252 section 7.3; reverse-domain private-use schemes like com.example.app:/cb are accepted, schemes without a period such as myapp:// are rejected per section 7.1 (optional)",
-                },
-                "allowed_scopes": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Per-client scope allow-list (#186); when non-empty, /authorize and /token reject a requested scope outside this set with invalid_scope (RFC 6749 4.1.2.1/5.2). Empty = any scope in the global oauth.scopes_supported vocabulary is allowed (optional)",
-                },
-                "allowed_resources": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Per-client RFC 8707 resource allow-list (#187); when non-empty, a resource requested on /authorize or /token must be one of these or the request is invalid_target. Empty = any valid resource (an absolute URI without a fragment) is allowed (optional)",
-                },
+                        "refresh rotation forced"),
+                "description": _domain(OAuthClient, "description", "Human-readable description (optional)"),
+                "background_color": _domain(OAuthClient, "background_color", "Hex color (e.g. '#1a1a2e') behind the /authorize login card (optional)", pattern=None),
+                "header_color": _domain(OAuthClient, "header_color", "Hex color (e.g. '#0d6efd') for the /authorize login card header band (optional)", pattern=None),
+                "footer_color": _domain(OAuthClient, "footer_color", "Hex color (e.g. '#ffffff') for the /authorize login card footer band (optional)", pattern=None),
+                "show_client_id": _domain(OAuthClient, "show_client_id", "Show client_id on the /authorize login page (optional, default true)"),
+                "show_description": _domain(OAuthClient, "show_description", "Show description on the /authorize login page (optional, default false)"),
+                "layout": _domain(OAuthClient, "layout", "/authorize login card composition (#249): 'vertical' (default) is the single-column card; 'horizontal' places the client info and the login form side by side, collapsing back to a single column on narrow viewports (optional, default vertical)"),
+                "additional_audiences": _domain(OAuthClient, "additional_audiences", "Extra audiences added to the ID Token 'aud' alongside the client_id (optional)"),
+                "redirect_uris": _domain(OAuthClient, "redirect_uris", "Registered redirect URIs; when non-empty, /authorize enforces exact matching, except a registered loopback URI (http://127.0.0.1:{port}/..., http://[::1]:{port}/...) matches any port per RFC 8252 section 7.3; reverse-domain private-use schemes like com.example.app:/cb are accepted, schemes without a period such as myapp:// are rejected per section 7.1 (optional)"),
+                "allowed_scopes": _domain(OAuthClient, "allowed_scopes", "Per-client scope allow-list (#186); when non-empty, /authorize and /token reject a requested scope outside this set with invalid_scope (RFC 6749 4.1.2.1/5.2). Empty = any scope in the global oauth.scopes_supported vocabulary is allowed (optional)"),
+                "allowed_resources": _domain(OAuthClient, "allowed_resources", "Per-client RFC 8707 resource allow-list (#187); when non-empty, a resource requested on /authorize or /token must be one of these or the request is invalid_target. Empty = any valid resource (an absolute URI without a fragment) is allowed (optional)"),
             },
             # client_secret is validated in the handler: required for every
             # auth method except 'none' (#188).
@@ -463,72 +328,22 @@ _TOOLS: list[Tool] = [
         input_schema={
             "type": "object",
             "properties": {
-                "client_id": {
-                    "type": "string",
-                    "description": "Client ID to update",
-                },
-                "client_secret": {
-                    "type": "string",
-                    "description": "New client secret (optional)",
-                },
-                "token_endpoint_auth_method": {
-                    "type": "string",
-                    "enum": ["client_secret_basic", "client_secret_post", "none"],
-                    "description": (
-                        "New token endpoint auth method (optional). Switching "
+                "client_id": _domain(OAuthClient, "client_id", "Client ID to update"),
+                "client_secret": _domain(OAuthClient, "client_secret", "New client secret (optional)", minLength=None),
+                "token_endpoint_auth_method": _domain(OAuthClient, "token_endpoint_auth_method", "New token endpoint auth method (optional). Switching "
                         "a secret-less client to a confidential method "
-                        "requires supplying client_secret in the same call"
-                    ),
-                },
-                "description": {
-                    "type": "string",
-                    "description": "New description (optional)",
-                },
-                "background_color": {
-                    "type": "string",
-                    "description": "New hex color (e.g. '#1a1a2e') behind the /authorize login card; empty string clears it (optional)",
-                },
-                "header_color": {
-                    "type": "string",
-                    "description": "New hex color (e.g. '#0d6efd') for the /authorize login card header band; empty string clears it (optional)",
-                },
-                "footer_color": {
-                    "type": "string",
-                    "description": "New hex color (e.g. '#ffffff') for the /authorize login card footer band; empty string clears it (optional)",
-                },
-                "show_client_id": {
-                    "type": "boolean",
-                    "description": "Show client_id on the /authorize login page (optional)",
-                },
-                "show_description": {
-                    "type": "boolean",
-                    "description": "Show description on the /authorize login page (optional)",
-                },
-                "layout": {
-                    "type": "string",
-                    "enum": ["vertical", "horizontal"],
-                    "description": "/authorize login card composition (#249): 'horizontal' places the client info and the login form side by side, collapsing back to a single column on narrow viewports (optional)",
-                },
-                "additional_audiences": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Replace the client's extra ID Token audiences (optional)",
-                },
-                "redirect_uris": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Replace the client's registered redirect URIs (loopback URIs match any port per RFC 8252 section 7.3, reverse-domain private-use schemes accepted, myapp:// rejected per section 7.1); empty list removes the restriction (optional)",
-                },
-                "allowed_scopes": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Replace the client's scope allow-list (#186); empty list removes the restriction (optional)",
-                },
-                "allowed_resources": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Replace the client's RFC 8707 resource allow-list (#187); empty list removes the restriction (optional)",
-                },
+                        "requires supplying client_secret in the same call"),
+                "description": _domain(OAuthClient, "description", "New description (optional)"),
+                "background_color": _domain(OAuthClient, "background_color", "New hex color (e.g. '#1a1a2e') behind the /authorize login card; empty string clears it (optional)", pattern=None),
+                "header_color": _domain(OAuthClient, "header_color", "New hex color (e.g. '#0d6efd') for the /authorize login card header band; empty string clears it (optional)", pattern=None),
+                "footer_color": _domain(OAuthClient, "footer_color", "New hex color (e.g. '#ffffff') for the /authorize login card footer band; empty string clears it (optional)", pattern=None),
+                "show_client_id": _domain(OAuthClient, "show_client_id", "Show client_id on the /authorize login page (optional)"),
+                "show_description": _domain(OAuthClient, "show_description", "Show description on the /authorize login page (optional)"),
+                "layout": _domain(OAuthClient, "layout", "/authorize login card composition (#249): 'horizontal' places the client info and the login form side by side, collapsing back to a single column on narrow viewports (optional)"),
+                "additional_audiences": _domain(OAuthClient, "additional_audiences", "Replace the client's extra ID Token audiences (optional)"),
+                "redirect_uris": _domain(OAuthClient, "redirect_uris", "Replace the client's registered redirect URIs (loopback URIs match any port per RFC 8252 section 7.3, reverse-domain private-use schemes accepted, myapp:// rejected per section 7.1); empty list removes the restriction (optional)"),
+                "allowed_scopes": _domain(OAuthClient, "allowed_scopes", "Replace the client's scope allow-list (#186); empty list removes the restriction (optional)"),
+                "allowed_resources": _domain(OAuthClient, "allowed_resources", "Replace the client's RFC 8707 resource allow-list (#187); empty list removes the restriction (optional)"),
             },
             "required": ["client_id"],
         },
@@ -539,10 +354,7 @@ _TOOLS: list[Tool] = [
         input_schema={
             "type": "object",
             "properties": {
-                "client_id": {
-                    "type": "string",
-                    "description": "Client ID to delete",
-                },
+                "client_id": _domain(OAuthClient, "client_id", "Client ID to delete"),
             },
             "required": ["client_id"],
         },
@@ -599,38 +411,23 @@ _TOOLS: list[Tool] = [
         input_schema={
             "type": "object",
             "properties": {
-                "issuer": {
-                    "type": "string",
-                    "description": "OAuth2/OIDC issuer URL",
-                },
-                "issuer_from_request": {
-                    "type": "boolean",
-                    "description": "Derive the issuer from each request's own Host "
+                "issuer": _domain(Settings, "issuer", "OAuth2/OIDC issuer URL"),
+                "issuer_from_request": _domain(Settings, "issuer_from_request", "Derive the issuer from each request's own Host "
                     "header instead of the fixed 'issuer' (dev convenience for "
                     "setups reachable under more than one hostname). MCP tools "
                     "have no request of their own, so this only affects HTTP "
-                    "discovery/token/device-flow responses, never MCP ones.",
-                },
-                "issuer_allowlist": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Origins (e.g. 'http://localhost:8000') allowed "
+                    "discovery/token/device-flow responses, never MCP ones."),
+                "issuer_allowlist": _domain(Settings, "issuer_allowlist", "Origins (e.g. 'http://localhost:8000') allowed "
                     "to be reflected back by 'issuer_from_request'. Empty (default) "
                     "allows any Host header. A non-matching Host falls back to the "
-                    "fixed 'issuer'.",
-                },
-                "device_verification_base_url": {
-                    "type": "string",
-                    "description": "Fixed base URL for the device flow's "
+                    "fixed 'issuer'."),
+                "device_verification_base_url": _domain(Settings, "device_verification_base_url", "Fixed base URL for the device flow's "
                     "verification_uri (e.g. 'https://idp.example.com'), used "
                     "instead of the request-derived issuer so a backend/container "
                     "caller's Host doesn't leak into a URL a human's browser can't "
                     "reach. Only consulted when 'issuer_from_request' is on; empty "
-                    "string clears it back to following the request Host.",
-                },
-                "issuer_from_proxy_headers": {
-                    "type": "boolean",
-                    "description": "Trust 'X-Forwarded-Proto'/'X-Forwarded-Host'/"
+                    "string clears it back to following the request Host."),
+                "issuer_from_proxy_headers": _domain(Settings, "issuer_from_proxy_headers", "Trust 'X-Forwarded-Proto'/'X-Forwarded-Host'/"
                     "'X-Forwarded-For' from a single reverse-proxy hop in front of "
                     "NanoIDP (applies werkzeug's ProxyFix). Only affects the "
                     "'issuer_from_request' derivation - and only when that toggle "
@@ -638,110 +435,47 @@ _TOOLS: list[Tool] = [
                     "attribution regardless. Only enable this when NanoIDP is "
                     "deployed directly behind exactly one trusted proxy - these "
                     "headers are otherwise spoofable by any client. Takes effect "
-                    "on the next app restart, not the running process.",
-                },
-                "audience": {
-                    "type": "string",
-                    "description": "Default token audience",
-                },
-                "token_expiry_minutes": {
-                    "type": "integer",
-                    "description": "Token expiration in minutes",
-                },
-                "saml_entity_id": {
-                    "type": "string",
-                    "description": "SAML IdP entityID. Empty string clears it so "
+                    "on the next app restart, not the running process."),
+                "audience": _domain(Settings, "audience", "Default token audience"),
+                "token_expiry_minutes": _domain(Settings, "token_expiry_minutes", "Token expiration in minutes"),
+                "saml_entity_id": _domain(Settings, "saml_entity_id", "SAML IdP entityID. Empty string clears it so "
                     "it is derived again from the effective issuer as "
-                    "<issuer>/saml (#181)",
-                },
-                "saml_sso_url": {
-                    "type": "string",
-                    "description": "SAML SingleSignOnService location. Empty string "
-                    "clears it so it is derived again as <issuer>/saml/sso (#181)",
-                },
-                "saml_sign_responses": {
-                    "type": "boolean",
-                    "description": "Enable/disable SAML response signing",
-                },
-                "saml_export_roles": {
-                    "type": "boolean",
-                    "description": "Emit the user's roles as a SAML attribute (off by default)",
-                },
-                "saml_export_groups": {
-                    "type": "boolean",
-                    "description": "Emit the user's groups as a SAML attribute (off by default)",
-                },
-                "saml_roles_attr_name": {
-                    "type": "string",
-                    "description": "SAML attribute name for the roles (default: 'roles')",
-                },
-                "saml_groups_attr_name": {
-                    "type": "string",
-                    "description": "SAML attribute name for the groups (default: 'groups')",
-                },
-                "saml_c14n_algorithm": {
-                    "type": "string",
-                    "enum": ["c14n", "c14n11", "exc_c14n"],
-                    "description": "XML canonicalization algorithm: 'c14n' (1.0), 'c14n11' (1.1), or 'exc_c14n' (Exclusive 1.0)",
-                },
-                "saml_want_authn_requests_signed": {
-                    "type": "boolean",
-                    "description": "Require and verify AuthnRequest signatures, both bindings (#69)",
-                },
-                "saml_sp_certificates": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "PEM certificate files of SPs whose AuthnRequest signatures are accepted",
-                },
-                "strict_saml_binding": {
-                    "type": "boolean",
-                    "description": "Enforce strict SAML binding compliance (reject GET with uncompressed data)",
-                },
-                "verbose_logging": {
-                    "type": "boolean",
-                    "description": "Include usernames/client_ids in log messages (dev convenience)",
-                },
-                "refresh_token_rotation": {
-                    "type": "boolean",
-                    "description": "Rotate refresh tokens: each refresh invalidates the consumed refresh token (#46)",
-                },
-                "require_pkce": {
-                    "type": "boolean",
-                    "description": "Reject /authorize requests without a PKCE code_challenge (#47)",
-                },
-                "login_mode": {
-                    "type": "string",
-                    "enum": ["password", "persona"],
-                    "description": "Interactive login mode: 'password' (default) "
+                    "<issuer>/saml (#181)"),
+                "saml_sso_url": _domain(Settings, "saml_sso_url", "SAML SingleSignOnService location. Empty string "
+                    "clears it so it is derived again as <issuer>/saml/sso (#181)"),
+                "saml_sign_responses": _domain(Settings, "saml_sign_responses", "Enable/disable SAML response signing"),
+                "saml_export_roles": _domain(Settings, "saml_export_roles", "Emit the user's roles as a SAML attribute (off by default)"),
+                "saml_export_groups": _domain(Settings, "saml_export_groups", "Emit the user's groups as a SAML attribute (off by default)"),
+                "saml_roles_attr_name": _domain(Settings, "saml_roles_attr_name", "SAML attribute name for the roles (default: 'roles')"),
+                "saml_groups_attr_name": _domain(Settings, "saml_groups_attr_name", "SAML attribute name for the groups (default: 'groups')"),
+                "saml_c14n_algorithm": _domain(Settings, "saml_c14n_algorithm", "XML canonicalization algorithm: 'c14n' (1.0), 'c14n11' (1.1), or 'exc_c14n' (Exclusive 1.0)"),
+                "saml_want_authn_requests_signed": _domain(Settings, "saml_want_authn_requests_signed", "Require and verify AuthnRequest signatures, both bindings (#69)"),
+                "saml_sp_certificates": _domain(Settings, "saml_sp_certificates", "PEM certificate files of SPs whose AuthnRequest signatures are accepted"),
+                "strict_saml_binding": _domain(Settings, "strict_saml_binding", "Enforce strict SAML binding compliance (reject GET with uncompressed data)"),
+                "verbose_logging": _domain(Settings, "verbose_logging", "Include usernames/client_ids in log messages (dev convenience)"),
+                "refresh_token_rotation": _domain(Settings, "refresh_token_rotation", "Rotate refresh tokens: each refresh invalidates the consumed refresh token (#46)"),
+                "require_pkce": _domain(Settings, "require_pkce", "Reject /authorize requests without a PKCE code_challenge (#47)"),
+                "login_mode": _domain(Settings, "login_mode", "Interactive login mode: 'password' (default) "
                     "requires the configured password on /login, /authorize, "
                     "/saml/sso and the device flow; 'persona' lists the "
                     "configured users and logs in by selecting one, no password "
                     "prompt. Opt-in, off by default - a local development/testing "
                     "convenience, not an authentication mode for deployed "
                     "environments. Orthogonal to 'security_profile' and to the "
-                    "OAuth password grant, which is unaffected either way.",
-                },
-                "auto_login": {
-                    "type": "boolean",
-                    "description": "With login_mode: persona, OIDC /authorize "
+                    "OAuth password grant, which is unaffected either way."),
+                "auto_login": _domain(Settings, "auto_login", "With login_mode: persona, OIDC /authorize "
                     "accepts login_hint values prefixed "
                     "'persona-auto-login:USERNAME' and logs that user in "
                     "directly, no picker (#250) - for driving a real OIDC "
                     "client library in automated integration tests. Opt-in, "
                     "off by default; inert unless login_mode is also "
-                    "'persona'.",
-                },
-                "two_step": {
-                    "type": "boolean",
-                    "description": "Collect username and password on "
+                    "'persona'."),
+                "two_step": _domain(Settings, "two_step", "Collect username and password on "
                     "separate screens, everywhere login_mode: password "
                     "renders a combined form - /authorize, /login, "
                     "/saml/sso and the device flow (#322/#323). Opt-in, "
-                    "off by default; inert under login_mode: persona.",
-                },
-                "totp": {
-                    "type": "boolean",
-                    "description": "After a successful password check, "
+                    "off by default; inert under login_mode: persona."),
+                "totp": _domain(Settings, "totp", "After a successful password check, "
                     "require a time-based one-time code (RFC 6238, 6 "
                     "digits, 30s period, SHA-1) from any user carrying a "
                     "totp_secret - on /authorize, /login, /saml/sso and "
@@ -749,8 +483,7 @@ _TOOLS: list[Tool] = [
                     "the secret is a plain field of the user entry, "
                     "written directly in users.yaml, with no enrolment, "
                     "no replay protection and no admin reset. Opt-in, "
-                    "off by default; inert under login_mode: persona.",
-                },
+                    "off by default; inert under login_mode: persona."),
             },
             "required": [],
         },
@@ -849,10 +582,10 @@ _TOOLS: list[Tool] = [
                     "type": "string",
                     "description": "Filter by event type (e.g. token_request, authorization_request)",
                 },
-                "username": {
-                    "type": "string",
-                    "description": "Filter by username",
-                },
+                # A filter, not a username to act on: get_entries treats a
+                # blank one as "no filter", a vocabulary User.username does
+                # not have, so the minLength does not carry over.
+                "username": _domain(User, "username", "Filter by username", minLength=None),
             },
             "required": [],
         },

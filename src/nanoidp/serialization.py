@@ -513,7 +513,11 @@ OWNED_SETTINGS: tuple[OwnedSetting, ...] = (
     # apply_settings_document this mode is equivalent to plain.
     OwnedSetting("saml", "roles_attr_name", "saml_roles_attr_name", "omit_when_falsy", ""),
     OwnedSetting("saml", "groups_attr_name", "saml_groups_attr_name", "omit_when_falsy", ""),
-    OwnedSetting("saml", "c14n_algorithm", "saml_c14n_algorithm"),
+    # Blank clears the key so the default algorithm applies again, the same
+    # contract as the two attribute names above. As a "plain" row a blank
+    # form field persisted a literal "", which since #297 closed the set is
+    # a file the next process cannot load.
+    OwnedSetting("saml", "c14n_algorithm", "saml_c14n_algorithm", "omit_when_falsy", ""),
     OwnedSetting("saml", "strict_binding", "strict_saml_binding"),
     OwnedSetting("saml", "want_authn_requests_signed", "saml_want_authn_requests_signed"),
     OwnedSetting("saml", "sp_certificates", "saml_sp_certificates", "omit_when_falsy", []),

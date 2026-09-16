@@ -351,6 +351,10 @@
           },
           "mode": {
             "default": "password",
+            "enum": [
+              "password",
+              "persona"
+            ],
             "title": "Mode",
             "type": "string"
           },
@@ -485,6 +489,11 @@
         "properties": {
           "c14n_algorithm": {
             "default": "exc_c14n",
+            "enum": [
+              "exc_c14n",
+              "c14n",
+              "c14n11"
+            ],
             "title": "C14N Algorithm",
             "type": "string"
           },

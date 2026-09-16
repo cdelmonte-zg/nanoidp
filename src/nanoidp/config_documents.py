@@ -40,11 +40,15 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from .models import (
     DEFAULT_SCOPES_SUPPORTED,
+    SAML_C14N_DEFAULT,
+    LoginMode,
     OAuthClient,
+    SamlC14nAlgorithm,
     Settings,
     User,
     _coerce_additional_audiences,
     _coerce_client_str_list,
+    normalize_saml_c14n_algorithm,
 )
 
 logger = logging.getLogger(__name__)
@@ -177,10 +181,18 @@ class SamlSection(BaseModel):
     # bare `roles_attr_name:` line must keep reaching it (#197 review).
     roles_attr_name: Optional[str] = "roles"
     groups_attr_name: Optional[str] = "groups"
-    c14n_algorithm: str = "exc_c14n"
+    # Closed set (#297), blank still meaning the default - the same
+    # before-validator the domain model runs, so an unset ${VAR} keeps
+    # loading here too.
+    c14n_algorithm: SamlC14nAlgorithm = SAML_C14N_DEFAULT
     want_authn_requests_signed: bool = False
     sp_certificates: Optional[List[str]] = None
     strict_binding: bool = False
+
+    @field_validator("c14n_algorithm", mode="before")
+    @classmethod
+    def _normalize_c14n_algorithm(cls, v: Any) -> Any:
+        return normalize_saml_c14n_algorithm(v)
 
 
 class ExternalKeysSection(BaseModel):
@@ -233,7 +245,7 @@ class LoggingSection(BaseModel):
 class LoginSection(BaseModel):
     model_config = _FORBID
 
-    mode: str = "password"
+    mode: LoginMode = "password"
     auto_login: bool = False
     two_step: bool = False
     totp: bool = False

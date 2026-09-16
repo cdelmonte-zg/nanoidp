@@ -120,3 +120,51 @@ class TestBlankClearsTheSamlAttrNames:
         saml = yaml.safe_load((tmp_path / "settings.yaml").read_text())["saml"]
         assert saml["roles_attr_name"] == "entitlementsOf"
         assert saml["groups_attr_name"] == "memberGroups"
+
+
+class TestTheAlgorithmNeverReachesTheFileUnchecked:
+    """``saml.c14n_algorithm`` is a closed set since #297, so an unchecked
+    value written here leaves a settings.yaml the next process cannot load:
+    ``_atomic_write`` replaces the file first and only then reloads. Same
+    guard, and the same reason, as ``login_mode``.
+    """
+
+    def _seed(self, tmp_path):
+        import shutil
+        from pathlib import Path
+
+        from nanoidp.config import ConfigManager
+
+        repo_config = Path(__file__).resolve().parent.parent / "config"
+        for name in ("settings.yaml", "users.yaml"):
+            shutil.copy(repo_config / name, tmp_path / name)
+        ConfigManager(str(tmp_path))
+        return YamlWriter(str(tmp_path))
+
+    def test_an_invalid_algorithm_is_refused_before_anything_is_written(self, tmp_path):
+        import pytest
+
+        writer = self._seed(tmp_path)
+        before = (tmp_path / "settings.yaml").read_text()
+        with pytest.raises(ValueError, match="canonicalization algorithm"):
+            writer.update_saml_settings(c14n_algorithm="exc-c14n")
+        assert (tmp_path / "settings.yaml").read_text() == before
+
+    def test_the_composed_form_write_is_guarded_too(self, tmp_path):
+        import pytest
+
+        writer = self._seed(tmp_path)
+        before = (tmp_path / "settings.yaml").read_text()
+        with pytest.raises(ValueError, match="canonicalization algorithm"):
+            writer.update_settings_form(
+                oauth_fields={}, saml_fields={"c14n_algorithm": "exc-c14n"}
+            )
+        assert (tmp_path / "settings.yaml").read_text() == before
+
+    def test_blank_clears_the_key_so_the_default_applies(self, tmp_path):
+        import yaml
+
+        writer = self._seed(tmp_path)
+        writer.update_saml_settings(c14n_algorithm="")
+        saml = yaml.safe_load((tmp_path / "settings.yaml").read_text())["saml"]
+        assert "c14n_algorithm" not in saml

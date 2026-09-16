@@ -75,6 +75,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lowered `max_previous_keys` trims the JWKS as soon as it is applied.
 
 ### Changed
+- **MCP tool arguments take their shape from the domain models** (#297).
+  An argument that carries a configuration field's value now derives its
+  type, enum, bounds, length, pattern and item type from that field; the
+  tool keeps its own description, its `required` list and the wider
+  vocabulary it defines (an empty `client_secret` or branding colour still
+  means "none"/"clear it", an empty `get_audit_log` username still means
+  "no filter", and the handler answers those). The schemas gained 16
+  constraints the models already enforced and nobody advertised:
+  `minLength` on every name and secret that has no wider tool vocabulary,
+  and the range of `token_expiry_minutes`. For a client this moves those
+  rejections to a dispatch refusal (`MCP_INVALID_ARGUMENTS`), the two
+  layers the MCP error model already describes.
+- **`update_settings` no longer applies a value the model would refuse**
+  (#297). It writes its arguments onto `Settings` with `setattr`, and
+  `Settings` has no `validate_assignment`, so its tool schema was the only
+  check between an argument and the running configuration - and that schema
+  carried two enums and no bounds. `update_settings` with
+  `token_expiry_minutes: 0` or `99999` was applied and reported as a
+  success; both are now refused before dispatch.
+- **`saml.c14n_algorithm` is a closed set** (#297), in the models and in
+  the configuration document. An unknown value used to reach `routes/saml.py`,
+  which silently signed with Exclusive C14N, so a typo changed the algorithm
+  without a word; it now fails the configuration load. Blank keeps meaning
+  "the default", so an unset `${VAR}` placeholder loads exactly as before,
+  and the settings writer checks the value before it replaces the file.
+  (`login.mode` was already a closed set on the `Settings` model and only
+  moves into the document type here.)
 - **Users and clients resolve through one identity resolver** (#235), in
   preparation for runtime-created test identities (#192). Every login,
   grant, client authentication and SAML lookup resolves users and clients
