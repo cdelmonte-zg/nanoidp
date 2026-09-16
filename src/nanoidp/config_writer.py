@@ -328,12 +328,15 @@ def current_revision(file_path: Path) -> Revision:
 
 
 WriteItem = Tuple[Path, Optional[Revision], Callable[[Dict[str, Any]], Any]]
+# Given every (path, mutated document) in a batch, raise to refuse the write.
+Validate = Callable[[Sequence[Tuple[Path, Dict[str, Any]]]], None]
 
 
 def compare_and_replace(
     file_path: Path,
     expected_revision: Optional[Revision],
     mutate: Callable[[Dict[str, Any]], Any],
+    validate: Optional[Validate] = None,
 ) -> Revision:
     """Load, optionally check, mutate, atomically replace; return the new revision.
 
@@ -344,10 +347,12 @@ def compare_and_replace(
     partial write or a half-applied mutation. The single-item case of
     ``compare_and_replace_many``.
     """
-    return compare_and_replace_many([(file_path, expected_revision, mutate)])[0]
+    return compare_and_replace_many([(file_path, expected_revision, mutate)], validate)[0]
 
 
-def compare_and_replace_many(items: Sequence[WriteItem]) -> List[Revision]:
+def compare_and_replace_many(
+    items: Sequence[WriteItem], validate: Optional[Validate] = None
+) -> List[Revision]:
     """``compare_and_replace`` across several files as one coordinated,
     conflict-checked batch - not a filesystem transaction (see below).
 
@@ -396,6 +401,16 @@ def compare_and_replace_many(items: Sequence[WriteItem]) -> List[Revision]:
             document = load_yaml_document(file_path)
             mutate(document)
             loaded.append((file_path, document))
+
+        # Phase 2b: the caller inspects what phase 2 produced, before any
+        # of it reaches disk (#366). It sees every document in the batch at
+        # once, which is the only place that view exists: a rule spanning
+        # users.yaml and settings.yaml has nowhere else to run. Raising here
+        # leaves every file untouched, exactly like a mutate that raises.
+        # This module stays ignorant of what makes a document acceptable -
+        # the caller owns that, as it owns mutate.
+        if validate is not None:
+            validate(loaded)
 
         # Phase 3: every mutated document written.
         new_revisions = []

@@ -19,7 +19,12 @@ from flask import Blueprint, current_app, jsonify, request
 from flask.typing import ResponseReturnValue
 
 from ..config import ConfigurationRejected, get_config
-from ..config_documents import EntryInvalid, parse_client_entry, parse_user_entry
+from ..config_documents import (
+    DocumentRejected,
+    EntryInvalid,
+    parse_client_entry,
+    parse_user_entry,
+)
 from ..config_writer import ConflictError, LockUnavailableError
 from ..hooks import HookError
 from ..services.dynamic_registration import (
@@ -238,6 +243,10 @@ def _promote(
         return _error(404, f"no runtime {kind} {name!r}", "not_found")
     except PromotionInProgress:
         return _error(409, f"runtime {kind} {name!r} is being promoted", "promotion_in_progress")
+    except DocumentRejected as exc:
+        # Refused before the file was replaced (#366): a pre-write refusal,
+        # like ConflictError, not the post-write reload failure below.
+        return _error(422, exc.message, "invalid")
     except DeclaredNameCollision:
         return _error(409, f"{kind} {name!r} is already declared in {file_name}", "declared")
     except ConflictError:

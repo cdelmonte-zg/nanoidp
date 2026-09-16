@@ -34,7 +34,19 @@ import copy
 import logging
 import os
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Literal, Mapping, Optional, Tuple, Type, TypeVar
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    List,
+    Literal,
+    Mapping,
+    Optional,
+    Sequence,
+    Tuple,
+    Type,
+    TypeVar,
+)
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
@@ -50,6 +62,7 @@ from .models import (
     _coerce_client_str_list,
     normalize_saml_c14n_algorithm,
 )
+from .serialization import expand_env_vars
 
 logger = logging.getLogger(__name__)
 
@@ -791,3 +804,72 @@ def document_defaults() -> Dict[str, Any]:
         else:
             defaults[key] = value
     return defaults
+
+
+def _first_finding(exc: ValueError) -> str:
+    """One line from a model's complaint, the way ``_entry_error`` reads one.
+
+    A ``ValidationError`` prints several lines and a link to pydantic's
+    documentation, which is not what a settings page should show. The value
+    never appears: ``Settings`` sets ``hide_input_in_errors`` (#352).
+    """
+    if isinstance(exc, ValidationError):
+        first = exc.errors()[0]
+        field = _dotted(first["loc"])
+        message = first["msg"].removeprefix("Value error, ")
+        return f"{field + ': ' if field else ''}{message}"
+    return str(exc)
+
+
+class DocumentRejected(ValueError):
+    """A document a writer composed would not load, so it is not written.
+
+    A refusal, not a failure: like ``ConflictError`` it is raised before
+    anything reaches disk, and unlike ``ConfigurationRejected`` it never
+    means "the file is written and the reload failed". Callers that tell
+    those apart (``/api/runtime``, #192) must keep telling them apart.
+
+    ``message`` is the text a caller may show: the model's own finding, with
+    the file and the path to the offending key, and no value in it.
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.message = message
+
+
+def reject_unloadable(documents: Sequence[Tuple[Path, Dict[str, Any]]]) -> None:
+    """Refuse a write whose result the next load would not accept (#366).
+
+    The write primitive replaces the file and only then reloads, so a
+    document that the models refuse used to reach disk and leave a
+    settings.yaml no process could start from: a blank ``oauth.issuer``,
+    ``oauth.audience`` or ``server.rate_limit_token_endpoint`` is written as
+    ``""``, which those fields reject. The same parse the loader runs,
+    run one step earlier, turns that into a refusal with nothing written.
+
+    ``${VAR}`` placeholders are expanded into a **copy** first, exactly as
+    ``ConfigManager._stage_directory`` does, because that is the value the
+    models will see; the document written keeps its placeholders. What this
+    therefore answers is "would this file load in this environment", which
+    is the question that matters and the only one available here.
+
+    Strictness comes from the document's own ``config_validation``, the way
+    a fresh process would read it. A running process whose CLI raised
+    strictness beyond the file's can still refuse its own write afterwards,
+    in the reload it already does - no worse than before, and not something
+    this can see.
+    """
+    for file_path, document in documents:
+        expanded = expand_env_vars(dict(document))
+        try:
+            if file_path.name == "users.yaml":
+                load_users_document(expanded, file_path).to_users()
+            else:
+                strict = declared_validation_mode(expanded) == "strict"
+                load_settings_document(expanded, file_path, strict=strict).to_settings()
+        except (ValueError, ValidationError) as exc:
+            raise DocumentRejected(
+                f"the change would leave {file_path.name} unloadable: "
+                f"{_first_finding(exc)}"
+            ) from exc

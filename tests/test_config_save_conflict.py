@@ -10,6 +10,7 @@ import pytest
 import yaml
 
 from nanoidp.config import ConfigManager, ReloadAfterSaveError
+from nanoidp.config_documents import DocumentRejected
 from nanoidp.config_writer import ConflictError, current_revision
 from nanoidp.hooks import HookError
 
@@ -122,50 +123,113 @@ class TestSaveIsTransactionalAcrossBothFiles:
         assert (on_disk_settings.get("oauth") or {}).get("audience") != "changed"
 
 
-class TestSaveReloadFailureAfterASuccessfulWrite:
-    """Regression pin for #229 review blocking 3: reload_local() runs
-    unconditionally at the end of save(), so it can raise on its own -
-    Settings has no validate_assignment, so an in-memory
-    token_expiry_minutes = -5 (Settings declares gt=0) reaches
-    settings.yaml just fine but fails to reload back in. Two distinct
-    bugs to pin: a durable write must never be reported as if nothing
-    happened, and a reload failure must never replace a pending
-    HookError - a caller needs to tell "the write itself failed" apart
-    from "written, but the runtime couldn't adopt it" apart from
-    "written, only the mirror push failed"."""
+class TestASaveThatWouldNotLoadIsRefused:
+    """What used to be pinned here as damage control is now prevented.
 
-    def test_reload_failure_is_not_reported_as_a_silent_success(self, tmp_path):
+    Settings has no validate_assignment, so an in-memory
+    token_expiry_minutes = -5 (the model declares gt=0) reached
+    settings.yaml just fine and only failed on the way back in. These
+    tests asserted that the -5 was on disk afterwards, because at the
+    time the alternative was a durable write reported as if nothing had
+    happened. Since #366 the document is parsed before the file is
+    replaced, so the write never happens at all - which is the outcome
+    those assertions were the least bad substitute for.
+
+    The reload-failure contract itself is still pinned, one class down.
+    """
+
+    def test_the_file_is_left_alone(self, tmp_path):
         config_dir = _seed(tmp_path)
+        settings_file = config_dir / "settings.yaml"
+        config = ConfigManager(str(config_dir))
+        before = settings_file.read_text()
+
+        config.settings.token_expiry_minutes = -5
+
+        with pytest.raises(DocumentRejected):
+            config.save()
+
+        assert settings_file.read_text() == before
+
+    def test_the_refusal_names_the_file_and_the_field(self, tmp_path):
+        config = ConfigManager(str(_seed(tmp_path)))
+        config.settings.token_expiry_minutes = -5
+
+        with pytest.raises(DocumentRejected) as refused:
+            config.save()
+
+        assert "settings.yaml" in refused.value.message
+        assert "token_expiry_minutes" in refused.value.message
+
+    def test_a_refusal_does_not_reach_the_mirror_hook(self, tmp_path):
+        """Nothing was written, so there is nothing to mirror. The hook
+        would otherwise announce a save that did not happen."""
+        config_dir = _seed(tmp_path)
+        settings_file = config_dir / "settings.yaml"
+        marker = tmp_path / "hook-ran"
+        settings_file.write_text(
+            settings_file.read_text()
+            + f"\nhooks:\n  on_config_saved: 'touch {marker}'\n  strict: true\n"
+        )
         config = ConfigManager(str(config_dir))
 
         config.settings.token_expiry_minutes = -5
 
+        with pytest.raises(DocumentRejected):
+            config.save()
+        assert not marker.exists()
+
+
+class TestReloadFailureAfterASuccessfulWrite:
+    """The #229 review blocking 3 contract, still true.
+
+    reload_local() runs unconditionally at the end of save(), so it can
+    raise on its own. Since #366 the writer no longer produces a document
+    that fails to parse, so the causes left are the ones it cannot see -
+    another process writing in between, an environment that changed under
+    it, a strictness the file does not declare. The failure is injected
+    here rather than provoked, because the contract being pinned is what
+    save() does about it, not which cause produced it: a durable write
+    must never be reported as if nothing happened, and a reload failure
+    must never replace a pending HookError. A caller needs to tell "the
+    write itself failed" apart from "written, but the runtime couldn't
+    adopt it" apart from "written, only the mirror push failed".
+    """
+
+    @staticmethod
+    def _reload_always_fails(config, monkeypatch):
+        def fail() -> None:
+            raise ValueError("the runtime could not adopt it")
+
+        monkeypatch.setattr(config, "reload_local", fail)
+
+    def test_reload_failure_is_not_reported_as_a_silent_success(self, tmp_path, monkeypatch):
+        config_dir = _seed(tmp_path)
+        config = ConfigManager(str(config_dir))
+        config.settings.audience = "written-anyway"
+        self._reload_always_fails(config, monkeypatch)
+
         with pytest.raises(ReloadAfterSaveError):
             config.save()
 
-        # the write itself landed - a durable write is not a failure to
-        # hide, and the file is authoritative even though the runtime
-        # could not adopt it
         on_disk = yaml.safe_load((config_dir / "settings.yaml").read_text())
-        assert on_disk["oauth"]["token_expiry_minutes"] == -5
+        assert on_disk["oauth"]["audience"] == "written-anyway"
 
-    def test_reload_failure_does_not_swallow_a_pending_hook_error(self, tmp_path):
+    def test_reload_failure_does_not_swallow_a_pending_hook_error(self, tmp_path, monkeypatch):
         config_dir = _seed(tmp_path)
         settings_file = config_dir / "settings.yaml"
         settings_file.write_text(
             settings_file.read_text() + "\nhooks:\n  on_config_saved: 'false'\n  strict: true\n"
         )
         config = ConfigManager(str(config_dir))
-
-        config.settings.token_expiry_minutes = -5
+        config.settings.audience = "written-anyway"
+        self._reload_always_fails(config, monkeypatch)
 
         with pytest.raises(HookError):
             config.save()
 
-        # both failures are real, but HookError - "you'll be told the
-        # mirror push failed" - keeps priority over the reload failure
         on_disk = yaml.safe_load(settings_file.read_text())
-        assert on_disk["oauth"]["token_expiry_minutes"] == -5
+        assert on_disk["oauth"]["audience"] == "written-anyway"
 
 
 class TestSaveRefreshesRuntimeOnceAfterBothFiles:

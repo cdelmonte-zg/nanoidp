@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **A write that would leave a file unloadable is refused, not written**
+  (#366). Every writer replaced the file and reloaded afterwards, so a
+  document the models refuse reached disk first and was discovered second,
+  leaving a `settings.yaml` the next process could not start from. The
+  composed document is now parsed, exactly as a load parses it, before any
+  file is replaced: the error names the file and the key and nothing is
+  written. Reachable from the settings form (a blank `oauth.audience` or
+  `oauth.issuer`) and from the MCP tools, where `update_settings` writes
+  onto a model without `validate_assignment` and `save_config` persisted
+  the result, so an `issuer` refused by a validator rather than by a field
+  constraint could be saved and then fail to load back. `${VAR}`
+  placeholders are expanded into a copy for the check, so what is written
+  keeps them. The check is of the document only, never of activation.
+
 ### Added
 - **Dynamic client registration** (#190), RFC 7591 with the read and delete
   of RFC 7592, behind `oauth.dynamic_registration.enabled` (off by default).

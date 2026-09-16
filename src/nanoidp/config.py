@@ -22,6 +22,7 @@ from .config_documents import (
     document_defaults,
     load_settings_document,
     load_users_document,
+    reject_unloadable,
 )
 from .config_writer import compare_and_replace, compare_and_replace_many, revision_of_bytes
 from .hooks import SOURCE_SETTINGS, HookError, HookRegistry, bootstrap_registry
@@ -605,7 +606,11 @@ class ConfigManager:
                         doc, self.persistable_settings(), defaults=document_defaults()
                     ),
                 ),
-            ]
+            ],
+            # Both documents are checked together, before either is
+            # written (#366): a save that would leave a file the next
+            # process cannot load is refused with nothing on disk.
+            validate=reject_unloadable,
         )
 
         hook_error: Optional[HookError] = None
