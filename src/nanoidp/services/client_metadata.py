@@ -24,6 +24,7 @@ from pydantic import BaseModel
 
 from ..config_documents import EntryInvalid, parse_client_entry
 from ..models import OAuthClient
+from .redirect_uri import redirect_uri_rejection_reason
 from .runtime_identities import MemoryRuntimeRepository, get_runtime_identity_store
 
 logger = logging.getLogger(__name__)
@@ -72,12 +73,20 @@ class DocumentInvalid(ValueError):
 
 
 class CachedClient(BaseModel):
-    """A client learned from a metadata document, and when to forget it."""
+    """A client learned from a metadata document, and when to forget it.
 
-    client_id: str
+    The client carries its own id and the repository is keyed on it, so a
+    cache entry cannot end up filed under a URL other than the one the
+    client answers to. There is nothing here to keep in step.
+    """
+
     client: OAuthClient
     fetched_at: float
     expires_at: float
+
+    @property
+    def client_id(self) -> str:
+        return self.client.client_id
 
     def is_fresh(self, now: Optional[float] = None) -> bool:
         return (now if now is not None else time.time()) < self.expires_at
@@ -90,7 +99,7 @@ def looks_like_client_id_url(client_id: str) -> bool:
     else is a name. Whether the candidate is a *valid* Client Identifier URL
     is ``reject_invalid_client_id_url``'s answer, which says why.
     """
-    return client_id.startswith(_SCHEME)
+    return client_id[: len(_SCHEME)].lower() == _SCHEME
 
 
 def reject_invalid_client_id_url(client_id: str) -> None:
@@ -107,7 +116,11 @@ def reject_invalid_client_id_url(client_id: str) -> None:
     # simple string comparison, so it is checked as given.
     if client_id != client_id.strip() or any(ch.isspace() for ch in client_id):
         raise ClientIdUrlInvalid("a client identifier URL must contain no whitespace")
-    if not client_id.startswith(_SCHEME):
+    if client_id[: len(_SCHEME)].lower() != _SCHEME:
+        # Case-insensitive, per RFC 3986: scheme names are, and an
+        # implementation is asked to accept an uppercase one. Everything
+        # after it is compared as given, because the draft matches the
+        # document's client_id against this string literally.
         raise ClientIdUrlInvalid("a client identifier URL must use https")
     parts = urlsplit(client_id)
     if parts.scheme != "https":
@@ -118,8 +131,15 @@ def reject_invalid_client_id_url(client_id: str) -> None:
         raise ClientIdUrlInvalid("a client identifier URL must carry no fragment")
     if not parts.hostname:
         raise ClientIdUrlInvalid("a client identifier URL must name a host")
-    if not parts.path or parts.path == "/":
+    if not parts.path:
         raise ClientIdUrlInvalid("a client identifier URL must have a path")
+    if parts.path == "/":
+        # NOT RECOMMENDED in the draft, not forbidden - the same treatment
+        # the query gets, for the same reason.
+        logger.warning(
+            "Client identifier URL uses the root path, which the "
+            "specification discourages: %s", client_id
+        )
     # Percent-decoded first: %2e is '.' (RFC 3986), and the rule exists so
     # that nothing between here and the origin can normalise the request
     # target into a different resource than the identifier names.
@@ -170,12 +190,13 @@ def client_from_document(
     if not all(isinstance(uri, str) and uri for uri in redirect_uris):
         raise DocumentInvalid("redirect_uris must be a list of strings")
     for uri in redirect_uris:
-        # The same answer #190 gives a registration: a value /authorize
-        # could never match is named here, rather than found later as an
-        # opaque refusal.
-        parsed = urlsplit(uri)
-        if not parsed.scheme or not (parsed.netloc or parsed.path):
-            raise DocumentInvalid("redirect_uris must be absolute URIs")
+        # Through the gate /authorize itself applies, not a second reading
+        # of the same rule: that module exists to be the only one, and it
+        # knows things this would have missed, such as RFC 6749's ban on a
+        # fragment and RFC 8252's rule for private-use schemes.
+        rejection = redirect_uri_rejection_reason(uri)
+        if rejection is not None:
+            raise DocumentInvalid(f"redirect_uris: {rejection}")
 
     entry: Dict[str, Any] = {
         "client_id": client_id,
@@ -227,7 +248,7 @@ def cache() -> MemoryRuntimeRepository[CachedClient]:
     processes do not share it, and a durable backend is #354's.
     """
     return get_runtime_identity_store().repository(
-        "cimd_documents", lambda cached: cached.client_id
+        "cimd_documents", lambda cached: cached.client.client_id
     )
 
 
@@ -260,7 +281,7 @@ def _evict_oldest(room_for: int) -> int:
     return dropped
 
 
-def remember(client_id: str, client: OAuthClient, lifetime: Optional[float]) -> CachedClient:
+def remember(client: OAuthClient, lifetime: Optional[float]) -> CachedClient:
     """Cache a document that was fetched and accepted.
 
     Only successes are cached. The draft says an error response or an
@@ -268,14 +289,17 @@ def remember(client_id: str, client: OAuthClient, lifetime: Optional[float]) -> 
     cache here: a bad answer must not be able to stick. Protecting the
     server from a client that keeps failing is rate limiting, elsewhere.
 
-    The identifier is checked here rather than trusted from the caller, so
-    the rules this module states are the rules the cache actually holds to:
-    nothing can be remembered under a URL the specification does not allow.
+    The key is the client's own id, and the identifier is checked here
+    rather than trusted from the caller, so the rules this module states are
+    the rules the cache actually holds to: nothing can be remembered under a
+    URL the specification does not allow, and nothing can be filed under a
+    URL other than the one it answers to.
 
     Sweep, evict and replace are one critical section. They are three visits
     to the repository, and two requests for the same uncached URL would
     otherwise both fetch and collide on the create.
     """
+    client_id = client.client_id
     reject_invalid_client_id_url(client_id)
     now = time.time()
     with cache_lock:
@@ -284,7 +308,6 @@ def remember(client_id: str, client: OAuthClient, lifetime: Optional[float]) -> 
         _evict_oldest(room_for=1)
         return cache().create(
             CachedClient(
-                client_id=client_id,
                 client=client,
                 fetched_at=now,
                 expires_at=now + bounded_lifetime(lifetime),

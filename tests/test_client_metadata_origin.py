@@ -51,7 +51,6 @@ def _expire(client_id):
     cache().delete(client_id)
     cache().create(
         CachedClient(
-            client_id=entry.client_id,
             client=entry.client,
             fetched_at=entry.fetched_at,
             expires_at=time.time() - 1,
@@ -98,7 +97,6 @@ class TestTheClientIdentifierUrl:
             ("https://user:pw@client.example/m.json", "userinfo"),
             ("https://client.example/m.json#frag", "fragment"),
             ("https://client.example", "path"),
-            ("https://client.example/", "path"),
             ("https://client.example/./m.json", "path segments"),
             ("https://client.example/a/../m.json", "path segments"),
             # %2e is '.' (RFC 3986), so the rule has to look past the
@@ -111,7 +109,6 @@ class TestTheClientIdentifierUrl:
             (" https://client.example/m.json", "whitespace"),
             ("https://client.example/m.json\n", "whitespace"),
             ("https://client.ex\tample/m.json", "whitespace"),
-            ("HTTPS://client.example/m.json", "https"),
         ],
     )
     def test_every_rule_has_its_own_refusal(self, client_id, reason):
@@ -121,10 +118,26 @@ class TestTheClientIdentifierUrl:
     def test_a_well_formed_url_passes(self):
         reject_invalid_client_id_url(URL)
 
-    def test_a_query_is_discouraged_rather_than_refused(self):
-        """SHOULD NOT, not MUST NOT: refusing would lock a conforming
-        client out of this IdP entirely."""
-        reject_invalid_client_id_url("https://client.example/m.json?tenant=a")
+    @pytest.mark.parametrize(
+        "client_id",
+        [
+            # SHOULD NOT and NOT RECOMMENDED, not MUST NOT: refusing either
+            # would lock a conforming client out of this IdP entirely.
+            "https://client.example/m.json?tenant=a",
+            "https://client.example/",
+        ],
+    )
+    def test_what_the_draft_discourages_is_not_refused(self, client_id):
+        reject_invalid_client_id_url(client_id)
+
+    def test_an_uppercase_scheme_is_accepted(self):
+        """RFC 3986: scheme names are case-insensitive, and an
+        implementation is asked to accept an uppercase one. Both gates say
+        so, or a URL one accepts could never resolve through the other."""
+        upper = "HTTPS://client.example/m.json"
+
+        reject_invalid_client_id_url(upper)
+        assert looks_like_client_id_url(upper) is True
 
     def test_the_two_gates_agree_about_the_same_string(self):
         """One says whether a client_id is worth looking at, the other
@@ -159,11 +172,20 @@ class TestTheDocument:
         with pytest.raises(DocumentInvalid, match="authenticates with"):
             client_from_document(URL, _document(token_endpoint_auth_method=method), [])
 
-    def test_a_relative_redirect_uri_is_refused(self):
-        """The same answer #190 gives a registration: a value /authorize
-        could never match is named here rather than found later."""
-        with pytest.raises(DocumentInvalid, match="absolute"):
-            client_from_document(URL, _document(redirect_uris=["/cb"]), [])
+    @pytest.mark.parametrize(
+        "uri",
+        [
+            "/cb",
+            # RFC 6749 forbids a fragment in a redirect endpoint, and
+            # RFC 8252 wants a period in a private-use scheme. Neither rule
+            # is restated here: this goes through the gate /authorize uses.
+            "https://app.example/cb#fragment",
+            "myapp:/oauth2redirect",
+        ],
+    )
+    def test_a_redirect_uri_authorize_would_refuse_is_refused_here(self, uri):
+        with pytest.raises(DocumentInvalid, match="redirect_uris"):
+            client_from_document(URL, _document(redirect_uris=[uri]), [])
 
     @pytest.mark.parametrize("value", [None, [], "not-a-list", [""], [1]])
     def test_redirect_uris_must_be_a_non_empty_list_of_strings(self, value):
@@ -213,13 +235,13 @@ class TestTheCache:
     def test_a_remembered_client_reads_back(self, app):
         with app.app_context():
             client = client_from_document(URL, _document(), ["openid"])
-            remember(URL, client, None)
+            remember(client, None)
 
             assert cached_client(URL).client_id == URL
 
     def test_an_expired_entry_is_gone_and_dropped(self, app):
         with app.app_context():
-            remember(URL, client_from_document(URL, _document(), ["openid"]), None)
+            remember(client_from_document(URL, _document(), ["openid"]), None)
             _expire(URL)
 
             assert cached_client(URL) is None
@@ -231,10 +253,10 @@ class TestTheCache:
         with app.app_context():
             for index in range(3):
                 url = f"https://client.example/{index}.json"
-                remember(url, client_from_document(url, _document(client_id=url), []), None)
+                remember(client_from_document(url, _document(client_id=url), []), None)
                 _expire(url)
 
-            remember(URL, client_from_document(URL, _document(), []), None)
+            remember(client_from_document(URL, _document(), []), None)
 
             assert [entry.client_id for entry in cache().list()] == [URL]
 
@@ -245,7 +267,7 @@ class TestTheCache:
         with app.app_context():
             for index in range(MAX_CACHED_DOCUMENTS + 5):
                 url = f"https://client.example/{index}.json"
-                remember(url, client_from_document(url, _document(client_id=url), []), None)
+                remember(client_from_document(url, _document(client_id=url), []), None)
 
             entries = cache().list()
             assert len(entries) == MAX_CACHED_DOCUMENTS
@@ -267,7 +289,7 @@ class TestTheCache:
             def write():
                 barrier.wait()
                 try:
-                    remember(URL, client, None)
+                    remember(client, None)
                 except Exception as exc:  # noqa: BLE001 - the point of the test
                     failures.append(exc)
 
@@ -282,17 +304,22 @@ class TestTheCache:
 
     def test_a_url_the_rules_refuse_cannot_be_remembered(self, app):
         """The rules are this module's, so the cache holds to them rather
-        than trusting whoever calls it."""
+        than trusting whoever calls it. The client is built around a legal
+        URL and then given an illegal one, which is the only way to get a
+        client the rules would refuse: client_from_document applies them
+        too."""
         with app.app_context():
-            bad = "https://client.example/m.json#frag"
+            client = client_from_document(URL, _document(), [])
+            client.client_id = "https://client.example/m.json#frag"
+
             with pytest.raises(ClientIdUrlInvalid):
-                remember(bad, client_from_document(URL, _document(), []), None)
+                remember(client, None)
 
             assert cache().list() == []
 
     def test_forgetting_says_whether_there_was_an_entry(self, app):
         with app.app_context():
-            remember(URL, client_from_document(URL, _document(), []), None)
+            remember(client_from_document(URL, _document(), []), None)
 
             assert forget(URL) is True
             assert forget(URL) is False
@@ -301,8 +328,8 @@ class TestTheCache:
         """A re-fetch of a document that changed must not hit the
         repository's "a name is taken" rule."""
         with app.app_context():
-            remember(URL, client_from_document(URL, _document(), []), None)
-            remember(URL, client_from_document(URL, _document(client_name="renamed"), []), None)
+            remember(client_from_document(URL, _document(), []), None)
+            remember(client_from_document(URL, _document(client_name="renamed"), []), None)
 
             assert cached_client(URL).description == "renamed"
 
@@ -310,7 +337,7 @@ class TestTheCache:
         """Expiry, not deletion: a read surface showing an entry nothing
         would use would be a lie about what is in effect."""
         with app.app_context():
-            remember(URL, client_from_document(URL, _document(), []), None)
+            remember(client_from_document(URL, _document(), []), None)
             assert [entry.client_id for entry in cached_entries()] == [URL]
 
             _expire(URL)
@@ -338,7 +365,7 @@ class TestPrecedence:
     the first two."""
 
     def _cache_a_client(self, client_id=URL):
-        remember(client_id, client_from_document(client_id, _document(client_id=client_id), []), None)
+        remember(client_from_document(client_id, _document(client_id=client_id), []), None)
 
     def test_a_cached_document_resolves_as_cimd(self, app):
         with app.app_context():
@@ -399,7 +426,7 @@ class TestTheSwitch:
         someone else's document: the switch says whether such documents
         count at all."""
         with app.app_context():
-            remember(URL, client_from_document(URL, _document(), []), None)
+            remember(client_from_document(URL, _document(), []), None)
             get_config().settings.client_id_metadata_documents_enabled = False
 
             assert get_identities().resolve_client(URL) is None
@@ -451,7 +478,7 @@ class TestTheDcrInvariantStillHolds:
             assert live_registration(URL, identities) is not None
 
             identities.delete_runtime_client(URL)
-            remember(URL, client_from_document(URL, _document(), []), None)
+            remember(client_from_document(URL, _document(), []), None)
 
             assert identities.resolve_client(URL).origin == "cimd"
             assert live_registration(URL, identities) is None

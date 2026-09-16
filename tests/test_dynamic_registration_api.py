@@ -201,6 +201,12 @@ class TestWhatIsRefused:
             ({"grant_types": ["client_credentials"]}, "invalid_redirect_uri"),
             ({"redirect_uris": ["not-a-uri"]}, "invalid_redirect_uri"),
             ({"redirect_uris": [REDIRECT], "grant_types": ["implicit"]}, "invalid_client_metadata"),
+            # Through the same gate /authorize uses (#196 review), so the
+            # rules it already knows are not restated weakly here: RFC 6749
+            # forbids a fragment, RFC 8252 wants a period in a private-use
+            # scheme.
+            ({"redirect_uris": ["https://app.example/cb#f"]}, "invalid_redirect_uri"),
+            ({"redirect_uris": ["myapp:/cb"]}, "invalid_redirect_uri"),
             (
                 {"redirect_uris": [REDIRECT], "token_endpoint_auth_method": "private_key_jwt"},
                 "invalid_client_metadata",
