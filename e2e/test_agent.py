@@ -305,6 +305,31 @@ class NanoIDPTestAgent:
         except Exception as e:
             return self._add_result("OIDC Discovery", TestCategory.CORE, False, str(e))
 
+    def test_metadata_documents_off_by_default(self) -> TestResult:
+        """Client ID metadata documents are opt-in (#196).
+
+        Turning them on makes this server fetch a URL a client chose, so
+        the default posture is worth asserting on a running server rather
+        than assuming. When an operator has turned it on, the metadata says
+        so and that is what is checked instead.
+        """
+        try:
+            document = self.session.get(
+                f"{self.base_url}/.well-known/oauth-authorization-server", timeout=5
+            ).json()
+            advertised = document.get("client_id_metadata_document_supported", False)
+            return self._add_result(
+                "Metadata Documents Off By Default",
+                TestCategory.CORE,
+                True,
+                "enabled on this server" if advertised else "not advertised",
+                {"client_id_metadata_document_supported": advertised},
+            )
+        except Exception as e:
+            return self._add_result(
+                "Metadata Documents Off By Default", TestCategory.CORE, False, str(e)
+            )
+
     def test_authorization_server_metadata(self) -> TestResult:
         """RFC 8414 metadata: the same document under the OAuth name (#190).
 
@@ -6071,6 +6096,7 @@ class NanoIDPTestAgent:
                 self.test_oidc_discovery,
                 self.test_authorization_server_metadata,
                 self.test_registration_absent_by_default,
+                self.test_metadata_documents_off_by_default,
             ]),
             (TestCategory.OAUTH, "OAuth2/OIDC Flows", [
                 self.test_jwks,

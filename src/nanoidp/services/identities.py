@@ -28,12 +28,12 @@ edit forms and the MCP server work on the declared configuration only.
 import logging
 import threading
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Literal, Optional, Tuple
+from typing import Any, Callable, Dict, List, Literal, Optional, Set, Tuple
 
 from ..config import ConfigManager, ConfigurationRejected, OAuthClient, Settings, User, get_config
 from ..hooks import HookError
 from .audit import get_audit_log
-from .client_metadata import cached_client, looks_like_client_id_url
+from .client_metadata import cached_client, cached_entries, looks_like_client_id_url
 from .runtime_identities import MemoryRuntimeIdentityStore, get_runtime_identity_store
 from .yaml_writer import EntryAlreadyExists, PostWriteError, get_yaml_writer
 
@@ -231,7 +231,24 @@ class IdentityResolver:
             for client in runtime_clients
             if client.client_id not in declared_ids
         ]
-        return declared + runtime
+        return declared + runtime + self._cimd_clients(declared_ids | {
+            client.client_id for client in runtime_clients
+        })
+
+    def _cimd_clients(self, taken: Set[str]) -> List[ResolvedClient]:
+        """Cached metadata-document clients, in the same order of precedence.
+
+        Listed here rather than composed by each read surface: one place
+        decides which clients exist, and a page that combined the cache
+        itself would be a second answer to that question.
+        """
+        if not self.config.settings.client_id_metadata_documents_enabled:
+            return []
+        return [
+            ResolvedClient(entry.client, "cimd")
+            for entry in cached_entries()
+            if entry.client.client_id not in taken
+        ]
 
     def create_runtime_client(self, client: OAuthClient) -> OAuthClient:
         # See create_runtime_user.

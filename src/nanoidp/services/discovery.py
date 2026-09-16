@@ -76,6 +76,13 @@ def build_discovery_document(
             if settings.dynamic_registration_enabled
             else {}
         ),
+        # Advertised only while such documents are honoured (#196), the same
+        # rule the registration endpoint follows.
+        **(
+            {"client_id_metadata_document_supported": True}
+            if settings.client_id_metadata_documents_enabled
+            else {}
+        ),
         # 'none' = public clients (#188). Deliberately NOT in the
         # introspection list: RFC 7662 requires an authenticated caller,
         # and a public client_id is not authentication.

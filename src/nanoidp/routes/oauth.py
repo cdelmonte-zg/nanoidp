@@ -35,6 +35,14 @@ from ..services import (
     get_token_service,
     identities_for,
 )
+from ..services.client_metadata import (
+    ClientIdUrlInvalid,
+    DocumentInvalid,
+    DocumentNotUsable,
+    learn_client,
+    looks_like_client_id_url,
+)
+from ..services.client_metadata_fetch import FetchRefused
 from ..services.device_code import (
     DEVICE_CODE_EXPIRES_IN,
     DEVICE_POLL_INTERVAL,
@@ -357,11 +365,53 @@ def _validate_authorize_client(
         )
 
     client = identities_for(config).get_client(p.client_id)
+    if client is None:
+        client = _client_from_metadata_document(config, p.client_id)
     if not client:
         return None, _authorize_reject(
             p.client_id, "Unknown client", "invalid_client", "Unknown client_id"
         )
     return client, None
+
+
+def _client_from_metadata_document(
+    config: ConfigManager, client_id: str
+) -> Optional[OAuthClient]:
+    """Learn a client from the document it publishes (#196).
+
+    **The only place nanoidp fetches one.** Reached only when no declared
+    and no runtime client holds this name, so an operator who declares a
+    client whose id is a URL never causes an outbound request, and only
+    after the feature is enabled.
+
+    Every failure answers the same "Unknown client_id" the caller already
+    returns for a name nobody knows. Telling a caller which rule refused it
+    would say whether a host is in ``allowed_hosts``, whether it resolved,
+    what it answered - to whoever chose the URL. The reason goes to the
+    audit and the log, where an operator reads it.
+    """
+    settings = config.settings
+    if not settings.client_id_metadata_documents_enabled:
+        return None
+    if not looks_like_client_id_url(client_id):
+        return None
+    try:
+        return learn_client(client_id, settings)
+    except (
+        ClientIdUrlInvalid,
+        DocumentInvalid,
+        DocumentNotUsable,
+        FetchRefused,
+    ) as refused:
+        logger.info("Client ID metadata document refused for %s: %s", client_id, refused)
+        audit_event(
+            "client_metadata_document_refused",
+            "failure",
+            endpoint="/authorize",
+            client_id=client_id,
+            details={"reason": str(refused)},
+        )
+        return None
 
 
 def _validate_authorize_response_type(

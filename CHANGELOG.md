@@ -8,6 +8,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **A client ID metadata document is fetched at `/authorize`** (#196, last
+  part). An `https` `client_id` that no declared and no runtime client
+  holds is looked up: the document is fetched, validated, cached, and the
+  client resolves from then on with `origin: cimd`.
+  `client_id_metadata_document_supported` is advertised while the feature
+  is on. **Only `/authorize` fetches**: `/token` and every other surface
+  read the cache, so a document that is not cached is an unknown client
+  there, which is what keeps a token request from waiting on somebody
+  else's web server. A document whose response says it must not be cached
+  is refused at the authorization request rather than turned into a code no
+  token request could redeem. Every refusal answers the same
+  `invalid_client` / `Unknown client_id`, with the reason in the audit log:
+  which rule refused it is not something to tell whoever chose the URL. The
+  client list shows cached clients read-only with a Forget button, which is
+  how a developer re-fetches a document they have just changed.
 - **The metadata document is fetched** (#196, second part), by the one
   outbound request nanoidp makes. `oauth.client_id_metadata_documents`
   gains `allowed_hosts` (exact DNS names, empty by default, so nothing is

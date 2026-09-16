@@ -16,6 +16,7 @@
 | `GET /ui/logout` | Dashboard session logout (the web UI's Logout button) |
 | `POST /device_authorization` | Device Authorization (RFC 8628; alias: `/device/code`) |
 | `GET/POST /device` | Device verification page |
+| `POST /clients/forget` | Drop one cached client ID metadata document (web UI) |
 | `POST /register` | Dynamic client registration (RFC 7591), opt-in |
 | `GET/DELETE /register/<client_id>` | Read or remove a registration (RFC 7592) |
 

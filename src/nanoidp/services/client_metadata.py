@@ -72,6 +72,17 @@ class DocumentInvalid(ValueError):
     """The document at a Client Identifier URL cannot become a client."""
 
 
+class DocumentNotUsable(ValueError):
+    """The document is valid and cannot be used for this flow.
+
+    A document the response says must not be cached (#196): the cache is
+    the only place a CIMD client exists between ``/authorize`` and
+    ``/token``, so issuing an authorization code for one would produce a
+    code no token request could ever redeem. Refusing at the authorization
+    request says so at the moment a developer can act on it.
+    """
+
+
 class CachedClient(BaseModel):
     """A client learned from a metadata document, and when to forget it.
 
@@ -343,6 +354,34 @@ def forget(client_id: str) -> bool:
 
 def forget_all() -> int:
     return cache().delete_all()
+
+
+def learn_client(client_id: str, settings: Any) -> OAuthClient:
+    """Fetch a metadata document, validate it, cache it, return the client.
+
+    The one composition of the two halves, and the reason the halves exist:
+    the fetcher performs I/O and knows nothing about the cache, this module
+    owns the rules and the cache and knows nothing about sockets, and only
+    a caller that is allowed to reach the network calls this. That caller
+    is ``/authorize``; the resolver never does, which is what keeps network
+    I/O out of the other sixteen places a client is resolved.
+
+    Raises ``ClientIdUrlInvalid``, ``FetchRefused``, ``DocumentInvalid`` or
+    ``DocumentNotUsable``. A caller that cannot use any of them has one
+    answer for all four.
+    """
+    from .client_metadata_fetch import DO_NOT_CACHE, fetch_document
+
+    reject_invalid_client_id_url(client_id)
+    document, lifetime = fetch_document(client_id, settings)
+    client = client_from_document(client_id, document, list(settings.scopes_supported))
+    if lifetime is DO_NOT_CACHE or lifetime == DO_NOT_CACHE:
+        raise DocumentNotUsable(
+            "the document must not be cached, and a client that is not cached "
+            "cannot be resolved at the token endpoint"
+        )
+    remember(client, lifetime)
+    return client
 
 
 def cached_entries() -> List[CachedClient]:
