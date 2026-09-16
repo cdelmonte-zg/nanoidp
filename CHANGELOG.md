@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **RFC 8414 authorization server metadata** (#190).
+  `/.well-known/oauth-authorization-server` serves the same document as
+  `/.well-known/openid-configuration`, from the same builder and the same
+  issuer resolution, so `issuer_from_request` applies to both and the two
+  cannot drift. nanoidp is one server advertising one set of endpoints; a
+  client that speaks only OAuth looks under this name and used to get a
+  404 and a longer route to the same answer. A client registration
+  endpoint is not advertised yet: that is the rest of #190.
 - **Disposable runtime users and clients: `/api/runtime`** (#192). A CI job or
   an integration test creates users and clients on a running IdP, uses them in
   every protocol flow, and removes them without touching `users.yaml` or

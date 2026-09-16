@@ -98,9 +98,22 @@ def _parse_claims_parameter(raw: Optional[str]) -> Optional[Dict[str, list]]:
     return result or None
 
 
+# Decorators apply bottom-up, so the OIDC rule is registered first and stays
+# the one url_for() builds for this endpoint: the alias is the second name,
+# not the canonical one.
+@oauth_bp.route("/.well-known/oauth-authorization-server")
 @oauth_bp.route("/.well-known/openid-configuration")
 def oidc_config() -> ResponseReturnValue:
-    """OIDC Discovery endpoint."""
+    """OIDC Discovery, and the same document under the RFC 8414
+    authorization server metadata name (#190).
+
+    One handler on both paths rather than two documents: the two
+    specifications describe the same server, nanoidp advertises one set of
+    endpoints, and a client asking under either name must not be told two
+    different things. A client that speaks only OAuth looks under the RFC
+    8414 name - n8n does, before falling back to the OIDC one - so a 404
+    there only sends it the long way round to the same answer.
+    """
     config = get_config()
     return jsonify(
         build_discovery_document(config.settings, issuer=effective_issuer(config.settings))

@@ -5,6 +5,7 @@
 | Endpoint | Description |
 |----------|-------------|
 | `GET /.well-known/openid-configuration` | OIDC Discovery |
+| `GET /.well-known/oauth-authorization-server` | The same document under the RFC 8414 name |
 | `GET /.well-known/jwks.json` | JSON Web Key Set |
 | `GET/POST /authorize` | Authorization endpoint (login page) |
 | `POST /token` | Token endpoint |
@@ -15,6 +16,14 @@
 | `GET /ui/logout` | Dashboard session logout (the web UI's Logout button) |
 | `POST /device_authorization` | Device Authorization (RFC 8628; alias: `/device/code`) |
 | `GET/POST /device` | Device verification page |
+
+The two discovery paths return the same document: nanoidp is one server with
+one set of endpoints, and a client that speaks only OAuth looks under the
+RFC 8414 name. Both derive the issuer the same way, so `issuer_from_request`
+applies to both. The metadata is served at the root form of the name only,
+which is the correct one for an issuer without a path component; an issuer
+with a path would want RFC 8414's path-suffixed form, and nanoidp's OIDC
+document has always assumed the root form too.
 
 `POST /authorize` (the login form submit) reads its OAuth request
 parameters (`response_type`, `client_id`, `redirect_uri`, `scope`, `state`,

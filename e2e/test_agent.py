@@ -305,6 +305,44 @@ class NanoIDPTestAgent:
         except Exception as e:
             return self._add_result("OIDC Discovery", TestCategory.CORE, False, str(e))
 
+    def test_authorization_server_metadata(self) -> TestResult:
+        """RFC 8414 metadata: the same document under the OAuth name (#190).
+
+        A client that speaks OAuth and not OIDC looks here first. The two
+        names are one handler, so what this checks on a running server is
+        that the second rule is actually registered and answers the same
+        document, not that two documents were kept in step.
+        """
+        try:
+            oauth = self.session.get(
+                f"{self.base_url}/.well-known/oauth-authorization-server",
+                timeout=5
+            )
+            oidc = self.session.get(
+                f"{self.base_url}/.well-known/openid-configuration",
+                timeout=5
+            )
+            if oauth.status_code != 200:
+                return self._add_result(
+                    "Authorization Server Metadata",
+                    TestCategory.CORE,
+                    False,
+                    f"Status: {oauth.status_code}"
+                )
+            same = oauth.json() == oidc.json()
+            return self._add_result(
+                "Authorization Server Metadata",
+                TestCategory.CORE,
+                same,
+                "same document as openid-configuration" if same
+                else "the two discovery documents differ",
+                {"issuer": oauth.json().get("issuer")}
+            )
+        except Exception as e:
+            return self._add_result(
+                "Authorization Server Metadata", TestCategory.CORE, False, str(e)
+            )
+
     # =========================================================================
     # OAUTH2/OIDC TESTS
     # =========================================================================
@@ -5800,6 +5838,7 @@ class NanoIDPTestAgent:
             (TestCategory.CORE, "Core Infrastructure", [
                 self.test_health,
                 self.test_oidc_discovery,
+                self.test_authorization_server_metadata,
             ]),
             (TestCategory.OAUTH, "OAuth2/OIDC Flows", [
                 self.test_jwks,

@@ -163,9 +163,11 @@ which accepts the public client as it is.
 
 - **Dynamic client registration.** n8n's `MCP OAuth2 API` credential enables
   it by default; with it on, n8n discovers nanoidp from the resource
-  metadata, asks for `/.well-known/oauth-authorization-server`, falls back to
-  `openid-configuration`, and stops at the missing `registration_endpoint`.
-  That is #190. The stack runs with the toggle off.
+  metadata and asks for `/.well-known/oauth-authorization-server`. nanoidp
+  now serves that name (the same document as `openid-configuration`), so the
+  fallback is no longer needed, but n8n still stops at the missing
+  `registration_endpoint`. That is the rest of #190. The stack runs with the
+  toggle off.
 - **OIDC login to n8n itself** through nanoidp is an n8n Enterprise feature
   and is not part of this stack.
 
