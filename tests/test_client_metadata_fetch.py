@@ -19,6 +19,7 @@ import pytest
 from nanoidp.models import Settings
 from nanoidp.services import client_metadata_fetch as fetcher
 from nanoidp.services.client_metadata_fetch import (
+    DO_NOT_CACHE,
     MAX_BODY_BYTES,
     TIMEOUT_SECONDS,
     FetchRefused,
@@ -103,7 +104,9 @@ class TestTheHappyPath:
 
         path, headers = origin.requests[-1]
         assert path == "/metadata.json"
-        assert headers["Host"] == f"{HOSTNAME}:{origin.port}" or headers["Host"] == HOSTNAME
+        # With the port, because it is not the scheme's default: a
+        # name-based virtual host would otherwise serve another resource.
+        assert headers["Host"] == f"{HOSTNAME}:{origin.port}"
         assert "application/json" in headers["Accept"]
 
     def test_a_json_suffix_media_type_is_accepted(self, origin, resolves_to_loopback):
@@ -209,6 +212,25 @@ class TestTheBudgetIsForTheWholeFetch:
 
         assert elapsed < 3.0, f"the fetch ran for {elapsed:.1f}s on a 1s budget"
 
+    def test_a_server_that_drips_headers_cannot_outlast_it_either(
+        self, origin, resolves_to_loopback, monkeypatch
+    ):
+        """The same trick one phase earlier. http.client reads the status
+        line and the headers itself, so a deadline that only governs the
+        body governs the half an origin controls."""
+        monkeypatch.setattr(fetcher, "TIMEOUT_SECONDS", 1.0)
+        client_id = _client_id(origin)
+        origin.serve_document(metadata_document(client_id))
+        origin.header_lines = 60
+        origin.header_delay = 0.3
+
+        started = time.monotonic()
+        with pytest.raises(FetchRefused):
+            fetch_document(client_id, _settings())
+        elapsed = time.monotonic() - started
+
+        assert elapsed < 3.0, f"the header phase ran for {elapsed:.1f}s on a 1s budget"
+
     def test_the_budget_is_not_configurable(self):
         """A bound on what a client can cost this server, not a preference.
         A setting here would mostly be a way to raise it."""
@@ -217,6 +239,100 @@ class TestTheBudgetIsForTheWholeFetch:
             "timeout" in name for name in Settings.model_fields
             if "client_id_metadata" in name
         )
+
+
+class TestNothingEscapesAsSomethingElse:
+    """Every refusal is a FetchRefused. Once PR C calls this from
+    /authorize, anything else is an unhandled exception on an
+    unauthenticated endpoint."""
+
+    @pytest.mark.parametrize(
+        "client_id",
+        [
+            # PR A's URL rules never look at the port, and urlsplit raises
+            # when asked for one it cannot parse.
+            f"https://{HOSTNAME}:99999/metadata.json",
+            f"https://{HOSTNAME}:abc/metadata.json",
+            f"https://{HOSTNAME}:-1/metadata.json",
+            "https://[unbalanced/metadata.json",
+        ],
+    )
+    def test_a_url_that_cannot_be_parsed_is_refused_not_raised(self, client_id):
+        with pytest.raises(FetchRefused):
+            fetch_document(client_id, _settings())
+
+    def test_nothing_is_fetched_when_the_feature_is_off(self, origin, resolves_to_loopback):
+        """Checked here as well as by the caller: an operator who filled in
+        allowed_hosts with the feature off is not protected by a call site
+        alone."""
+        client_id = _client_id(origin)
+        origin.serve_document(metadata_document(client_id))
+
+        with pytest.raises(FetchRefused, match="not enabled"):
+            fetch_document(
+                client_id, _settings(client_id_metadata_documents_enabled=False)
+            )
+
+        assert origin.requests == []
+
+
+class TestTheDeadlineSocket:
+    """The wrapper on its own, since the watchdog would hide its absence.
+
+    Two mechanisms hold the budget: this re-arms the timeout before every
+    read, which is what makes a slow phase fail promptly and say why, and
+    the watchdog closes the socket at the deadline whatever happens. A test
+    of the fetch cannot tell which one acted, so this pins the first one.
+    """
+
+    def test_every_read_re_arms_the_timeout_from_the_deadline(self):
+        armed = []
+
+        class FakeSocket:
+            def settimeout(self, value):
+                armed.append(value)
+
+            def recv_into(self, buffer, *args):
+                buffer[:1] = b"x"
+                return 1
+
+        wrapped = fetcher._DeadlineSocket(FakeSocket(), time.monotonic() + 5)
+        buffer = bytearray(1)
+        wrapped.recv_into(buffer)
+        wrapped.recv_into(buffer)
+
+        assert len(armed) == 2
+        assert armed[1] < armed[0], "the budget did not shrink between reads"
+
+    def test_a_read_past_the_deadline_is_refused(self):
+        class FakeSocket:
+            def settimeout(self, value):
+                pass
+
+            def recv_into(self, buffer, *args):
+                return 0
+
+        wrapped = fetcher._DeadlineSocket(FakeSocket(), time.monotonic() - 1)
+
+        with pytest.raises(FetchRefused, match="budget"):
+            wrapped.recv_into(bytearray(1))
+
+    def test_the_reader_it_hands_out_goes_through_it(self):
+        """http.client reads the status line and headers through makefile,
+        so a reader over the socket underneath would skip the re-arming."""
+        armed = []
+
+        class FakeSocket:
+            def settimeout(self, value):
+                armed.append(value)
+
+            def recv_into(self, buffer, *args):
+                return 0
+
+        wrapped = fetcher._DeadlineSocket(FakeSocket(), time.monotonic() + 5)
+        wrapped.makefile("rb").read()
+
+        assert armed, "the reader did not re-arm the timeout"
 
 
 class TestWhichHostsMayBeFetched:
@@ -264,8 +380,21 @@ class TestWhichAddressesMayBeConnectedTo:
 
     @pytest.mark.parametrize(
         "address",
-        ["10.0.0.5", "192.168.1.1", "172.16.0.1", "169.254.169.254", "fd00::1", "fe80::1",
-         "224.0.0.1", "0.0.0.0"],
+        [
+            "10.0.0.5", "192.168.1.1", "172.16.0.1", "169.254.169.254",
+            "fd00::1", "fe80::1", "224.0.0.1", "0.0.0.0",
+            # RFC 6598 carrier-grade NAT, which several Kubernetes networks
+            # use for pods: ipaddress calls it neither private nor reserved.
+            "100.64.0.1",
+            # 6to4 relay anycast, which ipaddress still calls globally
+            # routable.
+            "192.88.99.1",
+            # An IPv4 address inside an IPv6 one. Judging the wrapper rather
+            # than what it reaches is how the metadata service gets fetched.
+            "::ffff:169.254.169.254",
+            "::ffff:10.0.0.1",
+            "64:ff9b::7f00:1",
+        ],
     )
     def test_a_special_use_address_is_refused(self, origin, resolves_to_loopback, address):
         with pytest.raises(FetchRefused, match="special-use|loopback"):
@@ -345,10 +474,15 @@ class TestTls:
                 _settings(client_id_metadata_documents_allowed_hosts=["other.example"]),
             )
 
-    def test_a_plain_http_origin_cannot_answer(self, origin, resolves_to_loopback):
-        """There is no http path at all: the URL rules refuse the scheme
-        before this module is reached, and this module only speaks TLS."""
-        assert "https" in fetcher._PinnedConnection.__doc__.lower()
+    def test_an_http_url_is_refused_rather_than_dialled_with_tls(
+        self, origin, resolves_to_loopback
+    ):
+        """The URL rules refuse the scheme first, but this module dials TLS,
+        so it refuses it too rather than trusting the caller to have."""
+        with pytest.raises(FetchRefused, match="https"):
+            fetch_document(f"http://{HOSTNAME}:{origin.port}/metadata.json", _settings())
+
+        assert origin.requests == []
 
 
 class TestTheCacheLifetime:
@@ -367,11 +501,26 @@ class TestTheCacheLifetime:
         assert cache_lifetime(header) == expected
 
     @pytest.mark.parametrize("header", ["no-store", "no-cache", "private, no-store"])
-    def test_a_document_that_says_not_to_keep_it_is_not_kept(self, header):
+    def test_a_document_that_says_not_to_keep_it_says_so(self, header):
         """no-cache means "not without revalidating", which is not
         implemented, so the conservative reading is the honest one."""
-        with pytest.raises(FetchRefused, match="must not be stored"):
-            cache_lifetime(header)
+        assert cache_lifetime(header) == DO_NOT_CACHE
+
+    def test_a_document_that_may_not_be_cached_is_still_a_document(
+        self, origin, resolves_to_loopback
+    ):
+        """Not keeping a copy is not the same as refusing the answer. A host
+        that sets no-store globally, which most frameworks do for anything
+        that is not a static file, would otherwise have no way to publish a
+        metadata document at all."""
+        client_id = _client_id(origin)
+        origin.serve_document(metadata_document(client_id))
+        origin.cache_control = "no-store"
+
+        document, lifetime = fetch_document(client_id, _settings())
+
+        assert document["client_id"] == client_id
+        assert lifetime == DO_NOT_CACHE
 
     def test_the_lifetime_reaches_the_caller(self, origin, resolves_to_loopback):
         client_id = _client_id(origin)

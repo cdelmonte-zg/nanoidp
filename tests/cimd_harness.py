@@ -96,6 +96,11 @@ class Origin:
         self.location: Optional[str] = None
         self.chunk_delay = 0.0
         self.chunk_size = 0
+        # A header phase that arrives a line at a time: the part of the
+        # exchange http.client reads on its own, where a body-only deadline
+        # sees nothing.
+        self.header_lines = 0
+        self.header_delay = 0.0
         self.requests: list = []
         self._server_pem = server_pem
         self._httpd: Optional[http.server.HTTPServer] = None
@@ -124,6 +129,16 @@ class Origin:
                     self.end_headers()
                     return
                 self.send_response(origin.status)
+                if origin.header_lines:
+                    import time as _time
+
+                    for index in range(origin.header_lines):
+                        try:
+                            self.send_header(f"X-Padding-{index}", "x" * 64)
+                            self.wfile.flush()
+                        except OSError:
+                            return
+                        _time.sleep(origin.header_delay)
                 if origin.content_type:
                     self.send_header("Content-Type", origin.content_type)
                 if origin.cache_control:

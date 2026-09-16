@@ -26,9 +26,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   there is exactly one request, with no retry and no second address.
   The 5 second budget covers the whole fetch, not each operation, so a
   server sending a few bytes at a time cannot hold a worker: the timeout is
-  recomputed from one deadline before every read. Only `max-age` is read
-  from `Cache-Control`, and `no-store` or `no-cache` mean the document is
-  not kept at all.
+  recomputed from one deadline before every read, the name is resolved under
+  the same budget, and a watchdog closes the socket at the deadline whatever
+  else happens. An address is judged by what it reaches, so an IPv4 address
+  carried inside an IPv6 one (`::ffff:169.254.169.254`, NAT64) is read as
+  the address it translates to. Only `max-age` is read from `Cache-Control`;
+  `no-store` and `no-cache` mean the document is used but not cached, which
+  is what they ask for, rather than refused.
   **Nothing calls this yet**: `/authorize` is the rest of #196.
 - **A client can come from a metadata document it publishes** (#196, first
   part): `IdentityResolver` resolves a third origin, `cimd`, after the two
