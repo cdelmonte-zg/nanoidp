@@ -180,6 +180,13 @@ class ClientIdMetadataDocumentsSection(BaseModel):
     model_config = _FORBID
 
     enabled: bool = False
+    # Empty means nothing is fetched: an operator names the hosts. Exact
+    # DNS names, no wildcards - a wildcard turns a list of hosts into a
+    # list of zones, which is rarely what the person writing it meant.
+    allowed_hosts: List[str] = Field(default_factory=list)
+    # The draft's development exception, no wider: loopback only, and only
+    # when this server is itself on loopback.
+    allow_loopback: bool = False
 
 
 class OAuthSection(BaseModel):
@@ -457,6 +464,12 @@ class SettingsDocument(BaseModel):
             scope_enforcement=self.oauth.scope_enforcement,
             client_id_metadata_documents_enabled=(
                 self.oauth.client_id_metadata_documents.enabled
+            ),
+            client_id_metadata_documents_allowed_hosts=(
+                self.oauth.client_id_metadata_documents.allowed_hosts
+            ),
+            client_id_metadata_documents_allow_loopback=(
+                self.oauth.client_id_metadata_documents.allow_loopback
             ),
             dynamic_registration_enabled=self.oauth.dynamic_registration.enabled,
             dynamic_registration_max_clients=self.oauth.dynamic_registration.max_clients,

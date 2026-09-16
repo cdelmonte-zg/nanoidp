@@ -66,6 +66,12 @@ oauth:
   # the fetch is not implemented yet.
   # client_id_metadata_documents:
   #   enabled: true
+  #   # Exact DNS names. Empty (the default) fetches nothing at all.
+  #   allowed_hosts:
+  #     - client.example
+  #   # Only for a harness on this machine, and only when nanoidp is itself
+  #   # bound to loopback. Private and link-local addresses stay refused.
+  #   allow_loopback: false
 saml:
   # entity_id / sso_url: absent = derived from the effective issuer as
   # <issuer>/saml and <issuer>/saml/sso (follows issuer_from_request); set

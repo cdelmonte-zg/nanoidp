@@ -420,6 +420,20 @@ class Settings(BaseModel):
         "settings.yaml. The fetch itself is not implemented yet, so turning "
         "this on has no effect on its own.",
     )
+    client_id_metadata_documents_allowed_hosts: List[str] = Field(
+        default_factory=list,
+        description="Hostnames whose client ID metadata documents this "
+        "server will fetch (#196). Exact DNS names, no wildcards. Empty, the "
+        "default, means none: a host is opted in one at a time.",
+    )
+    client_id_metadata_documents_allow_loopback: bool = Field(
+        default=False,
+        description="Allow a client ID metadata document on a loopback "
+        "address (#196), for a test harness on the same machine. Applies "
+        "only when this server is itself bound to loopback, and only to the "
+        "address family it is bound to. Private, link-local and unique-local "
+        "addresses are refused either way.",
+    )
     dynamic_registration_enabled: bool = Field(
         default=False,
         description="Accept RFC 7591 dynamic client registration on /register "
