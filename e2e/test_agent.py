@@ -305,29 +305,45 @@ class NanoIDPTestAgent:
         except Exception as e:
             return self._add_result("OIDC Discovery", TestCategory.CORE, False, str(e))
 
-    def test_metadata_documents_off_by_default(self) -> TestResult:
-        """Client ID metadata documents are opt-in (#196).
+    def test_metadata_documents_refuse_a_host_nobody_allowed(self) -> TestResult:
+        """A client identifier URL this server was never told about is
+        refused (#196).
 
-        Turning them on makes this server fetch a URL a client chose, so
-        the default posture is worth asserting on a running server rather
-        than assuming. When an operator has turned it on, the metadata says
-        so and that is what is checked instead.
+        True whether or not the feature is on, which is what makes it an
+        assertion rather than a reading: with it off nothing is fetched at
+        all, and with it on the host is not in allowed_hosts. Either way
+        the answer is the same one an unknown name gets, and .invalid is
+        reserved by RFC 2606 so nothing is ever contacted.
         """
         try:
             document = self.session.get(
                 f"{self.base_url}/.well-known/oauth-authorization-server", timeout=5
             ).json()
             advertised = document.get("client_id_metadata_document_supported", False)
+            response = self.session.get(
+                f"{self.base_url}/authorize",
+                params={
+                    "response_type": "code",
+                    "client_id": "https://nobody.invalid/metadata.json",
+                    "redirect_uri": "http://localhost:3000/callback",
+                    "code_challenge": "x" * 43,
+                    "code_challenge_method": "S256",
+                },
+                allow_redirects=False,
+                timeout=10,
+            )
+            refused = response.status_code == 400
             return self._add_result(
-                "Metadata Documents Off By Default",
+                "Metadata Document Host Not Allowed",
                 TestCategory.CORE,
-                True,
-                "enabled on this server" if advertised else "not advertised",
+                refused,
+                f"refused with {response.status_code}"
+                + (" (feature advertised)" if advertised else " (feature off)"),
                 {"client_id_metadata_document_supported": advertised},
             )
         except Exception as e:
             return self._add_result(
-                "Metadata Documents Off By Default", TestCategory.CORE, False, str(e)
+                "Metadata Document Host Not Allowed", TestCategory.CORE, False, str(e)
             )
 
     def test_authorization_server_metadata(self) -> TestResult:
@@ -6096,7 +6112,7 @@ class NanoIDPTestAgent:
                 self.test_oidc_discovery,
                 self.test_authorization_server_metadata,
                 self.test_registration_absent_by_default,
-                self.test_metadata_documents_off_by_default,
+                self.test_metadata_documents_refuse_a_host_nobody_allowed,
             ]),
             (TestCategory.OAUTH, "OAuth2/OIDC Flows", [
                 self.test_jwks,

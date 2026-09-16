@@ -76,11 +76,16 @@ def build_discovery_document(
             if settings.dynamic_registration_enabled
             else {}
         ),
-        # Advertised only while such documents are honoured (#196), the same
-        # rule the registration endpoint follows.
+        # Advertised only while a document could actually be honoured
+        # (#196). allowed_hosts is empty by default and nothing is fetched
+        # until an operator names a host, so "enabled" alone would advertise
+        # a capability that refuses every client with no way to tell it is
+        # inert - which the registration endpoint above cannot do, since it
+        # needs no second setting to work.
         **(
             {"client_id_metadata_document_supported": True}
             if settings.client_id_metadata_documents_enabled
+            and settings.client_id_metadata_documents_allowed_hosts
             else {}
         ),
         # 'none' = public clients (#188). Deliberately NOT in the

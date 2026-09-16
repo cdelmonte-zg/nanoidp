@@ -66,9 +66,12 @@ oauth:
   # the fetch is not implemented yet.
   # client_id_metadata_documents:
   #   enabled: true
-  #   # Exact DNS names. Empty (the default) fetches nothing at all.
+  #   # Exact DNS names, with the port when it is not 443. Empty (the
+  #   # default) fetches nothing at all. An entry authorises this server to
+  #   # make requests to that host and port, at any path a client chooses.
   #   allowed_hosts:
   #     - client.example
+  #     - harness.example:8443
   #   # Only for a harness on this machine, and only when nanoidp is itself
   #   # bound to loopback. Private and link-local addresses stay refused.
   #   allow_loopback: false

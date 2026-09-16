@@ -23,6 +23,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   which rule refused it is not something to tell whoever chose the URL. The
   client list shows cached clients read-only with a Forget button, which is
   how a developer re-fetches a document they have just changed.
+  An `allowed_hosts` entry names a host **and a port** (443 when none is
+  given), so opting a host in does not authorise every port on it. This
+  process makes at most 30 metadata fetches a minute, all callers together:
+  the limit is on the fetch rather than on `/authorize`, because that is
+  where the cost is and the endpoint is where people log in. The audit
+  records that a document was refused and not why, since `GET /api/audit`
+  is readable by anyone who can reach it and the reason is exactly what the
+  uniform error withholds.
 - **The metadata document is fetched** (#196, second part), by the one
   outbound request nanoidp makes. `oauth.client_id_metadata_documents`
   gains `allowed_hosts` (exact DNS names, empty by default, so nothing is

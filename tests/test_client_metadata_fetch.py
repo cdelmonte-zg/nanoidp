@@ -52,11 +52,15 @@ def origin(certificates, trust_the_test_ca):
         yield running
 
 
-def _settings(**overrides):
+def _settings(port=None, **overrides):
+    """``port`` is the harness's, because an allowlist entry names a host
+    and a port: opting a host in must not open every port on it."""
     values = {
         "host": "127.0.0.1",
         "client_id_metadata_documents_enabled": True,
-        "client_id_metadata_documents_allowed_hosts": [HOSTNAME],
+        "client_id_metadata_documents_allowed_hosts": [
+            f"{HOSTNAME}:{port}" if port else HOSTNAME
+        ],
         "client_id_metadata_documents_allow_loopback": True,
     }
     values.update(overrides)
@@ -91,7 +95,7 @@ class TestTheHappyPath:
         client_id = _client_id(origin)
         origin.serve_document(metadata_document(client_id))
 
-        document, lifetime = fetch_document(client_id, _settings())
+        document, lifetime = fetch_document(client_id, _settings(origin.port))
 
         assert document["client_id"] == client_id
         assert lifetime is None
@@ -102,7 +106,7 @@ class TestTheHappyPath:
         client_id = _client_id(origin)
         origin.serve_document(metadata_document(client_id))
 
-        fetch_document(client_id, _settings())
+        fetch_document(client_id, _settings(origin.port))
 
         path, headers = origin.requests[-1]
         assert path == "/metadata.json"
@@ -116,7 +120,7 @@ class TestTheHappyPath:
         origin.serve_document(metadata_document(client_id))
         origin.content_type = "application/client-metadata+json; charset=utf-8"
 
-        assert fetch_document(client_id, _settings())[0]["client_id"] == client_id
+        assert fetch_document(client_id, _settings(origin.port))[0]["client_id"] == client_id
 
 
 class TestTheAnswerMustBeADocument:
@@ -127,7 +131,7 @@ class TestTheAnswerMustBeADocument:
         origin.status = status
 
         with pytest.raises(FetchRefused, match="answered"):
-            fetch_document(client_id, _settings())
+            fetch_document(client_id, _settings(origin.port))
 
     @pytest.mark.parametrize("status", [301, 302, 307, 308])
     def test_a_redirect_is_an_answer_not_a_hop(self, origin, resolves_to_loopback, status):
@@ -138,7 +142,7 @@ class TestTheAnswerMustBeADocument:
         origin.location = "/elsewhere.json"
 
         with pytest.raises(FetchRefused, match="answered"):
-            fetch_document(client_id, _settings())
+            fetch_document(client_id, _settings(origin.port))
 
         assert len(origin.requests) == 1
 
@@ -153,14 +157,14 @@ class TestTheAnswerMustBeADocument:
         origin.content_type = content_type
 
         with pytest.raises(FetchRefused, match="not JSON"):
-            fetch_document(client_id, _settings())
+            fetch_document(client_id, _settings(origin.port))
 
     def test_a_body_that_is_not_json_is_refused(self, origin, resolves_to_loopback):
         client_id = _client_id(origin)
         origin.body = b"{not json at all"
 
         with pytest.raises(FetchRefused, match="not valid JSON"):
-            fetch_document(client_id, _settings())
+            fetch_document(client_id, _settings(origin.port))
 
 
 class TestTheBodyIsBounded:
@@ -169,7 +173,7 @@ class TestTheBodyIsBounded:
         origin.body = b'{"padding": "' + b"x" * (MAX_BODY_BYTES * 2) + b'"}'
 
         with pytest.raises(FetchRefused, match="larger than"):
-            fetch_document(client_id, _settings())
+            fetch_document(client_id, _settings(origin.port))
 
     def test_the_limit_does_not_depend_on_content_length(self, origin, resolves_to_loopback):
         """Chunked, so the sender declares no size at all. A limit that
@@ -179,7 +183,7 @@ class TestTheBodyIsBounded:
         origin.chunk_size = 512
 
         with pytest.raises(FetchRefused, match="larger than"):
-            fetch_document(client_id, _settings())
+            fetch_document(client_id, _settings(origin.port))
 
     def test_a_document_just_under_the_limit_is_read(self, origin, resolves_to_loopback):
         client_id = _client_id(origin)
@@ -189,7 +193,7 @@ class TestTheBodyIsBounded:
         origin.serve_document(document)
 
         assert len(origin.body) < MAX_BODY_BYTES
-        assert fetch_document(client_id, _settings())[0]["client_name"] == "x" * padding
+        assert fetch_document(client_id, _settings(origin.port))[0]["client_name"] == "x" * padding
 
 
 class TestTheBudgetIsForTheWholeFetch:
@@ -209,7 +213,7 @@ class TestTheBudgetIsForTheWholeFetch:
 
         started = time.monotonic()
         with pytest.raises(FetchRefused, match="budget"):
-            fetch_document(client_id, _settings())
+            fetch_document(client_id, _settings(origin.port))
         elapsed = time.monotonic() - started
 
         assert elapsed < 3.0, f"the fetch ran for {elapsed:.1f}s on a 1s budget"
@@ -228,7 +232,7 @@ class TestTheBudgetIsForTheWholeFetch:
 
         started = time.monotonic()
         with pytest.raises(FetchRefused):
-            fetch_document(client_id, _settings())
+            fetch_document(client_id, _settings(origin.port))
         elapsed = time.monotonic() - started
 
         assert elapsed < 3.0, f"the header phase ran for {elapsed:.1f}s on a 1s budget"
@@ -277,7 +281,7 @@ class TestTheBudgetIsForTheWholeFetch:
 
         started = time.monotonic()
         with pytest.raises(FetchRefused):
-            fetch_document(f"https://{HOSTNAME}:{port[0]}/metadata.json", _settings())
+            fetch_document(f"https://{HOSTNAME}:{port[0]}/metadata.json", _settings(port[0]))
         elapsed = time.monotonic() - started
 
         assert elapsed < 3.0, f"the handshake ran for {elapsed:.1f}s on a 1s budget"
@@ -438,6 +442,34 @@ class TestWhichHostsMayBeFetched:
                     _settings(client_id_metadata_documents_allowed_hosts=allowed),
                 )
 
+    def test_a_host_is_allowed_on_one_port_not_on_every_port(
+        self, origin, resolves_to_loopback
+    ):
+        """Naming a host must not turn this server into a way to reach
+        :22 or :6379 on it, at a path of the caller's choosing."""
+        client_id = _client_id(origin)
+        origin.serve_document(metadata_document(client_id))
+
+        with pytest.raises(FetchRefused, match="allowed_hosts"):
+            fetch_document(
+                client_id,
+                _settings(client_id_metadata_documents_allowed_hosts=[
+                    f"{HOSTNAME}:{origin.port + 1}"
+                ]),
+            )
+
+        assert origin.requests == []
+
+    def test_an_entry_with_no_port_means_443(self, origin, resolves_to_loopback):
+        client_id = _client_id(origin)
+        origin.serve_document(metadata_document(client_id))
+
+        with pytest.raises(FetchRefused, match="allowed_hosts"):
+            fetch_document(
+                client_id,
+                _settings(client_id_metadata_documents_allowed_hosts=[HOSTNAME]),
+            )
+
     def test_the_comparison_is_a_dns_one(self, origin, resolves_to_loopback):
         """Case and a trailing dot are the same name; the client_id itself
         is never normalised, since the draft compares it literally."""
@@ -446,7 +478,7 @@ class TestWhichHostsMayBeFetched:
 
         allowed = [f"{HOSTNAME.upper()}."]
         assert fetch_document(
-            client_id, _settings(client_id_metadata_documents_allowed_hosts=allowed)
+            client_id, _settings(client_id_metadata_documents_allowed_hosts=[f'{a}:{origin.port}' for a in allowed])
         )[0]["client_id"] == client_id
 
 
@@ -455,7 +487,7 @@ class TestWhichAddressesMayBeConnectedTo:
         resolves_to_loopback(addresses)
         client_id = _client_id(origin)
         origin.serve_document(metadata_document(client_id))
-        return fetch_document(client_id, _settings(**settings))
+        return fetch_document(client_id, _settings(origin.port, **settings))
 
     @pytest.mark.parametrize(
         "address",
@@ -493,7 +525,7 @@ class TestWhichAddressesMayBeConnectedTo:
         monkeypatch.setattr(fetcher.socket, "getaddrinfo", fails)
 
         with pytest.raises(FetchRefused, match="does not resolve"):
-            fetch_document(_client_id(origin), _settings())
+            fetch_document(_client_id(origin), _settings(origin.port))
 
 
 class TestTheInterpreterDoesNotDecide:
@@ -569,7 +601,7 @@ class TestTheLoopbackException:
         resolves_to_loopback(addresses)
         client_id = _client_id(origin)
         origin.serve_document(metadata_document(client_id))
-        return fetch_document(client_id, _settings(**settings))
+        return fetch_document(client_id, _settings(origin.port, **settings))
 
     def test_loopback_is_refused_unless_it_is_opted_in(self, origin, resolves_to_loopback):
         with pytest.raises(FetchRefused, match="loopback"):
@@ -616,7 +648,7 @@ class TestTls:
         origin.serve_document(metadata_document(client_id))
 
         with pytest.raises(FetchRefused, match="TLS"):
-            fetch_document(client_id, _settings())
+            fetch_document(client_id, _settings(origin.port))
 
     def test_the_certificate_must_name_the_host_that_was_asked_for(
         self, origin, resolves_to_loopback, monkeypatch
@@ -628,7 +660,11 @@ class TestTls:
         with pytest.raises(FetchRefused, match="TLS"):
             fetch_document(
                 client_id,
-                _settings(client_id_metadata_documents_allowed_hosts=["other.example"]),
+                _settings(
+                    client_id_metadata_documents_allowed_hosts=[
+                        f"other.example:{origin.port}"
+                    ]
+                ),
             )
 
     def test_an_http_url_is_refused_rather_than_dialled_with_tls(
@@ -676,7 +712,7 @@ class TestTheCacheLifetime:
         origin.serve_document(metadata_document(client_id))
         origin.cache_control = "no-store"
 
-        document, lifetime = fetch_document(client_id, _settings())
+        document, lifetime = fetch_document(client_id, _settings(origin.port))
 
         assert document["client_id"] == client_id
         assert lifetime == DO_NOT_CACHE
@@ -686,7 +722,7 @@ class TestTheCacheLifetime:
         origin.serve_document(metadata_document(client_id))
         origin.cache_control = "max-age=300"
 
-        assert fetch_document(client_id, _settings())[1] == 300.0
+        assert fetch_document(client_id, _settings(origin.port))[1] == 300.0
 
 
 class TestExactlyOneRequest:
@@ -703,7 +739,7 @@ class TestExactlyOneRequest:
         monkeypatch.setattr(socket.socket, "connect", counting_connect)
         try:
             with pytest.raises(FetchRefused, match="could not be reached"):
-                fetch_document(_client_id(origin), _settings())
+                fetch_document(_client_id(origin), _settings(origin.port))
         finally:
             monkeypatch.setattr(socket.socket, "connect", real_connect)
 
@@ -713,7 +749,7 @@ class TestExactlyOneRequest:
         client_id = _client_id(origin)
         origin.serve_document(metadata_document(client_id))
 
-        fetch_document(client_id, _settings())
+        fetch_document(client_id, _settings(origin.port))
 
         assert len(origin.requests) == 1
 

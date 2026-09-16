@@ -78,7 +78,7 @@ purpose:
 
 | | |
 | --- | --- |
-| Hosts | only those in `allowed_hosts`, matched as exact DNS names |
+| Hosts | only those in `allowed_hosts`, matched as exact DNS names, **and only on the port named there** (443 when none is) |
 | Addresses | only globally routable ones. Every address the name answers with must be acceptable, or the name is refused |
 | Loopback | only with `allow_loopback`, only when nanoidp is itself on loopback, only on the same address family |
 | Redirects | never followed |
@@ -88,7 +88,11 @@ purpose:
 | Retries | none, and no second address after a failed connection |
 
 `allowed_hosts` is empty by default, which means nothing is fetched at all
-until an operator names a host.
+until an operator names a host. An entry may carry a port
+(`client.example:8443`); one that does not means 443 and no other port, so
+naming a host does not turn this server into a way to reach every port on
+it. The path is the client's, so a host you name is one whose whole URL
+space a client may point this server at.
 
 ## The cache
 
@@ -114,5 +118,12 @@ they have just changed.
 Every refusal answers the authorization request with the same
 `invalid_client` / `Unknown client_id` a name nobody knows would get.
 Saying which rule refused it would tell whoever chose the URL whether a
-host is allowed, whether it resolved, or what it answered. The reason is in
-the audit log and the server log, where an operator reads it.
+host is allowed, whether it resolved, or what it answered. **The reason is
+in the server log only**: `GET /api/audit` is readable by anyone who can
+reach it, so the audit records that a document was refused and not why.
+
+The body says nothing, but the clock still does: a host that is not allowed
+is refused before any I/O and answers at once, while an allowed one costs a
+lookup, a handshake and up to the five second budget. If that distinction
+matters to you, do not enable this on an instance strangers can reach - it
+is a developer tool, not a hardened gateway.

@@ -22,7 +22,7 @@ import yaml
 
 from nanoidp.app import create_app
 from nanoidp.config import get_config
-from nanoidp.services import client_metadata_fetch
+from nanoidp.services import client_metadata, client_metadata_fetch
 from nanoidp.services.client_metadata import cached_client
 from nanoidp.services.identities import get_identities
 from tests.cimd_harness import HOSTNAME, Origin, issue_certificates, metadata_document
@@ -65,7 +65,9 @@ def app(tmp_path, origin):
     document["jwt"]["keys_dir"] = str(tmp_path / "keys")
     document["oauth"]["client_id_metadata_documents"] = {
         "enabled": True,
-        "allowed_hosts": [HOSTNAME],
+        # With the port: naming a host opts in one port on it, not every
+        # port, and the harness listens on an ephemeral one.
+        "allowed_hosts": [f"{HOSTNAME}:{origin.port}"],
         "allow_loopback": True,
     }
     settings.write_text(yaml.safe_dump(document))
@@ -289,7 +291,11 @@ class TestWhatIsRefused:
         entries = client.get("/api/audit").get_data(as_text=True)
         assert "client_metadata_document_refused" not in entries
 
-    def test_a_refusal_is_audited_with_its_reason(self, app, origin, resolves_to_loopback):
+    def test_a_refusal_is_audited_without_its_reason(self, app, origin, resolves_to_loopback):
+        """GET /api/audit is readable by anyone who can reach it, so a
+        reason in the entry would hand back through one surface exactly
+        what the uniform error withholds on the other. The event is
+        recorded; the why is in the server log."""
         client = app.test_client()
         origin.status = 500
         self._authorize(app, _client_id(origin))
@@ -297,6 +303,54 @@ class TestWhatIsRefused:
         entries = client.get("/api/audit").get_data(as_text=True)
 
         assert "client_metadata_document_refused" in entries
+        for leak in ("allowed_hosts", "does not resolve", "answered", "larger than"):
+            assert leak not in entries, f"the audit says why: {leak}"
+
+    @pytest.mark.parametrize(
+        "client_id",
+        [
+            # urlsplit raises a bare ValueError for these, which is not one
+            # of the errors the route catches: it left /authorize as a 500
+            # from an unauthenticated request.
+            "https://[::1",
+            "https://[abc]x/p",
+            "https://user@[::1/p",
+        ],
+    )
+    def test_a_malformed_url_is_refused_not_raised(self, app, client_id):
+        response = self._authorize(app, client_id)
+
+        assert response.status_code == 400
+        assert response.get_json()["error"] == "invalid_client"
+
+    def test_this_server_will_not_be_made_to_fetch_without_end(
+        self, app, origin, resolves_to_loopback, monkeypatch
+    ):
+        """Only successes are cached, so a URL that fails validation is
+        fetched again every time it is asked for, and /authorize is
+        unauthenticated. The limit is on the fetch, not on the endpoint:
+        that is where the cost is, and the endpoint is where people log
+        in."""
+        monkeypatch.setattr(client_metadata, "MAX_FETCHES_PER_MINUTE", 3)
+        monkeypatch.setattr(client_metadata, "_fetch_times", [])
+        origin.status = 404
+
+        for _ in range(6):
+            self._authorize(app, _client_id(origin))
+
+        assert len(origin.requests) == 3
+
+    def test_an_ordinary_login_is_not_rate_limited_by_it(
+        self, app, origin, resolves_to_loopback, monkeypatch
+    ):
+        """The budget must not become a limit on /authorize itself."""
+        monkeypatch.setattr(client_metadata, "MAX_FETCHES_PER_MINUTE", 1)
+        monkeypatch.setattr(client_metadata, "_fetch_times", [])
+        client = app.test_client()
+        query, _ = _authorize_query("demo-client")
+
+        for _ in range(5):
+            assert client.get("/authorize", query_string=query).status_code == 200
 
 
 class TestTheReadSurface:
@@ -376,6 +430,18 @@ class TestDiscovery:
         document = app.test_client().get(path).get_json()
 
         assert document["client_id_metadata_document_supported"] is True
+
+    def test_it_is_not_advertised_when_no_host_is_allowed(self, app):
+        """Enabled with an empty allowed_hosts refuses every client, so
+        advertising it would promise a capability with no way to tell it is
+        inert. The registration endpoint needs no second setting to work,
+        which is why it has no such state."""
+        with app.app_context():
+            get_config().settings.client_id_metadata_documents_allowed_hosts = []
+
+        document = app.test_client().get("/.well-known/openid-configuration").get_json()
+
+        assert "client_id_metadata_document_supported" not in document
 
     def test_it_is_not_advertised_when_it_is_off(self, app):
         with app.app_context():

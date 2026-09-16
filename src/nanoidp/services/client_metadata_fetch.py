@@ -280,14 +280,28 @@ class _PinnedConnection:
         )
 
 
-def allowed_hosts(settings: Settings) -> List[str]:
-    """The hostnames an operator has opted in, compared as DNS names.
+def allowed_hosts(settings: Settings) -> List[Tuple[str, int]]:
+    """What an operator has opted in: a host, and the port on it.
 
-    Lower-cased and with a trailing dot removed, because those are the same
-    name. The ``client_id`` itself is never normalised: the draft matches it
+    An entry may name a port (``client.example:8443``); one that does not
+    means 443 and nothing else. Naming a host has to authorise connections
+    to one port on it rather than to every port: this server would
+    otherwise open TLS to ``:22`` or ``:6379`` on the operator's host for
+    anyone who asks, at a path of their choosing, which is a port scan from
+    nanoidp's position on the network.
+
+    The host is compared as a DNS name, lower-cased and without a trailing
+    dot. The ``client_id`` itself is never normalised: the draft matches it
     against the document by simple string comparison.
     """
-    return [_dns_name(host) for host in settings.client_id_metadata_documents_allowed_hosts]
+    entries: List[Tuple[str, int]] = []
+    for raw in settings.client_id_metadata_documents_allowed_hosts:
+        host, separator, port = raw.strip().rpartition(":")
+        if separator and port.isdigit():
+            entries.append((_dns_name(host), int(port)))
+        else:
+            entries.append((_dns_name(raw), 443))
+    return entries
 
 
 def _dns_name(host: str) -> str:
@@ -572,7 +586,7 @@ def fetch_document(client_id: str, settings: Settings) -> Tuple[Any, Any]:
         raise FetchRefused("client ID metadata documents are not enabled")
     if not hostname:
         raise FetchRefused("the client identifier URL names no host")
-    if hostname not in allowed_hosts(settings):
+    if (hostname, port) not in allowed_hosts(settings):
         # Default empty: nothing is fetched until an operator names a host.
         raise FetchRefused("the metadata document's host is not in allowed_hosts")
 

@@ -39,6 +39,7 @@ from ..services.client_metadata import (
     ClientIdUrlInvalid,
     DocumentInvalid,
     DocumentNotUsable,
+    TooManyFetches,
     learn_client,
     looks_like_client_id_url,
 )
@@ -387,8 +388,13 @@ def _client_from_metadata_document(
     Every failure answers the same "Unknown client_id" the caller already
     returns for a name nobody knows. Telling a caller which rule refused it
     would say whether a host is in ``allowed_hosts``, whether it resolved,
-    what it answered - to whoever chose the URL. The reason goes to the
-    audit and the log, where an operator reads it.
+    what it answered - to whoever chose the URL.
+
+    The reason goes to the server log only. ``GET /api/audit`` is readable
+    by anyone who can reach it, so an audit entry carrying the reason would
+    hand back through one surface exactly what the other withholds; the
+    entry records that a document was refused, and the operator reads why
+    where only the operator is.
     """
     settings = config.settings
     if not settings.client_id_metadata_documents_enabled:
@@ -401,6 +407,7 @@ def _client_from_metadata_document(
         ClientIdUrlInvalid,
         DocumentInvalid,
         DocumentNotUsable,
+        TooManyFetches,
         FetchRefused,
     ) as refused:
         logger.info("Client ID metadata document refused for %s: %s", client_id, refused)
@@ -409,7 +416,6 @@ def _client_from_metadata_document(
             "failure",
             endpoint="/authorize",
             client_id=client_id,
-            details={"reason": str(refused)},
         )
         return None
 
