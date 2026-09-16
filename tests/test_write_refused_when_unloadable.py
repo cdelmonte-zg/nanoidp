@@ -220,6 +220,51 @@ class TestTheCheckItself:
         assert str(settings) not in refused.value.message
         assert refused.value.message.count("settings.yaml") == 1
 
+    def test_a_config_version_the_loader_refuses_is_refused_here_too(self, tmp_path):
+        """A rule the document models do not own: SettingsDocument says as
+        much where it declares the field, because the check runs on the raw
+        mapping before the model is built. Without it a candidate could
+        pass every model and be refused by the very next load."""
+        from nanoidp.config_documents import reject_unloadable
+
+        with pytest.raises(DocumentRejected, match="newer than this release"):
+            reject_unloadable(
+                [(tmp_path / "settings.yaml", {"config_version": 999, "oauth": {}})]
+            )
+
+    def test_the_two_files_must_agree_on_the_contract_version(self, tmp_path, monkeypatch):
+        """One version for the whole directory, which only a batch holding
+        both files can check. Needs a simulated v2, since with only v1 both
+        supported values are necessarily equal - the same simulation
+        tests/test_config_version.py uses for the loader's own check."""
+        from nanoidp import serialization
+        from nanoidp.config_documents import reject_unloadable
+
+        monkeypatch.setattr(serialization, "CONFIG_VERSION", 2)
+
+        with pytest.raises(DocumentRejected, match="one contract version"):
+            reject_unloadable(
+                [
+                    (tmp_path / "settings.yaml", {"config_version": 2, "oauth": {}}),
+                    (
+                        tmp_path / "users.yaml",
+                        {"config_version": 1, "users": {"admin": {"password": "x"}}},
+                    ),
+                ]
+            )
+
+    def test_a_single_file_is_not_sent_to_read_the_other(self, tmp_path, monkeypatch):
+        """The agreement is checked when both documents are in hand. A
+        one-file writer reading the other file off disk would be answering
+        the snapshot question #246 owns, and answering it wrongly."""
+        from nanoidp import serialization
+        from nanoidp.config_documents import reject_unloadable
+
+        monkeypatch.setattr(serialization, "CONFIG_VERSION", 2)
+        (tmp_path / "users.yaml").write_text("config_version: 1\nusers: {}\n")
+
+        reject_unloadable([(tmp_path / "settings.yaml", {"config_version": 2, "oauth": {}})])
+
     def test_the_declared_mode_is_read_before_the_placeholders_are_expanded(
         self, tmp_path, monkeypatch
     ):

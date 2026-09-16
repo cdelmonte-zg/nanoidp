@@ -62,7 +62,7 @@ from .models import (
     _coerce_client_str_list,
     normalize_saml_c14n_algorithm,
 )
-from .serialization import expand_env_vars
+from .serialization import check_config_version, expand_env_vars
 
 logger = logging.getLogger(__name__)
 
@@ -826,6 +826,45 @@ def _declared_strictness(documents: Sequence[Tuple[Path, Dict[str, Any]]]) -> bo
     return False
 
 
+def _reject_disagreeing_versions(
+    documents: Sequence[Tuple[Path, Dict[str, Any]]]
+) -> None:
+    """``config_version``, in the loader's own order and with its own rule.
+
+    The document models do not own this one: ``SettingsDocument`` says so
+    where it declares the field, because the check runs on the raw mapping
+    before ``${VAR}`` expansion and before the model is built, so a
+    ``config_version: 999`` would pass every model and be refused by the
+    next load.
+
+    The second half is the directory's invariant rather than a file's: both
+    files declare the same number. It can only be checked when both are in
+    the batch, which is where it matters - ``ConfigManager.save()`` and the
+    wizard write both. A single-file writer is not sent to read the other
+    file: that is the snapshot question #246 owns, and reading it here
+    would answer it wrongly.
+    """
+    versions: Dict[str, int] = {}
+    for file_path, document in documents:
+        try:
+            versions[file_path.name] = check_config_version(document, file_path)
+        except ValueError as exc:
+            raise DocumentRejected(
+                f"the change would leave {file_path.name} unloadable: "
+                f"{_first_finding(file_path, exc)}"
+            ) from exc
+    settings_version = versions.get("settings.yaml")
+    users_version = versions.get("users.yaml")
+    if settings_version is not None and users_version is not None:
+        if settings_version != users_version:
+            raise DocumentRejected(
+                f"the change would leave the configuration directory unloadable: "
+                f"users.yaml declares config_version {users_version} and "
+                f"settings.yaml declares {settings_version}; one directory "
+                f"follows one contract version"
+            )
+
+
 def _first_finding(file_path: Path, exc: ValueError) -> str:
     """One line from a model's complaint, the way ``_entry_error`` reads one.
 
@@ -884,6 +923,7 @@ def reject_unloadable(documents: Sequence[Tuple[Path, Dict[str, Any]]]) -> None:
     this can see.
     """
     strict = _declared_strictness(documents)
+    _reject_disagreeing_versions(documents)
     for file_path, document in documents:
         expanded = expand_env_vars(dict(document))
         try:

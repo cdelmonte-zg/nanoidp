@@ -26,7 +26,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `localhost:8000` finished the wizard and left a directory the server it
   had just configured could not start from. Both files are now checked
   before either is written, so a refused answer leaves no half-configured
-  directory behind.
+  directory behind. The check follows the loader's order, `config_version`
+  included: that rule lives on the raw mapping rather than in the document
+  models, so without it a candidate could pass every model and be refused
+  by the very next load, and a batch holding both files also has to see
+  them declare the same version.
 
 ### Added
 - **Dynamic client registration** (#190), RFC 7591 with the read and delete
