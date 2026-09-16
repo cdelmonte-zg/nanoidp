@@ -93,5 +93,6 @@ class TestUserFieldParity:
         resp = client.get("/api/users/admin")
         assert resp.status_code == 200
         keys = set(resp.get_json())
-        # password/totp_secret elided; authorities is derived, not a stored field.
-        assert keys == (_MODEL_FIELDS - {"password", "totp_secret"}) | {"authorities"}
+        # password/totp_secret elided; authorities is derived and origin (#192)
+        # says declared or runtime, neither is a stored field.
+        assert keys == (_MODEL_FIELDS - {"password", "totp_secret"}) | {"authorities", "origin"}

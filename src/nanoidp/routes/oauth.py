@@ -839,7 +839,7 @@ def _render_authorize_login(
         totp_step=totp_step,
         login_password=login_password,
         change_username_url=url_for("oauth.authorize", **_authorize_query_params(p)),
-        users=config.persona_picker_entries(),
+        users=identities_for(config).persona_picker_entries(),
     )
     return no_store(response) if totp_step else response
 
@@ -1988,7 +1988,7 @@ def device_verify() -> ResponseReturnValue:
             login_username=login_username,
             totp_step=totp_step,
             login_password=login_password,
-            users=config.persona_picker_entries(),
+            users=identities_for(config).persona_picker_entries(),
         )
         return no_store(response) if totp_step else response
 

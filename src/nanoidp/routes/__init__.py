@@ -2,7 +2,8 @@
 
 from .api import api_bp
 from .oauth import oauth_bp
+from .runtime import runtime_bp
 from .saml import saml_bp
 from .ui import ui_bp
 
-__all__ = ["oauth_bp", "saml_bp", "ui_bp", "api_bp"]
+__all__ = ["oauth_bp", "saml_bp", "ui_bp", "api_bp", "runtime_bp"]

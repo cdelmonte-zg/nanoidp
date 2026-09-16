@@ -4499,6 +4499,139 @@ class NanoIDPTestAgent:
         except Exception as e:
             return self._add_result("API User Details", TestCategory.API, False, str(e))
 
+    def test_runtime_identities(self) -> TestResult:
+        """Disposable runtime users and clients (#192): created through
+        /api/runtime on the running server, usable in a protocol flow, visible
+        in /api/users with their origin, kept across a reload, refused under a
+        declared name, promoted into users.yaml, and removed by a reset. The
+        promoted user is deleted again through the UI, so the server's
+        declared configuration ends as it started."""
+        suffix = secrets.token_hex(3)
+        username, client_id, promoted = f"ci-rt-{suffix}", f"ci-rt-app-{suffix}", f"ci-rt-promoted-{suffix}"
+        base = f"{self.base_url}/api/runtime"
+        checks: Dict[str, bool] = {}
+        try:
+            created_user = self.session.post(
+                f"{base}/users", json={"username": username, "password": "rt-pw", "roles": ["TESTER"]}, timeout=5
+            )
+            created_client = self.session.post(
+                f"{base}/clients",
+                json={"client_id": client_id, "client_secret": "rt-secret", "redirect_uris": ["http://localhost:3000/callback"]},
+                timeout=5,
+            )
+            checks["created"] = created_user.status_code == 201 and created_client.status_code == 201
+
+            grant = requests.post(
+                f"{self.base_url}/token",
+                data={"grant_type": "password", "username": username, "password": "rt-pw"},
+                auth=(client_id, "rt-secret"),
+                timeout=5,
+            )
+            checks["password_grant_with_runtime_client"] = grant.status_code == 200
+
+            listed = self.session.get(f"{self.base_url}/api/users", timeout=5).json().get("users", [])
+            checks["api_users_origin"] = any(
+                u.get("username") == username and u.get("origin") == "runtime" for u in listed
+            )
+
+            reload_response = self.session.post(f"{self.base_url}/api/config/reload", timeout=10)
+            checks["survives_reload"] = (
+                reload_response.status_code == 200
+                and self.session.get(f"{base}/users/{username}", timeout=5).status_code == 200
+            )
+
+            redirect_uri = "http://localhost:3000/callback"
+            browser = requests.Session()
+            browser.get(
+                f"{self.base_url}/authorize",
+                params={"response_type": "code", "client_id": client_id, "redirect_uri": redirect_uri, "scope": "openid"},
+                timeout=5,
+            )
+            login = browser.post(
+                f"{self.base_url}/authorize",
+                data={"username": username, "password": "rt-pw"},
+                allow_redirects=False,
+                timeout=5,
+            )
+            code = parse_qs(urlparse(login.headers.get("Location", "")).query).get("code", [""])[0]
+            exchanged = requests.post(
+                f"{self.base_url}/token",
+                data={"grant_type": "authorization_code", "code": code, "redirect_uri": redirect_uri},
+                auth=(client_id, "rt-secret"),
+                timeout=5,
+            )
+            checks["authorization_code_flow"] = exchanged.status_code == 200 and "id_token" in exchanged.json()
+
+            authn_request = base64.b64encode(
+                b'<samlp:AuthnRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" ID="_rt_e2e" '
+                b'Version="2.0" IssueInstant="2026-01-01T00:00:00Z" AssertionConsumerServiceURL="http://localhost:8080/acs"/>'
+            ).decode()
+            sso = requests.post(
+                f"{self.base_url}/saml/sso",
+                data={"SAMLRequest": authn_request, "saml_original_verb": "POST", "username": username, "password": "rt-pw"},
+                timeout=5,
+            )
+            saml_match = re.search(r'name="SAMLResponse"\s+value="([^"]+)"', sso.text)
+            checks["saml_sso"] = bool(saml_match) and username.encode() in base64.b64decode(saml_match.group(1))
+
+            # A declaration of a runtime name through the web UI: its reload
+            # removes the runtime object, with an audit event.
+            shadowed = f"ci-rt-shadowed-{suffix}"
+            self.session.post(f"{base}/users", json={"username": shadowed, "password": "runtime"}, timeout=5)
+            self.session.post(
+                f"{self.base_url}/users/create", data={"username": shadowed, "password": "declared"}, timeout=10
+            )
+            removed = self.session.get(
+                f"{self.base_url}/api/audit", params={"event_type": "runtime_identity_removed_on_reload"}, timeout=5
+            ).json().get("entries", [])
+            checks["declared_through_ui_wins"] = (
+                self.session.get(f"{base}/users/{shadowed}", timeout=5).status_code == 404
+                and any(e.get("details", {}).get("name") == shadowed for e in removed)
+            )
+            self.session.post(f"{self.base_url}/users/{shadowed}/delete", timeout=5)
+
+            collision = self.session.post(f"{base}/users", json={"username": self.username, "password": "x"}, timeout=5)
+            checks["declared_name_409"] = collision.status_code == 409 and collision.json().get("kind") == "declared"
+
+            self.session.post(f"{base}/users", json={"username": promoted, "password": "promoted-pw"}, timeout=5)
+            promotion = self.session.post(f"{base}/users/{promoted}/promote", timeout=10)
+            after = self.session.get(f"{self.base_url}/api/users/{promoted}", timeout=5)
+            checks["promoted_into_users_yaml"] = (
+                promotion.status_code == 200
+                and after.status_code == 200
+                and after.json().get("origin") == "declared"
+                and self.session.get(f"{base}/users/{promoted}", timeout=5).status_code == 404
+            )
+            promoted_events = [
+                e for e in self.session.get(
+                    f"{self.base_url}/api/audit", params={"event_type": "runtime_identity_promoted"}, timeout=5
+                ).json().get("entries", [])
+                if e.get("details", {}).get("name") == promoted
+            ]
+            checks["exactly_one_promoted_event"] = len(promoted_events) == 1
+
+            reset = self.session.delete(base, timeout=5)
+            checks["reset_counts"] = reset.status_code == 200 and reset.json() == {"users_deleted": 1, "clients_deleted": 1}
+            refused = requests.post(
+                f"{self.base_url}/token",
+                data={"grant_type": "password", "username": username, "password": "rt-pw"},
+                auth=(client_id, "rt-secret"),
+                timeout=5,
+            )
+            checks["gone_after_reset"] = refused.status_code == 401
+        except Exception as e:
+            return self._add_result("Runtime Identities", TestCategory.API, False, str(e), checks)
+        finally:
+            self.session.delete(base, timeout=5)
+            self.session.post(f"{self.base_url}/users/{promoted}/delete", timeout=5)
+
+        failed = [name for name, ok in checks.items() if not ok]
+        return self._add_result(
+            "Runtime Identities", TestCategory.API, not failed,
+            "all checks passed" if not failed else f"failed: {', '.join(failed)}",
+            checks,
+        )
+
     def test_api_direct_token(self) -> TestResult:
         """REST API - Direct token generation."""
         try:
@@ -5729,6 +5862,7 @@ class NanoIDPTestAgent:
                 self.test_api_users_list,
                 self.test_api_user_details,
                 self.test_api_direct_token,
+                self.test_runtime_identities,
                 self.test_api_config,
                 self.test_api_verbose_logging_setting,
                 self.test_api_config_version,
