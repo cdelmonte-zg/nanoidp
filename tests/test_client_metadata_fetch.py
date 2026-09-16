@@ -232,6 +232,81 @@ class TestTheBudgetIsForTheWholeFetch:
 
         assert elapsed < 3.0, f"the header phase ran for {elapsed:.1f}s on a 1s budget"
 
+    def test_a_server_that_drips_the_handshake_cannot_outlast_it(
+        self, monkeypatch, resolves_to_loopback
+    ):
+        """The one place the per-operation rule does not bite: ssl applies
+        the socket timeout to the handshake as a whole, not to each read.
+        The rest of this module works around the opposite, so the exception
+        is pinned rather than assumed - if it ever stopped being true, the
+        handshake would be the unbounded phase."""
+        import threading
+
+        monkeypatch.setattr(fetcher, "TIMEOUT_SECONDS", 1.0)
+        ready, port = threading.Event(), []
+
+        def dribble():
+            listener = socket.socket()
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            listener.bind(("127.0.0.1", 0))
+            listener.listen(1)
+            port.append(listener.getsockname()[1])
+            ready.set()
+            try:
+                connection, _ = listener.accept()
+                connection.recv(4096)
+                # A well formed record header announcing a long record, so
+                # the peer waits for the rest rather than rejecting a
+                # malformed one - the refusal has to be the budget, not a
+                # protocol error arriving sooner.
+                connection.sendall(b"\x16\x03\x03\x40\x00")
+                for _ in range(200):
+                    connection.sendall(b"\x00")
+                    time.sleep(0.3)
+            except OSError:
+                pass
+            finally:
+                listener.close()
+
+        threading.Thread(target=dribble, daemon=True).start()
+        ready.wait(5)
+        # Without this the name does not resolve and the test would pass
+        # long before any handshake, which is how it first passed.
+        resolves_to_loopback(["127.0.0.1"])
+
+        started = time.monotonic()
+        with pytest.raises(FetchRefused):
+            fetch_document(f"https://{HOSTNAME}:{port[0]}/metadata.json", _settings())
+        elapsed = time.monotonic() - started
+
+        assert elapsed < 3.0, f"the handshake ran for {elapsed:.1f}s on a 1s budget"
+
+    def test_a_slow_resolver_cannot_outlast_it_either(self, monkeypatch):
+        """A pool created per fetch cannot work: leaving its context manager
+        waits for the task it was given, so the request waits for the
+        resolver anyway. Measured at 2.0s on a 0.1s budget before this."""
+        monkeypatch.setattr(fetcher, "TIMEOUT_SECONDS", 0.2)
+
+        def slow(*args, **kwargs):
+            time.sleep(3)
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 443))]
+
+        monkeypatch.setattr(fetcher.socket, "getaddrinfo", slow)
+
+        started = time.monotonic()
+        with pytest.raises(FetchRefused, match="resolve"):
+            fetch_document(f"https://{HOSTNAME}/metadata.json", _settings())
+        elapsed = time.monotonic() - started
+
+        assert elapsed < 1.0, f"the fetch waited {elapsed:.1f}s for a resolver it gave up on"
+
+    def test_the_resolver_pool_is_bounded_and_shared(self):
+        """Not a pool per request: under a run of slow names that would be a
+        thread per request. Two workers for the process, so the third fetch
+        waits for its own budget and then fails."""
+        assert fetcher._RESOLVER_WORKERS == 2
+        assert fetcher._resolver() is fetcher._resolver()
+
     def test_the_budget_is_not_configurable(self):
         """A bound on what a client can cost this server, not a preference.
         A setting here would mostly be a way to raise it."""
@@ -517,13 +592,15 @@ class TestTheCacheLifetime:
         implemented, so the conservative reading is the honest one."""
         assert cache_lifetime(header) == DO_NOT_CACHE
 
-    def test_a_document_that_may_not_be_cached_is_still_a_document(
+    def test_a_valid_document_is_returned_with_the_do_not_cache_answer(
         self, origin, resolves_to_loopback
     ):
-        """Not keeping a copy is not the same as refusing the answer. A host
-        that sets no-store globally, which most frameworks do for anything
-        that is not a static file, would otherwise have no way to publish a
-        metadata document at all."""
+        """Refusing here would discard a good document, which is a different
+        thing from not caching it. What a caller can do with one it may not
+        keep is the caller's decision: with the cache the only place a CIMD
+        client exists between /authorize and /token, PR C will refuse the
+        authorization request rather than issue a code for a client /token
+        cannot resolve."""
         client_id = _client_id(origin)
         origin.serve_document(metadata_document(client_id))
         origin.cache_control = "no-store"

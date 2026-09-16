@@ -52,6 +52,17 @@ TIMEOUT_SECONDS = 5.0
 MAX_BODY_BYTES = 5 * 1024
 _READ_CHUNK = 1024
 
+# Resolving runs on a small pool that outlives a single fetch. A pool per
+# fetch cannot work: leaving its context manager waits for the task, so a
+# name whose server black-holes queries would hold the request for the
+# resolver's own retries no matter what the budget said. Two workers, for
+# the life of the process: under load the third fetch waits for its own
+# budget and then fails, which is the behaviour to want here - bounded and
+# closed, rather than always able to resolve.
+_RESOLVER_WORKERS = 2
+_resolver_pool: Optional[Any] = None
+_resolver_pool_lock = threading.Lock()
+
 ACCEPTED_MEDIA_TYPES = ("application/json",)
 _JSON_SUFFIX = "+json"
 
@@ -150,7 +161,6 @@ class _PinnedConnection:
         self.port = port
         self.deadline = deadline
         self._sock: Optional[Any] = None
-        self._watchdog: Optional[threading.Timer] = None
 
     def __enter__(self) -> "_PinnedConnection":
         family = socket.AF_INET6 if ":" in self.address else socket.AF_INET
@@ -162,28 +172,22 @@ class _PinnedConnection:
             # The certificate is checked against the name the client gave,
             # never against the address dialled: pinning the address must
             # not weaken what the name has to prove.
+            # One timeout for the handshake, which is the exception to the
+            # per-operation rule this module otherwise works around: ssl
+            # applies it to the handshake as a whole, not to each read, so a
+            # peer that dribbles is cut off at the deadline. A test holds
+            # that, because the rest of the file assumes the opposite.
             raw.settimeout(_deadline_remaining(self.deadline))
-            # The handshake is many reads, so the same per-operation problem
-            # applies to it. A watchdog closes the socket at the deadline,
-            # which no amount of dribbling can outlast.
-            self._watchdog = threading.Timer(
-                _deadline_remaining(self.deadline), self._abort, args=(raw,)
-            )
-            self._watchdog.daemon = True
-            self._watchdog.start()
             self._sock = _DeadlineSocket(
                 context.wrap_socket(raw, server_hostname=self.hostname), self.deadline
             )
         except FetchRefused:
-            self._stop_watchdog()
             raw.close()
             raise
         except ssl.SSLError as exc:
-            self._stop_watchdog()
             raw.close()
             raise FetchRefused(f"the TLS connection was refused: {exc.__class__.__name__}") from exc
         except OSError as exc:
-            self._stop_watchdog()
             raw.close()
             if time.monotonic() >= self.deadline:
                 raise FetchRefused(
@@ -195,26 +199,11 @@ class _PinnedConnection:
             # module and the socket is never left open: ssl encodes the
             # hostname with the idna codec, which raises a UnicodeError for
             # a name it cannot encode.
-            self._stop_watchdog()
             raw.close()
             raise FetchRefused("the metadata document could not be reached") from exc
         return self
 
-    @staticmethod
-    def _abort(raw: socket.socket) -> None:
-        """Close the socket from under a read that will not end."""
-        try:
-            raw.shutdown(socket.SHUT_RDWR)
-        except OSError:
-            pass
-
-    def _stop_watchdog(self) -> None:
-        if self._watchdog is not None:
-            self._watchdog.cancel()
-            self._watchdog = None
-
     def __exit__(self, *exc_info: Any) -> None:
-        self._stop_watchdog()
         if self._sock is not None:
             self._sock.close()
 
@@ -305,29 +294,46 @@ def _dns_name(host: str) -> str:
     return host.strip().rstrip(".").lower()
 
 
+def _resolver() -> Any:
+    """The process's resolver pool, created once."""
+    global _resolver_pool
+    if _resolver_pool is None:
+        with _resolver_pool_lock:
+            if _resolver_pool is None:
+                _resolver_pool = concurrent.futures.ThreadPoolExecutor(
+                    max_workers=_RESOLVER_WORKERS, thread_name_prefix="cimd-resolver"
+                )
+    return _resolver_pool
+
+
 def _resolve(hostname: str, port: int, deadline: float) -> List[str]:
     """The addresses a name answers with, inside the budget.
 
     ``getaddrinfo`` blocks with no timeout of its own, so a host whose
     nameserver black-holes queries would spend the resolver's own retries -
     tens of seconds - before the budget was ever consulted. It runs on a
-    worker so the wait can be given up on. The worker is not killed, because
-    nothing can kill it; it ends when the resolver does, and answers nobody.
+    worker so the wait can be given up on, and on a shared pool rather than
+    a fresh one, because a pool's own shutdown waits for the task it was
+    given and would put the wait straight back.
     """
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-        future = pool.submit(
-            socket.getaddrinfo, hostname, port, type=socket.SOCK_STREAM
-        )
-        try:
-            infos = future.result(timeout=_deadline_remaining(deadline))
-        except concurrent.futures.TimeoutError as exc:
-            raise FetchRefused(
-                "the metadata document's host took longer than the budget to resolve"
-            ) from exc
-        except socket.gaierror as exc:
-            raise FetchRefused("the metadata document's host does not resolve") from exc
-        except UnicodeError as exc:
-            raise FetchRefused("the metadata document's host is not a usable name") from exc
+    future = _resolver().submit(
+        socket.getaddrinfo, hostname, port, type=socket.SOCK_STREAM
+    )
+    try:
+        infos = future.result(timeout=_deadline_remaining(deadline))
+    except concurrent.futures.TimeoutError as exc:
+        # Cancelled if it has not started. If it is already inside
+        # getaddrinfo nothing can stop it, and it will finish and answer
+        # nobody; what matters is that this request does not wait for it
+        # and that no more than _RESOLVER_WORKERS can ever be in there.
+        future.cancel()
+        raise FetchRefused(
+            "the metadata document's host took longer than the budget to resolve"
+        ) from exc
+    except socket.gaierror as exc:
+        raise FetchRefused("the metadata document's host does not resolve") from exc
+    except UnicodeError as exc:
+        raise FetchRefused("the metadata document's host is not a usable name") from exc
     addresses: List[str] = []
     for info in infos:
         address = str(info[4][0])
@@ -442,9 +448,12 @@ def _acceptable_address(
     return addresses[0]
 
 
-# What a document may be kept for, when the answer is "not at all". The
-# caller passes the lifetime to client_metadata.remember, which clamps a
-# number upwards to a minute; a separate value says do not call it.
+# The response is a valid document and MUST NOT enter the cache. What a
+# caller can do with a document it may not keep is the caller's question,
+# not this module's: with the cache as the only place a CIMD client exists
+# between /authorize and /token, an authorization flow cannot be completed
+# from one, and PR C refuses the authorization request rather than issuing
+# a code for a client /token will not be able to resolve.
 DO_NOT_CACHE = "do-not-cache"
 
 
@@ -462,10 +471,11 @@ def cache_lifetime(cache_control: Optional[str]) -> Any:
         return None
     directives = [directive.strip().lower() for directive in cache_control.split(",")]
     if "no-store" in directives or "no-cache" in directives:
-        # Usable, not cacheable. Discarding the document would lock out any
-        # client whose host sets no-store globally, which most frameworks
-        # and CDNs do for anything that is not a static file, and the rule
-        # is about keeping a copy rather than about honouring the answer.
+        # Valid, and not to be kept. Raising here would discard a good
+        # document, which is a different thing from not caching it and is
+        # not what the header asks; whether a protocol flow can go on
+        # without a cached copy is the caller's decision, and this module
+        # does not know which flow it is serving.
         # no-cache means "not without revalidating", which is not
         # implemented, so it reads the same way.
         return DO_NOT_CACHE
@@ -491,8 +501,9 @@ def fetch_document(client_id: str, settings: Settings) -> Tuple[Any, Any]:
     """The document at this client identifier URL, and how long it may be kept.
 
     The second value is what ``Cache-Control`` said: a number of seconds,
-    ``None`` for "it said nothing", or ``DO_NOT_CACHE``. A document that may
-    not be cached is still a document.
+    ``None`` for "it said nothing", or ``DO_NOT_CACHE``, meaning the
+    response is valid but must not enter the cache. What a caller can do
+    with a document it may not keep is the caller's decision.
 
     Raises ``FetchRefused`` for everything else. The caller's only decision
     is whether it has a document; the reason is for the operator.

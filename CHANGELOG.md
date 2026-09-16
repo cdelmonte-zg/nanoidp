@@ -31,8 +31,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   else happens. An address is judged by what it reaches, so an IPv4 address
   carried inside an IPv6 one (`::ffff:169.254.169.254`, NAT64) is read as
   the address it translates to. Only `max-age` is read from `Cache-Control`;
-  `no-store` and `no-cache` mean the document is used but not cached, which
-  is what they ask for, rather than refused.
+  `no-store` and `no-cache` answer that the document is valid and must not be
+  cached, rather than discarding it: what a caller can do with a document it
+  may not keep is the caller's decision, and with the cache the only place a
+  CIMD client exists between `/authorize` and `/token`, the wiring will
+  refuse such an authorization request rather than issue a code for a client
+  `/token` could not resolve.
   **Nothing calls this yet**: `/authorize` is the rest of #196.
 - **A client can come from a metadata document it publishes** (#196, first
   part): `IdentityResolver` resolves a third origin, `cimd`, after the two
