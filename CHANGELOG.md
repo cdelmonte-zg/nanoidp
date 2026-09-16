@@ -30,7 +30,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the same budget, and a watchdog closes the socket at the deadline whatever
   else happens. An address is judged by what it reaches, so an IPv4 address
   carried inside an IPv6 one (`::ffff:169.254.169.254`, NAT64) is read as
-  the address it translates to. Only `max-age` is read from `Cache-Control`;
+  the address it translates to, and the ranges CVE-2024-4032 affects are
+  named in the code rather than left to `ipaddress`: nanoidp supports
+  Python 3.10, where older patch releases call several special-purpose
+  ranges globally reachable, and raising the floor would not settle it
+  either. Only `max-age` is read from `Cache-Control`;
   `no-store` and `no-cache` answer that the document is valid and must not be
   cached, rather than discarding it: what a caller can do with a document it
   may not keep is the caller's decision, and with the cache the only place a

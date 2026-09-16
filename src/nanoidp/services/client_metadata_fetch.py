@@ -359,16 +359,51 @@ def _server_is_on_loopback(settings: Settings) -> bool:
         return False
 
 
-# The one range Python still calls globally routable that an operator has
-# no business being sent to: 6to4 relay anycast, deprecated by RFC 7526.
+# 6to4 relay anycast, deprecated by RFC 7526. Every ipaddress calls it
+# globally reachable, so this one is nanoidp's own judgement rather than a
+# version correction.
 _EXTRA_FORBIDDEN = (ipaddress.ip_network("192.88.99.0/24"),)
+
+# Compatibility corrections for CVE-2024-4032. Supported CPython patch
+# releases older than 3.10.15 / 3.11.10 / 3.12.4 report these special
+# purpose addresses as globally reachable, and raising requires-python
+# would not settle it either: >=3.10.15 still admits 3.11.0 to 3.11.9. The
+# SSRF decision belongs to this module, not to the interpreter's patch
+# level, so the ranges are named here.
+#
+# Do not fold these into one list: the exceptions are the point. 2001::/23
+# and 192.0.0.0/24 are not globally reachable as a whole, and a handful of
+# addresses inside them are, so a simpler rule would refuse what the
+# registry allows.
+_NOT_GLOBALLY_REACHABLE = (
+    ipaddress.ip_network("192.0.0.0/24"),
+    ipaddress.ip_network("64:ff9b:1::/48"),
+    ipaddress.ip_network("2002::/16"),
+    ipaddress.ip_network("2001::/23"),
+)
+_GLOBALLY_REACHABLE_WITHIN = (
+    ipaddress.ip_network("192.0.0.9/32"),
+    ipaddress.ip_network("192.0.0.10/32"),
+    ipaddress.ip_network("2001:1::1/128"),
+    ipaddress.ip_network("2001:1::2/128"),
+    ipaddress.ip_network("2001:3::/32"),
+    ipaddress.ip_network("2001:4:112::/48"),
+    ipaddress.ip_network("2001:20::/28"),
+    ipaddress.ip_network("2001:30::/28"),
+)
 # IPv6 forms that carry an IPv4 address inside them. Judging the wrapper
 # instead of what it wraps is how ::ffff:169.254.169.254 gets fetched.
 _NAT64 = ipaddress.ip_network("64:ff9b::/96")
 
 
 def _embedded_ipv4(parsed: Any) -> Optional[Any]:
-    """The IPv4 address an IPv6 one carries, if it carries one."""
+    """The IPv4 address an IPv6 one carries, if it carries one.
+
+    This also makes the later CPython correction for IPv4-mapped addresses
+    (3.10.16 / 3.11.11) beside the point here: the mapped address is pulled
+    out and judged as itself, on every version, rather than the wrapper
+    being handed to ``is_global``.
+    """
     if parsed.version != 6:
         return None
     if parsed.ipv4_mapped is not None:
@@ -376,6 +411,15 @@ def _embedded_ipv4(parsed: Any) -> Optional[Any]:
     if parsed in _NAT64:
         return ipaddress.ip_address(int(parsed) & 0xFFFFFFFF)
     return None
+
+
+def _known_not_globally_reachable(parsed: Any) -> bool:
+    """The CVE-2024-4032 table, applied before ``is_global`` is believed."""
+    if any(parsed in network for network in _GLOBALLY_REACHABLE_WITHIN
+           if network.version == parsed.version):
+        return False
+    return any(parsed in network for network in _NOT_GLOBALLY_REACHABLE
+               if network.version == parsed.version)
 
 
 def _is_routable(parsed: Any) -> bool:
@@ -388,6 +432,8 @@ def _is_routable(parsed: Any) -> bool:
     wants. Multicast counts as global to ``ipaddress`` and is never an
     answer to a request for one document over TCP.
     """
+    if _known_not_globally_reachable(parsed):
+        return False
     forbidden_extra = any(
         parsed in network for network in _EXTRA_FORBIDDEN
         if network.version == parsed.version

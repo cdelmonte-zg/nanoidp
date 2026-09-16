@@ -10,6 +10,7 @@ the whole point of pinning the address. Resolution is the seam the tests
 drive, because it is the seam an attacker would.
 """
 
+import ipaddress
 import socket
 import ssl
 import time
@@ -491,6 +492,74 @@ class TestWhichAddressesMayBeConnectedTo:
 
         with pytest.raises(FetchRefused, match="does not resolve"):
             fetch_document(_client_id(origin), _settings())
+
+
+class TestTheInterpreterDoesNotDecide:
+    """CVE-2024-4032: supported CPython patch releases older than 3.10.15 /
+    3.11.10 / 3.12.4 call these special-purpose addresses globally
+    reachable. Raising requires-python would not settle it - >=3.10.15
+    still admits 3.11.0 to 3.11.9 - so the ranges are named in the module
+    and asserted here, on whatever interpreter happens to run the suite.
+    """
+
+    @pytest.mark.parametrize(
+        "address",
+        [
+            "192.0.0.1",        # IETF protocol assignments
+            "192.0.0.171",
+            "64:ff9b:1::1",     # local-use NAT64
+            "2002::1",          # 6to4
+            "2001::1",          # Teredo
+            "2001:2::1",        # benchmarking
+        ],
+    )
+    def test_an_address_an_old_interpreter_calls_global_is_refused(self, address):
+        assert not fetcher._is_routable(ipaddress.ip_address(address))
+
+    @pytest.mark.parametrize(
+        "address",
+        [
+            # The exceptions are the point: these sit inside the ranges
+            # above and the registry does call them globally reachable, so
+            # a simpler rule would refuse what is allowed.
+            "192.0.0.9",
+            "192.0.0.10",
+            "2001:1::1",
+            "2001:1::2",
+            "2001:3::1",
+            "2001:4:112::1",
+            "2001:20::1",
+            "2001:30::1",
+        ],
+    )
+    def test_the_exceptions_inside_those_ranges_stay_routable(self, address):
+        assert fetcher._is_routable(ipaddress.ip_address(address))
+
+    @pytest.mark.parametrize(
+        "address", ["192.0.0.1", "64:ff9b:1::1", "2002::1", "2001::1"]
+    )
+    def test_they_are_refused_even_when_the_interpreter_says_global(
+        self, address, monkeypatch
+    ):
+        """The condition the table exists for, reproduced rather than
+        waited for: on an interpreter with the CVE, is_global answers True
+        for these. On a corrected one the table is redundant, which is why
+        nothing else here can tell whether it is consulted at all.
+        """
+        monkeypatch.setattr(
+            ipaddress.IPv4Address, "is_global", property(lambda self: True)
+        )
+        monkeypatch.setattr(
+            ipaddress.IPv6Address, "is_global", property(lambda self: True)
+        )
+
+        assert not fetcher._is_routable(ipaddress.ip_address(address))
+
+    @pytest.mark.parametrize("address", ["8.8.8.8", "2606:4700::1111"])
+    def test_an_ordinary_public_address_is_still_routable(self, address):
+        """The correction must not become a deny-list that swallows the
+        internet."""
+        assert fetcher._is_routable(ipaddress.ip_address(address))
 
 
 class TestTheLoopbackException:
