@@ -32,6 +32,13 @@ TOOL_ONLY = {
 }
 
 
+# Derivations where the argument is deliberately not named after its field.
+# Empty today: every derived argument carries its field's own name, which is
+# what makes the link checkable at all. An entry here should be a decision
+# with a reason next to it, not a way to quiet the test below.
+RENAMED_DERIVATIONS: dict = {}
+
+
 def _properties():
     for tool in _TOOLS:
         for name, spec in (tool.input_schema or {}).get("properties", {}).items():
@@ -67,6 +74,19 @@ class TestDerivation:
             and (tool, name) not in TOOL_ONLY
         ]
         assert offenders == []
+
+    def test_a_derived_argument_is_linked_to_the_field_it_is_named_after(self):
+        """The parity test above recomputes the expected shape from
+        ``spec.field``, so it compares a derivation with itself and cannot
+        see one wired to the wrong field: ``"username": _domain(User,
+        "email", ...)`` would match. The names are the check."""
+        for tool, name, spec in _properties():
+            if not isinstance(spec, DomainProperty):
+                continue
+            expected = RENAMED_DERIVATIONS.get((tool, name), name)
+            assert spec.field == expected, (
+                f"{tool}.{name} derives from {spec.model.__name__}.{spec.field}"
+            )
 
     def test_requiredness_is_the_operations_own(self):
         """update_user patches a model whose full representation demands more."""
