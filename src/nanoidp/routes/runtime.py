@@ -15,11 +15,11 @@ every other management write (#163): the same gate as ``/api``.
 
 from typing import Any, Callable, Dict
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, current_app, jsonify, request
 from flask.typing import ResponseReturnValue
 
 from ..config import ConfigurationRejected, get_config
-from ..config_documents import parse_client_entry, parse_user_entry
+from ..config_documents import EntryInvalid, parse_client_entry, parse_user_entry
 from ..config_writer import ConflictError, LockUnavailableError
 from ..hooks import HookError
 from ..services.identities import (
@@ -45,7 +45,7 @@ def _error(status: int, message: str, kind: str) -> ResponseReturnValue:
 def _json_object() -> Dict[str, Any]:
     body = request.get_json(silent=True)
     if not isinstance(body, dict):
-        raise ValueError(f"{request.method} {request.path}: expected a JSON object")
+        raise EntryInvalid(f"{request.method} {request.path}: expected a JSON object")
     return body
 
 
@@ -71,10 +71,10 @@ def create_user() -> ResponseReturnValue:
         body = _json_object()
         username = body.pop("username", None)
         if not isinstance(username, str) or not username:
-            raise ValueError("POST /api/runtime/users: username is required")
+            raise EntryInvalid("POST /api/runtime/users: username is required")
         user = parse_user_entry(username, body, "POST /api/runtime/users")
-    except ValueError as exc:
-        return _error(400, str(exc), "invalid")
+    except EntryInvalid as exc:
+        return _error(400, exc.message, "invalid")
     return _create("user", user.username, lambda: identities_for(get_config()).create_runtime_user(user),
                    lambda created: user_summary(created, "runtime"))
 
@@ -113,8 +113,8 @@ def create_client() -> ResponseReturnValue:
     validated exactly like a declared client."""
     try:
         client = parse_client_entry(_json_object(), "POST /api/runtime/clients")
-    except ValueError as exc:
-        return _error(400, str(exc), "invalid")
+    except EntryInvalid as exc:
+        return _error(400, exc.message, "invalid")
     return _create("client", client.client_id,
                    lambda: identities_for(get_config()).create_runtime_client(client),
                    lambda created: client_summary(created, "runtime"))
@@ -170,10 +170,10 @@ def reset() -> ResponseReturnValue:
 def _create(kind: str, name: str, create: Callable[[], Any], view: Callable[[Any], Dict[str, Any]]) -> ResponseReturnValue:
     try:
         created = create()
-    except DeclaredNameCollision as exc:
-        return _error(409, str(exc), "declared")
-    except RuntimeObjectExists as exc:
-        return _error(409, str(exc), "exists")
+    except DeclaredNameCollision:
+        return _error(409, f"{kind} {name!r} is declared in the configuration", "declared")
+    except RuntimeObjectExists:
+        return _error(409, f"a runtime {kind} {name!r} already exists", "exists")
     _audit("runtime_identity_created", kind, name)
     return jsonify(view(created)), 201
 
@@ -181,10 +181,10 @@ def _create(kind: str, name: str, create: Callable[[], Any], view: Callable[[Any
 def _delete(kind: str, name: str, delete: Callable[[str], None]) -> ResponseReturnValue:
     try:
         delete(name)
-    except RuntimeObjectNotFound as exc:
-        return _error(404, str(exc), "not_found")
-    except PromotionInProgress as exc:
-        return _error(409, str(exc), "promotion_in_progress")
+    except RuntimeObjectNotFound:
+        return _error(404, f"no runtime {kind} {name!r}", "not_found")
+    except PromotionInProgress:
+        return _error(409, f"runtime {kind} {name!r} is being promoted", "promotion_in_progress")
     _audit("runtime_identity_deleted", kind, name)
     return jsonify({"deleted": name, "kind": kind})
 
@@ -200,15 +200,18 @@ def _promote(
     }
     try:
         outcome = promote(context)
-    except RuntimeObjectNotFound as exc:
-        return _error(404, str(exc), "not_found")
-    except (PromotionInProgress, DeclaredNameCollision) as exc:
-        kind_name = "promotion_in_progress" if isinstance(exc, PromotionInProgress) else "declared"
-        return _error(409, str(exc), kind_name)
-    except ConflictError as exc:
-        return _error(409, str(exc), "conflict")
-    except LockUnavailableError as exc:
-        return _error(503, str(exc), "lock_unavailable")
+    except RuntimeObjectNotFound:
+        return _error(404, f"no runtime {kind} {name!r}", "not_found")
+    except PromotionInProgress:
+        return _error(409, f"runtime {kind} {name!r} is being promoted", "promotion_in_progress")
+    except DeclaredNameCollision:
+        return _error(409, f"{kind} {name!r} is already declared in {file_name}", "declared")
+    except ConflictError:
+        return _error(
+            409, f"{file_name} changed since it was read; nothing was written", "conflict"
+        )
+    except LockUnavailableError:
+        return _error(503, f"{file_name} is locked by another write; try again", "lock_unavailable")
     except (ConfigurationRejected, HookError) as exc:
         # The entry is in the file; the configuration around it did not load.
         # The runtime object stays until a reload succeeds, which retires it
@@ -219,12 +222,12 @@ def _promote(
             f"reloaded: {exc.message}",
             "reload_failed",
         )
-    except Exception as exc:
+    except Exception:
         # Anything else stopped the write itself (an unreadable or malformed
         # file on disk, an I/O error): nothing was written, the object stays.
-        return _error(
-            500, f"{name!r} could not be written to {file_name}: {type(exc).__name__}: {exc}", "write_failed"
-        )
+        # The reason goes to the log, not to the caller.
+        current_app.logger.exception("Promotion of runtime %s %r could not write %s", kind, name, file_name)
+        return _error(500, f"{name!r} could not be written to {file_name}", "write_failed")
     body: Dict[str, Any] = {"promoted": name, "kind": kind, "file": file_name}
     if outcome.mirror_error is not None:
         body["mirror_hook_error"] = outcome.mirror_error

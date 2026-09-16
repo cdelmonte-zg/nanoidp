@@ -659,6 +659,17 @@ def load_users_document(
     )
 
 
+class EntryInvalid(ValueError):
+    """An entry given to parse_user_entry/parse_client_entry does not
+    validate. ``message`` is the text built here from the model's own
+    finding, the only part a caller may show: the exception itself carries
+    the library error as its cause."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.message = message
+
+
 def _entry_error(source: str, document_prefix: str, exc: ValueError) -> ValueError:
     """One line naming the source and the entry's own field, for an entry
     validated inside a whole document: a loader message loses the document
@@ -668,8 +679,8 @@ def _entry_error(source: str, document_prefix: str, exc: ValueError) -> ValueErr
         first = exc.errors()[0]
         field = _dotted(first["loc"])
         message = first["msg"].removeprefix("Value error, ")
-        return ValueError(f"{source}: {field + ': ' if field else ''}{message}")
-    return ValueError(str(exc).replace(document_prefix, ""))
+        return EntryInvalid(f"{source}: {field + ': ' if field else ''}{message}")
+    return EntryInvalid(str(exc).replace(document_prefix, ""))
 
 
 def parse_user_entry(username: str, data: Any, source: str) -> User:
@@ -677,7 +688,7 @@ def parse_user_entry(username: str, data: Any, source: str) -> User:
     same model, defaults and rules as a declared user, for a user created at
     runtime. ``source`` names where the data came from in the error."""
     if not isinstance(data, Mapping):
-        raise ValueError(f"{source}: expected a JSON object")
+        raise EntryInvalid(f"{source}: expected a JSON object")
     try:
         document = _load_document(
             UsersDocument, {"users": {username: dict(data)}}, Path(source), strict=True
@@ -691,7 +702,7 @@ def parse_client_entry(data: Any, source: str) -> OAuthClient:
     """One client from a mapping shaped like an ``oauth.clients[]`` entry
     (#192): the same model, coercions and rules as a declared client."""
     if not isinstance(data, Mapping):
-        raise ValueError(f"{source}: expected a JSON object")
+        raise EntryInvalid(f"{source}: expected a JSON object")
     try:
         document = _load_document(
             SettingsDocument, {"oauth": {"clients": [dict(data)]}}, Path(source), strict=True
