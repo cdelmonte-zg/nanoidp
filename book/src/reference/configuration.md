@@ -113,8 +113,8 @@ The same validation runs the other way round as well: before any surface
 that writes configuration replaces a file, the document it composed is
 parsed exactly as a load would parse it, and a document the models refuse
 is refused instead of written. So the settings form, `/api/runtime`
-promotion and the MCP `save_config` tool cannot leave behind a
-`settings.yaml` the next process would fail to start from. What you get is
+promotion, the MCP `save_config` tool and `nanoidp init` cannot leave behind
+a `settings.yaml` the next process would fail to start from. What you get is
 an error naming the file and the key, with the file unchanged. The check
 expands `${VAR}` into a copy, the way a load does, so what is written keeps
 its placeholders and what is checked is what the next load will read.

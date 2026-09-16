@@ -123,6 +123,121 @@ class TestWhatARefusalDoesNotDo:
         assert config.settings.token_expiry_minutes == -5
 
 
+class TestEveryWriterGoesThroughIt:
+    """One boundary, not one per caller."""
+
+    def test_the_single_file_save_helpers_refuse_too(self, tmp_path):
+        """They exist for callers that want one file written and notified,
+        not for a second contract in the same class."""
+        _seed(tmp_path)
+        config = ConfigManager(str(tmp_path))
+        before = (tmp_path / "settings.yaml").read_text()
+        config.settings.token_expiry_minutes = -5
+
+        with pytest.raises(DocumentRejected):
+            config._save_settings()
+
+        assert (tmp_path / "settings.yaml").read_text() == before
+
+    def test_every_save_path_hands_the_primitive_the_check(self, tmp_path, monkeypatch):
+        """_save_users writes from User objects, which validate on
+        assignment, so no value reaches it that the models would refuse:
+        the check there is defence, and a behavioural test cannot tell
+        whether it is passed. The rule is structural - one contract for the
+        class, not one per method - so it is pinned structurally.
+        """
+        import nanoidp.config as config_module
+
+        _seed(tmp_path)
+        config = ConfigManager(str(tmp_path))
+        seen = []
+        real = config_module.compare_and_replace
+
+        def recording(file_path, expected, mutate, validate=None):
+            seen.append((file_path.name, validate))
+            return real(file_path, expected, mutate, validate)
+
+        monkeypatch.setattr(config_module, "compare_and_replace", recording)
+
+        config._save_users()
+        config._save_settings()
+
+        assert [name for name, _ in seen] == ["users.yaml", "settings.yaml"]
+        assert all(validate is not None for _name, validate in seen), seen
+
+    def test_the_wizard_refuses_and_leaves_no_directory_behind(self, tmp_path):
+        """``nanoidp init`` asks for an issuer as free text, and a document
+        model accepts a string that is not a URL: the wizard used to finish
+        by writing a directory the server it just configured cannot start
+        from."""
+        from nanoidp import wizard
+
+        config_dir = tmp_path / "fresh"
+
+        with pytest.raises(DocumentRejected):
+            wizard._create_config(
+                str(config_dir), "127.0.0.1", "8000", "localhost:8000", "my-app",
+                "demo", "secret", "Demo", "admin", "admin", "a@example.org", "60",
+            )
+
+        assert list(config_dir.glob("*.yaml")) == []
+
+    def test_a_good_wizard_run_produces_a_directory_that_loads(self, tmp_path):
+        from nanoidp import wizard
+
+        config_dir = tmp_path / "fresh"
+        wizard._create_config(
+            str(config_dir), "127.0.0.1", "8000", "http://localhost:8000", "my-app",
+            "demo", "secret", "Demo", "admin", "admin", "a@example.org", "60",
+        )
+
+        assert ConfigManager(str(config_dir)).settings.issuer == "http://localhost:8000"
+
+
+class TestTheCheckItself:
+    """``reject_unloadable`` directly, for the halves no writer reaches on
+    its own today but that must not regress silently."""
+
+    def test_a_users_document_the_models_refuse_is_rejected(self, tmp_path):
+        from nanoidp.config_documents import reject_unloadable
+
+        with pytest.raises(DocumentRejected) as refused:
+            reject_unloadable(
+                [(tmp_path / "users.yaml", {"users": {"admin": {"email": "not-an-email"}}})]
+            )
+
+        assert "users.yaml" in refused.value.message
+
+    def test_the_message_does_not_carry_the_server_directory(self, tmp_path):
+        """The caller has been told the file name; the absolute path the
+        server happens to run from is not theirs to see."""
+        from nanoidp.config_documents import reject_unloadable
+
+        settings = tmp_path / "settings.yaml"
+        with pytest.raises(DocumentRejected) as refused:
+            reject_unloadable([(settings, {"oauth": {"token_expiry_minutes": "not a number"}})])
+
+        assert str(settings) not in refused.value.message
+        assert refused.value.message.count("settings.yaml") == 1
+
+    def test_the_declared_mode_is_read_before_the_placeholders_are_expanded(
+        self, tmp_path, monkeypatch
+    ):
+        """The loader reads config_validation literally, so a placeholder
+        there means "warn" to it. Reading it after expansion would refuse a
+        write the load would have accepted."""
+        from nanoidp.config_documents import reject_unloadable
+
+        monkeypatch.setenv("NANOIDP_TEST_MODE", "strict")
+        document = {
+            "config_validation": "${NANOIDP_TEST_MODE}",
+            "oauth": {"issuer": "http://localhost:8000"},
+            "not_a_key_anyone_knows": True,
+        }
+
+        reject_unloadable([(tmp_path / "settings.yaml", document)])
+
+
 class TestPlaceholdersAreNotTheValidatedValue:
     """The loader expands ``${VAR}`` before the models see it, so the check
     has to expand a copy: what is written keeps the placeholder, what is

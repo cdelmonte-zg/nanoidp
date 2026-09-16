@@ -61,11 +61,12 @@ configuration only.
 | `DELETE /api/runtime` | Remove every runtime user and client; answers the counts. It waits for a promotion in progress, and keeps an object whose promotion is waiting for a successful reload |
 
 There is no update: delete and create again. Errors are JSON with an `error`
-and a `kind`: `invalid` (`400`), `not_found` (`404`), `declared` or `exists`
-(`409`, the name is declared, or already a runtime object),
-`promotion_in_progress` (`409`), `conflict` (`409`) and `lock_unavailable`
-(`503`) from the file writer, and `write_failed` or `reload_failed` (`500`)
-for a promotion.
+and a `kind`: `invalid` (`400`, the request body), `not_found` (`404`),
+`declared` or `exists` (`409`, the name is declared, or already a runtime
+object), `promotion_in_progress` (`409`), `conflict` (`409`) and
+`lock_unavailable` (`503`) from the file writer, `unloadable` (`422`, the
+file the promotion would write would not load back, so it was not written),
+and `write_failed` or `reload_failed` (`500`) for a promotion.
 
 ## The rules
 
@@ -109,6 +110,10 @@ warning. The declared entry is then the only copy.
   runtime object as it was.
 - If the file cannot be written at all (it is malformed on disk, an I/O
   error), the response is `500` (`write_failed`) and nothing changes.
+- If the entry would leave the file unloadable, the response is `422`
+  (`unloadable`) and nothing is written: the check runs before the file is
+  replaced (#366), so this is a refusal like `conflict`, not a
+  `reload_failed` where the change may already be on disk.
 - A promotion holds reloads off until it finishes. Someone declaring the same
   name at that moment either wins the race to the file (the promotion answers
   `409` and that declaration's reload removes the runtime object as a

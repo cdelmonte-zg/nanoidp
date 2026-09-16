@@ -656,6 +656,7 @@ class ConfigManager:
             users_file,
             expected_revision,
             lambda doc: apply_users_document(doc, self.users, self.default_user),
+            validate=reject_unloadable,
         )
         self.notify_saved(users_file, "users")
 
@@ -675,6 +676,10 @@ class ConfigManager:
             lambda doc: apply_settings_document(
                 doc, self.persistable_settings(), defaults=document_defaults()
             ),
+            # The same refusal save() gets (#366): one class, one contract,
+            # rather than a second way in that still writes what will not
+            # load back.
+            validate=reject_unloadable,
         )
         self.notify_saved(settings_file, "settings")
 

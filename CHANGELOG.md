@@ -21,6 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   constraint could be saved and then fail to load back. `${VAR}`
   placeholders are expanded into a copy for the check, so what is written
   keeps them. The check is of the document only, never of activation.
+  `nanoidp init` and the setup wizard go through it too: they validated the
+  document model but not the domain rules, so an issuer like
+  `localhost:8000` finished the wizard and left a directory the server it
+  had just configured could not start from. Both files are now checked
+  before either is written, so a refused answer leaves no half-configured
+  directory behind.
 
 ### Added
 - **Dynamic client registration** (#190), RFC 7591 with the read and delete

@@ -806,19 +806,42 @@ def document_defaults() -> Dict[str, Any]:
     return defaults
 
 
-def _first_finding(exc: ValueError) -> str:
+def _declared_strictness(documents: Sequence[Tuple[Path, Dict[str, Any]]]) -> bool:
+    """The validation mode this directory declares, for every file in it.
+
+    One contract per directory, the way a load reads it: settings.yaml
+    decides and users.yaml follows. Read from the raw document, before the
+    placeholders are expanded, because that is where the loader reads it -
+    ``config_validation: ${VAR}`` is a literal there, not the variable's
+    value, and the check must not be stricter than the load it predicts.
+
+    A batch with no settings document cannot change what settings.yaml
+    declares, and strictness only governs unknown keys, which these writers
+    do not introduce; such a batch is checked the permissive way rather
+    than reading a file this function was not handed.
+    """
+    for file_path, document in documents:
+        if file_path.name != "users.yaml":
+            return declared_validation_mode(document) == "strict"
+    return False
+
+
+def _first_finding(file_path: Path, exc: ValueError) -> str:
     """One line from a model's complaint, the way ``_entry_error`` reads one.
 
     A ``ValidationError`` prints several lines and a link to pydantic's
-    documentation, which is not what a settings page should show. The value
-    never appears: ``Settings`` sets ``hide_input_in_errors`` (#352).
+    documentation, which is not what a settings page should show. A loader
+    ``ValueError`` already names the file, with the absolute path the server
+    was started with: the caller has been told the file name once already
+    and has no use for the server's directory layout. The value never
+    appears either way: ``Settings`` sets ``hide_input_in_errors`` (#352).
     """
     if isinstance(exc, ValidationError):
         first = exc.errors()[0]
         field = _dotted(first["loc"])
         message = first["msg"].removeprefix("Value error, ")
         return f"{field + ': ' if field else ''}{message}"
-    return str(exc)
+    return str(exc).replace(f"{file_path}: ", "")
 
 
 class DocumentRejected(ValueError):
@@ -860,16 +883,16 @@ def reject_unloadable(documents: Sequence[Tuple[Path, Dict[str, Any]]]) -> None:
     in the reload it already does - no worse than before, and not something
     this can see.
     """
+    strict = _declared_strictness(documents)
     for file_path, document in documents:
         expanded = expand_env_vars(dict(document))
         try:
             if file_path.name == "users.yaml":
-                load_users_document(expanded, file_path).to_users()
+                load_users_document(expanded, file_path, strict=strict).to_users()
             else:
-                strict = declared_validation_mode(expanded) == "strict"
                 load_settings_document(expanded, file_path, strict=strict).to_settings()
         except (ValueError, ValidationError) as exc:
             raise DocumentRejected(
                 f"the change would leave {file_path.name} unloadable: "
-                f"{_first_finding(exc)}"
+                f"{_first_finding(file_path, exc)}"
             ) from exc

@@ -114,7 +114,7 @@ def init_config(config_dir: str) -> None:
         # fails init loudly instead of shipping a directory that will not load.
         from nanoidp.wizard import _validate_and_write
 
-        _validate_and_write(users_path, DEFAULT_USERS_YAML, kind="users")
+        _validate_and_write([(users_path, DEFAULT_USERS_YAML)])
         print(f"  [created] {users_path}")
 
     # Create settings.yaml
@@ -124,7 +124,7 @@ def init_config(config_dir: str) -> None:
     else:
         from nanoidp.wizard import _validate_and_write
 
-        _validate_and_write(settings_path, DEFAULT_SETTINGS_YAML, kind="settings")
+        _validate_and_write([(settings_path, DEFAULT_SETTINGS_YAML)])
         print(f"  [created] {settings_path}")
 
     # Create keys directory

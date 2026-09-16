@@ -246,7 +246,7 @@ def _promote(
     except DocumentRejected as exc:
         # Refused before the file was replaced (#366): a pre-write refusal,
         # like ConflictError, not the post-write reload failure below.
-        return _error(422, exc.message, "invalid")
+        return _error(422, exc.message, "unloadable")
     except DeclaredNameCollision:
         return _error(409, f"{kind} {name!r} is already declared in {file_name}", "declared")
     except ConflictError:
