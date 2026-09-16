@@ -410,6 +410,14 @@ class Settings(BaseModel):
     )
     audience: str = Field(default="default", min_length=1, description="OAuth audience")
     token_expiry_minutes: int = Field(default=60, gt=0, le=1440, description="Token expiry in minutes")
+    client_id_metadata_documents_enabled: bool = Field(
+        default=False,
+        description="Accept a Client ID Metadata Document as a client source "
+        "(#196): an https client_id whose document /authorize fetches and "
+        "caches. Off by default, because it makes this server fetch a URL a "
+        "client chose. Cached clients live in process memory, are lost on "
+        "restart, and are never written to settings.yaml.",
+    )
     dynamic_registration_enabled: bool = Field(
         default=False,
         description="Accept RFC 7591 dynamic client registration on /register "

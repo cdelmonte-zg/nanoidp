@@ -185,6 +185,19 @@
         "title": "ClientEntry",
         "type": "object"
       },
+      "ClientIdMetadataDocumentsSection": {
+        "additionalProperties": false,
+        "description": "``oauth.client_id_metadata_documents`` (#196).\n\nOff by default and, like ``dynamic_registration``, deliberately not in\n``serialization.OWNED_SETTINGS``: turning on an outbound fetch driven by\na client-supplied URL is a decision for the file, not for the settings\nform or the MCP update_settings tool.",
+        "properties": {
+          "enabled": {
+            "default": false,
+            "title": "Enabled",
+            "type": "boolean"
+          }
+        },
+        "title": "ClientIdMetadataDocumentsSection",
+        "type": "object"
+      },
       "DynamicRegistrationSection": {
         "additionalProperties": false,
         "description": "``oauth.dynamic_registration`` (#190).\n\nDeliberately not in ``serialization.OWNED_SETTINGS``: the settings form\nand the MCP ``update_settings`` tool do not offer it. Opening an\nunauthenticated mutation endpoint on an instance that may be reachable\nfrom a network is a decision for the file, not for a form. Not being on\nthat table means \"not managed by those surfaces\", never \"dropped by the\nnext save\": ``apply_settings_document`` mutates the parsed document and\nleaves every key it does not own alone.",
@@ -399,6 +412,9 @@
             "default": "default",
             "title": "Audience",
             "type": "string"
+          },
+          "client_id_metadata_documents": {
+            "$ref": "#/$defs/ClientIdMetadataDocumentsSection"
           },
           "clients": {
             "items": {

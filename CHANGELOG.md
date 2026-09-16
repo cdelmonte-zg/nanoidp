@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **A client can come from a metadata document it publishes** (#196, first
+  part): `IdentityResolver` resolves a third origin, `cimd`, after the two
+  it already knew. Precedence is declared, then runtime, then a cached
+  metadata document, and the first two are answered without the cache being
+  consulted at all: an `https` client_id does not by itself make a client a
+  CIMD one. The rules about what a client identifier URL is, and what a
+  document must say to become a client, live in
+  `services/client_metadata.py` as pure functions, with the cache as a
+  repository the runtime store lends them. A document authenticates with
+  `none` and nothing else, since the draft forbids every shared-secret
+  method and those are two of the three nanoidp supports.
+  `oauth.client_id_metadata_documents.enabled` is off by default and set in
+  the file only, like `dynamic_registration`.
+  **Nothing fetches yet**: the resolver reads the cache and never fills it,
+  which is what keeps network I/O out of `/token` and the other fifteen
+  places that resolve a client. The fetcher and the wiring to `/authorize`
+  are the rest of #196.
+  For code embedding nanoidp: `Origin` is now `UserOrigin` and
+  `ClientOrigin`, because only a client can have this third one.
+
 ### Fixed
 - **A write that would leave a file unloadable is refused, not written**
   (#366). Every writer replaced the file and reloaded afterwards, so a

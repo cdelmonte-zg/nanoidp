@@ -168,6 +168,20 @@ class DynamicRegistrationSection(BaseModel):
     max_clients: int = Field(default=100, ge=1, le=10000)
 
 
+class ClientIdMetadataDocumentsSection(BaseModel):
+    """``oauth.client_id_metadata_documents`` (#196).
+
+    Off by default and, like ``dynamic_registration``, deliberately not in
+    ``serialization.OWNED_SETTINGS``: turning on an outbound fetch driven by
+    a client-supplied URL is a decision for the file, not for the settings
+    form or the MCP update_settings tool.
+    """
+
+    model_config = _FORBID
+
+    enabled: bool = False
+
+
 class OAuthSection(BaseModel):
     model_config = _FORBID
 
@@ -191,6 +205,9 @@ class OAuthSection(BaseModel):
     logos_dir: Optional[str] = None
     dynamic_registration: DynamicRegistrationSection = Field(
         default_factory=DynamicRegistrationSection
+    )
+    client_id_metadata_documents: ClientIdMetadataDocumentsSection = Field(
+        default_factory=ClientIdMetadataDocumentsSection
     )
     # Present in shipped presets, never consumed by the loader (accepted for
     # compatibility; see the module docstring).
@@ -438,6 +455,9 @@ class SettingsDocument(BaseModel):
                 else list(DEFAULT_SCOPES_SUPPORTED)
             ),
             scope_enforcement=self.oauth.scope_enforcement,
+            client_id_metadata_documents_enabled=(
+                self.oauth.client_id_metadata_documents.enabled
+            ),
             dynamic_registration_enabled=self.oauth.dynamic_registration.enabled,
             dynamic_registration_max_clients=self.oauth.dynamic_registration.max_clients,
             logos_dir=self.oauth.logos_dir,
