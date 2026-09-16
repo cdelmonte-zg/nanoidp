@@ -15,6 +15,7 @@ list ``token`` (#41).
 import json
 
 import pytest
+from flask import url_for
 
 from nanoidp.config import get_config
 from nanoidp.mcp_server import _execute_tool
@@ -61,3 +62,48 @@ class TestResponseTypesHonest:
         )
         assert resp.status_code == 302
         assert authorize_error(resp)["error"] == "unsupported_response_type"
+
+
+class TestAuthorizationServerMetadata:
+    """RFC 8414 metadata is the same document under a second name (#190).
+
+    nanoidp is one server advertising one set of endpoints, so a client that
+    speaks only OAuth and looks for ``/.well-known/oauth-authorization-server``
+    must not be told something different from a client that reads the OIDC
+    document, and must not be told nothing at all. n8n asks for this name
+    first when its dynamic client registration toggle is on.
+    """
+
+    def test_the_two_documents_are_identical(self, client):
+        rfc8414 = client.get("/.well-known/oauth-authorization-server")
+        assert rfc8414.status_code == 200, "the RFC 8414 name is not served"
+        oidc = json.loads(client.get("/.well-known/openid-configuration").data)
+        assert json.loads(rfc8414.data) == oidc
+
+    @pytest.mark.asyncio
+    async def test_the_mcp_document_matches_it_too(self, client):
+        rfc8414 = json.loads(client.get("/.well-known/oauth-authorization-server").data)
+        assert await _execute_tool("get_oidc_discovery", {}, get_config()) == rfc8414
+
+    def test_one_handler_answers_both_names(self, app):
+        """The documents are equal because there is one handler, not because
+        two were kept in step. Everything the alias inherits - the issuer
+        resolution (#126), the absence of a gate on this blueprint, CORS -
+        follows from that, so the day someone splits it in two this fails
+        rather than the equality drifting later.
+        """
+        rules = {
+            rule.rule: rule.endpoint
+            for rule in app.url_map.iter_rules()
+            if rule.rule.startswith("/.well-known/")
+        }
+        assert rules["/.well-known/oauth-authorization-server"] == rules[
+            "/.well-known/openid-configuration"
+        ]
+
+    def test_the_oidc_name_stays_the_one_url_for_builds(self, app):
+        """Two rules on one endpoint: the alias must not become the name the
+        application generates for itself. Decorators apply bottom-up, so the
+        OIDC rule has to be the inner one."""
+        with app.test_request_context():
+            assert url_for("oauth.oidc_config") == "/.well-known/openid-configuration"
