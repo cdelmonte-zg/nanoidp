@@ -8,6 +8,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **The metadata document is fetched** (#196, second part), by the one
+  outbound request nanoidp makes. `oauth.client_id_metadata_documents`
+  gains `allowed_hosts` (exact DNS names, empty by default, so nothing is
+  fetched until an operator names a host) and `allow_loopback` (the draft's
+  development exception: loopback only, only when this server is itself on
+  loopback, only for the family it is bound to; private, link-local and
+  unique-local addresses stay refused).
+  Built on the standard library rather than an HTTP client, so the rules
+  are the shape rather than flags: the connection goes to an address this
+  code resolved and checked while the hostname is kept for TLS and `Host`,
+  which is what makes it not a DNS time-of-check-to-time-of-use; a name is
+  refused unless **every** address it answers with is acceptable, so one
+  that offers a public address and a loopback one cannot be raced;
+  redirects cannot be followed; the body is bounded at 5 KiB while it is
+  read, so a missing or dishonest `Content-Length` changes nothing; and
+  there is exactly one request, with no retry and no second address.
+  The 5 second budget covers the whole fetch, not each operation, so a
+  server sending a few bytes at a time cannot hold a worker: the timeout is
+  recomputed from one deadline before every read. Only `max-age` is read
+  from `Cache-Control`, and `no-store` or `no-cache` mean the document is
+  not kept at all.
+  **Nothing calls this yet**: `/authorize` is the rest of #196.
 - **A client can come from a metadata document it publishes** (#196, first
   part): `IdentityResolver` resolves a third origin, `cimd`, after the two
   it already knew. Precedence is declared, then runtime, then a cached

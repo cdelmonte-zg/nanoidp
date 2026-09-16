@@ -189,6 +189,18 @@
         "additionalProperties": false,
         "description": "``oauth.client_id_metadata_documents`` (#196).\n\nOff by default and, like ``dynamic_registration``, deliberately not in\n``serialization.OWNED_SETTINGS``: turning on an outbound fetch driven by\na client-supplied URL is a decision for the file, not for the settings\nform or the MCP update_settings tool.",
         "properties": {
+          "allow_loopback": {
+            "default": false,
+            "title": "Allow Loopback",
+            "type": "boolean"
+          },
+          "allowed_hosts": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Allowed Hosts",
+            "type": "array"
+          },
           "enabled": {
             "default": false,
             "title": "Enabled",

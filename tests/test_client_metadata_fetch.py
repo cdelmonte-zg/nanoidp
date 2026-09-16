@@ -1,0 +1,432 @@
+"""Fetching a client's metadata document (#196, PR B).
+
+The first outbound request nanoidp makes, against a URL a client chose, so
+every rule here has a negative and the negatives are the deliverable.
+
+The origin is a real HTTPS server with a private CA, serving a certificate
+for a name that does not exist in DNS. That is deliberate: the fetcher is
+told which address to connect to and has to prove the name anyway, which is
+the whole point of pinning the address. Resolution is the seam the tests
+drive, because it is the seam an attacker would.
+"""
+
+import socket
+import time
+from pathlib import Path
+
+import pytest
+
+from nanoidp.models import Settings
+from nanoidp.services import client_metadata_fetch as fetcher
+from nanoidp.services.client_metadata_fetch import (
+    MAX_BODY_BYTES,
+    TIMEOUT_SECONDS,
+    FetchRefused,
+    cache_lifetime,
+    fetch_document,
+)
+from tests.cimd_harness import HOSTNAME, Origin, issue_certificates, metadata_document
+
+
+@pytest.fixture(scope="module")
+def certificates(tmp_path_factory):
+    return issue_certificates(tmp_path_factory.mktemp("cimd-ca"))
+
+
+@pytest.fixture
+def trust_the_test_ca(certificates, monkeypatch):
+    """The default context reads SSL_CERT_FILE, so the production code is
+    not given a test-only way to trust something."""
+    ca_path, _ = certificates
+    monkeypatch.setenv("SSL_CERT_FILE", str(ca_path))
+    return ca_path
+
+
+@pytest.fixture
+def origin(certificates, trust_the_test_ca):
+    _, server_pem = certificates
+    with Origin(server_pem) as running:
+        yield running
+
+
+def _settings(**overrides):
+    values = {
+        "host": "127.0.0.1",
+        "client_id_metadata_documents_enabled": True,
+        "client_id_metadata_documents_allowed_hosts": [HOSTNAME],
+        "client_id_metadata_documents_allow_loopback": True,
+    }
+    values.update(overrides)
+    return Settings(**values)
+
+
+@pytest.fixture
+def resolves_to_loopback(monkeypatch):
+    """The name the certificate is for does not exist in DNS. The tests say
+    where it lives, which is also how they say where an attacker would."""
+
+    def resolve(addresses):
+        def getaddrinfo(host, port, *args, **kwargs):
+            return [
+                (socket.AF_INET6 if ":" in address else socket.AF_INET,
+                 socket.SOCK_STREAM, 6, "", (address, port))
+                for address in addresses
+            ]
+
+        monkeypatch.setattr(fetcher.socket, "getaddrinfo", getaddrinfo)
+
+    resolve(["127.0.0.1"])
+    return resolve
+
+
+def _client_id(origin, path="/metadata.json"):
+    return f"https://{HOSTNAME}:{origin.port}{path}"
+
+
+class TestTheHappyPath:
+    def test_a_document_is_fetched_and_parsed(self, origin, resolves_to_loopback):
+        client_id = _client_id(origin)
+        origin.serve_document(metadata_document(client_id))
+
+        document, lifetime = fetch_document(client_id, _settings())
+
+        assert document["client_id"] == client_id
+        assert lifetime is None
+
+    def test_the_request_carries_the_name_not_the_address(self, origin, resolves_to_loopback):
+        """TLS proved the name, and Host says it: the address is a routing
+        decision this module made, not something the origin is told."""
+        client_id = _client_id(origin)
+        origin.serve_document(metadata_document(client_id))
+
+        fetch_document(client_id, _settings())
+
+        path, headers = origin.requests[-1]
+        assert path == "/metadata.json"
+        assert headers["Host"] == f"{HOSTNAME}:{origin.port}" or headers["Host"] == HOSTNAME
+        assert "application/json" in headers["Accept"]
+
+    def test_a_json_suffix_media_type_is_accepted(self, origin, resolves_to_loopback):
+        client_id = _client_id(origin)
+        origin.serve_document(metadata_document(client_id))
+        origin.content_type = "application/client-metadata+json; charset=utf-8"
+
+        assert fetch_document(client_id, _settings())[0]["client_id"] == client_id
+
+
+class TestTheAnswerMustBeADocument:
+    @pytest.mark.parametrize("status", [201, 204, 400, 404, 500])
+    def test_only_200_is_a_document(self, origin, resolves_to_loopback, status):
+        client_id = _client_id(origin)
+        origin.serve_document(metadata_document(client_id))
+        origin.status = status
+
+        with pytest.raises(FetchRefused, match="answered"):
+            fetch_document(client_id, _settings())
+
+    @pytest.mark.parametrize("status", [301, 302, 307, 308])
+    def test_a_redirect_is_an_answer_not_a_hop(self, origin, resolves_to_loopback, status):
+        """The draft says the server must not follow one. Nothing here can:
+        the refusal is the status, and there is no second request."""
+        client_id = _client_id(origin)
+        origin.status = status
+        origin.location = "/elsewhere.json"
+
+        with pytest.raises(FetchRefused, match="answered"):
+            fetch_document(client_id, _settings())
+
+        assert len(origin.requests) == 1
+
+    @pytest.mark.parametrize(
+        "content_type", [None, "text/html", "text/plain", "application/xml", "json"]
+    )
+    def test_a_body_that_does_not_claim_to_be_json_is_refused(
+        self, origin, resolves_to_loopback, content_type
+    ):
+        client_id = _client_id(origin)
+        origin.serve_document(metadata_document(client_id))
+        origin.content_type = content_type
+
+        with pytest.raises(FetchRefused, match="not JSON"):
+            fetch_document(client_id, _settings())
+
+    def test_a_body_that_is_not_json_is_refused(self, origin, resolves_to_loopback):
+        client_id = _client_id(origin)
+        origin.body = b"{not json at all"
+
+        with pytest.raises(FetchRefused, match="not valid JSON"):
+            fetch_document(client_id, _settings())
+
+
+class TestTheBodyIsBounded:
+    def test_an_oversize_body_is_refused(self, origin, resolves_to_loopback):
+        client_id = _client_id(origin)
+        origin.body = b'{"padding": "' + b"x" * (MAX_BODY_BYTES * 2) + b'"}'
+
+        with pytest.raises(FetchRefused, match="larger than"):
+            fetch_document(client_id, _settings())
+
+    def test_the_limit_does_not_depend_on_content_length(self, origin, resolves_to_loopback):
+        """Chunked, so the sender declares no size at all. A limit that
+        trusted Content-Length would not be a limit."""
+        client_id = _client_id(origin)
+        origin.body = b'{"padding": "' + b"x" * (MAX_BODY_BYTES * 2) + b'"}'
+        origin.chunk_size = 512
+
+        with pytest.raises(FetchRefused, match="larger than"):
+            fetch_document(client_id, _settings())
+
+    def test_a_document_just_under_the_limit_is_read(self, origin, resolves_to_loopback):
+        client_id = _client_id(origin)
+        document = metadata_document(client_id)
+        padding = MAX_BODY_BYTES - len(str(document)) - 40
+        document["client_name"] = "x" * padding
+        origin.serve_document(document)
+
+        assert len(origin.body) < MAX_BODY_BYTES
+        assert fetch_document(client_id, _settings())[0]["client_name"] == "x" * padding
+
+
+class TestTheBudgetIsForTheWholeFetch:
+    def test_a_server_that_drips_cannot_outlast_the_budget(
+        self, origin, resolves_to_loopback, monkeypatch
+    ):
+        """The subtlety a per-operation timeout misses: every read finishes
+        well inside its own limit while the fetch as a whole never ends.
+        The timeout is recomputed from one deadline, so it shrinks."""
+        monkeypatch.setattr(fetcher, "TIMEOUT_SECONDS", 1.0)
+        client_id = _client_id(origin)
+        document = metadata_document(client_id)
+        document["client_name"] = "x" * 3000
+        origin.serve_document(document)
+        origin.chunk_size = 8
+        origin.chunk_delay = 0.2  # each chunk is far inside the budget
+
+        started = time.monotonic()
+        with pytest.raises(FetchRefused, match="budget"):
+            fetch_document(client_id, _settings())
+        elapsed = time.monotonic() - started
+
+        assert elapsed < 3.0, f"the fetch ran for {elapsed:.1f}s on a 1s budget"
+
+    def test_the_budget_is_not_configurable(self):
+        """A bound on what a client can cost this server, not a preference.
+        A setting here would mostly be a way to raise it."""
+        assert TIMEOUT_SECONDS == 5.0
+        assert not any(
+            "timeout" in name for name in Settings.model_fields
+            if "client_id_metadata" in name
+        )
+
+
+class TestWhichHostsMayBeFetched:
+    def test_nothing_is_fetched_until_a_host_is_opted_in(self, origin, resolves_to_loopback):
+        client_id = _client_id(origin)
+        origin.serve_document(metadata_document(client_id))
+
+        with pytest.raises(FetchRefused, match="allowed_hosts"):
+            fetch_document(
+                client_id, _settings(client_id_metadata_documents_allowed_hosts=[])
+            )
+
+        assert origin.requests == [], "a refused host must not be contacted"
+
+    def test_a_host_is_matched_exactly(self, origin, resolves_to_loopback):
+        """No wildcards: a wildcard turns a list of hosts into a list of
+        zones, which is rarely what the person writing it meant."""
+        client_id = _client_id(origin)
+
+        for allowed in (["other.example"], ["*.example"], ["example"], ["ient.example"]):
+            with pytest.raises(FetchRefused, match="allowed_hosts"):
+                fetch_document(
+                    client_id,
+                    _settings(client_id_metadata_documents_allowed_hosts=allowed),
+                )
+
+    def test_the_comparison_is_a_dns_one(self, origin, resolves_to_loopback):
+        """Case and a trailing dot are the same name; the client_id itself
+        is never normalised, since the draft compares it literally."""
+        client_id = _client_id(origin)
+        origin.serve_document(metadata_document(client_id))
+
+        allowed = [f"{HOSTNAME.upper()}."]
+        assert fetch_document(
+            client_id, _settings(client_id_metadata_documents_allowed_hosts=allowed)
+        )[0]["client_id"] == client_id
+
+
+class TestWhichAddressesMayBeConnectedTo:
+    def _fetch(self, origin, addresses, resolves_to_loopback, **settings):
+        resolves_to_loopback(addresses)
+        client_id = _client_id(origin)
+        origin.serve_document(metadata_document(client_id))
+        return fetch_document(client_id, _settings(**settings))
+
+    @pytest.mark.parametrize(
+        "address",
+        ["10.0.0.5", "192.168.1.1", "172.16.0.1", "169.254.169.254", "fd00::1", "fe80::1",
+         "224.0.0.1", "0.0.0.0"],
+    )
+    def test_a_special_use_address_is_refused(self, origin, resolves_to_loopback, address):
+        with pytest.raises(FetchRefused, match="special-use|loopback"):
+            self._fetch(origin, [address], resolves_to_loopback)
+
+    def test_every_resolved_address_must_be_acceptable(self, origin, resolves_to_loopback):
+        """Not "find one that is allowed": a name that answers with a public
+        address and a loopback one can hand out either, so it is refused
+        entirely rather than raced."""
+        with pytest.raises(FetchRefused):
+            self._fetch(origin, ["127.0.0.1", "10.0.0.5"], resolves_to_loopback)
+
+    def test_a_name_that_does_not_resolve_is_refused(self, origin, monkeypatch):
+        def fails(*args, **kwargs):
+            raise socket.gaierror("no such host")
+
+        monkeypatch.setattr(fetcher.socket, "getaddrinfo", fails)
+
+        with pytest.raises(FetchRefused, match="does not resolve"):
+            fetch_document(_client_id(origin), _settings())
+
+
+class TestTheLoopbackException:
+    def _attempt(self, origin, resolves_to_loopback, addresses, **settings):
+        resolves_to_loopback(addresses)
+        client_id = _client_id(origin)
+        origin.serve_document(metadata_document(client_id))
+        return fetch_document(client_id, _settings(**settings))
+
+    def test_loopback_is_refused_unless_it_is_opted_in(self, origin, resolves_to_loopback):
+        with pytest.raises(FetchRefused, match="loopback"):
+            self._attempt(
+                origin, resolves_to_loopback, ["127.0.0.1"],
+                client_id_metadata_documents_allow_loopback=False,
+            )
+
+    def test_a_server_not_on_loopback_does_not_get_the_exception(
+        self, origin, resolves_to_loopback
+    ):
+        """Half the rule: an instance reachable from a network must not be
+        talked into fetching from its own host."""
+        with pytest.raises(FetchRefused, match="itself on loopback"):
+            self._attempt(origin, resolves_to_loopback, ["127.0.0.1"], host="0.0.0.0")
+
+    def test_the_family_must_be_the_one_the_server_is_bound_to(
+        self, origin, resolves_to_loopback
+    ):
+        with pytest.raises(FetchRefused, match="interface"):
+            self._attempt(origin, resolves_to_loopback, ["::1"], host="127.0.0.1")
+
+    def test_a_private_address_is_refused_even_with_the_exception_on(
+        self, origin, resolves_to_loopback
+    ):
+        with pytest.raises(FetchRefused, match="special-use"):
+            self._attempt(origin, resolves_to_loopback, ["10.0.0.5"])
+
+
+class TestTls:
+    def test_an_untrusted_certificate_is_refused(self, origin, resolves_to_loopback, monkeypatch):
+        monkeypatch.delenv("SSL_CERT_FILE", raising=False)
+        client_id = _client_id(origin)
+        origin.serve_document(metadata_document(client_id))
+
+        with pytest.raises(FetchRefused, match="TLS"):
+            fetch_document(client_id, _settings())
+
+    def test_the_certificate_must_name_the_host_that_was_asked_for(
+        self, origin, resolves_to_loopback, monkeypatch
+    ):
+        """Pinning the address must not weaken what the name has to prove."""
+        client_id = f"https://other.example:{origin.port}/metadata.json"
+        origin.serve_document(metadata_document(client_id))
+
+        with pytest.raises(FetchRefused, match="TLS"):
+            fetch_document(
+                client_id,
+                _settings(client_id_metadata_documents_allowed_hosts=["other.example"]),
+            )
+
+    def test_a_plain_http_origin_cannot_answer(self, origin, resolves_to_loopback):
+        """There is no http path at all: the URL rules refuse the scheme
+        before this module is reached, and this module only speaks TLS."""
+        assert "https" in fetcher._PinnedConnection.__doc__.lower()
+
+
+class TestTheCacheLifetime:
+    @pytest.mark.parametrize(
+        "header, expected",
+        [
+            (None, None),
+            ("", None),
+            ("max-age=120", 120.0),
+            ("public, max-age=600", 600.0),
+            ("max-age=notanumber", None),
+            ("public", None),
+        ],
+    )
+    def test_max_age_is_read_and_nothing_else_is(self, header, expected):
+        assert cache_lifetime(header) == expected
+
+    @pytest.mark.parametrize("header", ["no-store", "no-cache", "private, no-store"])
+    def test_a_document_that_says_not_to_keep_it_is_not_kept(self, header):
+        """no-cache means "not without revalidating", which is not
+        implemented, so the conservative reading is the honest one."""
+        with pytest.raises(FetchRefused, match="must not be stored"):
+            cache_lifetime(header)
+
+    def test_the_lifetime_reaches_the_caller(self, origin, resolves_to_loopback):
+        client_id = _client_id(origin)
+        origin.serve_document(metadata_document(client_id))
+        origin.cache_control = "max-age=300"
+
+        assert fetch_document(client_id, _settings())[1] == 300.0
+
+
+class TestExactlyOneRequest:
+    def test_a_refused_connection_is_not_retried(self, origin, resolves_to_loopback, monkeypatch):
+        """No retry and no second address: the peer that answered is the
+        peer that was checked, and a failure is a failure."""
+        attempts = []
+        real_connect = socket.socket.connect
+
+        def counting_connect(self, address):
+            attempts.append(address)
+            raise OSError("refused")
+
+        monkeypatch.setattr(socket.socket, "connect", counting_connect)
+        try:
+            with pytest.raises(FetchRefused, match="could not be reached"):
+                fetch_document(_client_id(origin), _settings())
+        finally:
+            monkeypatch.setattr(socket.socket, "connect", real_connect)
+
+        assert len(attempts) == 1
+
+    def test_a_successful_fetch_makes_one_request(self, origin, resolves_to_loopback):
+        client_id = _client_id(origin)
+        origin.serve_document(metadata_document(client_id))
+
+        fetch_document(client_id, _settings())
+
+        assert len(origin.requests) == 1
+
+
+class TestNothingIsCachedHere:
+    def test_the_fetcher_imports_nothing_from_the_cache(self):
+        """Two modules, two questions. A fetcher that remembered would make
+        "only successes are cached" a property of this file too, and the
+        draft's rule about not caching failures would live in two places."""
+        import ast
+
+        tree = ast.parse(Path(fetcher.__file__).read_text())
+        imported = {
+            node.module
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom) and node.module
+        } | {
+            alias.name
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Import)
+            for alias in node.names
+        }
+
+        assert not any("client_metadata" in name for name in imported), imported
