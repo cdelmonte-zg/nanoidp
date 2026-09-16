@@ -354,12 +354,14 @@ class TestNothingEscapesAsSomethingElse:
 
 
 class TestTheDeadlineSocket:
-    """The wrapper on its own, since the watchdog would hide its absence.
+    """The wrapper on its own.
 
-    Two mechanisms hold the budget: this re-arms the timeout before every
-    read, which is what makes a slow phase fail promptly and say why, and
-    the watchdog closes the socket at the deadline whatever happens. A test
-    of the fetch cannot tell which one acted, so this pins the first one.
+    The budget is held in two places, for two reasons: ``ssl`` applies the
+    socket timeout to the handshake as a whole, so that phase needs nothing
+    but the remaining deadline, while ``http.client`` reads the status line,
+    the headers and the body itself, and a timeout set once bounds none of
+    that against a peer that is never idle. This wrapper is the second half,
+    and it is exercised directly as well as through a fetch.
     """
 
     def test_every_read_re_arms_the_timeout_from_the_deadline(self):
