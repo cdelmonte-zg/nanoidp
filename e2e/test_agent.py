@@ -343,6 +343,38 @@ class NanoIDPTestAgent:
                 "Authorization Server Metadata", TestCategory.CORE, False, str(e)
             )
 
+    def test_registration_absent_by_default(self) -> TestResult:
+        """Dynamic client registration is off unless an operator turns it on.
+
+        It creates clients on an unauthenticated endpoint, so the default
+        posture is worth asserting rather than assuming. The suite behind
+        --dcr exercises the other half, against a server that enables it.
+        """
+        try:
+            document = self.session.get(
+                f"{self.base_url}/.well-known/oauth-authorization-server", timeout=5
+            ).json()
+            advertised = "registration_endpoint" in document
+            status = self.session.post(
+                f"{self.base_url}/register", json={"redirect_uris": []}, timeout=5
+            ).status_code
+            if advertised:
+                return self._add_result(
+                    "Registration Off By Default", TestCategory.CORE, True,
+                    "enabled on this server; --dcr covers it",
+                    {"registration_endpoint": document["registration_endpoint"]},
+                )
+            return self._add_result(
+                "Registration Off By Default",
+                TestCategory.CORE,
+                status == 404,
+                f"not advertised, /register answers {status}",
+            )
+        except Exception as e:
+            return self._add_result(
+                "Registration Off By Default", TestCategory.CORE, False, str(e)
+            )
+
     # =========================================================================
     # OAUTH2/OIDC TESTS
     # =========================================================================
@@ -5818,6 +5850,205 @@ class NanoIDPTestAgent:
         print(f"  MCP suite: {self.suite.passed}/{self.suite.total} passed" + ("" if ok else "  [FAILED]"))
         return ok
 
+    # =========================================================================
+    # DYNAMIC CLIENT REGISTRATION SUITE (#190)
+    # =========================================================================
+
+    def _dcr_session(self) -> requests.Session:
+        """A session of its own, with no client credentials on it.
+
+        self.session carries HTTP Basic for the demo client and would both
+        contradict the client_id a registered client sends to /token and
+        overwrite the bearer credential RFC 7592 is read with: requests
+        applies session.auth after the request's own headers.
+        """
+        if getattr(self, "_dcr_session_cache", None) is None:
+            self._dcr_session_cache = requests.Session()
+        return self._dcr_session_cache
+
+    def _dcr_register(self, **metadata) -> dict:
+        body = {"redirect_uris": ["http://localhost:3000/callback"]}
+        body.update(metadata)
+        response = self._dcr_session().post(f"{self.base_url}/register", json=body, timeout=5)
+        response.raise_for_status()
+        return response.json()
+
+    def _dcr_test_discovery_advertises_it(self) -> TestResult:
+        try:
+            document = self._dcr_session().get(
+                f"{self.base_url}/.well-known/oauth-authorization-server", timeout=5
+            ).json()
+            endpoint = document.get("registration_endpoint", "")
+            return self._add_result(
+                "DCR Advertised", TestCategory.CORE, endpoint.endswith("/register"),
+                endpoint or "no registration_endpoint in the metadata",
+            )
+        except Exception as e:
+            return self._add_result("DCR Advertised", TestCategory.CORE, False, str(e))
+
+    def _dcr_test_register_and_use(self) -> TestResult:
+        """What an MCP host does: register, then run the code flow as the
+        client it was just issued."""
+        try:
+            registered = self._dcr_register(
+                token_endpoint_auth_method="none", client_name="e2e agent"
+            )
+            client_id = registered["client_id"]
+            verifier = secrets.token_urlsafe(32)
+            challenge = base64.urlsafe_b64encode(
+                hashlib.sha256(verifier.encode()).digest()
+            ).decode().rstrip("=")
+            params = {
+                "response_type": "code",
+                "client_id": client_id,
+                "redirect_uri": "http://localhost:3000/callback",
+                "scope": "openid profile",
+                "state": secrets.token_urlsafe(16),
+                "code_challenge": challenge,
+                "code_challenge_method": "S256",
+            }
+            flow = requests.Session()
+            flow.get(f"{self.base_url}/authorize", params=params,
+                     allow_redirects=False, timeout=5)
+            authorized = flow.post(
+                f"{self.base_url}/authorize", params=params,
+                data={"username": self.username, "password": self.password},
+                allow_redirects=False, timeout=5,
+            )
+            code = parse_qs(urlparse(authorized.headers.get("Location", "")).query).get(
+                "code", [None]
+            )[0]
+            if not code:
+                return self._add_result(
+                    "DCR Register And Use", TestCategory.OAUTH, False,
+                    f"no code after authorize (status {authorized.status_code})",
+                )
+            token = self._dcr_session().post(
+                f"{self.base_url}/token",
+                data={
+                    "grant_type": "authorization_code",
+                    "code": code,
+                    "redirect_uri": "http://localhost:3000/callback",
+                    "client_id": client_id,
+                    "code_verifier": verifier,
+                },
+                timeout=5,
+            )
+            ok = token.status_code == 200 and "access_token" in token.json()
+            self._dcr_registered = registered
+            return self._add_result(
+                "DCR Register And Use", TestCategory.OAUTH, ok,
+                f"registered {client_id} and got a token" if ok
+                else f"token endpoint answered {token.status_code}",
+            )
+        except Exception as e:
+            return self._add_result("DCR Register And Use", TestCategory.OAUTH, False, str(e))
+
+    def _dcr_test_read_registration(self) -> TestResult:
+        try:
+            registered = getattr(self, "_dcr_registered", None)
+            if registered is None:
+                return self._add_result(
+                    "DCR Read Registration", TestCategory.OAUTH, False, "no registration to read"
+                )
+            token = registered["registration_access_token"]
+            read = self._dcr_session().get(
+                registered["registration_client_uri"],
+                headers={"Authorization": f"Bearer {token}"}, timeout=5,
+            )
+            refused = self._dcr_session().get(
+                registered["registration_client_uri"],
+                headers={"Authorization": "Bearer wrong"}, timeout=5,
+            )
+            ok = (
+                read.status_code == 200
+                and read.json().get("client_id") == registered["client_id"]
+                and refused.status_code == 401
+            )
+            return self._add_result(
+                "DCR Read Registration", TestCategory.OAUTH, ok,
+                f"read {read.status_code}, wrong token {refused.status_code}",
+            )
+        except Exception as e:
+            return self._add_result("DCR Read Registration", TestCategory.OAUTH, False, str(e))
+
+    def _dcr_test_delete_registration(self) -> TestResult:
+        """The client goes with its registration, and the token stops working."""
+        try:
+            registered = getattr(self, "_dcr_registered", None)
+            if registered is None:
+                return self._add_result(
+                    "DCR Delete Registration", TestCategory.OAUTH, False, "nothing to delete"
+                )
+            headers = {"Authorization": f"Bearer {registered['registration_access_token']}"}
+            deleted = self._dcr_session().delete(
+                registered["registration_client_uri"], headers=headers, timeout=5
+            )
+            after = self._dcr_session().get(
+                registered["registration_client_uri"], headers=headers, timeout=5
+            )
+            authorize = self._dcr_session().get(
+                f"{self.base_url}/authorize",
+                params={
+                    "response_type": "code",
+                    "client_id": registered["client_id"],
+                    "redirect_uri": "http://localhost:3000/callback",
+                },
+                allow_redirects=False, timeout=5,
+            )
+            ok = deleted.status_code == 204 and after.status_code == 401 and authorize.status_code == 400
+            return self._add_result(
+                "DCR Delete Registration", TestCategory.OAUTH, ok,
+                f"delete {deleted.status_code}, read after {after.status_code}, "
+                f"authorize as the deleted client {authorize.status_code}",
+            )
+        except Exception as e:
+            return self._add_result("DCR Delete Registration", TestCategory.OAUTH, False, str(e))
+
+    def _dcr_test_metadata_is_refused_when_wrong(self) -> TestResult:
+        try:
+            no_redirect = self._dcr_session().post(
+                f"{self.base_url}/register", json={}, timeout=5
+            )
+            bad_grant = self._dcr_session().post(
+                f"{self.base_url}/register",
+                json={"redirect_uris": ["http://localhost:3000/callback"],
+                      "grant_types": ["implicit"]},
+                timeout=5,
+            )
+            ok = (
+                no_redirect.status_code == 400
+                and no_redirect.json().get("error") == "invalid_redirect_uri"
+                and bad_grant.status_code == 400
+                and bad_grant.json().get("error") == "invalid_client_metadata"
+            )
+            return self._add_result(
+                "DCR Refuses Bad Metadata", TestCategory.OAUTH, ok,
+                f"{no_redirect.json().get('error')}, {bad_grant.json().get('error')}",
+            )
+        except Exception as e:
+            return self._add_result("DCR Refuses Bad Metadata", TestCategory.OAUTH, False, str(e))
+
+    def run_dcr_tests(self) -> bool:
+        """Dedicated suite for dynamic client registration (#190).
+
+        Requires a nanoidp started with oauth.dynamic_registration.enabled,
+        which no shipped configuration turns on.
+        """
+        print("\n" + "=" * 70)
+        print("  NanoIDP Dynamic Client Registration Suite (#190)")
+        print("=" * 70)
+        print(f"\n  Target: {self.base_url}")
+        self._dcr_test_discovery_advertises_it()
+        self._dcr_test_register_and_use()
+        self._dcr_test_read_registration()
+        self._dcr_test_metadata_is_refused_when_wrong()
+        self._dcr_test_delete_registration()
+        print("\n" + "-" * 70)
+        ok = self.suite.failed == 0
+        print(f"  DCR suite: {self.suite.passed}/{self.suite.total} passed" + ("" if ok else "  [FAILED]"))
+        return ok
+
     def run_all_tests(self) -> bool:
         """Esegue tutti i test organizzati per categoria."""
         print("\n" + "=" * 70)
@@ -5839,6 +6070,7 @@ class NanoIDPTestAgent:
                 self.test_health,
                 self.test_oidc_discovery,
                 self.test_authorization_server_metadata,
+                self.test_registration_absent_by_default,
             ]),
             (TestCategory.OAUTH, "OAuth2/OIDC Flows", [
                 self.test_jwks,
@@ -6047,6 +6279,13 @@ Examples:
         "must be configured with the documents:read/documents:write/admin scopes."
     )
 
+    parser.add_argument(
+        "--dcr",
+        action="store_true",
+        help="Run only the dynamic client registration suite (#190). The "
+        "server must have oauth.dynamic_registration.enabled set."
+    )
+
     args = parser.parse_args()
 
     agent = NanoIDPTestAgent(
@@ -6065,6 +6304,8 @@ Examples:
         success = agent.run_saml_signed_tests(args.sp_key, args.sp_cert)
     elif args.mcp:
         success = agent.run_mcp_tests(args.mcp)
+    elif args.dcr:
+        success = agent.run_dcr_tests()
     else:
         success = agent.run_all_tests()
 

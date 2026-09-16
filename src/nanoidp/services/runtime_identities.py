@@ -3,9 +3,12 @@ IdP runs, as opposed to the ones declared in the YAML files.
 
 Runtime objects are execution state: disposable test identities that live in
 process memory and never touch the declared configuration unless one is
-explicitly promoted (#192). The store holds exactly two repositories,
-``users`` and ``clients``; authorization codes, device codes, revocations and
-the audit keep their own stores.
+explicitly promoted (#192). The store holds ``users`` and ``clients`` as
+named attributes, and lends the same machinery to a service that owns a
+record type of its own through ``repository()`` (#190's dynamic client
+registrations, #196's CIMD cache): same lock, same by-value contract,
+without this module importing that type. Authorization codes, device codes,
+revocations and the audit keep their own stores.
 
 The store knows nothing about declared configuration. The precedence rule
 (declared first), the collision rule on creation and the reconciliation on
@@ -13,11 +16,16 @@ reload live in ``services.identities``, the one place that composes the two.
 """
 
 import threading
-from typing import Callable, Dict, Generic, List, Optional, Protocol, TypeVar
+from typing import Any, Callable, Dict, Generic, List, Optional, Protocol, TypeVar, cast
+
+from pydantic import BaseModel
 
 from ..config import OAuthClient, User
 
-T = TypeVar("T", User, OAuthClient)
+# Any pydantic model: the repository needs a deep copy and a name, nothing
+# else, so naming the two types that happened to exist first would only
+# describe the day it was written (#190).
+T = TypeVar("T", bound=BaseModel)
 
 
 class RuntimeObjectExists(ValueError):
@@ -98,6 +106,24 @@ class MemoryRuntimeIdentityStore:
         self.clients: MemoryRuntimeRepository[OAuthClient] = MemoryRuntimeRepository(
             self._lock, lambda client: client.client_id
         )
+        self._lent: Dict[str, MemoryRuntimeRepository[Any]] = {}
+
+    def repository(
+        self, name: str, key_of: Callable[[T], str]
+    ) -> MemoryRuntimeRepository[T]:
+        """The repository a service keeps here under ``name``, created once.
+
+        For runtime state that belongs to one service rather than to the
+        identity model: #190 keeps its registration records this way. The
+        store holds the state and the lock, the service owns the type and
+        the rules, and this module stays free of both.
+        """
+        with self._lock:
+            existing = self._lent.get(name)
+            if existing is None:
+                existing = MemoryRuntimeRepository(self._lock, key_of)
+                self._lent[name] = existing
+            return cast(MemoryRuntimeRepository[T], existing)
 
 
 _runtime_identity_store: Optional[MemoryRuntimeIdentityStore] = None

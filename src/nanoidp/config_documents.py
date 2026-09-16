@@ -137,6 +137,24 @@ class ClientEntry(BaseModel):
         )
 
 
+class DynamicRegistrationSection(BaseModel):
+    """``oauth.dynamic_registration`` (#190).
+
+    Deliberately not in ``serialization.OWNED_SETTINGS``: the settings form
+    and the MCP ``update_settings`` tool do not offer it. Opening an
+    unauthenticated mutation endpoint on an instance that may be reachable
+    from a network is a decision for the file, not for a form. Not being on
+    that table means "not managed by those surfaces", never "dropped by the
+    next save": ``apply_settings_document`` mutates the parsed document and
+    leaves every key it does not own alone.
+    """
+
+    model_config = _FORBID
+
+    enabled: bool = False
+    max_clients: int = Field(default=100, ge=1, le=10000)
+
+
 class OAuthSection(BaseModel):
     model_config = _FORBID
 
@@ -158,6 +176,9 @@ class OAuthSection(BaseModel):
     scopes_supported: Optional[List[str]] = None
     scope_enforcement: bool = True
     logos_dir: Optional[str] = None
+    dynamic_registration: DynamicRegistrationSection = Field(
+        default_factory=DynamicRegistrationSection
+    )
     # Present in shipped presets, never consumed by the loader (accepted for
     # compatibility; see the module docstring).
     # Accepted for compatibility (shipped presets carry it), never consumed and
@@ -404,6 +425,8 @@ class SettingsDocument(BaseModel):
                 else list(DEFAULT_SCOPES_SUPPORTED)
             ),
             scope_enforcement=self.oauth.scope_enforcement,
+            dynamic_registration_enabled=self.oauth.dynamic_registration.enabled,
+            dynamic_registration_max_clients=self.oauth.dynamic_registration.max_clients,
             logos_dir=self.oauth.logos_dir,
             saml_entity_id=self.saml.entity_id or None,
             saml_sso_url=self.saml.sso_url or None,

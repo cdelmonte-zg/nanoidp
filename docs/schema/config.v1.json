@@ -185,6 +185,26 @@
         "title": "ClientEntry",
         "type": "object"
       },
+      "DynamicRegistrationSection": {
+        "additionalProperties": false,
+        "description": "``oauth.dynamic_registration`` (#190).\n\nDeliberately not in ``serialization.OWNED_SETTINGS``: the settings form\nand the MCP ``update_settings`` tool do not offer it. Opening an\nunauthenticated mutation endpoint on an instance that may be reachable\nfrom a network is a decision for the file, not for a form. Not being on\nthat table means \"not managed by those surfaces\", never \"dropped by the\nnext save\": ``apply_settings_document`` mutates the parsed document and\nleaves every key it does not own alone.",
+        "properties": {
+          "enabled": {
+            "default": false,
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "max_clients": {
+            "default": 100,
+            "maximum": 10000,
+            "minimum": 1,
+            "title": "Max Clients",
+            "type": "integer"
+          }
+        },
+        "title": "DynamicRegistrationSection",
+        "type": "object"
+      },
       "ExternalKeysSection": {
         "additionalProperties": false,
         "description": "Operator-provided RSA signing keys (#358): both PEM paths together, or\nno ``external_keys`` block at all.",
@@ -398,6 +418,9 @@
             ],
             "default": null,
             "title": "Device Verification Base Url"
+          },
+          "dynamic_registration": {
+            "$ref": "#/$defs/DynamicRegistrationSection"
           },
           "issuer": {
             "default": "http://localhost:8000",

@@ -13,7 +13,7 @@ promotion order, the reconciliation on reload) live in
 every other management write (#163): the same gate as ``/api``.
 """
 
-from typing import Any, Callable, Dict
+from typing import Any, Callable, Dict, Optional
 
 from flask import Blueprint, current_app, jsonify, request
 from flask.typing import ResponseReturnValue
@@ -22,6 +22,7 @@ from ..config import ConfigurationRejected, get_config
 from ..config_documents import EntryInvalid, parse_client_entry, parse_user_entry
 from ..config_writer import ConflictError, LockUnavailableError
 from ..hooks import HookError
+from ..services.dynamic_registration import registrations
 from ..services.identities import (
     DeclaredNameCollision,
     PromotionInProgress,
@@ -121,9 +122,21 @@ def create_client() -> ResponseReturnValue:
                    lambda created: client_summary(created, "runtime"))
 
 
+def _source_of(client_id: str) -> Optional[str]:
+    """``dcr`` when a live registration record manages this client (#190).
+
+    Read from the record rather than from the shape of the id, which is only
+    a hint for a human reading a log.
+    """
+    return "dcr" if registrations().get(client_id) is not None else None
+
+
 @runtime_bp.route("/clients")
 def list_clients() -> ResponseReturnValue:
-    clients = [client_summary(c, "runtime") for c in identities_for(get_config()).store.clients.list()]
+    clients = [
+        client_summary(c, "runtime", _source_of(c.client_id))
+        for c in identities_for(get_config()).store.clients.list()
+    ]
     return jsonify({"clients": clients, "count": len(clients)})
 
 
@@ -132,7 +145,7 @@ def get_client(client_id: str) -> ResponseReturnValue:
     client = identities_for(get_config()).store.clients.get(client_id)
     if client is None:
         return _error(404, f"no runtime client {client_id!r}", "not_found")
-    return jsonify(client_summary(client, "runtime"))
+    return jsonify(client_summary(client, "runtime", _source_of(client_id)))
 
 
 @runtime_bp.route("/clients/<client_id>", methods=["DELETE"])

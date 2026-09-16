@@ -410,6 +410,23 @@ class Settings(BaseModel):
     )
     audience: str = Field(default="default", min_length=1, description="OAuth audience")
     token_expiry_minutes: int = Field(default=60, gt=0, le=1440, description="Token expiry in minutes")
+    dynamic_registration_enabled: bool = Field(
+        default=False,
+        description="Accept RFC 7591 dynamic client registration on /register "
+        "(#190). Off by default: it is an unauthenticated endpoint that "
+        "creates runtime clients on an instance that may be reachable from a "
+        "network. Registered clients live in the runtime store, are lost on "
+        "restart, and are never written to settings.yaml unless an operator "
+        "promotes one through /api/runtime.",
+    )
+    dynamic_registration_max_clients: int = Field(
+        default=100,
+        ge=1,
+        le=10000,
+        description="How many live dynamic registrations may exist at once "
+        "(#190). A promoted or deleted client frees its slot immediately; "
+        "further registrations answer 429 until one does.",
+    )
     refresh_token_rotation: bool = Field(
         default=False,
         description="Rotate refresh tokens: each refresh invalidates the consumed "

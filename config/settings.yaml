@@ -53,6 +53,13 @@ oauth:
   issuer_from_request: false
   issuer_from_proxy_headers: false
   # logos_dir: ./static/logos  # optional override; defaults to src/nanoidp/static/logos
+  # Dynamic client registration (#190), off by default: POST /register is
+  # open when enabled, so that a client handed only this URL can register
+  # itself. Enable it only on an instance you are willing to let anyone
+  # create clients on.
+  # dynamic_registration:
+  #   enabled: true
+  #   max_clients: 100
 saml:
   # entity_id / sso_url: absent = derived from the effective issuer as
   # <issuer>/saml and <issuer>/saml/sso (follows issuer_from_request); set

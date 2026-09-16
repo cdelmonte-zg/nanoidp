@@ -14,7 +14,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 
 from . import __version__
 from .config import get_config, init_config
-from .routes import api_bp, oauth_bp, runtime_bp, saml_bp, ui_bp
+from .routes import api_bp, oauth_bp, registration_bp, runtime_bp, saml_bp, ui_bp
 from .services import activate_crypto_service
 from .services.identities import reconcile_runtime_identities
 
@@ -143,6 +143,7 @@ def create_app(
     app.register_blueprint(ui_bp)
     app.register_blueprint(api_bp)
     app.register_blueprint(runtime_bp)
+    app.register_blueprint(registration_bp)
 
     # Actually APPLY the /token rate limit (#304). Until 3.0 the limiter
     # was created with default_limits=[] and no view ever decorated, so
