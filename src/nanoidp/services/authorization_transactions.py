@@ -263,13 +263,30 @@ class AuthorizationTransactionStore:
             )
 
     def consume(
-        self, transaction_id: str, browser_binding: Optional[str]
+        self,
+        transaction_id: str,
+        browser_binding: Optional[str],
+        *,
+        verified_username: Optional[str] = None,
     ) -> Optional[AuthorizationTransaction]:
         """Remove the transaction and return it, exactly once. ``None`` when
-        it is gone, expired, not this browser's, or already consumed."""
+        it is gone, expired, not this browser's, or already consumed.
+
+        ``verified_username`` is for a completion that rests on a password
+        verified earlier: the transaction must still record it for that
+        user, checked under the lock, since a concurrent "Change username"
+        may have reset it after the caller read it.
+        """
         with self._lock:
             current = self.get_bound(transaction_id, browser_binding)
-            if current is None or not self._repository.delete(transaction_id):
+            if current is None:
+                return None
+            if verified_username is not None and (
+                current.state is not TransactionState.PRIMARY_VERIFIED
+                or current.primary_username != verified_username
+            ):
+                return None
+            if not self._repository.delete(transaction_id):
                 return None
             return current
 

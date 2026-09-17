@@ -366,6 +366,65 @@ class TestSecondFactor:
         assert "code" not in params
         assert pending_transaction_ids(client) == []
 
+    @pytest.mark.parametrize(("concurrent_user", "expected"), [("admin", 200), ("user1", 400)])
+    def test_a_concurrent_password_submission_on_the_same_transaction(
+        self, app, client, monkeypatch, concurrent_user, expected
+    ):
+        """A double-clicked password form: both POSTs read the transaction as
+        pending, and the first verifies it while the second is still checking
+        the password. The second shows the code screen for the same user and
+        is refused for a different one."""
+        from nanoidp.routes import oauth as oauth_routes
+
+        page = client.get(f"/authorize?{AUTHORIZE_QS}")
+        transaction_id = transaction_id_of(page)
+        with client.session_transaction() as session:
+            binding = session["authorize_binding"]
+        original = oauth_routes.authenticate_interactively
+
+        def first_submission_wins(config, *, username, password):
+            get_authorization_transaction_store().mark_primary_verified(
+                transaction_id, binding, username=concurrent_user, amr=["pwd"]
+            )
+            return original(config, username=username, password=password)
+
+        monkeypatch.setattr(oauth_routes, "authenticate_interactively", first_submission_wins)
+
+        response = client.post(
+            "/authorize",
+            data={"username": "admin", "password": "admin", "transaction_id": transaction_id},
+        )
+
+        assert response.status_code == expected
+        if expected == 200:
+            assert b'name="totp_code"' in response.data
+
+    def test_a_code_is_not_issued_after_a_concurrent_change_username(
+        self, app, client, monkeypatch
+    ):
+        """The code POST read the transaction as verified; a "Change
+        username" reset it before the code was checked. The completion is
+        refused under the lock rather than issued on a reset transaction."""
+        from nanoidp.routes import oauth as oauth_routes
+
+        transaction_id = self._to_code_screen(client)
+        with client.session_transaction() as session:
+            binding = session["authorize_binding"]
+        original = oauth_routes.check_second_factor
+
+        def reset_meanwhile(config, user):
+            get_authorization_transaction_store().reset_login(transaction_id, binding)
+            return original(config, user)
+
+        monkeypatch.setattr(oauth_routes, "check_second_factor", reset_meanwhile)
+
+        response = client.post(
+            "/authorize", data={"transaction_id": transaction_id, "totp_code": generate_totp(_SECRET)}
+        )
+
+        assert response.status_code == 400
+        assert pending_transaction_ids(client) == [transaction_id]
+
     def test_change_username_forgets_the_verified_password(self, client):
         transaction_id = self._to_code_screen(client)
 

@@ -701,6 +701,7 @@ def _issue_authorization_code(
     username: str,
     *,
     transaction: Optional[AuthorizationTransaction] = None,
+    verified_username: Optional[str] = None,
     auto_login: bool = False,
     amr: Optional[Sequence[str]] = None,
 ) -> ResponseReturnValue:
@@ -717,9 +718,13 @@ def _issue_authorization_code(
     that carried the request, which never had a transaction. Otherwise it is
     consumed first: a transaction yields at most one code, and of two
     concurrent completions only the one that consumed it goes on.
+    ``verified_username`` is passed on to the store for a completion resting
+    on a password verified on an earlier request (see ``consume``).
     """
     if transaction is not None and (
-        get_authorization_transaction_store().consume(transaction.id, _browser_binding())
+        get_authorization_transaction_store().consume(
+            transaction.id, _browser_binding(), verified_username=verified_username
+        )
         is None
     ):
         return _refuse_without_transaction(
@@ -902,12 +907,13 @@ def _handle_authorize_login(
     login = authenticate_interactively(config, username=username, password=password)
 
     if login.phase.pending:
-        verified = get_authorization_transaction_store().mark_primary_verified(
+        store = get_authorization_transaction_store()
+        verified = store.mark_primary_verified(
             transaction.id,
             _browser_binding(),
             username=username,
             amr=AuthMethod.PASSWORD.amr,
-        )
+        ) or _verified_by_a_concurrent_submission(transaction, username)
         if verified is None:
             return None, _refuse_without_transaction(
                 "authorization transaction no longer pending",
@@ -942,6 +948,26 @@ def _handle_authorize_login(
     if persona_mode:
         return "Select a user", None, False
     return "Username and password are required", None, False
+
+
+def _verified_by_a_concurrent_submission(
+    transaction: AuthorizationTransaction, username: str
+) -> Optional[AuthorizationTransaction]:
+    """The transaction, when another submission already verified this same
+    user's password on it - a double-clicked password form, whose two POSTs
+    both read the transaction as pending. That is the state this POST was
+    about to write, so it goes on to the code screen instead of being
+    refused. A transaction verified for a different user is not."""
+    current = get_authorization_transaction_store().get_bound(
+        transaction.id, _browser_binding()
+    )
+    if (
+        current is not None
+        and current.state is TransactionState.PRIMARY_VERIFIED
+        and current.primary_username == username
+    ):
+        return current
+    return None
 
 
 def _audit_invalid_code(p: _AuthorizeParams, username: str, phase: SecondFactorPhase) -> None:
@@ -993,7 +1019,12 @@ def _complete_second_factor(
             _audit_invalid_code(p, username, login.phase)
         return _render_authorize_login(config, transaction, login.phase.error)
     return _issue_authorization_code(
-        config, p, username, transaction=transaction, amr=login.amr
+        config,
+        p,
+        username,
+        transaction=transaction,
+        verified_username=username,
+        amr=login.amr,
     )
 
 
