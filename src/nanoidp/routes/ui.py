@@ -154,7 +154,7 @@ def login() -> ResponseReturnValue:
     # detection is shared with every other password-form surface (#323
     # review round 2, before-merge 5).
     if "change_username" in request.form:
-        discard_pending_second_factor()
+        discard_pending_second_factor(purpose="login", context={})
         return render_login(None, "")
 
     password_submitted = "password" in request.form

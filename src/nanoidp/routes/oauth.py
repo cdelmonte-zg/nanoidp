@@ -2498,7 +2498,7 @@ def device_verify() -> ResponseReturnValue:
         amr = None
 
         if "change_username" in request.form:
-            discard_pending_second_factor()
+            discard_pending_second_factor(purpose="device", context=second_factor_context)
             login_username = ""
             return render_device(None)
 
@@ -2508,7 +2508,10 @@ def device_verify() -> ResponseReturnValue:
             # by verify() below exactly as it always has: either way the
             # pending second factor is over. Its username is the one the
             # deny's audit names, as the password form's would.
-            username = discard_pending_second_factor() or username
+            username = (
+                discard_pending_second_factor(purpose="device", context=second_factor_context)
+                or username
+            )
         elif on_code_screen:
             continuation = continue_second_factor(
                 config, purpose="device", context=second_factor_context

@@ -173,13 +173,16 @@ class TestStore:
         assert store.consume(record.id, "browser-a", purpose="login", context={}) is not None
         assert store.consume(record.id, "browser-a", purpose="login", context={}) is None
 
-    def test_discard_only_drops_this_browsers_record(self):
+    def test_discard_only_drops_this_browsers_record_for_its_surface_and_context(self):
         store = get_pending_second_factor_store()
         record = self._create(store)
 
-        assert store.discard(record.id, "browser-b") is None
-        assert store.discard(record.id, None) is None
-        assert store.discard(record.id, "browser-a") is not None
+        discard = store.discard
+        assert discard(record.id, "browser-b", purpose="login", context={}) is None
+        assert discard(record.id, None, purpose="login", context={}) is None
+        assert discard(record.id, "browser-a", purpose="device", context={}) is None
+        assert discard(record.id, "browser-a", purpose="login", context={"x": "y"}) is None
+        assert discard(record.id, "browser-a", purpose="login", context={}) is not None
         assert _records() == []
 
     def test_an_expired_record_is_not_found_and_makes_room(self, monkeypatch):
@@ -437,6 +440,68 @@ class TestContextBinding:
 
         assert b"Your sign-in has expired" in response.data
         assert not device.completed(None, client, response)
+
+
+class TestDiscardRespectsTheBinding:
+    """Discarding is bound like every other access (#376 review): a record
+    is dropped only by its own surface and context, so a "Change username"
+    or a deny elsewhere in the same browser leaves another flow intact."""
+
+    def _login_pending(self, client):
+        return _pending_id(_code_screen(client, Login(), {}))
+
+    def _assert_login_still_completes(self, app, client, pending):
+        response = client.post(
+            "/login", data={"pending_second_factor": pending, "totp_code": generate_totp(_SECRET)}
+        )
+        assert Login().completed(app, client, response)
+
+    def test_a_saml_change_username_does_not_discard_a_login_record(self, app, client):
+        pending = self._login_pending(client)
+
+        client.post(
+            "/saml/sso",
+            data={
+                "SAMLRequest": _authn_request(),
+                "pending_second_factor": pending,
+                "change_username": "1",
+            },
+        )
+
+        assert len(_records()) == 1
+        self._assert_login_still_completes(app, client, pending)
+
+    def test_a_device_deny_does_not_discard_a_login_record(self, app, client, auth_header):
+        pending = self._login_pending(client)
+        context = Device().context_fields(client, auth_header)
+
+        denied = client.post(
+            "/device", data={**context, "pending_second_factor": pending, "action": "deny"}
+        )
+
+        # The deny itself needs no credentials and still happens.
+        assert b"denied" in denied.data.lower()
+        assert len(_records()) == 1
+        self._assert_login_still_completes(app, client, pending)
+
+    def test_a_change_username_with_an_altered_context_leaves_the_original(
+        self, app, client, auth_header
+    ):
+        device = Device()
+        first = device.context_fields(client, auth_header)
+        second = device.context_fields(client, auth_header)
+        pending = _pending_id(_code_screen(client, device, first))
+
+        client.post(
+            "/device", data={**second, "pending_second_factor": pending, "change_username": "1"}
+        )
+
+        assert len(_records()) == 1
+        done = client.post(
+            "/device",
+            data={**first, "pending_second_factor": pending, "totp_code": generate_totp(_SECRET)},
+        )
+        assert device.completed(app, client, done)
 
 
 class TestDevice:

@@ -525,7 +525,7 @@ def _sso_authenticate_inline(
         return None, render_login(None, "")
 
     if "change_username" in request.form:
-        discard_pending_second_factor()
+        discard_pending_second_factor(purpose="saml_sso", context=second_factor_context)
         return None, render_login(None, "")
 
     if request.form.get(PENDING_SECOND_FACTOR_FIELD) and not password_submitted:

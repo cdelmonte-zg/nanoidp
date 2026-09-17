@@ -432,7 +432,7 @@ def continue_second_factor(
         or not settings.totp_active
         or not user.totp_secret
     ):
-        store.discard(record.id, binding)
+        store.discard(record.id, binding, purpose=purpose, context=context)
         return SecondFactorContinuation(
             error=SECOND_FACTOR_NO_LONGER_APPLIES,
             reason="second factor no longer applicable to the verified user",
@@ -451,15 +451,21 @@ def continue_second_factor(
     return SecondFactorContinuation(login=login, username=record.username)
 
 
-def discard_pending_second_factor() -> Optional[str]:
+def discard_pending_second_factor(
+    *, purpose: Purpose, context: Mapping[str, str]
+) -> Optional[str]:
     """Drop the pending second factor this form names, if it is this
-    browser's: "Change username", or a device deny or dead user_code from
-    the code screen. The username it recorded, for a caller that audits
-    what happened next: the code screen's form carries none."""
+    browser's record for this surface and context: "Change username", or a
+    device deny or dead user_code from the code screen. A record of another
+    flow, or one this form's context no longer matches, is left alone. The
+    username it recorded, for a caller that audits what happened next: the
+    code screen's form carries none."""
     record_id = request.form.get(PENDING_SECOND_FACTOR_FIELD, "")
     if not record_id:
         return None
-    record = get_pending_second_factor_store().discard(record_id, browser_flow_binding())
+    record = get_pending_second_factor_store().discard(
+        record_id, browser_flow_binding(), purpose=purpose, context=context
+    )
     return record.username if record is not None else None
 
 
