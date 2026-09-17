@@ -2093,6 +2093,82 @@ class NanoIDPTestAgent:
                             amr_ok = claims.get("amr") == ["pwd", "otp"]
                     checks["amr_reaches_id_token"] = amr_ok
 
+                # #373: /login and /device keep the verified password on the
+                # server; their code screens name a pending second factor and
+                # the code alone completes the login.
+                def pending_id(page: requests.Response) -> str:
+                    match = re.search(r'name="pending_second_factor" value="([^"]+)"', page.text)
+                    return match.group(1) if match else ""
+
+                ui_sess = requests.Session()
+                ui_screen = ui_sess.post(
+                    f"{self.base_url}/login",
+                    data={"username": totp_username, "password": totp_password},
+                    timeout=5,
+                )
+                checks["login_code_screen_carries_no_password"] = (
+                    'id="totp_code"' in ui_screen.text
+                    and 'name="password"' not in ui_screen.text
+                    and bool(pending_id(ui_screen))
+                )
+                ui_done = ui_sess.post(
+                    f"{self.base_url}/login",
+                    data={
+                        "pending_second_factor": pending_id(ui_screen),
+                        "totp_code": _generate_totp(totp_secret),
+                    },
+                    allow_redirects=False,
+                    timeout=5,
+                )
+                checks["login_code_alone_completes"] = (
+                    ui_done.status_code in (302, 303)
+                    and "error=" not in ui_done.headers.get("Location", "")
+                )
+
+                device_start = requests.post(
+                    f"{self.base_url}/device_authorization",
+                    auth=(self.client_id, self.client_secret),
+                    timeout=5,
+                )
+                user_code = device_start.json().get("user_code", "") if device_start.ok else ""
+                device_sess = requests.Session()
+                device_screen = device_sess.post(
+                    f"{self.base_url}/device",
+                    data={"user_code": user_code, "username": totp_username, "password": totp_password},
+                    timeout=5,
+                )
+                checks["device_code_screen_carries_no_password"] = (
+                    'id="totp_code"' in device_screen.text
+                    and 'name="password"' not in device_screen.text
+                    and bool(pending_id(device_screen))
+                )
+                stolen = requests.Session().post(
+                    f"{self.base_url}/device",
+                    data={
+                        "user_code": user_code,
+                        "pending_second_factor": pending_id(device_screen),
+                        "totp_code": _generate_totp(totp_secret),
+                        "action": "authorize",
+                    },
+                    timeout=5,
+                )
+                checks["device_pending_factor_refused_to_another_browser"] = (
+                    "authorized successfully" not in stolen.text.lower()
+                )
+                device_done = device_sess.post(
+                    f"{self.base_url}/device",
+                    data={
+                        "user_code": user_code,
+                        "pending_second_factor": pending_id(device_screen),
+                        "totp_code": _generate_totp(totp_secret),
+                        "action": "authorize",
+                    },
+                    timeout=5,
+                )
+                checks["device_code_alone_authorizes"] = (
+                    "authorized successfully" in device_done.text.lower()
+                )
+
             success = all(checks.values())
             return self._add_result(
                 "TOTP Login", TestCategory.OAUTH, success, f"checks={checks}", checks,

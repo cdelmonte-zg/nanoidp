@@ -279,9 +279,10 @@ password screen, and whether a submission is the username-only step or a
 real login attempt is derived from whether it carries a password - a
 request that already has both authenticates directly, so a client written
 against the combined form keeps working unchanged. "Change username"
-returns to the first screen everywhere, including `/saml/sso` - which has
-no GET to link back to, so it resubmits the in-progress SP request's
-hidden fields instead.
+returns to the first screen everywhere. It is a form post on every surface:
+it discards a login waiting for its TOTP code, and on `/saml/sso` it
+resubmits the in-progress SP request's hidden fields, since there is no GET
+to link back to.
 
 ### Second factor (TOTP)
 
@@ -327,15 +328,19 @@ runtime, like every other property of a user:
   password.
 - **One rule, one place.** `login.totp` rides the same phase machinery as
   `login.two_step` (`routes/_auth.py`): the code screen is a further phase
-  after the password step. On `/authorize` the verified password is
-  recorded on the authorization transaction (#346), so the code screen
-  carries only the code, and the code is checked against the current secret
-  of the user the transaction names; a user deleted or left without a
-  secret in the meantime ends the request with `access_denied` rather than
-  completing on the password alone. On `/login`, `/saml/sso` and `/device`
-  nothing is stored server-side yet: the username and the password travel
-  forward as hidden fields and the password is re-checked when the code is
-  verified (#373).
+  after the password step. The verified password is never sent back to the
+  browser: on `/authorize` it is recorded on the authorization transaction
+  (#346); on `/login`, `/saml/sso` and `/device` it is recorded as a pending
+  second factor (#373), bound to the browser, to the surface and to what the
+  login is for there (the SAML request in flight, the device `user_code`),
+  valid for 5 minutes and used once. Either way the code screen carries
+  only an opaque reference and the code, and the code is checked against
+  the current secret of the user the record names. A user deleted or left
+  without a secret, TOTP switched off or persona mode switched on in the
+  meantime ends the login (`access_denied` to the client on `/authorize`,
+  an error on the page elsewhere) rather than completing it on the password
+  alone. A form post carrying the password and the code together still
+  completes both at once, with nothing stored.
 - **Verification.** RFC 6238, six digits, a 30-second period, HMAC-SHA1,
   one step of clock skew either side - the parameters every authenticator
   app assumes by default. Implemented with the standard library only

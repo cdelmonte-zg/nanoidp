@@ -135,10 +135,6 @@ class Lookup:
     transaction: Optional[AuthorizationTransaction] = None
 
 
-def new_browser_binding() -> str:
-    return secrets.token_urlsafe(32)
-
-
 # One lock for every operation, whichever store object makes it: the store
 # below is a view over the runtime store's repository, not an owner of state.
 # Reads take it too: a transition replaces a record with a delete and a

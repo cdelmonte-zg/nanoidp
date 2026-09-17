@@ -91,6 +91,7 @@
                         <input type="text" class="form-control user-code-input" id="user_code" name="user_code"
                                placeholder="XXXX-XXXX" value="{{ user_code }}" required
                                {% if not two_step_login and not totp_step %}autofocus{% endif %}
+                               {% if totp_step %}readonly{% endif %}
                                maxlength="8" pattern="[A-Za-z0-9]{8}">
                         <label for="user_code"><i class="bi bi-upc me-2"></i>Device Code</label>
                     </div>
@@ -114,11 +115,10 @@
                     </div>
                     {% elif totp_step %}
                     {# Declarative TOTP second factor (#348): a further
-                       phase after a successful password check, riding
-                       two_step's machinery. Since nothing is stored
-                       server-side, the password travels forward as a
-                       hidden field too and is re-checked on submit. #}
-                    {{ macros.totp_code_fields(login_username, login_password) }}
+                       phase after a successful password check. The verified
+                       password is a pending second factor on the server
+                       (#373), bound to this user_code. #}
+                    {{ macros.totp_code_fields(pending_second_factor) }}
 
                     <div class="d-grid gap-2">
                         <button type="submit" name="action" value="authorize" class="btn btn-primary py-2">
@@ -180,9 +180,14 @@
                 </form>
 
                 {% if (two_step_login or totp_step) and login_username %}
-                <div class="text-center mt-3">
-                    <a href="{{ url_for('oauth.device_verify', user_code=user_code) }}" class="btn btn-link p-0">Change username</a>
-                </div>
+                {# A POST (#373): it discards a pending second factor. #}
+                <form method="POST" class="text-center mt-3">
+                    <input type="hidden" name="user_code" value="{{ user_code }}">
+                    {% if pending_second_factor %}
+                    <input type="hidden" name="pending_second_factor" value="{{ pending_second_factor }}">
+                    {% endif %}
+                    <button type="submit" name="change_username" value="1" formnovalidate class="btn btn-link p-0">Change username</button>
+                </form>
                 {% endif %}
 
                 <div class="text-center mt-3">

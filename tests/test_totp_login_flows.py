@@ -4,10 +4,11 @@ surfaces, exactly the way test_two_step_login_flows.py covers two_step.
 Off by default; each surface's plain-password behavior must stay unchanged
 when it's off, and a user without a totp_secret must see no change either
 way. The step rides two_step's machinery (routes/_auth.second_factor_phase).
-On /login, /saml/sso and /device it is likewise stateless: the code screen
-carries the password forward as a hidden field too, re-checked on submit.
-On /authorize the verified password is recorded on the authorization
-transaction instead (#346, see test_authorization_transactions.py).
+The verified password is kept on the server: on /authorize in the
+authorization transaction (#346, see test_authorization_transactions.py),
+on /login, /saml/sso and /device as a pending second factor (#373, see
+test_pending_second_factors.py). A POST carrying the password and the code
+together stays stateless.
 """
 
 import base64
@@ -68,7 +69,9 @@ class TestLoginTotp:
 
         assert response.status_code == 200
         assert b'name="totp_code"' in response.data
-        assert b'name="password" value="admin"' in response.data
+        # #373: the verified password stays on the server.
+        assert b'name="password"' not in response.data
+        assert b'name="pending_second_factor"' in response.data
         assert b"Signing in as" in response.data
 
     def test_wrong_password_never_reaches_code_screen(self, app, client):
@@ -346,7 +349,9 @@ class TestDeviceTotp:
 
         assert response.status_code == 200
         assert b'name="totp_code"' in response.data
-        assert b'name="password" value="admin"' in response.data
+        # #373: the verified password stays on the server.
+        assert b'name="password"' not in response.data
+        assert b'name="pending_second_factor"' in response.data
 
     def test_wrong_code_stays_on_code_screen(self, app, client, auth_header):
         _enable_totp(app)

@@ -10,6 +10,7 @@ import secrets
 from datetime import datetime
 from io import StringIO
 from pathlib import Path
+from typing import Callable
 
 from flask import (
     Blueprint,
@@ -25,7 +26,7 @@ from flask import (
 from flask.typing import ResponseReturnValue
 
 from ..branding import effective_logos_dir
-from ..config import OAuthClient, User, get_config
+from ..config import ConfigManager, OAuthClient, User, get_config
 from ..config_documents import DocumentRejected
 from ..config_writer import ConflictError, current_revision
 from ..hooks import HookError
@@ -41,9 +42,14 @@ from ..services import (
 from ..services.client_metadata import forget as forget_cached_client
 from ._audit import audit_event
 from ._auth import (
+    PENDING_SECOND_FACTOR_FIELD,
+    SECOND_FACTOR_STORE_FULL,
     SecondFactorPhase,
     TwoStepPhase,
     authenticate_interactively,
+    begin_second_factor,
+    continue_second_factor,
+    discard_pending_second_factor,
     establish_login_session,
     management_secret_required_for_ui,
     mark_management_verified,
@@ -118,13 +124,12 @@ def login() -> ResponseReturnValue:
         error: str | None,
         login_username: str,
         *,
-        totp_step: bool = False,
-        login_password: str = "",
+        pending_second_factor: str = "",
     ) -> ResponseReturnValue:
-        # no_store applied here, not by each caller (#348 review, cleanup):
-        # the code screen carries the password forward as a hidden field,
-        # so every response rendering it must be uncacheable, and this is
-        # the one place that knows totp_step is set.
+        # A pending second factor (#373) renders the code screen. no_store
+        # applied here, not by each caller (#348 review, cleanup): the one
+        # place that knows the code screen is being rendered.
+        totp_step = bool(pending_second_factor)
         response = render_template(
             "login.html",
             error=error,
@@ -133,7 +138,7 @@ def login() -> ResponseReturnValue:
             two_step_login=two_step_login,
             login_username=login_username,
             totp_step=totp_step,
-            login_password=login_password,
+            pending_second_factor=pending_second_factor,
             management_secret_configured=bool(config.settings.management_secret),
         )
         return no_store(response) if totp_step else response
@@ -148,8 +153,15 @@ def login() -> ResponseReturnValue:
     # field, carried forward as a hidden input on the password screen. Step
     # detection is shared with every other password-form surface (#323
     # review round 2, before-merge 5).
-    username = request.form.get("username", "").strip()
+    if "change_username" in request.form:
+        discard_pending_second_factor(purpose="login", context={})
+        return render_login(None, "")
+
     password_submitted = "password" in request.form
+    if request.form.get(PENDING_SECOND_FACTOR_FIELD) and not password_submitted:
+        return _login_code_screen_submission(config, render_login)
+
+    username = request.form.get("username", "").strip()
     password = request.form.get("password", "")
 
     phase = two_step_phase(
@@ -179,12 +191,12 @@ def login() -> ResponseReturnValue:
         error = "Select a user" if persona_mode else "Username and password required"
         return redirect(url_for("ui.login", error=error))
 
-    # Declarative TOTP second factor (#348): riding the same phase
-    # machinery as two_step - the code screen is a further phase, the
-    # username and (since nothing is stored server-side) the password
-    # travel forward as hidden fields. login.user is None until the login
-    # is complete, so the failure branch below cannot be reached with a
-    # code still outstanding.
+    # Declarative TOTP second factor (#348): the code screen is a further
+    # phase. The verified password is recorded as a pending second factor
+    # (#373) and the screen carries only its id. login.user is None until
+    # the login is complete, so the failure branch below cannot be reached
+    # with a code still outstanding. A POST carrying the password and the
+    # code together completes both here, statelessly, as before.
     login = authenticate_interactively(config, username=username, password=password)
 
     if login.phase.pending:
@@ -196,7 +208,10 @@ def login() -> ResponseReturnValue:
                 username=username,
                 details={"reason": login.phase.error},
             )
-        return render_login(login.phase.error, username, totp_step=True, login_password=password)
+        pending_id = begin_second_factor(purpose="login", context={}, username=username)
+        if pending_id is None:
+            return render_login(SECOND_FACTOR_STORE_FULL, "")
+        return render_login(login.phase.error, username, pending_second_factor=pending_id)
 
     if not login.user:
         audit_event(
@@ -221,6 +236,40 @@ def login() -> ResponseReturnValue:
         username=username,
     )
 
+    return redirect(url_for("ui.index"))
+
+
+def _login_code_screen_submission(
+    config: ConfigManager, render_login: Callable[..., ResponseReturnValue]
+) -> ResponseReturnValue:
+    """The code screen's POST on its pending second factor (#373)."""
+    continuation = continue_second_factor(config, purpose="login", context={})
+    if continuation.error is not None:
+        audit_event(
+            "login",
+            "failed",
+            endpoint="/login",
+            username=continuation.username,
+            details={"reason": continuation.reason},
+        )
+        return render_login(continuation.error, "")
+    assert continuation.login is not None and continuation.username is not None
+    if continuation.pending is not None:
+        if continuation.login.phase is SecondFactorPhase.CODE_INVALID:
+            audit_event(
+                "login",
+                "failed",
+                endpoint="/login",
+                username=continuation.username,
+                details={"reason": continuation.login.phase.error},
+            )
+        return render_login(
+            continuation.login.phase.error,
+            continuation.username,
+            pending_second_factor=continuation.pending.id,
+        )
+    establish_login_session(continuation.username, method=continuation.login.method)
+    audit_event("login", "success", endpoint="/login", username=continuation.username)
     return redirect(url_for("ui.index"))
 
 
