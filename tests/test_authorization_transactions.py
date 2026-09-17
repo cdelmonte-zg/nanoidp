@@ -9,6 +9,7 @@ request that names no transaction.
 """
 
 import re
+import threading
 import time
 
 import pytest
@@ -148,6 +149,85 @@ class TestStore:
         runtime_identities._runtime_identity_store = None
 
         assert get_authorization_transaction_store().get_bound(transaction.id, "browser-a") is None
+
+
+class _PausingRepository:
+    """The real repository, with ``create`` held at a gate once armed: a
+    replacement (delete then create) stops exactly between its two visits."""
+
+    def __init__(self, inner):
+        self._inner = inner
+        self.armed = False
+        self.between = threading.Event()
+        self.release = threading.Event()
+
+    def create(self, obj):
+        if self.armed:
+            self.armed = False
+            self.between.set()
+            assert self.release.wait(5)
+        return self._inner.create(obj)
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
+class TestReadsSeeTransitionsWhole:
+    """Readers take the transitions' lock (#346 review): a replacement is a
+    delete and a create, and a read between them would see a live
+    transaction as gone."""
+
+    @pytest.mark.parametrize("read", ["get_bound", "find_unique_for_binding"])
+    @pytest.mark.parametrize("transition", ["mark_primary_verified", "reset_login"])
+    def test_a_read_during_a_replacement_waits_for_it(self, monkeypatch, read, transition):
+        store = get_authorization_transaction_store()
+        transaction = _create(store)
+        if transition == "reset_login":
+            store.mark_primary_verified(transaction.id, "browser-a", username="admin", amr=["pwd"])
+        pausing = _PausingRepository(store._repository)
+        monkeypatch.setattr(
+            transactions_module.AuthorizationTransactionStore,
+            "_repository",
+            property(lambda self: pausing),
+        )
+        pausing.armed = True
+
+        def run_transition():
+            if transition == "mark_primary_verified":
+                store.mark_primary_verified(
+                    transaction.id, "browser-a", username="admin", amr=["pwd"]
+                )
+            else:
+                store.reset_login(transaction.id, "browser-a")
+
+        writer = threading.Thread(target=run_transition)
+        writer.start()
+        assert pausing.between.wait(5)
+
+        seen = []
+
+        def run_read():
+            if read == "get_bound":
+                seen.append(store.get_bound(transaction.id, "browser-a"))
+            else:
+                seen.append(store.find_unique_for_binding("browser-a").transaction)
+
+        reader = threading.Thread(target=run_read)
+        reader.start()
+        reader.join(0.2)
+        blocked = reader.is_alive()
+        pausing.release.set()
+        writer.join(5)
+        reader.join(5)
+
+        assert blocked, "the read did not wait for the replacement"
+        expected = (
+            TransactionState.PRIMARY_VERIFIED
+            if transition == "mark_primary_verified"
+            else TransactionState.PENDING
+        )
+        assert seen[0] is not None
+        assert seen[0].state is expected
 
 
 class TestNoSecretInARecord:

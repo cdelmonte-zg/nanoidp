@@ -139,16 +139,20 @@ def new_browser_binding() -> str:
     return secrets.token_urlsafe(32)
 
 
-# One lock for every transition, whichever store object makes it: the store
+# One lock for every operation, whichever store object makes it: the store
 # below is a view over the runtime store's repository, not an owner of state.
-_transitions_lock = threading.Lock()
+# Reads take it too: a transition replaces a record with a delete and a
+# create, and a read between the two would see a live transaction as gone.
+# Reentrant, because the transitions read through get_bound while holding it.
+_store_lock = threading.RLock()
 
 
 class AuthorizationTransactionStore:
-    """The transitions a transaction goes through, each one atomic."""
+    """The operations on transactions, each one atomic with respect to the
+    others, reads included."""
 
     def __init__(self) -> None:
-        self._lock = _transitions_lock
+        self._lock = _store_lock
 
     @property
     def _repository(self) -> MemoryRuntimeRepository[AuthorizationTransaction]:
@@ -192,7 +196,8 @@ class AuthorizationTransactionStore:
         self, transaction_id: str, browser_binding: Optional[str]
     ) -> Optional[AuthorizationTransaction]:
         """The live transaction with this id, if this browser created it."""
-        transaction = self._repository.get(transaction_id)
+        with self._lock:
+            transaction = self._repository.get(transaction_id)
         if transaction is None or not transaction.is_bound_to(browser_binding):
             return None
         return transaction if transaction.is_live() else None
@@ -204,11 +209,12 @@ class AuthorizationTransactionStore:
         if browser_binding is None:
             return Lookup(LookupOutcome.NONE)
         now = time.time()
+        with self._lock:
+            transactions = self._repository.list()
         candidates = [
             transaction
-            for transaction in self._repository.list()
-            if transaction.is_bound_to(browser_binding)
-            and transaction.is_live(now)
+            for transaction in transactions
+            if transaction.is_bound_to(browser_binding) and transaction.is_live(now)
         ]
         if not candidates:
             return Lookup(LookupOutcome.NONE)
