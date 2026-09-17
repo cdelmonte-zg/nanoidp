@@ -648,11 +648,22 @@ def _may_hold_a_refresh_token(config: ConfigManager, client_id: Optional[str]) -
     the cache's capacity and freshness rules would have to answer for days
     rather than minutes. That is a design, not a patch, and it is not this
     one.
+
+    A client that does not resolve at all answers ``False``, not ``True``:
+    this is decided after the grant handler has run, so an entry can go
+    between the authorization code being consumed and this question being
+    asked. Handing a seven day credential to a client that has just
+    disappeared is exactly the outcome the rule exists to prevent, and the
+    conservative answer costs a caller who is still there nothing but a
+    second login.
     """
     if client_id is None:
+        # A token with no client at all cannot carry a refresh token in the
+        # first place; create_token refuses that pairing. Left to the
+        # existing rule rather than answered twice.
         return True
     resolved = identities_for(config).resolve_client(client_id)
-    return resolved is None or resolved.origin != "cimd"
+    return resolved is not None and resolved.origin != "cimd"
 
 
 def _hold_cached_client_for_the_code(

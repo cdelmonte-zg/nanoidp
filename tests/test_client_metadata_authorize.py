@@ -657,6 +657,22 @@ class TestWhatACachedClientMayNotDo:
         assert token.status_code == 200
         assert "refresh_token" in token.get_json()
 
+    def test_a_client_that_has_gone_gets_no_refresh_token_either(self, app):
+        """The question is asked after the grant handler has run, so the
+        entry can go between the authorization code being consumed and
+        this. An unresolvable client answers no: handing a seven day
+        credential to one that has just disappeared is the outcome the rule
+        exists to prevent, and the conservative answer costs a caller who
+        is still there nothing but a second login."""
+        with app.app_context():
+            config = get_config()
+
+            assert oauth_routes._may_hold_a_refresh_token(
+                config, "https://nobody.example/m.json"
+            ) is False
+            assert oauth_routes._may_hold_a_refresh_token(config, "gone-client") is False
+            assert oauth_routes._may_hold_a_refresh_token(config, "demo-client") is True
+
     def test_a_cached_client_cannot_start_the_device_grant(
         self, app, origin, resolves_to_loopback
     ):
