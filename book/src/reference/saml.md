@@ -147,6 +147,13 @@ opening two logins produces, are unaffected. The
 POST binding needs none of this: its signature travels inside the
 AuthnRequest and is verified again on every leg.
 
+Every attribute query is recorded in the audit log as a
+`saml_attribute_query` event - the successful ones, the unknown principals,
+and the ones refused for their shape - with the query's own `ID` as
+`request_id` and the request size, so an entry can be matched to the caller
+that sent it (#309). The query body is written to the log only when
+`logging.verbose_logging` is on, because it names a principal.
+
 Need a test SP keypair? `python e2e/gen_sp_keypair.py --out .`
 generates `sp-key.pem`/`sp-cert.pem`, and
 `e2e/test_agent.py --saml-signed` exercises the whole behavior

@@ -228,6 +228,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   service's certificate instead of re-reading the file per request, and a
   lowered `max_previous_keys` trims the JWKS as soon as it is applied.
 
+### Changed
+- **Every `/saml/attribute-query` outcome is attributable to its sender**
+  (#309). A query refused for its shape - not well-formed, no
+  `AttributeQuery`, no `Subject`, no `NameID` - used to write no audit entry
+  at all, and the query's own `ID` was read only after those three were
+  found, so a refused request could not be matched to whoever sent it. Each
+  outcome now writes a `saml_attribute_query` entry carrying `request_id`
+  and `content_length`, and the id is read as early as the body allows,
+  including from a query posted without the SOAP envelope. The body itself
+  is logged only under `verbose_logging`, since it names a principal. This
+  is diagnosis for a flake that has not been reproduced, not a fix for it.
+
 ### Fixed
 - **Two signed Redirect AuthnRequests in one browser no longer interfere**
   (#375). With `saml.want_authn_requests_signed`, a verified `GET
