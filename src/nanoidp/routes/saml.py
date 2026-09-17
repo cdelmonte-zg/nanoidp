@@ -28,10 +28,15 @@ from ..services.saml_verification import (
 )
 from ._audit import audit_event
 from ._auth import (
+    PENDING_SECOND_FACTOR_FIELD,
+    SECOND_FACTOR_STORE_FULL,
     AuthMethod,
     SecondFactorPhase,
     TwoStepPhase,
     authenticate_interactively,
+    begin_second_factor,
+    continue_second_factor,
+    discard_pending_second_factor,
     establish_login_session,
     no_store,
     session_auth_method,
@@ -469,8 +474,7 @@ def _sso_authenticate_inline(
         error: Optional[str],
         login_username: str,
         *,
-        totp_step: bool = False,
-        login_password: str = "",
+        pending_second_factor: str = "",
     ) -> ResponseReturnValue:
         # The screen must carry the verb of the request that ENTERED the
         # flow, not the verb of the request that is rendering it (#323
@@ -489,10 +493,10 @@ def _sso_authenticate_inline(
         if form_verb and form_verb.upper() not in ("GET", "POST"):
             return abort(400, description="invalid saml_original_verb")
         original_verb = (form_verb or request.method).upper()
-        # no_store applied here, not by each caller (#348 review, cleanup):
-        # the code screen carries the password forward as a hidden field,
-        # so every response rendering it must be uncacheable, and this is
-        # the one place that knows totp_step is set.
+        # A pending second factor (#373) renders the code screen. no_store
+        # applied here, not by each caller (#348 review, cleanup): the one
+        # place that knows the code screen is being rendered.
+        totp_step = bool(pending_second_factor)
         response = render_template(
             "login.html",
             error=error,
@@ -504,9 +508,57 @@ def _sso_authenticate_inline(
             two_step_login=two_step_login,
             login_username=login_username,
             totp_step=totp_step,
-            login_password=login_password,
+            pending_second_factor=pending_second_factor,
         )
         return no_store(response) if totp_step else response
+
+    # The context a pending second factor belongs to (#373): the SAML
+    # request in flight, exactly as this form carries it. An invalid verb is
+    # refused by render_login before any record is created or used.
+    form_verb = request.form.get("saml_original_verb") or request.method
+    second_factor_context = {
+        "SAMLRequest": saml_request_b64,
+        "RelayState": relay_state,
+        "saml_original_verb": form_verb.upper(),
+    }
+    if form_verb.upper() not in ("GET", "POST"):
+        return None, render_login(None, "")
+
+    if "change_username" in request.form:
+        discard_pending_second_factor()
+        return None, render_login(None, "")
+
+    if request.form.get(PENDING_SECOND_FACTOR_FIELD) and not password_submitted:
+        continuation = continue_second_factor(
+            config, purpose="saml_sso", context=second_factor_context
+        )
+        if continuation.error is not None:
+            audit_event(
+                "login",
+                "failed",
+                endpoint="/saml/sso",
+                username=continuation.username,
+                details={"reason": continuation.reason},
+            )
+            return None, render_login(continuation.error, "")
+        assert continuation.login is not None and continuation.username is not None
+        if continuation.pending is not None:
+            if continuation.login.phase is SecondFactorPhase.CODE_INVALID:
+                audit_event(
+                    "login",
+                    "failed",
+                    endpoint="/saml/sso",
+                    username=continuation.username,
+                    details={"reason": continuation.login.phase.error},
+                )
+            return None, render_login(
+                continuation.login.phase.error,
+                continuation.username,
+                pending_second_factor=continuation.pending.id,
+            )
+        establish_login_session(continuation.username, method=continuation.login.method)
+        audit_event("login", "success", endpoint="/saml/sso", username=continuation.username)
+        return continuation.username, None
 
     # Step detection is shared with every other password-form surface
     # (#323 review round 2, before-merge 5); username_submitted is what
@@ -531,10 +583,11 @@ def _sso_authenticate_inline(
         # authenticate, render the next screen with no error.
         return None, render_login(None, form_username)
 
-    # Declarative TOTP second factor (#348): riding the same phase
-    # machinery as two_step above - the code screen is a further phase,
-    # and since nothing is stored server-side, the password travels
-    # forward as a hidden field too and is re-checked on submit.
+    # Declarative TOTP second factor (#348): the code screen is a further
+    # phase. The verified password is recorded as a pending second factor
+    # bound to this SAML request (#373); the screen carries only its id. A
+    # POST carrying the password and the code together completes both here,
+    # statelessly, as before.
     login = authenticate_interactively(config, username=form_username, password=form_password)
 
     if login.phase.pending:
@@ -546,8 +599,13 @@ def _sso_authenticate_inline(
                 username=form_username,
                 details={"reason": login.phase.error},
             )
+        pending_id = begin_second_factor(
+            purpose="saml_sso", context=second_factor_context, username=form_username
+        )
+        if pending_id is None:
+            return None, render_login(SECOND_FACTOR_STORE_FULL, "")
         return None, render_login(
-            login.phase.error, form_username, totp_step=True, login_password=form_password
+            login.phase.error, form_username, pending_second_factor=pending_id
         )
 
     if login.user:

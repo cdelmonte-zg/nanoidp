@@ -13,19 +13,17 @@
    and implicit Enter-submission must not silently pick a user; the caller
    is then responsible for the click handler that actually submits. #}
 {# The declarative TOTP second factor's code screen (#348) on /login,
-   /saml/sso and /device (#373 tracks moving them off it). Stateless like two-step: the
-   username AND the password travel forward as hidden fields (nothing is
-   stored server-side; the route re-checks the password and marks the
-   response no-store), and the submit button stays with the caller, since
-   each surface labels and groups it differently. #}
-{% macro totp_code_fields(login_username, login_password) %}
-<input type="hidden" name="username" value="{{ login_username }}">
-<input type="hidden" name="password" value="{{ login_password }}">
+   /saml/sso and /device: the verified password is recorded server-side as
+   a pending second factor (#373), so the form carries only its opaque id
+   and the code. The submit button stays with the caller, since each
+   surface labels and groups it differently. #}
+{% macro totp_code_fields(pending_second_factor) %}
+<input type="hidden" name="pending_second_factor" value="{{ pending_second_factor }}">
 {{ totp_code_input() }}
 {% endmacro %}
 
-{# The code input alone, for a surface that keeps the verified password on
-   the server (/authorize, #346) and so has nothing to carry forward. #}
+{# The code input alone. /authorize uses it directly: its form names the
+   authorization transaction instead (#346). #}
 {% macro totp_code_input() %}
 <div class="form-floating mb-4">
     <input type="text" class="form-control" id="totp_code" name="totp_code"

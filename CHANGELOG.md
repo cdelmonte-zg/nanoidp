@@ -229,6 +229,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lowered `max_previous_keys` trims the JWKS as soon as it is applied.
 
 ### Changed
+- **The TOTP code screen of `/login`, `/saml/sso` and `/device` no longer
+  sends the verified password back to the browser** (#373). The password
+  check is recorded on the server as a pending second factor, bound to the
+  browser, to the surface and to what the login is for there (the SAML
+  request in flight, the device `user_code`), valid for 5 minutes and used
+  once, and the code screen carries only its id. The code is checked
+  against the user's current secret; a user deleted or left without a
+  secret, TOTP switched off or persona mode switched on in between ends the
+  login with an error instead. "Change username" is a form post that
+  discards it, and on `/device` a deny from the code screen discards it too
+  and still needs no credentials; the `user_code` is read-only on that
+  screen. A post carrying the password and the code together works as
+  before, with nothing stored. At most 1000 such logins wait at once.
 - **`/authorize` keeps each request as a server-side authorization
   transaction** (#346). An accepted GET validates the request once and
   stores it, bound to the browser, instead of copying ten parameters into

@@ -9,9 +9,10 @@ TOTP second-factor phase riding the same machinery (#348).
 
 import hashlib
 import hmac
+import secrets
 from dataclasses import dataclass
 from enum import Enum
-from typing import Optional, Sequence
+from typing import Mapping, Optional, Sequence
 
 from flask import Response, current_app, jsonify, make_response, redirect, request, session, url_for
 from flask.typing import ResponseReturnValue
@@ -23,6 +24,12 @@ from ..config import ConfigManager, User, get_config
 # module stays the import path its own callers and tests already use.
 from ..security import verify_secret  # noqa: F401
 from ..services.identities import identities_for
+from ..services.pending_second_factors import (
+    PendingSecondFactor,
+    PendingSecondFactorStoreFull,
+    Purpose,
+    get_pending_second_factor_store,
+)
 from ..services.totp import verify_totp
 
 
@@ -334,11 +341,129 @@ def check_second_factor(config: ConfigManager, user: User) -> InteractiveLogin:
     )
 
 
+# The session key holding this browser's binding: one random value for every
+# temporary capability the browser holds - /authorize's transactions (#346)
+# and the pending second factors below (#373). The name is historical, from
+# the first of them.
+_BROWSER_BINDING_SESSION_KEY = "authorize_binding"
+
+
+def browser_flow_binding(*, create: bool = False) -> Optional[str]:
+    """This browser's binding value, created on first use when asked."""
+    binding = session.get(_BROWSER_BINDING_SESSION_KEY)
+    if binding is None and create:
+        binding = secrets.token_urlsafe(32)
+        session[_BROWSER_BINDING_SESSION_KEY] = binding
+    return binding
+
+
+# The form field a code screen names its pending second factor with (#373).
+PENDING_SECOND_FACTOR_FIELD = "pending_second_factor"
+
+
+def begin_second_factor(
+    *, purpose: Purpose, context: Mapping[str, str], username: str
+) -> Optional[str]:
+    """Record that ``username``'s password was just verified and a TOTP code
+    is still required, for this browser, surface and context (#373). The id
+    for the code screen's form, or ``None`` when the store is full."""
+    try:
+        record = get_pending_second_factor_store().create(
+            browser_binding=browser_flow_binding(create=True) or "",
+            purpose=purpose,
+            context=context,
+            username=username,
+            amr=AuthMethod.PASSWORD.amr,
+        )
+    except PendingSecondFactorStoreFull:
+        return None
+    return record.id
+
+
+SECOND_FACTOR_STORE_FULL = "Too many sign-ins are waiting for a code, please try again later"
+SECOND_FACTOR_EXPIRED = "Your sign-in has expired, please start again"
+SECOND_FACTOR_NO_LONGER_APPLIES = "The sign-in could not be completed, please start again"
+
+
+@dataclass(frozen=True)
+class SecondFactorContinuation:
+    """What a code-screen submission on a pending second factor came to.
+
+    Exactly one of three: ``error`` set (the record is gone, foreign, or can
+    no longer complete; ``reason`` says which, for the audit), ``pending``
+    set (a wrong or blank code; ``login.phase.error`` is the message), or
+    ``login.user`` set (the code verified and the record was consumed).
+    """
+
+    login: Optional[InteractiveLogin] = None
+    pending: Optional[PendingSecondFactor] = None
+    error: Optional[str] = None
+    reason: Optional[str] = None
+    username: Optional[str] = None
+
+
+def continue_second_factor(
+    config: ConfigManager, *, purpose: Purpose, context: Mapping[str, str]
+) -> SecondFactorContinuation:
+    """The code screen's POST on the pending second factor its form names
+    (#373). The user is the one the record names: a username or password in
+    the form is not read, and the password is not asked for again.
+
+    The user is resolved again and the code checked against the current
+    secret. Anything that makes the recorded password no longer lead to a
+    TOTP check discards the record rather than completing on the password
+    alone: the user was deleted or lost their secret, TOTP was switched off,
+    or persona mode was switched on.
+    """
+    store = get_pending_second_factor_store()
+    binding = browser_flow_binding()
+    record_id = request.form.get(PENDING_SECOND_FACTOR_FIELD, "")
+    record = store.get_bound(record_id, binding, purpose=purpose, context=context)
+    if record is None:
+        return SecondFactorContinuation(
+            error=SECOND_FACTOR_EXPIRED,
+            reason="unknown, expired or foreign pending second factor",
+        )
+    settings = config.settings
+    user = identities_for(config).get_user(record.username)
+    if (
+        user is None
+        or settings.persona_mode_enabled
+        or not settings.totp_active
+        or not user.totp_secret
+    ):
+        store.discard(record.id, binding)
+        return SecondFactorContinuation(
+            error=SECOND_FACTOR_NO_LONGER_APPLIES,
+            reason="second factor no longer applicable to the verified user",
+            username=record.username,
+        )
+    login = check_second_factor(config, user)
+    if login.phase.pending:
+        return SecondFactorContinuation(login=login, pending=record, username=record.username)
+    if store.consume(record.id, binding, purpose=purpose, context=context) is None:
+        # Discarded or completed by a concurrent submission since it was read.
+        return SecondFactorContinuation(
+            error=SECOND_FACTOR_EXPIRED,
+            reason="pending second factor already completed or discarded",
+            username=record.username,
+        )
+    return SecondFactorContinuation(login=login, username=record.username)
+
+
+def discard_pending_second_factor() -> None:
+    """Drop the pending second factor this form names, if it is this
+    browser's: "Change username", or a device deny from the code screen."""
+    record_id = request.form.get(PENDING_SECOND_FACTOR_FIELD, "")
+    if record_id:
+        get_pending_second_factor_store().discard(record_id, browser_flow_binding())
+
+
 def no_store(response: ResponseReturnValue) -> Response:
-    """Mark a code-screen response uncacheable (#348 review). The screen
-    carries the password forward as a hidden field - the price of keeping
-    the step stateless like two_step - so it must never sit in a shared or
-    back/forward cache."""
+    """Mark a code-screen response uncacheable (#348 review). The screen no
+    longer carries the password (#346, #373), but it names server-side login
+    state bound to this browser, which has no business sitting in a shared
+    or back/forward cache either."""
     resp = make_response(response)
     resp.headers["Cache-Control"] = "no-store"
     return resp

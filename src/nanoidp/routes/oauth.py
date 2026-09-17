@@ -44,7 +44,6 @@ from ..services.authorization_transactions import (
     TransactionState,
     TransactionStoreFull,
     get_authorization_transaction_store,
-    new_browser_binding,
 )
 from ..services.client_metadata import (
     ClientIdUrlInvalid,
@@ -71,11 +70,17 @@ from ..services.scope import resolve_scope
 from ..services.token import resolve_user_claim, sanitize_claim_names
 from ._audit import audit_event
 from ._auth import (
+    PENDING_SECOND_FACTOR_FIELD,
+    SECOND_FACTOR_STORE_FULL,
     AuthMethod,
     SecondFactorPhase,
     TwoStepPhase,
     authenticate_interactively,
+    begin_second_factor,
+    browser_flow_binding,
     check_second_factor,
+    continue_second_factor,
+    discard_pending_second_factor,
     no_store,
     two_step_phase,
 )
@@ -193,10 +198,6 @@ _AUTHORIZE_REQUEST_FIELDS = (
     "claims",
     "resource",
 )
-
-# The one session key /authorize writes (#346): a random value naming this
-# browser, carried by every transaction the browser creates.
-_BROWSER_BINDING_SESSION_KEY = "authorize_binding"
 
 
 def _requested_fields() -> Dict[str, List[str]]:
@@ -723,7 +724,7 @@ def _issue_authorization_code(
     """
     if transaction is not None and (
         get_authorization_transaction_store().consume(
-            transaction.id, _browser_binding(), verified_username=verified_username
+            transaction.id, browser_flow_binding(), verified_username=verified_username
         )
         is None
     ):
@@ -910,7 +911,7 @@ def _handle_authorize_login(
         store = get_authorization_transaction_store()
         verified = store.mark_primary_verified(
             transaction.id,
-            _browser_binding(),
+            browser_flow_binding(),
             username=username,
             amr=AuthMethod.PASSWORD.amr,
         ) or _verified_by_a_concurrent_submission(transaction, username)
@@ -959,7 +960,7 @@ def _verified_by_a_concurrent_submission(
     about to write, so it goes on to the code screen instead of being
     refused. A transaction verified for a different user is not."""
     current = get_authorization_transaction_store().get_bound(
-        transaction.id, _browser_binding()
+        transaction.id, browser_flow_binding()
     )
     if (
         current is not None
@@ -1003,7 +1004,7 @@ def _complete_second_factor(
         or not settings.totp_active
         or not user.totp_secret
     ):
-        get_authorization_transaction_store().consume(transaction.id, _browser_binding())
+        get_authorization_transaction_store().consume(transaction.id, browser_flow_binding())
         return _authorize_error_redirect(
             config,
             p,
@@ -1075,15 +1076,6 @@ def _render_authorize_login(
     return no_store(response) if totp_step else response
 
 
-def _browser_binding(*, create: bool = False) -> Optional[str]:
-    """This browser's binding value (#346), created on first use when asked."""
-    binding = session.get(_BROWSER_BINDING_SESSION_KEY)
-    if binding is None and create:
-        binding = new_browser_binding()
-        session[_BROWSER_BINDING_SESSION_KEY] = binding
-    return binding
-
-
 def _begin_transaction(
     config: ConfigManager,
     p: _AuthorizeParams,
@@ -1107,7 +1099,7 @@ def _begin_transaction(
             "the client no longer resolves",
         )
     store = get_authorization_transaction_store()
-    binding = _browser_binding(create=True)
+    binding = browser_flow_binding(create=True)
     assert binding is not None
     try:
         transaction = store.create(
@@ -1238,14 +1230,14 @@ def _authorize_direct_post(
 
     outcome = _continue_authorize_login(config, transaction)
     store = get_authorization_transaction_store()
-    current = store.get_bound(transaction.id, _browser_binding())
+    current = store.get_bound(transaction.id, browser_flow_binding())
     if current is None:
         # Ended by an issued code or an error redirect: a response either way.
         return _render_after_login_attempt(config, transaction, outcome)
     if current.state is TransactionState.PRIMARY_VERIFIED:
         # Kept for the code step, whose form names it.
         return _render_after_login_attempt(config, current, outcome)
-    store.consume(transaction.id, _browser_binding())
+    store.consume(transaction.id, browser_flow_binding())
     return _render_after_login_attempt(config, current, outcome, name_transaction=False)
 
 
@@ -1255,7 +1247,7 @@ def _pending_transaction() -> Tuple[
     """The transaction a request that names none and carries no OAuth
     request fields resumes (#346): the one live transaction of this browser.
     None or several is refused rather than guessed."""
-    lookup = get_authorization_transaction_store().find_unique_for_binding(_browser_binding())
+    lookup = get_authorization_transaction_store().find_unique_for_binding(browser_flow_binding())
     if lookup.outcome is LookupOutcome.UNIQUE:
         return lookup.transaction, None
     if lookup.outcome is LookupOutcome.AMBIGUOUS:
@@ -1278,7 +1270,7 @@ def _named_transaction(
     ``action``, so it posts back to the URL of the GET that created the
     transaction - they must be exactly that GET's."""
     transaction = get_authorization_transaction_store().get_bound(
-        transaction_id, _browser_binding()
+        transaction_id, browser_flow_binding()
     )
     if transaction is None:
         return None, _refuse_without_transaction(
@@ -1311,7 +1303,7 @@ def _continue_authorize_login(
 
     if "change_username" in request.form:
         reset = get_authorization_transaction_store().reset_login(
-            transaction.id, _browser_binding()
+            transaction.id, browser_flow_binding()
         )
         if reset is None:
             return _refuse_without_transaction(
@@ -1411,7 +1403,7 @@ def authorize() -> ResponseReturnValue:
 
     outcome = _continue_authorize_login(config, transaction)
     current = get_authorization_transaction_store().get_bound(
-        transaction.id, _browser_binding()
+        transaction.id, browser_flow_binding()
     )
     # A verified password or a reset changed the transaction: render what
     # it is now.
@@ -2471,15 +2463,13 @@ def device_verify() -> ResponseReturnValue:
         error: Optional[str],
         *,
         success: Optional[str] = None,
-        totp_step: bool = False,
-        login_password: str = "",
+        pending_second_factor: str = "",
     ) -> ResponseReturnValue:
-        # One render for the three exits below (#348 review), the same
-        # closure /login and /saml/sso already use. no_store applied here,
-        # not by each caller (#348 review, cleanup): the code screen
-        # carries the password forward as a hidden field, so every response
-        # rendering it must be uncacheable, and this is the one place that
-        # knows totp_step is set.
+        # One render for every exit below (#348 review), the same closure
+        # /login and /saml/sso already use. A pending second factor (#373)
+        # renders the code screen; no_store applied here, not by each caller
+        # (#348 review, cleanup), the one place that knows it is rendered.
+        totp_step = bool(pending_second_factor)
         response = render_template(
             "device.html",
             user_code=user_code,
@@ -2489,7 +2479,7 @@ def device_verify() -> ResponseReturnValue:
             two_step_login=two_step_login,
             login_username=login_username,
             totp_step=totp_step,
-            login_password=login_password,
+            pending_second_factor=pending_second_factor,
             users=identities_for(config).persona_picker_entries(),
         )
         return no_store(response) if totp_step else response
@@ -2501,6 +2491,55 @@ def device_verify() -> ResponseReturnValue:
         password = request.form.get("password", "")
         action = request.form.get("action", "authorize")
         login_username = username
+        # The context a pending second factor belongs to (#373).
+        second_factor_context = {"user_code": user_code}
+        store = get_device_code_store()
+        decided_user: Optional[User] = None
+        amr = None
+
+        if "change_username" in request.form:
+            discard_pending_second_factor()
+            login_username = ""
+            return render_device(None)
+
+        on_code_screen = bool(request.form.get(PENDING_SECOND_FACTOR_FIELD)) and not password_submitted
+        if on_code_screen and (action == "deny" or store.pending_status(user_code) is not None):
+            # A deny needs no credentials, and a dead user_code is reported
+            # by verify() below exactly as it always has: either way the
+            # pending second factor is over.
+            discard_pending_second_factor()
+        elif on_code_screen:
+            continuation = continue_second_factor(
+                config, purpose="device", context=second_factor_context
+            )
+            if continuation.error is not None:
+                audit_event(
+                    "device_verification",
+                    "failed",
+                    endpoint="/device",
+                    username=continuation.username,
+                    details={"user_code": user_code, "reason": continuation.reason},
+                )
+                login_username = ""
+                return render_device(continuation.error)
+            assert continuation.login is not None and continuation.username is not None
+            login_username = continuation.username
+            if continuation.pending is not None:
+                if continuation.login.phase is SecondFactorPhase.CODE_INVALID:
+                    audit_event(
+                        "device_verification",
+                        "failed",
+                        endpoint="/device",
+                        username=continuation.username,
+                        details={"user_code": user_code, "reason": continuation.login.phase.error},
+                    )
+                return render_device(
+                    continuation.login.phase.error,
+                    pending_second_factor=continuation.pending.id,
+                )
+            decided_user = continuation.login.user
+            amr = continuation.login.amr
+            username = continuation.username
 
         # Step detection is shared with every other password-form surface
         # (#323 review round 2, before-merge 5); "deny" needs no
@@ -2508,7 +2547,11 @@ def device_verify() -> ResponseReturnValue:
         # its own), so it folds into the caller's own gate here rather than
         # two_step_phase needing to know about device-specific actions.
         phase = two_step_phase(
-            two_step_active=two_step_login and action != "deny",
+            # The code screen is past both steps: its outcome, a verified
+            # user or a dead user_code, goes to verify() below.
+            two_step_active=(
+                two_step_login and action != "deny" and not on_code_screen
+            ),
             username=username,
             password=password,
             password_submitted=password_submitted,
@@ -2533,7 +2576,7 @@ def device_verify() -> ResponseReturnValue:
         # Message-only: whether this is a "nothing filled in" attempt rather
         # than a wrong selection/credential, so the two outcomes get distinct
         # copy below. The actual auth decision lives in interactive_authenticate().
-        missing_input = action != "deny" and (
+        missing_input = action != "deny" and not on_code_screen and (
             (persona_mode and not username) or (not persona_mode and (not username or not password))
         )
 
@@ -2554,10 +2597,12 @@ def device_verify() -> ResponseReturnValue:
         # authenticate, serialized inside the store's lock) - under
         # password_hashing that was two bcrypt rounds per attempt instead of
         # one (#348 review, cleanup).
-        store = get_device_code_store()
-        decided_user: Optional[User] = None
-        amr = None
-        if action != "deny" and not missing_input and store.pending_status(user_code) is None:
+        if (
+            not on_code_screen
+            and action != "deny"
+            and not missing_input
+            and store.pending_status(user_code) is None
+        ):
             login = authenticate_interactively(config, username=username, password=password)
             if login.phase.pending:
                 if login.phase is SecondFactorPhase.CODE_INVALID:
@@ -2568,7 +2613,16 @@ def device_verify() -> ResponseReturnValue:
                         username=username,
                         details={"user_code": user_code, "reason": login.phase.error},
                     )
-                return render_device(login.phase.error, totp_step=True, login_password=password)
+                # The verified password is recorded server-side, bound to
+                # this user_code (#373); the code screen carries its id.
+                # A POST carrying the password and the code together
+                # completed both above, statelessly, as before.
+                pending_id = begin_second_factor(
+                    purpose="device", context=second_factor_context, username=username
+                )
+                if pending_id is None:
+                    return render_device(SECOND_FACTOR_STORE_FULL)
+                return render_device(login.phase.error, pending_second_factor=pending_id)
             decided_user = login.user
             amr = login.amr
 
