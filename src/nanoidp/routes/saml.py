@@ -27,8 +27,10 @@ from ..services.saml_verification import (
     verify_redirect_signature,
 )
 from ..services.saml_verified_requests import (
-    VerifiedRequestStoreFull,
-    get_verified_request_store,
+    VerificationState,
+    remember_verified,
+    request_digest,
+    state_of,
 )
 from ._audit import audit_event
 from ._auth import (
@@ -39,7 +41,6 @@ from ._auth import (
     TwoStepPhase,
     authenticate_interactively,
     begin_second_factor,
-    browser_flow_binding,
     continue_second_factor,
     discard_pending_second_factor,
     establish_login_session,
@@ -388,11 +389,13 @@ def _verify_authn_request_signature(
 
     - GET = Redirect binding: query-string signature (Bindings §3.4.4.1).
       The signature only exists on the original URL and cannot survive the
-      login-form roundtrip, so the verified request is bound SERVER-SIDE in
-      the session; the POST login leg (saml_original_verb=GET) is admitted
-      only for values byte-identical to a request this session already
-      verified, and fails closed otherwise (#69 review: hidden form fields
-      are client-controlled and must not be trusted on their own).
+      login-form roundtrip, so a verified request this browser still has to
+      continue is remembered in its own session (#375, a bounded expiring
+      set rather than #69's single slot); the POST login leg
+      (saml_original_verb=GET) is admitted only for a request that set says
+      this browser had verified, and fails closed otherwise (#69 review:
+      hidden form fields are client-controlled and must not be trusted on
+      their own).
     - POST without saml_original_verb = POST-binding entry: enveloped XML
       signature (Core §5).
     - POST login leg of a POST-binding request (saml_original_verb=POST):
@@ -411,37 +414,14 @@ def _verify_authn_request_signature(
                 request.query_string.decode("latin-1"),
                 load_sp_certificates(config.settings.saml_sp_certificates),
             )
-            # A later Redirect-leg POST may only replay exactly this
-            # verified request. Remembered per request, for this browser
-            # (#375): a second signed request in the same browser used to
-            # overwrite the first and make it non-continuable.
-            try:
-                get_verified_request_store().remember_verified(
-                    browser_flow_binding(create=True) or "",
-                    saml_request_b64,
-                    relay_state,
-                )
-            except VerifiedRequestStoreFull as full:
-                audit_event(
-                    "saml_request",
-                    "failed",
-                    endpoint="/saml/sso",
-                    details={"reason": f"AuthnRequest verification not held: {full}"},
-                )
-                return abort(
-                    503,
-                    description=(
-                        "too many signed AuthnRequests are being held, please try again"
-                    ),
-                )
+            # Remembering this request is the caller's, once it knows a
+            # login continuation is actually needed (#375): a browser that
+            # is already signed in completes the SSO on this GET and has
+            # nothing to continue.
         elif form_leg_verb == "GET":
-            if not get_verified_request_store().is_verified(
-                browser_flow_binding(), saml_request_b64, relay_state
-            ):
-                raise SAMLSignatureError(
-                    "Redirect-binding login continuation does not match a "
-                    "signature-verified request in this session"
-                )
+            refused = _admit_redirect_login_leg(saml_request_b64, relay_state)
+            if refused is not None:
+                return refused
         else:
             xml_bytes = _decode_saml_request_bytes(saml_request_b64)
             verify_post_signature(
@@ -457,6 +437,64 @@ def _verify_authn_request_signature(
         )
         return abort(400, description=f"AuthnRequest signature rejected: {e}")
     return None
+
+
+# The one session key /saml/sso writes for this (#375): the bounded,
+# expiring set of Redirect requests this browser had verified.
+_VERIFIED_REDIRECTS_SESSION_KEY = "saml_verified_redirects"
+
+
+def _remember_verified_redirect(saml_request_b64: str, relay_state: str) -> None:
+    """Remember that this browser had this Redirect request verified, or
+    refresh it while the browser is still continuing it."""
+    session[_VERIFIED_REDIRECTS_SESSION_KEY] = remember_verified(
+        session.get(_VERIFIED_REDIRECTS_SESSION_KEY),
+        request_digest(saml_request_b64, relay_state),
+    )
+
+
+def _admit_redirect_login_leg(
+    saml_request_b64: str, relay_state: str
+) -> Optional[ResponseReturnValue]:
+    """The login leg of a Redirect-binding request: ``None`` to proceed, or
+    the refusal.
+
+    An expired verification is told apart from one that never happened, in
+    the audit and the log, so neither says the signature was invalid; the
+    browser gets the same 400 either way.
+    """
+    state, live = state_of(
+        session.get(_VERIFIED_REDIRECTS_SESSION_KEY),
+        request_digest(saml_request_b64, relay_state),
+    )
+    if state is VerificationState.VERIFIED:
+        # Continuing the flow keeps it alive: a login can take several
+        # screens (two-step, then a TOTP code).
+        _remember_verified_redirect(saml_request_b64, relay_state)
+        return None
+    session[_VERIFIED_REDIRECTS_SESSION_KEY] = live
+    expired = state is VerificationState.EXPIRED
+    reason = (
+        "the verified Redirect AuthnRequest expired"
+        if expired
+        else "no matching verified Redirect AuthnRequest for this browser"
+    )
+    audit_event(
+        "saml_request",
+        "failed",
+        endpoint="/saml/sso",
+        details={"reason": reason},
+    )
+    logger.info("Redirect-binding login continuation refused: %s", reason)
+    return abort(
+        400,
+        description=(
+            "the verified Redirect AuthnRequest has expired, please start again"
+            if expired
+            else "Redirect-binding login continuation does not match a "
+            "signature-verified request of this browser"
+        ),
+    )
 
 
 def _sso_authenticate_inline(
@@ -770,6 +808,10 @@ def sso() -> ResponseReturnValue:
 
     username, login_page = _sso_authenticate_inline(config, saml_request_b64, relay_state)
     if login_page is not None:
+        if config.settings.saml_want_authn_requests_signed and request.method == "GET":
+            # A verified Redirect request is remembered here, where it is
+            # known that this browser has a login to continue (#375).
+            _remember_verified_redirect(saml_request_b64, relay_state)
         return login_page
     assert username is not None  # _sso_authenticate_inline returns one or the other
 

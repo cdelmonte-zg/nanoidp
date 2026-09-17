@@ -130,13 +130,17 @@ validates it.
 
 A Redirect-binding signature exists only on the original URL, so it cannot
 be re-verified when the inline login form posts the request back. nanoidp
-therefore remembers that this browser had this request verified and admits
-the login post only for a request it remembers, which is what keeps the
-hidden form fields from standing in for the signature. Each verified
-request is remembered on its own for **10 minutes** (#375); a browser may
-have ten such requests in flight, and an eleventh makes the oldest one
-non-continuable. The POST binding needs none of this: its signature travels
-inside the AuthnRequest and is verified again on every leg.
+therefore remembers, in the browser's own signed session, which Redirect
+requests that browser had verified, and admits the login post only for one
+of them, which is what keeps the hidden form fields from standing in for the
+signature. Each request is remembered on its own (#375, where it used to be
+a single slot, so a second signed request made the first non-continuable):
+ten per browser, an eleventh making the oldest non-continuable, each kept
+for **10 minutes of inactivity** and refreshed while the login is being
+continued. Nothing is shared between browsers, and the set survives a
+restart or several workers as long as they share `session.secret_key`. The
+POST binding needs none of this: its signature travels inside the
+AuthnRequest and is verified again on every leg.
 
 Need a test SP keypair? `python e2e/gen_sp_keypair.py --out .`
 generates `sp-key.pem`/`sp-cert.pem`, and

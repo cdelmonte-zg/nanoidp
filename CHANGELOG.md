@@ -233,10 +233,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (#375). With `saml.want_authn_requests_signed`, a verified `GET
   /saml/sso` was remembered in a single session key, so a second signed
   request overwrote the first and its login post was then refused as not
-  matching a verified request. Each verified request is now remembered on
-  its own, for the browser that had it verified, for 10 minutes; ten may be
-  in flight per browser and an eleventh makes that browser's oldest
-  non-continuable. What the login post must still present is unchanged.
+  matching a verified request. The browser's session now holds the set of
+  requests it had verified: ten of them, an eleventh making the oldest
+  non-continuable, each kept for 10 minutes of inactivity and refreshed
+  while the login is continued, and remembered only when a login actually
+  has to be continued. What the login post must present is unchanged, and
+  an expired verification now says so in the audit and the log instead of
+  reporting the signature as invalid.
 
 ### Changed
 - **The TOTP code screen of `/login`, `/saml/sso` and `/device` no longer

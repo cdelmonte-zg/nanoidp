@@ -1,11 +1,11 @@
-"""Verified SAML Redirect AuthnRequests, one per flow (#375).
+"""The Redirect AuthnRequests a browser has had verified (#375).
 
 With `saml.want_authn_requests_signed`, the Redirect signature cannot
-survive the login form's round trip, so a verified GET is remembered and the
-login leg asks whether this browser had exactly that request verified. It
-used to be remembered in one session slot, so a second signed request in the
-same browser made the first non-continuable. These tests hold the fix and
-the bounds the issue states.
+survive the login form's round trip, so a verified GET is remembered in the
+browser's own session and the login leg is admitted only for a request that
+set says was verified. It used to be one slot, so a second signed request in
+the same browser made the first non-continuable. These tests hold the fix,
+the bounds, and the property that nothing here is shared between browsers.
 """
 
 import base64
@@ -18,11 +18,12 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding
 
 from nanoidp.config import get_config
-from nanoidp.services import saml_verified_requests as store_module
+from nanoidp.services import saml_verified_requests as verified_module
 from nanoidp.services.saml_verified_requests import (
-    VerifiedRequestStoreFull,
-    get_verified_request_store,
+    VerificationState,
+    remember_verified,
     request_digest,
+    state_of,
 )
 from tests.test_saml_signed_authnrequests import AUTHN_REQUEST, RSA_SHA256, SP_CERT, SP_KEY
 
@@ -69,8 +70,9 @@ def _login_leg(client, request_id: bytes = b"_sig-test-1", relay_state="RS"):
     )
 
 
-def _records():
-    return get_verified_request_store()._repository.list()
+def _remembered(client):
+    with client.session_transaction() as session:
+        return list(session.get("saml_verified_redirects") or [])
 
 
 class TestConcurrentFlows:
@@ -106,110 +108,152 @@ class TestConcurrentFlows:
         assert response.status_code == 400
         assert b"signature-verified request" in response.data
 
+    def test_nothing_is_shared_between_browsers(self, app, client, signed_mode):
+        """#375: the state lives in each browser's own session, so a client
+        that keeps discarding its cookie cannot affect anyone else. The
+        server-side store this replaced could be filled by replaying one
+        signed URL, which then refused every browser."""
+        query = _signed_query()
+        for _ in range(3 * verified_module.MAX_VERIFIED_REQUESTS):
+            assert app.test_client().get(f"/saml/sso?{query}").status_code == 200
+
+        assert client.get(f"/saml/sso?{query}").status_code == 200
+        assert b"SAMLResponse" in _login_leg(client).data
+
 
 class TestBounds:
     def test_a_browsers_eleventh_request_drops_its_oldest(self, client, signed_mode):
-        ids = [f"_flow-{n}".encode() for n in range(store_module.MAX_VERIFIED_REQUESTS_PER_BROWSER)]
+        ids = [f"_flow-{n}".encode() for n in range(verified_module.MAX_VERIFIED_REQUESTS)]
         for request_id in ids:
             assert client.get(f"/saml/sso?{_signed_query(request_id)}").status_code == 200
 
         assert client.get(f"/saml/sso?{_signed_query(b'_flow-new')}").status_code == 200
 
-        assert len(_records()) == store_module.MAX_VERIFIED_REQUESTS_PER_BROWSER
+        assert len(_remembered(client)) == verified_module.MAX_VERIFIED_REQUESTS
         assert _login_leg(client, ids[0]).status_code == 400
         assert b"SAMLResponse" in _login_leg(client, ids[1]).data
         assert b"SAMLResponse" in _login_leg(client, b"_flow-new").data
 
-    def test_re_verifying_the_same_request_refreshes_it_and_frees_no_room(
-        self, client, signed_mode
-    ):
+    def test_re_verifying_the_same_request_frees_no_room(self, client, signed_mode):
         for _ in range(3):
             assert client.get(f"/saml/sso?{_signed_query(b'_same')}").status_code == 200
 
-        assert len(_records()) == 1
+        assert len(_remembered(client)) == 1
         assert b"SAMLResponse" in _login_leg(client, b"_same").data
 
     def test_a_verification_expires(self, client, signed_mode, monkeypatch):
         assert client.get(f"/saml/sso?{_signed_query()}").status_code == 200
-        later = time.time() + store_module.VERIFIED_REQUEST_LIFETIME_SECONDS + 1
-        monkeypatch.setattr(store_module.time, "time", lambda: later)
+        later = time.time() + verified_module.VERIFIED_REQUEST_LIFETIME_SECONDS + 1
+        monkeypatch.setattr(verified_module.time, "time", lambda: later)
 
         response = _login_leg(client)
 
         assert response.status_code == 400
-        assert b"signature-verified request" in response.data
+        assert b"expired" in response.data
 
-    def test_a_full_store_refuses_the_new_verification(self, client, signed_mode, monkeypatch):
-        monkeypatch.setattr(store_module, "MAX_VERIFIED_REQUESTS", 1)
-        assert client.get(f"/saml/sso?{_signed_query(b'_first')}").status_code == 200
+    def test_continuing_a_flow_keeps_it_alive(self, app, client, signed_mode, monkeypatch):
+        """A login can take several screens: each leg refreshes it."""
+        with app.app_context():
+            get_config().settings.two_step = True
+        assert client.get(f"/saml/sso?{_signed_query()}").status_code == 200
 
-        refused = client.get(f"/saml/sso?{_signed_query(b'_second')}")
+        clock = time.time()
+        monkeypatch.setattr(verified_module.time, "time", lambda: clock)
+        for _ in range(4):
+            clock += verified_module.VERIFIED_REQUEST_LIFETIME_SECONDS - 60
+            username_step = client.post(
+                "/saml/sso",
+                data={
+                    "SAMLRequest": _request_b64(b"_sig-test-1"),
+                    "RelayState": "RS",
+                    "saml_original_verb": "GET",
+                    "username": "admin",
+                },
+            )
+            assert username_step.status_code == 200
+            assert b'name="password"' in username_step.data
 
-        assert refused.status_code == 503
-        # The flow already verified is untouched.
-        assert b"SAMLResponse" in _login_leg(client, b"_first").data
+        assert b"SAMLResponse" in _login_leg(client).data
+
+    def test_an_already_signed_in_browser_remembers_nothing(self, client, signed_mode):
+        """#375: a browser that completes the SSO on the GET itself has no
+        continuation to remember."""
+        with client.session_transaction() as session:
+            session["user"] = "admin"
+
+        response = client.get(f"/saml/sso?{_signed_query()}")
+
+        assert b"SAMLResponse" in response.data
+        assert _remembered(client) == []
 
 
-class TestStore:
-    def _remember(self, binding="browser-a", request="req", relay="RS"):
-        return get_verified_request_store().remember_verified(binding, request, relay)
+    def test_a_post_binding_entry_remembers_nothing(self, client, signed_mode):
+        """Only a verified Redirect GET is remembered. A POST-binding entry
+        carries its signature inside the XML and is verified again on every
+        leg, so remembering it would let a Redirect-leg continuation of the
+        same request skip that verification."""
+        from tests.test_saml_signed_authnrequests import _signed_post_request
+
+        signed_xml = _signed_post_request()
+        page = client.post("/saml/sso", data={"SAMLRequest": signed_xml})
+        assert page.status_code == 200
+        assert b"username" in page.data
+
+        assert _remembered(client) == []
+        refused = client.post(
+            "/saml/sso",
+            data={
+                "SAMLRequest": signed_xml,
+                "saml_original_verb": "GET",
+                "username": "admin",
+                "password": "admin",
+            },
+        )
+        assert refused.status_code == 400
+        assert b"SAMLResponse" not in refused.data
+
+
+class TestTheRememberedSet:
+    """The bounded expiring set itself, without Flask."""
 
     def test_the_digest_covers_the_request_and_the_relay_state_only(self):
         assert request_digest("r", "s") == request_digest("r", "s")
         assert request_digest("r", "s") != request_digest("r", "t")
         assert request_digest("rs", "") != request_digest("r", "s")
+        # base64url of a full SHA-256, unpadded.
+        assert len(request_digest("r", "s")) == 43
 
-    def test_a_verification_belongs_to_one_browser(self):
-        self._remember(binding="browser-a")
-        store = get_verified_request_store()
+    def test_verified_then_expired_then_unknown(self):
+        entries = remember_verified([], "d", now=1000.0)
 
-        assert store.is_verified("browser-a", "req", "RS")
-        assert not store.is_verified("browser-b", "req", "RS")
-        assert not store.is_verified(None, "req", "RS")
-        assert not store.is_verified("browser-a", "other", "RS")
+        assert state_of(entries, "d", now=1000.0)[0] is VerificationState.VERIFIED
+        assert state_of(entries, "other", now=1000.0)[0] is VerificationState.UNKNOWN
+        late = 1000.0 + verified_module.VERIFIED_REQUEST_LIFETIME_SECONDS + 1
+        state, live = state_of(entries, "d", now=late)
+        assert state is VerificationState.EXPIRED
+        assert live == []
 
-    def test_the_same_request_in_two_browsers_is_two_records(self):
-        self._remember(binding="browser-a")
-        self._remember(binding="browser-b")
-        store = get_verified_request_store()
+    def test_re_verifying_refreshes_instead_of_appending(self):
+        entries = remember_verified([], "d", now=1000.0)
+        entries = remember_verified(entries, "d", now=1500.0)
 
-        assert len(_records()) == 2
-        assert store.is_verified("browser-a", "req", "RS")
-        assert store.is_verified("browser-b", "req", "RS")
+        assert entries == [["d", 1500.0]]
 
-    def test_eviction_only_drops_the_same_browsers_oldest(self, monkeypatch):
-        monkeypatch.setattr(store_module, "MAX_VERIFIED_REQUESTS_PER_BROWSER", 2)
-        self._remember(binding="browser-b", request="theirs")
-        self._remember(request="first")
-        self._remember(request="second")
+    def test_the_oldest_is_dropped_past_the_cap(self):
+        entries = []
+        for n in range(verified_module.MAX_VERIFIED_REQUESTS + 2):
+            entries = remember_verified(entries, f"d{n}", now=1000.0 + n)
 
-        self._remember(request="third")
+        assert len(entries) == verified_module.MAX_VERIFIED_REQUESTS
+        assert state_of(entries, "d0", now=1100.0)[0] is VerificationState.UNKNOWN
+        assert state_of(entries, "d2", now=1100.0)[0] is VerificationState.VERIFIED
 
-        store = get_verified_request_store()
-        assert not store.is_verified("browser-a", "first", "RS")
-        assert store.is_verified("browser-a", "second", "RS")
-        assert store.is_verified("browser-a", "third", "RS")
-        assert store.is_verified("browser-b", "theirs", "RS")
-
-    def test_the_global_cap_refuses_rather_than_dropping_another_browser(self, monkeypatch):
-        monkeypatch.setattr(store_module, "MAX_VERIFIED_REQUESTS", 1)
-        self._remember(binding="browser-a", request="first")
-
-        with pytest.raises(VerifiedRequestStoreFull):
-            self._remember(binding="browser-b", request="second")
-
-        assert get_verified_request_store().is_verified("browser-a", "first", "RS")
-
-    def test_expired_records_are_pruned_and_make_room(self, monkeypatch):
-        monkeypatch.setattr(store_module, "MAX_VERIFIED_REQUESTS", 1)
-        self._remember(request="old")
-        later = time.time() + store_module.VERIFIED_REQUEST_LIFETIME_SECONDS + 1
-        monkeypatch.setattr(store_module.time, "time", lambda: later)
-
-        assert self._remember(request="new") is not None
-        assert get_verified_request_store().is_verified("browser-a", "new", "RS")
-
-    def test_a_record_holds_no_request_content(self):
-        record = self._remember(request="the-whole-authn-request")
-
-        assert "the-whole-authn-request" not in record.model_dump_json()
+    @pytest.mark.parametrize(
+        "remembered",
+        ["not-a-list", None, [["d"]], [{"digest": "d"}], [["d", "not-a-number"]], [["d", True]]],
+    )
+    def test_anything_else_under_the_key_reads_as_nothing_remembered(self, remembered):
+        """The session is signed, not trusted to have this shape: an older
+        build or a hand-edited test session must read as empty, not raise."""
+        assert state_of(remembered, "d")[0] is VerificationState.UNKNOWN
+        assert remember_verified(remembered, "d", now=1000.0) == [["d", 1000.0]]
