@@ -237,8 +237,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   outcome now writes a `saml_attribute_query` entry carrying `request_id`
   and `content_length`, and the id is read as early as the body allows,
   including from a query posted without the SOAP envelope. The body itself
-  is logged only under `verbose_logging`, since it names a principal. This
-  is diagnosis for a flake that has not been reproduced, not a fix for it.
+  is logged only under `verbose_logging`, since it names a principal, and
+  the recorded id is truncated, since it comes from an unauthenticated
+  caller and is kept in the audit ring. Auditing refusals also means that
+  reaching this endpoint is a way to push older audit entries out, which the
+  endpoint reference now says. This is diagnosis for a flake that has not
+  been reproduced, not a fix for it.
 
 ### Fixed
 - **Two signed Redirect AuthnRequests in one browser no longer interfere**

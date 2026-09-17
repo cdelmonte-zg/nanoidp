@@ -118,13 +118,62 @@ class TestTheIdIsReadAsEarlyAsTheBodyAllows:
         assert details["request_id"] == "_aq-somebody-else"
         assert details["reason"] == "Invalid AttributeQuery: AttributeQuery element not found"
 
-    def test_a_bare_query_of_another_shape_is_not_named(self, app, client):
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "<samlp:Something xmlns:samlp='urn:x' ID='_not-a-query'/>",
+            # The local name alone is not a query: this one is in the
+            # assertion namespace, and this one in none at all.
+            '<saml2:AttributeQuery xmlns:saml2="urn:oasis:names:tc:SAML:2.0:assertion" ID="_wrong-ns"/>',
+            '<AttributeQuery ID="_no-ns"/>',
+        ],
+        ids=("other-element", "assertion-namespace", "no-namespace"),
+    )
+    def test_a_body_that_is_not_a_query_is_not_named(self, app, client, body):
         """Nothing is invented: a body that says nothing about a query id
         records None rather than a guess."""
-        _post(client, "<samlp:Something xmlns:samlp='urn:x' ID='_not-a-query'/>")
+        _post(client, body)
 
         (details,) = _details(app)
         assert details["request_id"] is None
+
+    def test_an_oversized_id_is_kept_as_evidence_not_as_storage(self, app, client):
+        """The id comes from an unauthenticated caller and is kept in the
+        audit ring: enough of it to match a sender, no more."""
+        from nanoidp.routes.saml import MAX_REQUEST_ID_CHARS
+
+        huge = "_" + "a" * 10_000
+        _post(client, _ENVELOPE.format(inner=_QUERY.format(
+            request_id=huge, subject=_SUBJECT.format(user="admin")
+        )))
+
+        (details,) = _details(app)
+        assert details["request_id"].startswith("_" + "a" * 50)
+        assert len(details["request_id"]) <= MAX_REQUEST_ID_CHARS + len("...(truncated)")
+
+    @pytest.mark.parametrize("subject", ["admin", None], ids=("accepted", "refused"))
+    def test_the_size_recorded_is_the_body_actually_read(self, app, client, subject):
+        """A declared Content-Length can overstate the body, and a chunked
+        request declares none: the evidence is what arrived. Holds on the
+        accepted path and on a refusal alike."""
+        body = _ENVELOPE.format(inner=_QUERY.format(
+            request_id="_aq-run-query-chunked",
+            subject=_SUBJECT.format(user=subject) if subject else "",
+        ))
+        import io
+
+        client.post(
+            "/saml/attribute-query",
+            input_stream=io.BytesIO(body.encode()),
+            content_type="text/xml",
+            environ_overrides={
+                "wsgi.input_terminated": True,
+                "HTTP_TRANSFER_ENCODING": "chunked",
+            },
+        )
+
+        (details,) = _details(app)
+        assert details["content_length"] == len(body.encode())
 
 
 class TestTheBodyStaysOutOfTheLogUnlessAsked:
@@ -148,3 +197,17 @@ class TestTheBodyStaysOutOfTheLogUnlessAsked:
         assert ("AttributeQuery body:" in logged) is verbose
         # The refusal itself is always logged, with the id and the size.
         assert "_aq-run-query-bare" in logged
+
+    def test_a_refused_request_is_logged_once(self, app, client, caplog):
+        """One warning per refused request: the parser's own complaint rides
+        in that line instead of adding a second."""
+        with caplog.at_level("WARNING", logger="nanoidp.routes.saml"):
+            _post(client, "<not-xml")
+
+        warnings = [
+            r
+            for r in caplog.records
+            if r.levelname == "WARNING" and r.name == "nanoidp.routes.saml"
+        ]
+        assert len(warnings) == 1
+        assert "Request body is not well-formed XML" in warnings[0].getMessage()

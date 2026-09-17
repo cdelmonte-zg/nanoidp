@@ -3396,7 +3396,9 @@ class NanoIDPTestAgent:
             return (
                 f"{entry.get('timestamp', '?')} {entry.get('status', '?')}"
                 f" id={details.get('request_id')!r}"
-                f" reason={details.get('reason', details.get('attributes_count'))!r}"
+                # 'error' is what the catch-all writes, which is the very
+                # outcome #309 is about: never drop it.
+                f" reason={details.get('reason') or details.get('error') or details.get('attributes_count')!r}"
                 f" len={details.get('content_length')}"
             )
 
