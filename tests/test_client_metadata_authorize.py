@@ -589,6 +589,101 @@ class TestACodeOutlivesTheClientItWasIssuedFor:
             assert retain_until("demo-client", 1e12) is False
 
 
+class TestWhatACachedClientMayNotDo:
+    """The cache keeps an entry as long as the authorization code issued
+    against it, so that is the longest anything may depend on it.
+
+    A refresh token lives days and a device code is redeemed by a later
+    request, and neither is bounded by the code's lifetime. Rather than
+    promise a cached document will still be there in a week, the deferred
+    state a cached client can be named in is an authorization code and
+    nothing else. Widening this means giving each grant a lease on the
+    client identity until its own expiry, which is a design of its own.
+    """
+
+    def test_no_refresh_token_is_issued_to_a_cached_client(
+        self, app, origin, resolves_to_loopback
+    ):
+        """Otherwise a seven day credential is handed out that this server
+        can make useless in ten minutes by evicting the entry, which is the
+        defect the code retention prevents, one step further along."""
+        client = app.test_client()
+        client_id = _client_id(origin)
+        origin.serve_document(metadata_document(client_id, redirect_uris=[REDIRECT]))
+        query, verifier = _authorize_query(client_id)
+        client.get("/authorize", query_string=query)
+        authorized = client.post(
+            "/authorize", query_string=query, data={"username": "admin", "password": "admin"}
+        )
+        code = parse_qs(urlparse(authorized.headers["Location"]).query)["code"][0]
+
+        token = client.post(
+            "/token",
+            data={
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": REDIRECT,
+                "client_id": client_id,
+                "code_verifier": verifier,
+            },
+        )
+
+        assert token.status_code == 200
+        assert "access_token" in token.get_json()
+        assert "refresh_token" not in token.get_json()
+
+    def test_a_declared_client_still_gets_one(self, app):
+        """The rule is about where the client lives, not about the flow."""
+        client = app.test_client()
+        query, verifier = _authorize_query("demo-client")
+        client.get("/authorize", query_string=query)
+        authorized = client.post(
+            "/authorize", query_string=query, data={"username": "admin", "password": "admin"}
+        )
+        code = parse_qs(urlparse(authorized.headers["Location"]).query)["code"][0]
+
+        basic = base64.b64encode(b"demo-client:demo-secret").decode()
+        token = client.post(
+            "/token",
+            data={
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": REDIRECT,
+                "code_verifier": verifier,
+            },
+            headers={"Authorization": f"Basic {basic}"},
+        )
+
+        assert token.status_code == 200
+        assert "refresh_token" in token.get_json()
+
+    def test_a_cached_client_cannot_start_the_device_grant(
+        self, app, origin, resolves_to_loopback
+    ):
+        """A device code is redeemed by a later request, so it depends on
+        the client being there then, and nothing keeps it. The endpoint
+        answers as it does for a name nobody knows: a distinct refusal
+        would say whether a URL is in this server's cache."""
+        client = app.test_client()
+        client_id = _client_id(origin)
+        origin.serve_document(metadata_document(client_id, redirect_uris=[REDIRECT]))
+        query, _ = _authorize_query(client_id)
+        client.get("/authorize", query_string=query)
+        with app.app_context():
+            assert cached_client(client_id) is not None
+
+        started = client.post(
+            "/device_authorization", data={"client_id": client_id, "scope": "openid"}
+        )
+        unknown = client.post(
+            "/device_authorization",
+            data={"client_id": "https://nobody.example/m.json", "scope": "openid"},
+        )
+
+        assert started.status_code == unknown.status_code == 401
+        assert started.get_json() == unknown.get_json()
+
+
 class TestDiscovery:
     @pytest.mark.parametrize(
         "path", ["/.well-known/openid-configuration", "/.well-known/oauth-authorization-server"]

@@ -625,6 +625,36 @@ def _validate_authorize_resources(
     return None
 
 
+def _may_hold_a_refresh_token(config: ConfigManager, client_id: Optional[str]) -> bool:
+    """Whether a token for this client may carry a refresh token (#196).
+
+    A client learned from a metadata document exists only in the cache, and
+    the cache promises to keep an entry exactly as long as the
+    authorization code issued against it. A refresh token lives days. One
+    handed to such a client would be a credential this server can make
+    useless long before its expiry, by expiring or evicting the entry -
+    the same defect the code retention exists to prevent, one step further
+    along, and this time with nothing to hold on to: there is no bound on
+    how long the cache would have to keep a document it is no longer
+    allowed to re-read on its own terms.
+
+    So the rule for now is the simple one: what a cached client can carry
+    is bounded by the authorization code lifetime, and nothing longer is
+    issued. RFC 6749 §5.1 makes the refresh token optional, so a response
+    without one is a complete response.
+
+    Supporting refresh for these clients means something larger: a grant
+    would take a lease on the client identity until its own expiry, and
+    the cache's capacity and freshness rules would have to answer for days
+    rather than minutes. That is a design, not a patch, and it is not this
+    one.
+    """
+    if client_id is None:
+        return True
+    resolved = identities_for(config).resolve_client(client_id)
+    return resolved is None or resolved.origin != "cimd"
+
+
 def _hold_cached_client_for_the_code(
     config: ConfigManager, p: _AuthorizeParams
 ) -> bool:
@@ -1414,7 +1444,9 @@ def token() -> ResponseReturnValue:
         id_token_claims=result.id_token_claims,
         userinfo_claims=result.userinfo_claims,
         issuer=effective_issuer(config.settings),
-        issue_refresh_token=result.issue_refresh_token,
+        issue_refresh_token=(
+            result.issue_refresh_token and _may_hold_a_refresh_token(config, client_id)
+        ),
         resource=result.resource,
         refresh_resource=result.refresh_resource,
     )
@@ -1877,6 +1909,32 @@ def end_session() -> ResponseReturnValue:
 # ============================================================================
 
 
+def _device_client(
+    config: ConfigManager, client_id: Optional[str]
+) -> Optional[OAuthClient]:
+    """The client for a device authorization request, which is never one
+    learned from a metadata document (#196).
+
+    A device code lives ten minutes and is redeemed later, by a different
+    request, so it depends on the client still being there - and a cached
+    client is kept only for the authorization code issued against it. The
+    boundary is drawn where it can be stated simply: the deferred state a
+    cached client can be named in is an authorization code, and nothing
+    else.
+
+    Not resolved rather than resolved-and-refused, so the endpoint answers
+    exactly as it does for a name nobody knows. A distinct refusal here
+    would say whether a given URL is in this server's cache, which is
+    something the caller cannot otherwise find out.
+    """
+    if not client_id:
+        return None
+    resolved = identities_for(config).resolve_client(client_id)
+    if resolved is None or resolved.origin == "cimd":
+        return None
+    return resolved.client
+
+
 @oauth_bp.route("/device_authorization", methods=["POST"])
 @oauth_bp.route("/device/code", methods=["POST"])
 def device_authorization() -> ResponseReturnValue:
@@ -1905,7 +1963,7 @@ def device_authorization() -> ResponseReturnValue:
     auth = identity.auth
     body_client_secret = identity.body_client_secret
     resolved_client_id = identity.client_id
-    device_client = identities_for(config).get_client(resolved_client_id) if resolved_client_id else None
+    device_client = _device_client(config, resolved_client_id)
     if identity.mismatch:
         # One request, two claimed identities (#277) - same rejection as
         # /token, for public and confidential clients alike.

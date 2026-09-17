@@ -41,6 +41,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   already gone; when it cannot be held the authorization request comes back
   as `temporarily_unavailable`. An operator's Forget still drops the entry
   and invalidates such a code, which is the point of it.
+  A client identified this way gets **no refresh token and cannot use the
+  device grant**: both outlive the authorization code that is the only
+  thing the cache promises to keep an entry for, and a credential this
+  server can invalidate long before its expiry is worse than one it never
+  issued. `/device_authorization` answers such a client_id exactly as it
+  answers a name nobody knows.
 - **The metadata document is fetched** (#196, second part), by the one
   outbound request nanoidp makes. `oauth.client_id_metadata_documents`
   gains `allowed_hosts` (exact DNS names, empty by default, so nothing is

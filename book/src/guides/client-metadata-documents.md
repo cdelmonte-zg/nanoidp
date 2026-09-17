@@ -126,6 +126,30 @@ The web UI lists cached clients read-only with a `cimd` badge, and a
 **Forget** button drops one: that is how a developer re-fetches a document
 they have just changed.
 
+## What a cached client may not do
+
+The cache keeps an entry as long as the authorization code issued against
+it, so that is the longest anything is allowed to depend on it. Two
+consequences, both deliberate:
+
+- **No refresh token.** A refresh token lives days; an entry does not. One
+  issued to a client that exists only in this cache would be a credential
+  the server can make useless long before its expiry, by expiring or
+  evicting the entry. The token response carries an access token and an ID
+  Token, and no `refresh_token` (RFC 6749 §5.1 makes it optional).
+- **No device grant.** A device code is redeemed by a later request, so it
+  depends on the client still being there, and nothing keeps it there.
+  `/device_authorization` answers a client identifier URL exactly as it
+  answers a name nobody knows.
+
+Both are narrower than the draft allows, and narrow on purpose for a first
+implementation: the property "what depends on a cached client is bounded by
+the authorization code lifetime" is one a reader can check. Supporting
+these grants means letting each one take a lease on the client identity
+until its own expiry, which also changes what the cache must promise about
+capacity and freshness. That is a design of its own, not a footnote to this
+one.
+
 ## When something is refused
 
 Every refusal answers the authorization request with the same
