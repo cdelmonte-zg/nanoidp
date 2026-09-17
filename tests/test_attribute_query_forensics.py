@@ -137,19 +137,50 @@ class TestTheIdIsReadAsEarlyAsTheBodyAllows:
         (details,) = _details(app)
         assert details["request_id"] is None
 
-    def test_an_oversized_id_is_kept_as_evidence_not_as_storage(self, app, client):
+    @pytest.mark.parametrize("user", ["admin", "nobody"], ids=("known", "unknown"))
+    def test_an_oversized_id_is_shortened_in_the_audit_and_whole_on_the_wire(
+        self, app, client, user
+    ):
         """The id comes from an unauthenticated caller and is kept in the
-        audit ring: enough of it to match a sender, no more."""
+        audit ring, so as evidence it is bounded. It is not bounded anywhere
+        else: the protocol sends it back in InResponseTo exactly as it
+        arrived, on the answer and on the unknown-principal error alike."""
+        from lxml import etree
+
         from nanoidp.routes.saml import MAX_REQUEST_ID_CHARS
 
         huge = "_" + "a" * 10_000
-        _post(client, _ENVELOPE.format(inner=_QUERY.format(
-            request_id=huge, subject=_SUBJECT.format(user="admin")
+        response = _post(client, _ENVELOPE.format(inner=_QUERY.format(
+            request_id=huge, subject=_SUBJECT.format(user=user)
         )))
 
         (details,) = _details(app)
         assert details["request_id"].startswith("_" + "a" * 50)
         assert len(details["request_id"]) <= MAX_REQUEST_ID_CHARS + len("...(truncated)")
+
+        saml_response = etree.fromstring(response.data).find(
+            ".//saml2p:Response",
+            {"saml2p": "urn:oasis:names:tc:SAML:2.0:protocol"},
+        )
+        assert saml_response is not None
+        assert saml_response.get("InResponseTo") == huge
+
+    def test_an_empty_id_stays_empty(self, app, client):
+        """``ID=""`` is what the sender wrote: it is neither a missing id nor
+        a reason to invent one."""
+        from lxml import etree
+
+        response = _post(client, _ENVELOPE.format(inner=_QUERY.format(
+            request_id="", subject=_SUBJECT.format(user="admin")
+        )))
+
+        saml_response = etree.fromstring(response.data).find(
+            ".//saml2p:Response",
+            {"saml2p": "urn:oasis:names:tc:SAML:2.0:protocol"},
+        )
+        assert saml_response.get("InResponseTo") == ""
+        (details,) = _details(app)
+        assert details["request_id"] == ""
 
     @pytest.mark.parametrize("subject", ["admin", None], ids=("accepted", "refused"))
     def test_the_size_recorded_is_the_body_actually_read(self, app, client, subject):

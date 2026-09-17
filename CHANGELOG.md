@@ -239,7 +239,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   including from a query posted without the SOAP envelope. The body itself
   is logged only under `verbose_logging`, since it names a principal, and
   the recorded id is truncated, since it comes from an unauthenticated
-  caller and is kept in the audit ring. Auditing refusals also means that
+  caller and is kept in the audit ring - a shortening of the evidence only:
+  what the protocol sends back in `InResponseTo` is the id exactly as it
+  arrived. Auditing refusals also means that
   reaching this endpoint is a way to push older audit entries out, which the
   endpoint reference now says. This is diagnosis for a flake that has not
   been reproduced, not a fix for it.

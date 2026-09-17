@@ -1042,16 +1042,19 @@ def _query_id_of(root: Optional[Any]) -> Optional[str]:
         # part of the match: an element that merely shares the local name is
         # not a query, and naming it would be the guess this refuses to make.
         query = root
-    return _bounded_request_id(query.get("ID")) if query is not None else None
+    return query.get("ID") if query is not None else None
 
 
 # The id is chosen by an unauthenticated caller and kept in the audit ring,
-# so it is evidence, not storage: enough of it to match a sender, never
-# enough to fill the log with.
+# so as EVIDENCE it is bounded: enough to match a sender, never enough to
+# fill the log with. This is a diagnostic shortening and nothing else: the
+# value the protocol carries back in InResponseTo is the id as it arrived.
 MAX_REQUEST_ID_CHARS = 128
 
 
 def _bounded_request_id(request_id: Optional[str]) -> Optional[str]:
+    """The id as it goes into an audit entry or a log line, never into a
+    SAML Response."""
     if request_id is None:
         return None
     if len(request_id) <= MAX_REQUEST_ID_CHARS:
@@ -1078,7 +1081,7 @@ def _audit_attribute_query(
         username=username,
         details={
             "reason": reason,
-            "request_id": request_id,
+            "request_id": _bounded_request_id(request_id),
             # The bytes read, not the declared Content-Length: a header can
             # overstate the body, and a chunked request declares none.
             "content_length": size,
@@ -1099,7 +1102,7 @@ def _attribute_query_fault(
     logger.warning(
         "%s (request_id=%s, %d bytes)%s",
         message,
-        request_id,
+        _bounded_request_id(request_id),
         len(body),
         f": {detail}" if detail else "",
     )
@@ -1186,9 +1189,16 @@ def attribute_query() -> ResponseReturnValue:
             )
 
         user_id = name_id_el.text
-        request_id = request_id or "_unknown"
+        # The id as it arrived: it travels back in InResponseTo, so it is
+        # not the shortened one the audit keeps. An ID="" stays "", as it
+        # always has; only an absent one becomes "_unknown".
+        request_id = request_id if request_id is not None else "_unknown"
 
-        logger.info(f"AttributeQuery for user: {user_id} (request_id={request_id})")
+        logger.info(
+            "AttributeQuery for user: %s (request_id=%s)",
+            user_id,
+            _bounded_request_id(request_id),
+        )
 
         # Get user from config
         user = identities_for(config).get_user(user_id)
@@ -1263,7 +1273,7 @@ def attribute_query() -> ResponseReturnValue:
             username=user_id,
             details={
                 "attributes_count": len(attributes),
-                "request_id": request_id,
+                "request_id": _bounded_request_id(request_id),
                 "content_length": len(soap_body),
             },
         )
@@ -1283,7 +1293,7 @@ def attribute_query() -> ResponseReturnValue:
             endpoint="/saml/attribute-query",
             details={
                 "error": str(e),
-                "request_id": locals().get("request_id"),
+                "request_id": _bounded_request_id(locals().get("request_id")),
                 "content_length": len(request.get_data() or b""),
             },
         )
