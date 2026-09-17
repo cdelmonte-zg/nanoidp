@@ -20,7 +20,7 @@ import time
 from typing import Any, Dict, List, Optional
 from urllib.parse import unquote, urlsplit
 
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 from ..config_documents import EntryInvalid, parse_client_entry
 from ..models import OAuthClient
@@ -72,17 +72,60 @@ class DocumentInvalid(ValueError):
     """The document at a Client Identifier URL cannot become a client."""
 
 
+class DocumentNotUsable(ValueError):
+    """The document is valid and cannot be used for this flow.
+
+    A document the response says must not be cached (#196): the cache is
+    the only place a CIMD client exists between ``/authorize`` and
+    ``/token``, so issuing an authorization code for one would produce a
+    code no token request could ever redeem. Refusing at the authorization
+    request says so at the moment a developer can act on it.
+    """
+
+
+class CacheIsFull(DocumentNotUsable):
+    """Every cached client is holding up an authorization code that is
+    still alive, so there is no room to learn another.
+
+    Refusing the new authorization request is the lesser harm. The
+    alternative is evicting an entry to make room, which breaks a flow
+    already under way for a client that did nothing wrong and would see
+    only a code that stopped working.
+    """
+
+
 class CachedClient(BaseModel):
     """A client learned from a metadata document, and when to forget it.
 
     The client carries its own id and the repository is keyed on it, so a
     cache entry cannot end up filed under a URL other than the one the
     client answers to. There is nothing here to keep in step.
+
+    Two clocks, because they answer different questions. ``expires_at`` is
+    how long this document may be used, which the response decides.
+    ``protected_until`` is how long something else depends on this entry
+    existing, which this server decides: an authorization code names a
+    client, and the cache is the only place a CIMD client is. The cap reads
+    the second one, so a document nobody is mid-flow with is a fine thing
+    to evict and one holding up a live code is not.
     """
 
     client: OAuthClient
     fetched_at: float
     expires_at: float
+    protected_until: float = 0.0
+
+    @model_validator(mode="after")
+    def _outlive_what_depends_on_this_entry(self) -> "CachedClient":
+        """An entry cannot expire while something still depends on it.
+
+        Stated once, here, rather than at each write: a lifetime shorter
+        than the promise would let the sweep drop an entry the cap was
+        told to keep, which is the same defect one step further along.
+        """
+        if self.expires_at < self.protected_until:
+            self.expires_at = self.protected_until
+        return self
 
     @property
     def client_id(self) -> str:
@@ -90,6 +133,10 @@ class CachedClient(BaseModel):
 
     def is_fresh(self, now: Optional[float] = None) -> bool:
         return (now if now is not None else time.time()) < self.expires_at
+
+    def is_protected(self, now: Optional[float] = None) -> bool:
+        """Whether something still depends on this entry being here."""
+        return (now if now is not None else time.time()) < self.protected_until
 
 
 def looks_like_client_id_url(client_id: str) -> bool:
@@ -122,7 +169,13 @@ def reject_invalid_client_id_url(client_id: str) -> None:
         # after it is compared as given, because the draft matches the
         # document's client_id against this string literally.
         raise ClientIdUrlInvalid("a client identifier URL must use https")
-    parts = urlsplit(client_id)
+    try:
+        parts = urlsplit(client_id)
+    except ValueError as exc:
+        # urlsplit raises a bare ValueError for an unbalanced bracket
+        # ("Invalid IPv6 URL"), which is not a subclass of the errors a
+        # caller catches. Everything this function refuses is its own.
+        raise ClientIdUrlInvalid("a client identifier URL cannot be parsed") from exc
     if parts.scheme != "https":
         raise ClientIdUrlInvalid("a client identifier URL must use https")
     if parts.username or parts.password:
@@ -147,6 +200,12 @@ def reject_invalid_client_id_url(client_id: str) -> None:
         raise ClientIdUrlInvalid(
             "a client identifier URL must have no '.' or '..' path segments"
         )
+    if not client_id.isascii():
+        # http.client builds the request line from this and cannot encode a
+        # non-ASCII one. A client that wants those characters percent-encodes
+        # them; the encoded form is what the document must then claim, since
+        # the draft compares the two literally.
+        raise ClientIdUrlInvalid("a client identifier URL must be ASCII")
     if parts.query:
         # SHOULD NOT, not MUST NOT. A conforming client may still carry one
         # (a multi-tenant host, say), and refusing would lock it out of this
@@ -268,11 +327,35 @@ def prune_expired() -> int:
 
 
 def _evict_oldest(room_for: int) -> int:
-    """Make room at the cap by dropping the least recently fetched."""
-    entries = sorted(cache().list(), key=lambda entry: entry.fetched_at)
+    """Make room at the cap by dropping the least recently fetched entries
+    that nothing depends on.
+
+    An entry holding up a live authorization code is not a candidate, and
+    it would otherwise be among the first: it was fetched before the login
+    that produced the code, so by then it is one of the oldest things here.
+    The cap is 100 and a code lives ten minutes, so this is reached by
+    ordinary traffic, with no attacker and nobody at fault.
+
+    If every entry is protected there is no room to make, and the caller is
+    refused rather than served at the cost of a flow already under way.
+    """
+    now = time.time()
+    entries = cache().list()
+    room_needed = len(entries) + room_for - MAX_CACHED_DOCUMENTS
+    if room_needed <= 0:
+        return 0
+    candidates = sorted(
+        (entry for entry in entries if not entry.is_protected(now)),
+        key=lambda entry: entry.fetched_at,
+    )
+    if len(candidates) < room_needed:
+        raise CacheIsFull(
+            "every cached metadata document is holding up an authorization "
+            "code that is still valid"
+        )
     dropped = 0
-    while len(entries) - dropped > MAX_CACHED_DOCUMENTS - room_for:
-        if cache().delete(entries[dropped].client_id):
+    for entry in candidates[:room_needed]:
+        if cache().delete(entry.client_id):
             logger.info(
                 "Dropped the oldest cached client metadata document to stay "
                 "within %d entries", MAX_CACHED_DOCUMENTS
@@ -304,6 +387,7 @@ def remember(client: OAuthClient, lifetime: Optional[float]) -> CachedClient:
     now = time.time()
     with cache_lock:
         prune_expired()
+        replaced = cache().get(client_id)
         forget(client_id)
         _evict_oldest(room_for=1)
         return cache().create(
@@ -311,8 +395,54 @@ def remember(client: OAuthClient, lifetime: Optional[float]) -> CachedClient:
                 client=client,
                 fetched_at=now,
                 expires_at=now + bounded_lifetime(lifetime),
+                # Re-fetching a document does not release what depends on
+                # the entry it replaces: the promise was made about the
+                # client, not about this copy of its document.
+                protected_until=replaced.protected_until if replaced else 0.0,
             )
         )
+
+
+def retain_until(client_id: str, moment: float) -> bool:
+    """Keep a cached client resolvable at least until ``moment``.
+
+    The cache is the only place a CIMD client exists between ``/authorize``
+    and ``/token``, so an entry must outlive any authorization code issued
+    against it. A lifetime floor cannot promise that: the document is
+    cached when it is fetched, and the code is minted later, when the login
+    finishes. A document with a short ``max-age`` fetched at 06:00 and a
+    code issued at 06:05 leaves five minutes where the code is valid and
+    the client is not, with nobody doing anything wrong.
+
+    So the moment the code exists, the entry is extended to cover it. A
+    client that is not in the cache - declared, runtime, gone - is not
+    this function's business, and it says so by answering ``False``.
+
+    This marks the entry as depended upon, not merely long-lived: the cap
+    drops the least recently fetched entry, and one a code was issued
+    against is by then one of the oldest. Extending only the lifetime would
+    leave it first in line for eviction, which is the same broken flow by
+    another route.
+    """
+    entry = cache().get(client_id)
+    if entry is None:
+        return False
+    if entry.protected_until >= moment:
+        return True
+    with cache_lock:
+        current = cache().get(client_id)
+        if current is None:
+            return False
+        cache().delete(client_id)
+        cache().create(
+            CachedClient(
+                client=current.client,
+                fetched_at=current.fetched_at,
+                expires_at=current.expires_at,
+                protected_until=moment,
+            )
+        )
+    return True
 
 
 def cached_client(client_id: str) -> Optional[OAuthClient]:
@@ -343,6 +473,34 @@ def forget(client_id: str) -> bool:
 
 def forget_all() -> int:
     return cache().delete_all()
+
+
+def learn_client(client_id: str, settings: Any) -> OAuthClient:
+    """Fetch a metadata document, validate it, cache it, return the client.
+
+    The one composition of the two halves, and the reason the halves exist:
+    the fetcher performs I/O and knows nothing about the cache, this module
+    owns the rules and the cache and knows nothing about sockets, and only
+    a caller that is allowed to reach the network calls this. That caller
+    is ``/authorize``; the resolver never does, which is what keeps network
+    I/O out of the other sixteen places a client is resolved.
+
+    Raises ``ClientIdUrlInvalid``, ``FetchRefused``, ``DocumentInvalid`` or
+    ``DocumentNotUsable``. A caller that cannot use any of them has one
+    answer for all four.
+    """
+    from .client_metadata_fetch import DO_NOT_CACHE, fetch_document
+
+    reject_invalid_client_id_url(client_id)
+    document, lifetime = fetch_document(client_id, settings)
+    client = client_from_document(client_id, document, list(settings.scopes_supported))
+    if lifetime is DO_NOT_CACHE or lifetime == DO_NOT_CACHE:
+        raise DocumentNotUsable(
+            "the document must not be cached, and a client that is not cached "
+            "cannot be resolved at the token endpoint"
+        )
+    remember(client, lifetime)
+    return client
 
 
 def cached_entries() -> List[CachedClient]:

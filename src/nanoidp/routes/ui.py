@@ -38,6 +38,7 @@ from ..services import (
     get_yaml_writer,
     identities_for,
 )
+from ..services.client_metadata import forget as forget_cached_client
 from ._audit import audit_event
 from ._auth import (
     SecondFactorPhase,
@@ -698,6 +699,26 @@ def client_edit(client_id: str) -> ResponseReturnValue:
         logger.exception("Failed to update client")
         flash(f"Failed to update client: {e}", "error")
         return redirect(url_for("ui.client_edit", client_id=client_id))
+
+
+@ui_bp.route("/clients/forget", methods=["POST"])
+def client_forget() -> ResponseReturnValue:
+    """Drop a cached client ID metadata document (#196).
+
+    The operator action the cache needs, and how a developer re-fetches a
+    document they have just changed: the next authorization request for
+    that client_id fetches again. The id is in the form body rather than in
+    the path, because it is an https URL.
+
+    Nothing declared or runtime can be reached from here: forgetting an id
+    that is not in the cache is a no-op, and the page says so.
+    """
+    client_id = request.form.get("client_id", "")
+    if forget_cached_client(client_id):
+        flash(f"Forgot the cached metadata document for '{client_id}'", "success")
+    else:
+        flash(f"No cached metadata document for '{client_id}'", "error")
+    return redirect(url_for("ui.clients"))
 
 
 @ui_bp.route("/clients/<client_id>/delete", methods=["POST"])

@@ -67,6 +67,16 @@ ACCEPTED_MEDIA_TYPES = ("application/json",)
 _JSON_SUFFIX = "+json"
 
 
+# How often this process will fetch a document, across all callers. A test
+# IdP learning clients does it a handful of times; more than this is
+# somebody making the server dial out. Monotonic, because a sliding window
+# of a process must not move when the clock is set.
+MAX_FETCHES_PER_MINUTE = 30
+_FETCH_WINDOW_SECONDS = 60.0
+_fetch_times: List[float] = []
+_fetch_budget_lock = threading.Lock()
+
+
 class FetchRefused(Exception):
     """The document was not fetched, and why.
 
@@ -76,6 +86,36 @@ class FetchRefused(Exception):
     honour this client_id - and the reason is for the log, not for a
     decision.
     """
+
+
+class TooManyFetches(FetchRefused):
+    """This server has fetched as often as it will in this window.
+
+    A ``FetchRefused``, so a caller that already handles a refusal handles
+    this one: there is nothing different to do about it.
+    """
+
+
+def _spend_fetch_budget() -> None:
+    """One fetch of the window's allowance, or a refusal.
+
+    Spent here, after the scheme, the flag, the URL and **the allowlist**
+    have all been checked, and immediately before the first byte of DNS.
+    Anything refused locally costs nothing: a caller asking thirty times
+    for a host nobody allowed must not be able to spend the allowance a
+    legitimate client needs, which is what happens when the budget is taken
+    before the checks.
+    """
+    now = time.monotonic()
+    with _fetch_budget_lock:
+        while _fetch_times and now - _fetch_times[0] > _FETCH_WINDOW_SECONDS:
+            _fetch_times.pop(0)
+        if len(_fetch_times) >= MAX_FETCHES_PER_MINUTE:
+            raise TooManyFetches(
+                "this server has fetched as many metadata documents as it will "
+                "in this window"
+            )
+        _fetch_times.append(now)
 
 
 def _deadline_remaining(deadline: float) -> float:
@@ -243,6 +283,12 @@ class _PinnedConnection:
             )
         except FetchRefused:
             raise
+        except UnicodeEncodeError as exc:
+            # http.client builds the request line from this string and
+            # cannot encode a non-ASCII one. The URL rules refuse such a
+            # client_id first; this is the backstop, so nothing but a
+            # FetchRefused leaves the module even if they are ever skipped.
+            raise FetchRefused("the metadata document's URL is not ASCII") from exc
         except (OSError, http.client.HTTPException) as exc:
             # A socket timeout here is the budget running out, because the
             # timeout was set from what was left of it. Saying so names the
@@ -280,14 +326,28 @@ class _PinnedConnection:
         )
 
 
-def allowed_hosts(settings: Settings) -> List[str]:
-    """The hostnames an operator has opted in, compared as DNS names.
+def allowed_hosts(settings: Settings) -> List[Tuple[str, int]]:
+    """What an operator has opted in: a host, and the port on it.
 
-    Lower-cased and with a trailing dot removed, because those are the same
-    name. The ``client_id`` itself is never normalised: the draft matches it
+    An entry may name a port (``client.example:8443``); one that does not
+    means 443 and nothing else. Naming a host has to authorise connections
+    to one port on it rather than to every port: this server would
+    otherwise open TLS to ``:22`` or ``:6379`` on the operator's host for
+    anyone who asks, at a path of their choosing, which is a port scan from
+    nanoidp's position on the network.
+
+    The host is compared as a DNS name, lower-cased and without a trailing
+    dot. The ``client_id`` itself is never normalised: the draft matches it
     against the document by simple string comparison.
     """
-    return [_dns_name(host) for host in settings.client_id_metadata_documents_allowed_hosts]
+    entries: List[Tuple[str, int]] = []
+    for raw in settings.client_id_metadata_documents_allowed_hosts:
+        host, separator, port = raw.strip().rpartition(":")
+        if separator and port.isdigit():
+            entries.append((_dns_name(host), int(port)))
+        else:
+            entries.append((_dns_name(raw), 443))
+    return entries
 
 
 def _dns_name(host: str) -> str:
@@ -557,7 +617,10 @@ def fetch_document(client_id: str, settings: Settings) -> Tuple[Any, Any]:
     try:
         parts = urlsplit(client_id)
         hostname = _dns_name(parts.hostname or "")
-        port = parts.port or 443
+        # ``or`` would read :0 as absent and dial 443 instead. The port is
+        # part of the identifier: the draft treats even an explicit :443 as
+        # a different string from no port at all.
+        port = parts.port if parts.port is not None else 443
     except ValueError as exc:
         # urlsplit and .port both raise on input PR A's URL rules do not
         # look at - a port out of range, an unbalanced bracket. Everything
@@ -572,10 +635,11 @@ def fetch_document(client_id: str, settings: Settings) -> Tuple[Any, Any]:
         raise FetchRefused("client ID metadata documents are not enabled")
     if not hostname:
         raise FetchRefused("the client identifier URL names no host")
-    if hostname not in allowed_hosts(settings):
+    if (hostname, port) not in allowed_hosts(settings):
         # Default empty: nothing is fetched until an operator names a host.
         raise FetchRefused("the metadata document's host is not in allowed_hosts")
 
+    _spend_fetch_budget()
     deadline = time.monotonic() + TIMEOUT_SECONDS
     address = _acceptable_address(hostname, port, settings, deadline)
     path = parts.path + (f"?{parts.query}" if parts.query else "")

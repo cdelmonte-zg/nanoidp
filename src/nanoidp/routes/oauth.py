@@ -5,6 +5,7 @@ OAuth2/OIDC routes for token endpoint and discovery.
 import json
 import logging
 import os
+import time
 from dataclasses import dataclass, replace
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -35,6 +36,16 @@ from ..services import (
     get_token_service,
     identities_for,
 )
+from ..services.auth_code import CODE_LIFETIME_SECONDS
+from ..services.client_metadata import (
+    ClientIdUrlInvalid,
+    DocumentInvalid,
+    DocumentNotUsable,
+    learn_client,
+    looks_like_client_id_url,
+)
+from ..services.client_metadata import retain_until as retain_cached_client_until
+from ..services.client_metadata_fetch import FetchRefused
 from ..services.device_code import (
     DEVICE_CODE_EXPIRES_IN,
     DEVICE_POLL_INTERVAL,
@@ -357,11 +368,57 @@ def _validate_authorize_client(
         )
 
     client = identities_for(config).get_client(p.client_id)
+    if client is None:
+        client = _client_from_metadata_document(config, p.client_id)
     if not client:
         return None, _authorize_reject(
             p.client_id, "Unknown client", "invalid_client", "Unknown client_id"
         )
     return client, None
+
+
+def _client_from_metadata_document(
+    config: ConfigManager, client_id: str
+) -> Optional[OAuthClient]:
+    """Learn a client from the document it publishes (#196).
+
+    **The only place nanoidp fetches one.** Reached only when no declared
+    and no runtime client holds this name, so an operator who declares a
+    client whose id is a URL never causes an outbound request, and only
+    after the feature is enabled.
+
+    Every failure answers the same "Unknown client_id" the caller already
+    returns for a name nobody knows. Telling a caller which rule refused it
+    would say whether a host is in ``allowed_hosts``, whether it resolved,
+    what it answered - to whoever chose the URL.
+
+    The reason goes to the server log only. ``GET /api/audit`` is readable
+    by anyone who can reach it, so an audit entry carrying the reason would
+    hand back through one surface exactly what the other withholds; the
+    entry records that a document was refused, and the operator reads why
+    where only the operator is.
+    """
+    settings = config.settings
+    if not settings.client_id_metadata_documents_enabled:
+        return None
+    if not looks_like_client_id_url(client_id):
+        return None
+    try:
+        return learn_client(client_id, settings)
+    except (
+        ClientIdUrlInvalid,
+        DocumentInvalid,
+        DocumentNotUsable,
+        FetchRefused,
+    ) as refused:
+        logger.info("Client ID metadata document refused for %s: %s", client_id, refused)
+        audit_event(
+            "client_metadata_document_refused",
+            "failure",
+            endpoint="/authorize",
+            client_id=client_id,
+        )
+        return None
 
 
 def _validate_authorize_response_type(
@@ -568,6 +625,76 @@ def _validate_authorize_resources(
     return None
 
 
+def _may_hold_a_refresh_token(config: ConfigManager, client_id: Optional[str]) -> bool:
+    """Whether a token for this client may carry a refresh token (#196).
+
+    A client learned from a metadata document exists only in the cache, and
+    the cache promises to keep an entry exactly as long as the
+    authorization code issued against it. A refresh token lives days. One
+    handed to such a client would be a credential this server can make
+    useless long before its expiry, by expiring or evicting the entry -
+    the same defect the code retention exists to prevent, one step further
+    along, and this time with nothing to hold on to: there is no bound on
+    how long the cache would have to keep a document it is no longer
+    allowed to re-read on its own terms.
+
+    So the rule for now is the simple one: what a cached client can carry
+    is bounded by the authorization code lifetime, and nothing longer is
+    issued. RFC 6749 §5.1 makes the refresh token optional, so a response
+    without one is a complete response.
+
+    Supporting refresh for these clients means something larger: a grant
+    would take a lease on the client identity until its own expiry, and
+    the cache's capacity and freshness rules would have to answer for days
+    rather than minutes. That is a design, not a patch, and it is not this
+    one.
+
+    A client that does not resolve at all answers ``False``, not ``True``:
+    this is decided after the grant handler has run, so an entry can go
+    between the authorization code being consumed and this question being
+    asked. Handing a seven day credential to a client that has just
+    disappeared is exactly the outcome the rule exists to prevent, and the
+    conservative answer costs a caller who is still there nothing but a
+    second login.
+    """
+    if client_id is None:
+        # A token with no client at all cannot carry a refresh token in the
+        # first place; create_token refuses that pairing. Left to the
+        # existing rule rather than answered twice.
+        return True
+    resolved = identities_for(config).resolve_client(client_id)
+    return resolved is not None and resolved.origin != "cimd"
+
+
+def _hold_cached_client_for_the_code(
+    config: ConfigManager, p: _AuthorizeParams
+) -> bool:
+    """Make the client survive the code before the code exists (#196).
+
+    A client learned from a metadata document lives only in the cache, so
+    an authorization code naming one is redeemable exactly as long as that
+    entry is there. Holding it afterwards leaves a gap: the entry can be
+    evicted or expire between the login being accepted and the code being
+    minted, and the code would then be handed over already dead.
+
+    So the order is: resolve again, hold, then mint. The resolution is
+    local - the cache is read, never filled, and a declared or runtime
+    client is answered without the cache being consulted at all - so this
+    costs no network and cannot fetch.
+
+    ``False`` means do not issue: either the client is no longer resolvable
+    at all, or the cache has no room to promise anything about it.
+    """
+    resolved = identities_for(config).resolve_client(p.client_id)
+    if resolved is None:
+        return False
+    if resolved.origin != "cimd":
+        # Declared and runtime clients do not depend on the cache, and a
+        # code for one is not this function's business.
+        return True
+    return retain_cached_client_until(p.client_id, time.time() + CODE_LIFETIME_SECONDS)
+
+
 def _issue_authorization_code(
     config: ConfigManager,
     p: _AuthorizeParams,
@@ -585,6 +712,18 @@ def _issue_authorization_code(
     produced this code - ``None`` for a persona/auto-login, since no
     password was checked.
     """
+    # Before the code exists, not after: a code whose client has gone is
+    # one the client cannot redeem and cannot explain (#196).
+    if not _hold_cached_client_for_the_code(config, p):
+        return _authorize_error_redirect(
+            config,
+            p,
+            "temporarily_unavailable",
+            "The authorization request could not be completed, please try again",
+            "the cached metadata document could not be held for the code",
+            username=username,
+        )
+
     auth_code_store = get_auth_code_store()
     code = auth_code_store.create_code(
         client_id=p.client_id,
@@ -1316,7 +1455,9 @@ def token() -> ResponseReturnValue:
         id_token_claims=result.id_token_claims,
         userinfo_claims=result.userinfo_claims,
         issuer=effective_issuer(config.settings),
-        issue_refresh_token=result.issue_refresh_token,
+        issue_refresh_token=(
+            result.issue_refresh_token and _may_hold_a_refresh_token(config, client_id)
+        ),
         resource=result.resource,
         refresh_resource=result.refresh_resource,
     )
@@ -1779,6 +1920,32 @@ def end_session() -> ResponseReturnValue:
 # ============================================================================
 
 
+def _device_client(
+    config: ConfigManager, client_id: Optional[str]
+) -> Optional[OAuthClient]:
+    """The client for a device authorization request, which is never one
+    learned from a metadata document (#196).
+
+    A device code lives ten minutes and is redeemed later, by a different
+    request, so it depends on the client still being there - and a cached
+    client is kept only for the authorization code issued against it. The
+    boundary is drawn where it can be stated simply: the deferred state a
+    cached client can be named in is an authorization code, and nothing
+    else.
+
+    Not resolved rather than resolved-and-refused, so the endpoint answers
+    exactly as it does for a name nobody knows. A distinct refusal here
+    would say whether a given URL is in this server's cache, which is
+    something the caller cannot otherwise find out.
+    """
+    if not client_id:
+        return None
+    resolved = identities_for(config).resolve_client(client_id)
+    if resolved is None or resolved.origin == "cimd":
+        return None
+    return resolved.client
+
+
 @oauth_bp.route("/device_authorization", methods=["POST"])
 @oauth_bp.route("/device/code", methods=["POST"])
 def device_authorization() -> ResponseReturnValue:
@@ -1807,7 +1974,7 @@ def device_authorization() -> ResponseReturnValue:
     auth = identity.auth
     body_client_secret = identity.body_client_secret
     resolved_client_id = identity.client_id
-    device_client = identities_for(config).get_client(resolved_client_id) if resolved_client_id else None
+    device_client = _device_client(config, resolved_client_id)
     if identity.mismatch:
         # One request, two claimed identities (#277) - same rejection as
         # /token, for public and confidential clients alike.

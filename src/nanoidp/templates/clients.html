@@ -30,6 +30,8 @@
                             <code>{{ client.client_id }}</code>
                             {% if entry.origin == 'runtime' %}
                             <span class="badge bg-warning text-dark ms-2" title="Created through /api/runtime; not in settings.yaml">runtime</span>
+                            {% elif entry.origin == 'cimd' %}
+                            <span class="badge bg-info text-dark ms-2" title="Learned from the metadata document this client publishes; cached, not in settings.yaml">cimd</span>
                             {% endif %}
                         </td>
                         <td>{{ client.description or '-' }}</td>
@@ -45,7 +47,14 @@
                         <td>
                             {% if entry.origin == 'runtime' %}
                             <span class="text-muted small">managed through /api/runtime</span>
-                            {% else %}
+                            {% elif entry.origin == 'cimd' %}
+                            <form action="{{ url_for('ui.client_forget') }}" method="post" class="d-inline">
+                                <input type="hidden" name="client_id" value="{{ client.client_id }}">
+                                <button type="submit" class="btn btn-outline-secondary btn-sm" title="Forget the cached document, so the next authorization request fetches it again">
+                                    <i class="bi bi-x-circle"></i> Forget
+                                </button>
+                            </form>
+                            {% elif entry.origin == 'declared' %}
                             <div class="btn-group btn-group-sm">
                                 <a href="{{ url_for('ui.client_edit', client_id=client.client_id) }}" class="btn btn-outline-primary">
                                     <i class="bi bi-pencil"></i>
