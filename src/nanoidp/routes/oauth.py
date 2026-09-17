@@ -7,7 +7,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import jwt as pyjwt
 from flask import (
@@ -1033,11 +1033,15 @@ def _render_authorize_login(
     transaction: AuthorizationTransaction,
     error_msg: Optional[str],
     login_username: str = "",
+    *,
+    name_transaction: bool = True,
 ) -> ResponseReturnValue:
     """The login page of a transaction (a GET, or a POST that did not
     authenticate).
 
-    Every form on it carries the transaction id. ``login_username`` is this
+    Every form on it carries the transaction id, unless ``name_transaction``
+    is off: a direct POST's page, whose transaction has already ended and
+    whose forms post back to the same query string instead. ``login_username`` is this
     request's username field, not a value remembered from a previous one
     (#323 review round 1) - "" on a GET, the just-submitted value on a
     POST. A transaction whose password is verified renders the TOTP code
@@ -1065,7 +1069,7 @@ def _render_authorize_login(
         two_step_login=config.settings.two_step_login_active,
         login_username=login_username,
         totp_step=totp_step,
-        transaction_id=transaction.id,
+        transaction_id=transaction.id if name_transaction else None,
         users=identities_for(config).persona_picker_entries(),
     )
     return no_store(response) if totp_step else response
@@ -1146,42 +1150,48 @@ def _begin_transaction(
     return transaction, None
 
 
-def _authorize_new_request(
-    config: ConfigManager, requested: Dict[str, List[str]]
-) -> ResponseReturnValue:
-    """A GET carrying an OAuth request: validate it once, then answer it by
-    auto-login or store it as a transaction and render its login page.
+def _validate_authorize_request(
+    config: ConfigManager, p: _AuthorizeParams
+) -> Tuple[Optional[OAuthClient], Optional[ResponseReturnValue]]:
+    """Every check a request read from a query string goes through, in the
+    historical order: (client, None) or (None, error). Mutates ``p`` to the
+    granted scope and resources.
 
-    Each step below is a named helper; every rejection keeps its historical
-    error body and audit behavior (#212). A rejected request creates
-    nothing (#331).
+    Each step is a named helper; every rejection keeps its historical error
+    body and audit behavior (#212). A rejected request creates nothing (#331).
     """
-    p = _read_authorize_params()
-
     client, error = _validate_authorize_client(config, p)
     if error is not None:
-        return error
+        return None, error
     assert client is not None  # _validate_authorize_client returns one or the other
 
     # redirect_uri is validated BEFORE scope/PKCE/resource (#189/RFC 9207):
     # an unvalidated redirect_uri keeps its local error (never redirect to
     # it), but once it is trusted, every later error is delivered to the
     # client as an OAuth error redirect carrying iss (#258 review).
-    error = _validate_authorize_redirect_uri(config, p, client)
+    for check in (
+        lambda: _validate_authorize_redirect_uri(config, p, client),
+        lambda: _validate_authorize_response_type(config, p),
+        lambda: _validate_authorize_scope(config, p, client),
+        lambda: _validate_authorize_pkce(config, p, client),
+        lambda: _validate_authorize_resources(config, p, client),
+    ):
+        error = check()
+        if error is not None:
+            return None, error
+    return client, None
+
+
+def _authorize_new_request(
+    config: ConfigManager, requested: Dict[str, List[str]]
+) -> ResponseReturnValue:
+    """A GET carrying an OAuth request: validate it once, then answer it by
+    auto-login or store it as a transaction and render its login page."""
+    p = _read_authorize_params()
+    client, error = _validate_authorize_request(config, p)
     if error is not None:
         return error
-    error = _validate_authorize_response_type(config, p)
-    if error is not None:
-        return error
-    error = _validate_authorize_scope(config, p, client)
-    if error is not None:
-        return error
-    error = _validate_authorize_pkce(config, p, client)
-    if error is not None:
-        return error
-    error = _validate_authorize_resources(config, p, client)
-    if error is not None:
-        return error
+    assert client is not None
 
     # #250: a login_hint carrying the reserved auto-login prefix bypasses
     # the login page/picker entirely - inert (returns None) unless
@@ -1198,16 +1208,54 @@ def _authorize_new_request(
     return _render_authorize_login(config, transaction, None)
 
 
-def _pending_transaction(
-    requested: Optional[Dict[str, List[str]]],
-) -> Tuple[Optional[AuthorizationTransaction], Optional[ResponseReturnValue]]:
-    """The transaction a request that names none resumes (#346): the one
-    live transaction of this browser, or, when the query string names a
-    request, the one created from exactly that request. None or several is
-    refused rather than guessed."""
-    lookup = get_authorization_transaction_store().find_unique_for_binding(
-        _browser_binding(), requested
-    )
+def _authorize_direct_post(
+    config: ConfigManager, requested: Dict[str, List[str]]
+) -> ResponseReturnValue:
+    """A POST carrying a complete OAuth request in its query string and no
+    ``transaction_id``: the documented direct entry point, with or without a
+    GET before it.
+
+    The request is validated here, once, exactly as a GET's would be, and
+    the login runs against a transaction created for it. That transaction
+    is kept only when it holds state a later request needs - a verified
+    password waiting for its TOTP code. Otherwise it ends with this request,
+    whatever the outcome, so a direct POST leaves the browser's pending
+    requests as it found them (#328): its page is rendered without a
+    transaction id, and its forms post back to the same URL, which is this
+    entry point again.
+    """
+    # login_hint is read into p but never acted on here: auto-login is a GET
+    # leg only (#325 review round 1, point 6).
+    p = _read_authorize_params()
+    client, error = _validate_authorize_request(config, p)
+    if error is not None:
+        return error
+    assert client is not None
+    transaction, error = _begin_transaction(config, p, client, requested)
+    if error is not None:
+        return error
+    assert transaction is not None
+
+    outcome = _continue_authorize_login(config, transaction)
+    store = get_authorization_transaction_store()
+    current = store.get_bound(transaction.id, _browser_binding())
+    if current is None:
+        # Ended by an issued code or an error redirect: a response either way.
+        return _render_after_login_attempt(config, transaction, outcome)
+    if current.state is TransactionState.PRIMARY_VERIFIED:
+        # Kept for the code step, whose form names it.
+        return _render_after_login_attempt(config, current, outcome)
+    store.consume(transaction.id, _browser_binding())
+    return _render_after_login_attempt(config, current, outcome, name_transaction=False)
+
+
+def _pending_transaction() -> Tuple[
+    Optional[AuthorizationTransaction], Optional[ResponseReturnValue]
+]:
+    """The transaction a request that names none and carries no OAuth
+    request fields resumes (#346): the one live transaction of this browser.
+    None or several is refused rather than guessed."""
+    lookup = get_authorization_transaction_store().find_unique_for_binding(_browser_binding())
     if lookup.outcome is LookupOutcome.UNIQUE:
         return lookup.transaction, None
     if lookup.outcome is LookupOutcome.AMBIGUOUS:
@@ -1222,22 +1270,13 @@ def _pending_transaction(
     )
 
 
-def _transaction_for_post() -> Tuple[
-    Optional[AuthorizationTransaction], Optional[ResponseReturnValue]
-]:
-    """The transaction a login POST continues.
-
-    The form names it with ``transaction_id``; a POST without one (a
-    scripted client posting credentials after its GET) resumes the unique
-    pending transaction of this browser. When the POST's own query string
-    carries OAuth request fields - a browser form has no ``action``, so it
-    posts back to the URL of the GET that created the transaction - they
-    must be exactly that GET's.
-    """
-    requested = _requested_fields() or None
-    transaction_id = request.form.get("transaction_id", "")
-    if not transaction_id:
-        return _pending_transaction(requested)
+def _named_transaction(
+    transaction_id: str, requested: Dict[str, List[str]]
+) -> Tuple[Optional[AuthorizationTransaction], Optional[ResponseReturnValue]]:
+    """The transaction a POST names with ``transaction_id``. When the POST's
+    own query string carries OAuth request fields - a browser form has no
+    ``action``, so it posts back to the URL of the GET that created the
+    transaction - they must be exactly that GET's."""
     transaction = get_authorization_transaction_store().get_bound(
         transaction_id, _browser_binding()
     )
@@ -1246,13 +1285,67 @@ def _transaction_for_post() -> Tuple[
             "unknown, expired or foreign authorization transaction",
             "Unknown or expired authorization request",
         )
-    if requested is not None and requested != transaction.requested:
+    if requested and requested != transaction.requested:
         return None, _refuse_without_transaction(
             "query string does not match the authorization transaction",
             "The request does not match the pending authorization request",
             client_id=transaction.params.client_id,
         )
     return transaction, None
+
+
+# The marker _continue_authorize_login returns when the login page is to be
+# rendered again; carries what the render needs.
+@dataclass(frozen=True)
+class _RenderLogin:
+    error_msg: Optional[str]
+    login_username: str
+
+
+def _continue_authorize_login(
+    config: ConfigManager, transaction: AuthorizationTransaction
+) -> Union[ResponseReturnValue, _RenderLogin]:
+    """One login POST on a transaction: a response to send as it is, or a
+    ``_RenderLogin`` when the login page is to be shown again."""
+    p = _params_of(transaction)
+
+    if "change_username" in request.form:
+        reset = get_authorization_transaction_store().reset_login(
+            transaction.id, _browser_binding()
+        )
+        if reset is None:
+            return _refuse_without_transaction(
+                "authorization transaction no longer pending",
+                "The authorization request is no longer pending",
+                client_id=transaction.params.client_id,
+            )
+        return _RenderLogin(None, "")
+
+    if transaction.state is TransactionState.PRIMARY_VERIFIED:
+        return _complete_second_factor(config, transaction, p)
+
+    error_msg, response, _ = _handle_authorize_login(config, transaction, p)
+    if response is not None:
+        return response
+    return _RenderLogin(error_msg, request.form.get("username", "").strip())
+
+
+def _render_after_login_attempt(
+    config: ConfigManager,
+    transaction: AuthorizationTransaction,
+    outcome: Union[ResponseReturnValue, _RenderLogin],
+    *,
+    name_transaction: bool = True,
+) -> ResponseReturnValue:
+    if not isinstance(outcome, _RenderLogin):
+        return outcome
+    return _render_authorize_login(
+        config,
+        transaction,
+        outcome.error_msg,
+        outcome.login_username,
+        name_transaction=name_transaction,
+    )
 
 
 @oauth_bp.route("/authorize", methods=["GET", "POST"])
@@ -1264,12 +1357,14 @@ def authorize() -> ResponseReturnValue:
     GET with OAuth request parameters: validate the request, then answer it
     (persona auto-login) or store it as an authorization transaction (#346)
     and display its login page.
-    GET without them: resume this browser's one pending transaction, which
-    is how a GET carrying only ``login_hint`` applies the hint to it.
-    POST: continue the transaction the form names with ``transaction_id``,
-    or this browser's one pending transaction when none is named. The POST
-    body carries only ``transaction_id`` and the login fields; OAuth
-    parameters are never read from it (#325).
+    GET without them (unrelated parameters are not OAuth request
+    parameters): resume this browser's one pending transaction, which is
+    how a GET carrying only ``login_hint`` applies the hint to it.
+    POST with ``transaction_id``: continue that transaction.
+    POST without one, with a complete OAuth request in its query string:
+    the direct entry point, validated on that POST.
+    POST with neither: continue this browser's one pending transaction.
+    OAuth parameters are never read from a POST body (#325).
 
     Required:
     - response_type: "code" for Authorization Code Flow
@@ -1289,7 +1384,7 @@ def authorize() -> ResponseReturnValue:
     if request.method == "GET":
         if requested:
             return _authorize_new_request(config, requested)
-        transaction, error = _pending_transaction(None)
+        transaction, error = _pending_transaction()
         if error is not None:
             return error
         assert transaction is not None
@@ -1303,40 +1398,24 @@ def authorize() -> ResponseReturnValue:
         return _render_authorize_login(config, transaction, None)
 
     _audit_body_oauth_fields()
-    transaction, error = _transaction_for_post()
+    transaction_id = request.form.get("transaction_id", "")
+    if not transaction_id and requested:
+        return _authorize_direct_post(config, requested)
+    if transaction_id:
+        transaction, error = _named_transaction(transaction_id, requested)
+    else:
+        transaction, error = _pending_transaction()
     if error is not None:
         return error
     assert transaction is not None
-    p = _params_of(transaction)
 
-    if "change_username" in request.form:
-        reset = get_authorization_transaction_store().reset_login(
-            transaction.id, _browser_binding()
-        )
-        if reset is None:
-            return _refuse_without_transaction(
-                "authorization transaction no longer pending",
-                "The authorization request is no longer pending",
-                client_id=transaction.params.client_id,
-            )
-        return _render_authorize_login(config, reset, None)
-
-    if transaction.state is TransactionState.PRIMARY_VERIFIED:
-        return _complete_second_factor(config, transaction, p)
-
-    login_username = request.form.get("username", "").strip()
-    error_msg, response, totp_step = _handle_authorize_login(config, transaction, p)
-    if response is not None:
-        return response
-    if totp_step:
-        # The password was just verified: re-read the transaction, which
-        # now renders the code screen.
-        current = get_authorization_transaction_store().get_bound(
-            transaction.id, _browser_binding()
-        )
-        if current is not None:
-            transaction = current
-    return _render_authorize_login(config, transaction, error_msg, login_username)
+    outcome = _continue_authorize_login(config, transaction)
+    current = get_authorization_transaction_store().get_bound(
+        transaction.id, _browser_binding()
+    )
+    # A verified password or a reset changed the transaction: render what
+    # it is now.
+    return _render_after_login_attempt(config, current or transaction, outcome)
 
 
 @oauth_bp.route("/client-logos/<client_id>")

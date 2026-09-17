@@ -238,9 +238,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the code is checked against the user's current secret. A POST without
   `transaction_id` (a script posting credentials after its GET) still
   works while exactly one request is pending in that cookie jar; with
-  several it is now refused instead of completing whichever GET came last,
-  and a POST whose query string names a request no GET of that browser
-  created is refused instead of being authenticated on its own. "Change
+  several it is now refused instead of completing whichever GET came last.
+  A POST carrying the whole request in its query string keeps working with
+  or without a GET before it, and still leaves the browser's pending
+  requests alone. "Change
   username" is a form on the transaction rather than a link carrying the
   request. A request opened before a configuration change keeps the client
   it was validated against; only a client that no longer exists ends it.

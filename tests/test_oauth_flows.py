@@ -522,22 +522,24 @@ class TestAuthorizationCodeFlow:
         assert response.status_code == 400
         assert pending_transaction_ids(client) == []
 
-    def test_post_naming_another_request_is_refused(self, client):
-        """#346: a POST whose query string names a request no GET of this
-        browser created has no transaction to continue, and the pending one
-        is left as it was."""
+    def test_failed_post_does_not_rebind_pending_request(self, client):
+        """#328: a direct POST on another URL must not replace the pending
+        request. With transactions (#346) the direct POST is validated and
+        runs against a transaction of its own, which ends with it."""
         client.get(
             '/authorize?response_type=code&client_id=demo-client'
             '&redirect_uri=http://localhost:3000/callback&scope=openid&state=tab-a'
         )
+        pending = pending_transaction_ids(client)
 
-        refused = client.post(
+        failed = client.post(
             '/authorize?response_type=code&client_id=test-client'
             '&redirect_uri=http://localhost:4000/callback&scope=openid&state=tab-b',
-            data={'username': 'admin', 'password': 'admin'},
+            data={'username': 'admin', 'password': 'wrong-password'},
         )
-        assert refused.status_code == 400
-        assert refused.get_json()['error'] == 'invalid_request'
+        assert failed.status_code == 200
+        assert b'Invalid username or password' in failed.data
+        assert pending_transaction_ids(client) == pending
 
         response = client.post(
             '/authorize',

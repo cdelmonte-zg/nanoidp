@@ -45,15 +45,20 @@ cookie of the browser that created it. It is a snapshot: a configuration
 change while it is open does not revalidate it, and only a client that no
 longer exists ends it.
 
-A `POST` names its transaction with `transaction_id`. A POST without one,
-such as a script posting `username`/`password` after its GET with the same
-cookie jar, continues the one pending transaction of that browser; with
-none or several pending it is refused with `invalid_request` rather than
-guessing. When the POST's own query string carries OAuth request
-parameters, they must be exactly those of the GET that created the
-transaction. A `GET` without OAuth request parameters follows the same
-"exactly one" rule, which is how a GET carrying only `login_hint` applies
-the hint to the pending request (#250/#325/#328/#346).
+A `POST` names its transaction with `transaction_id`; when its own query
+string also carries OAuth request parameters, they must be exactly those of
+the request that created the transaction. A POST without `transaction_id`
+whose query string carries a complete OAuth request is a direct entry
+point, with or without a GET before it: that request is validated on the
+POST like a GET's, and the login runs against a transaction that ends with
+the POST unless a TOTP code is still to come. A POST with neither, such as
+a script posting `username`/`password` after its GET with the same cookie
+jar, continues the one pending transaction of that browser; with none or
+several pending it is refused with `invalid_request` rather than guessing.
+A `GET` without OAuth request parameters (other query parameters do not
+count) follows the same "exactly one" rule, which is how a GET carrying
+only `login_hint` applies the hint to the pending request
+(#250/#325/#328/#346).
 
 curl examples for every grant are in
 [Requesting tokens](../guides/token-requests.md).

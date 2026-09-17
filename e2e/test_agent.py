@@ -2113,8 +2113,10 @@ class NanoIDPTestAgent:
         the browser's cookie (#346), exercised over real HTTP with two
         independent cookie jars.
 
-        Positive: a POST naming its transaction_id completes it, and a bare
-        POST still completes the one pending request of its cookie jar.
+        Positive: a POST naming its transaction_id completes it, a bare POST
+        still completes the one pending request of its cookie jar, and a
+        direct POST carrying the whole request in its query string completes
+        with no GET before it.
         Negative: a transaction_id from another cookie jar is refused and
         leaves the owner's transaction usable; a completed transaction
         cannot be replayed; with two requests pending, a bare POST is
@@ -2200,6 +2202,18 @@ class NanoIDPTestAgent:
                 f"{self.base_url}/authorize", data=credentials, allow_redirects=False, timeout=5
             )
             checks["bare_post_with_one_pending_completes"] = issued(bare, "first")
+
+            # The documented direct entry point: a complete request in the
+            # POST's query string, no GET before it, no transaction_id.
+            direct_params = params("direct")
+            direct = requests.Session().post(
+                f"{self.base_url}/authorize",
+                params=direct_params,
+                data=credentials,
+                allow_redirects=False,
+                timeout=5,
+            )
+            checks["direct_post_without_get_completes"] = issued(direct, "direct")
 
             success = all(checks.values())
             return self._add_result(

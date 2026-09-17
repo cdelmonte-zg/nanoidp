@@ -507,3 +507,107 @@ class TestRequestsThatNameNoTransaction:
             assert forms
             for form in forms:
                 assert f'name="transaction_id" value="{transaction_id_of(page)}"' in form
+
+    def test_a_get_with_only_unrelated_parameters_resumes_the_one_pending_request(self, client):
+        page = client.get(f"/authorize?{AUTHORIZE_QS}")
+
+        resumed = client.get("/authorize?utm_source=mail&tracking=abc")
+
+        assert resumed.status_code == 200
+        assert transaction_id_of(resumed) == transaction_id_of(page)
+
+
+class TestDirectPost:
+    """A POST with a complete OAuth request in its query string and no
+    transaction_id is a documented entry point on its own, with or without a
+    GET before it (#346 keeps it)."""
+
+    def test_it_issues_a_code_without_a_get(self, client):
+        response = client.post(
+            f"/authorize?{AUTHORIZE_QS}", data={"username": "admin", "password": "admin"}
+        )
+
+        assert response.status_code == 302
+        params = authorization_response_params(response)
+        assert params["state"] == ["tx"]
+        assert "code" in params
+        assert pending_transaction_ids(client) == []
+
+    def test_it_is_validated_like_a_get(self, client):
+        refused = client.post(
+            "/authorize?response_type=code&client_id=unknown-client"
+            "&redirect_uri=http://localhost:3000/callback",
+            data={"username": "admin", "password": "admin"},
+        )
+        assert refused.status_code == 400
+        assert refused.get_json()["error"] == "invalid_client"
+
+        scope = client.post(
+            f"/authorize?{AUTHORIZE_QS.replace('scope=openid', 'scope=not-a-real-scope')}",
+            data={"username": "admin", "password": "admin"},
+        )
+        assert scope.status_code == 302
+        params = authorization_response_params(scope)
+        assert params["error"] == ["invalid_scope"]
+        assert "code" not in params
+        assert pending_transaction_ids(client) == []
+
+    def test_a_failed_attempt_leaves_no_transaction_and_its_page_posts_back_to_the_query(
+        self, client
+    ):
+        failed = client.post(
+            f"/authorize?{AUTHORIZE_QS}", data={"username": "admin", "password": "wrong"}
+        )
+
+        assert failed.status_code == 200
+        assert b"Invalid username or password" in failed.data
+        assert b'name="transaction_id"' not in failed.data
+        assert pending_transaction_ids(client) == []
+
+    def test_the_two_step_username_step_stays_stateless(self, app, client):
+        with app.app_context():
+            get_config().settings.two_step = True
+
+        step1 = client.post(f"/authorize?{AUTHORIZE_QS}", data={"username": "admin"})
+        assert b'name="password"' in step1.data
+        assert b'name="transaction_id"' not in step1.data
+        assert pending_transaction_ids(client) == []
+
+        step2 = client.post(
+            f"/authorize?{AUTHORIZE_QS}", data={"username": "admin", "password": "admin"}
+        )
+        assert step2.status_code == 302
+        assert "code" in authorization_response_params(step2)
+
+    def test_a_totp_step_keeps_the_transaction_and_needs_no_password(self, app, client):
+        with app.app_context():
+            get_config().settings.totp = True
+            get_config().users["admin"].totp_secret = _SECRET
+
+        screen = client.post(
+            f"/authorize?{AUTHORIZE_QS}", data={"username": "admin", "password": "admin"}
+        )
+        assert b'name="totp_code"' in screen.data
+        assert b'name="password"' not in screen.data
+        transaction_id = transaction_id_of(screen)
+        assert pending_transaction_ids(client) == [transaction_id]
+
+        # The code form posts back to the same query string, naming the
+        # transaction.
+        done = client.post(
+            f"/authorize?{AUTHORIZE_QS}",
+            data={"transaction_id": transaction_id, "totp_code": generate_totp(_SECRET)},
+        )
+        assert done.status_code == 302
+        assert "code" in authorization_response_params(done)
+        assert pending_transaction_ids(client) == []
+
+    def test_it_does_not_touch_a_pending_request_on_success(self, client):
+        page = client.get(f"/authorize?{AUTHORIZE_QS}")
+        other = AUTHORIZE_QS.replace("state=tx", "state=direct")
+
+        direct = client.post(f"/authorize?{other}", data={"username": "admin", "password": "admin"})
+
+        assert authorization_response_params(direct)["state"] == ["direct"]
+        assert pending_transaction_ids(client) == [transaction_id_of(page)]
+

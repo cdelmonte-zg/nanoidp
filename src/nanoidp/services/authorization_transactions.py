@@ -103,9 +103,9 @@ class AuthorizationTransaction(BaseModel):
     created_at: float
     expires_at: float
     params: AuthorizationParameters
-    # The OAuth request fields of the accepted GET's query string, exactly
-    # as sent: a POST whose own query string names a request must name this
-    # one.
+    # The OAuth request fields of the query string that created it, exactly
+    # as sent: a POST naming this transaction from a query string of its own
+    # must carry this one.
     requested: Dict[str, List[str]]
     client_snapshot: ClientSnapshot
     client_origin: ClientOrigin
@@ -197,15 +197,10 @@ class AuthorizationTransactionStore:
             return None
         return transaction if transaction.is_live() else None
 
-    def find_unique_for_binding(
-        self,
-        browser_binding: Optional[str],
-        requested: Optional[Dict[str, List[str]]] = None,
-    ) -> Lookup:
+    def find_unique_for_binding(self, browser_binding: Optional[str]) -> Lookup:
         """The one live transaction of this browser, for a request that does
-        not name one. With ``requested``, only transactions created from
-        exactly that request count. Several candidates are ambiguous: the
-        caller refuses rather than guesses."""
+        not name one. Several candidates are ambiguous: the caller refuses
+        rather than guesses."""
         if browser_binding is None:
             return Lookup(LookupOutcome.NONE)
         now = time.time()
@@ -214,7 +209,6 @@ class AuthorizationTransactionStore:
             for transaction in self._repository.list()
             if transaction.is_bound_to(browser_binding)
             and transaction.is_live(now)
-            and (requested is None or transaction.requested == requested)
         ]
         if not candidates:
             return Lookup(LookupOutcome.NONE)

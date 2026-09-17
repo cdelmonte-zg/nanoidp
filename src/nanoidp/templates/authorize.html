@@ -118,7 +118,7 @@
 {% macro login_form_block() %}
             {% if persona_mode %}
             <form method="POST">
-                <input type="hidden" name="transaction_id" value="{{ transaction_id }}">
+                {% if transaction_id %}<input type="hidden" name="transaction_id" value="{{ transaction_id }}">{% endif %}
                 {{ macros.persona_picker(users, "Persona login - select a user to authorize.") }}
             </form>
             {% elif totp_step %}
@@ -127,7 +127,7 @@
                on the authorization transaction (#346), so this form carries
                only the transaction id and the code. #}
             <form method="POST">
-                <input type="hidden" name="transaction_id" value="{{ transaction_id }}">
+                {% if transaction_id %}<input type="hidden" name="transaction_id" value="{{ transaction_id }}">{% endif %}
                 {{ macros.totp_code_input() }}
 
                 <button type="submit" class="btn btn-primary w-100 py-2">
@@ -136,7 +136,7 @@
             </form>
             {% elif two_step_login and not login_username %}
             <form method="POST">
-                <input type="hidden" name="transaction_id" value="{{ transaction_id }}">
+                {% if transaction_id %}<input type="hidden" name="transaction_id" value="{{ transaction_id }}">{% endif %}
                 <div class="form-floating mb-4">
                     <input type="text" class="form-control" id="username" name="username" placeholder="Username" required autofocus autocomplete="username">
                     <label for="username"><i class="bi bi-person me-2"></i>Username</label>
@@ -148,7 +148,7 @@
             </form>
             {% elif two_step_login %}
             <form method="POST">
-                <input type="hidden" name="transaction_id" value="{{ transaction_id }}">
+                {% if transaction_id %}<input type="hidden" name="transaction_id" value="{{ transaction_id }}">{% endif %}
                 <input type="hidden" name="username" value="{{ login_username }}">
                 <div class="form-floating mb-4">
                     <input type="password" class="form-control" id="password" name="password" placeholder="Password" required autofocus autocomplete="current-password">
@@ -161,7 +161,7 @@
             </form>
             {% else %}
             <form method="POST">
-                <input type="hidden" name="transaction_id" value="{{ transaction_id }}">
+                {% if transaction_id %}<input type="hidden" name="transaction_id" value="{{ transaction_id }}">{% endif %}
                 <div class="form-floating mb-3">
                     <input type="text" class="form-control" id="username" name="username" placeholder="Username" required autofocus>
                     <label for="username"><i class="bi bi-person me-2"></i>Username</label>
@@ -183,7 +183,7 @@
                alike - one block, so the two screens cannot drift, the same
                shape login.html uses (#348 review, cleanup). #}
             <form method="POST" class="text-center mt-3">
-                <input type="hidden" name="transaction_id" value="{{ transaction_id }}">
+                {% if transaction_id %}<input type="hidden" name="transaction_id" value="{{ transaction_id }}">{% endif %}
                 <button type="submit" name="change_username" value="1" class="btn btn-link p-0">Change username</button>
             </form>
             {% endif %}
