@@ -19,8 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   else's web server. A document whose response says it must not be cached
   is refused at the authorization request rather than turned into a code no
   token request could redeem. Every refusal answers the same
-  `invalid_client` / `Unknown client_id`, with the reason in the audit log:
-  which rule refused it is not something to tell whoever chose the URL. The
+  `invalid_client` / `Unknown client_id`, with the reason in the server log
+  only: which rule refused it is not something to tell whoever chose the
+  URL. The
   client list shows cached clients read-only with a Forget button, which is
   how a developer re-fetches a document they have just changed.
   An `allowed_hosts` entry names a host **and a port** (443 when none is
@@ -30,7 +31,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   where the cost is and the endpoint is where people log in. The audit
   records that a document was refused and not why, since `GET /api/audit`
   is readable by anyone who can reach it and the reason is exactly what the
-  uniform error withholds.
+  uniform error withholds. An authorization code keeps the cached client it
+  was issued for resolvable until the code expires, so a document with a
+  short `max-age` cannot leave a valid code with no client behind it.
 - **The metadata document is fetched** (#196, second part), by the one
   outbound request nanoidp makes. `oauth.client_id_metadata_documents`
   gains `allowed_hosts` (exact DNS names, empty by default, so nothing is

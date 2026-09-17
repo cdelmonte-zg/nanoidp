@@ -109,6 +109,14 @@ class TestTheClientIdentifierUrl:
             (" https://client.example/m.json", "whitespace"),
             ("https://client.example/m.json\n", "whitespace"),
             ("https://client.ex\tample/m.json", "whitespace"),
+            # A request target is ASCII, so a URL that is not can never be
+            # fetched: http.client raises UnicodeEncodeError while building
+            # the request line, which is a 500 from /authorize rather than
+            # a refusal. The draft says nothing about IDNs, and refusing
+            # here keeps the answer to "can this be fetched" in one place.
+            ("https://client.example/caf\u00e9.json", "ASCII"),
+            ("https://cl\u00efent.example/m.json", "ASCII"),
+            ("https://client.example/m.json?q=\u00e9", "ASCII"),
         ],
     )
     def test_every_rule_has_its_own_refusal(self, client_id, reason):

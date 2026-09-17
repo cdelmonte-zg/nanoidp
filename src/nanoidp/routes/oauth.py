@@ -5,6 +5,7 @@ OAuth2/OIDC routes for token endpoint and discovery.
 import json
 import logging
 import os
+import time
 from dataclasses import dataclass, replace
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -35,14 +36,15 @@ from ..services import (
     get_token_service,
     identities_for,
 )
+from ..services.auth_code import CODE_LIFETIME_SECONDS
 from ..services.client_metadata import (
     ClientIdUrlInvalid,
     DocumentInvalid,
     DocumentNotUsable,
-    TooManyFetches,
     learn_client,
     looks_like_client_id_url,
 )
+from ..services.client_metadata import retain_until as retain_cached_client_until
 from ..services.client_metadata_fetch import FetchRefused
 from ..services.device_code import (
     DEVICE_CODE_EXPIRES_IN,
@@ -407,7 +409,6 @@ def _client_from_metadata_document(
         ClientIdUrlInvalid,
         DocumentInvalid,
         DocumentNotUsable,
-        TooManyFetches,
         FetchRefused,
     ) as refused:
         logger.info("Client ID metadata document refused for %s: %s", client_id, refused)
@@ -655,6 +656,13 @@ def _issue_authorization_code(
         resource=list(p.resources) if p.resources else None,
         amr=amr,
     )
+
+    # A client learned from a metadata document lives only in the cache, so
+    # the entry has to outlive the code just minted against it (#196). Done
+    # here rather than by a lifetime floor, because the document was cached
+    # when it was fetched and this is when the code starts existing. A
+    # no-op for a declared or runtime client.
+    retain_cached_client_until(p.client_id, time.time() + CODE_LIFETIME_SECONDS)
 
     # Clear OAuth session data
     for key in list(session.keys()):

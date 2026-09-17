@@ -16,6 +16,12 @@ from ..config import get_config_if_loaded
 
 logger = logging.getLogger(__name__)
 
+# How long a code may be redeemed for (RFC 6749 recommends ten minutes).
+# Named because #196 needs it too: a client learned from a metadata
+# document lives in a cache, and that entry has to outlive any code issued
+# against it.
+CODE_LIFETIME_SECONDS = 600
+
 
 @dataclass
 class AuthorizationCode:
@@ -43,7 +49,10 @@ class AuthorizationCode:
     # can keep honouring it (#112's pattern).
     amr: Optional[Sequence[str]] = None
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-    expires_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc) + timedelta(minutes=10))
+    expires_at: datetime = field(
+        default_factory=lambda: datetime.now(timezone.utc)
+        + timedelta(seconds=CODE_LIFETIME_SECONDS)
+    )
     used: bool = False
 
 

@@ -357,6 +357,21 @@ class TestNothingEscapesAsSomethingElse:
         assert origin.requests == []
 
 
+class TestARequestTargetIsAscii:
+    """The URL rules refuse a non-ASCII client_id before this module sees
+    it. This is the backstop: http.client cannot encode such a request
+    line, and nothing but a FetchRefused may leave here."""
+
+    def test_a_non_ascii_path_is_a_refusal_not_a_unicode_error(
+        self, origin, resolves_to_loopback
+    ):
+        client_id = f"https://{HOSTNAME}:{origin.port}/caf\u00e9.json"
+        origin.serve_document(metadata_document(client_id))
+
+        with pytest.raises(FetchRefused, match="ASCII"):
+            fetch_document(client_id, _settings(origin.port))
+
+
 class TestTheDeadlineSocket:
     """The wrapper on its own.
 
@@ -469,6 +484,20 @@ class TestWhichHostsMayBeFetched:
                 client_id,
                 _settings(client_id_metadata_documents_allowed_hosts=[HOSTNAME]),
             )
+
+    def test_a_port_of_zero_is_not_read_as_absent(self, origin, resolves_to_loopback):
+        """``parts.port or 443`` reads :0 as "no port given" and dials 443,
+        so a URL naming a port nobody allowed would be checked against 443,
+        pass, and be fetched from somewhere it never named."""
+        client_id = f"https://{HOSTNAME}:0/metadata.json"
+
+        with pytest.raises(FetchRefused, match="allowed_hosts"):
+            fetch_document(
+                client_id,
+                _settings(client_id_metadata_documents_allowed_hosts=[HOSTNAME]),
+            )
+
+        assert origin.requests == []
 
     def test_the_comparison_is_a_dns_one(self, origin, resolves_to_loopback):
         """Case and a trailing dot are the same name; the client_id itself

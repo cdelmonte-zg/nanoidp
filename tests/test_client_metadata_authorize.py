@@ -23,7 +23,7 @@ import yaml
 from nanoidp.app import create_app
 from nanoidp.config import get_config
 from nanoidp.services import client_metadata, client_metadata_fetch
-from nanoidp.services.client_metadata import cached_client
+from nanoidp.services.client_metadata import cached_client, cached_entries
 from nanoidp.services.identities import get_identities
 from tests.cimd_harness import HOSTNAME, Origin, issue_certificates, metadata_document
 
@@ -323,6 +323,18 @@ class TestWhatIsRefused:
         assert response.status_code == 400
         assert response.get_json()["error"] == "invalid_client"
 
+    def test_a_url_that_is_not_ascii_is_refused_not_raised(
+        self, app, origin, resolves_to_loopback
+    ):
+        """A request target is ASCII. Without the rule the URL passed
+        validation and http.client raised UnicodeEncodeError building the
+        request line: a 500 from an unauthenticated endpoint."""
+        response = self._authorize(app, f"https://{HOSTNAME}:{origin.port}/caf\u00e9.json")
+
+        assert response.status_code == 400
+        assert response.get_json()["error"] == "invalid_client"
+        assert origin.requests == []
+
     def test_this_server_will_not_be_made_to_fetch_without_end(
         self, app, origin, resolves_to_loopback, monkeypatch
     ):
@@ -331,8 +343,8 @@ class TestWhatIsRefused:
         unauthenticated. The limit is on the fetch, not on the endpoint:
         that is where the cost is, and the endpoint is where people log
         in."""
-        monkeypatch.setattr(client_metadata, "MAX_FETCHES_PER_MINUTE", 3)
-        monkeypatch.setattr(client_metadata, "_fetch_times", [])
+        monkeypatch.setattr(client_metadata_fetch, "MAX_FETCHES_PER_MINUTE", 3)
+        monkeypatch.setattr(client_metadata_fetch, "_fetch_times", [])
         origin.status = 404
 
         for _ in range(6):
@@ -340,12 +352,30 @@ class TestWhatIsRefused:
 
         assert len(origin.requests) == 3
 
+    def test_a_refused_host_does_not_spend_the_budget(
+        self, app, origin, resolves_to_loopback, monkeypatch
+    ):
+        """The limit is on the fetch, so what is refused locally must cost
+        nothing: otherwise a caller naming a host nobody allowed, thirty
+        times, denies the allowance to a client on a host that is."""
+        monkeypatch.setattr(client_metadata_fetch, "MAX_FETCHES_PER_MINUTE", 3)
+        monkeypatch.setattr(client_metadata_fetch, "_fetch_times", [])
+        client_id = _client_id(origin)
+        origin.serve_document(metadata_document(client_id, redirect_uris=[REDIRECT]))
+
+        for _ in range(10):
+            self._authorize(app, "https://not-allowed.example/x.json")
+
+        query, _ = _authorize_query(client_id)
+        assert app.test_client().get("/authorize", query_string=query).status_code == 200
+        assert len(origin.requests) == 1
+
     def test_an_ordinary_login_is_not_rate_limited_by_it(
         self, app, origin, resolves_to_loopback, monkeypatch
     ):
         """The budget must not become a limit on /authorize itself."""
-        monkeypatch.setattr(client_metadata, "MAX_FETCHES_PER_MINUTE", 1)
-        monkeypatch.setattr(client_metadata, "_fetch_times", [])
+        monkeypatch.setattr(client_metadata_fetch, "MAX_FETCHES_PER_MINUTE", 1)
+        monkeypatch.setattr(client_metadata_fetch, "_fetch_times", [])
         client = app.test_client()
         query, _ = _authorize_query("demo-client")
 
@@ -420,6 +450,91 @@ class TestTheReadSurface:
 
         with app.app_context():
             assert get_identities().resolve_client("demo-client") is not None
+
+
+def _expiry(client_id: str) -> float:
+    """When the cache would stop answering for this client."""
+    return next(
+        entry.expires_at for entry in cached_entries() if entry.client_id == client_id
+    )
+
+
+class TestACodeOutlivesTheClientItWasIssuedFor:
+    """The cache is the only place a CIMD client exists between /authorize
+    and /token, so an entry must cover any code minted against it.
+
+    A lifetime floor cannot promise this: the document is cached when it is
+    fetched and the code is minted later, when the login finishes. A
+    document with a short max-age fetched at 06:00 and a code issued at
+    06:05 leaves five minutes where the code is valid and the client is
+    not, with nobody doing anything wrong.
+    """
+
+    def test_issuing_a_code_extends_the_cached_entry(
+        self, app, origin, resolves_to_loopback
+    ):
+        import time as clock
+
+        from nanoidp.services.auth_code import CODE_LIFETIME_SECONDS
+
+        client = app.test_client()
+        client_id = _client_id(origin)
+        origin.serve_document(metadata_document(client_id, redirect_uris=[REDIRECT]))
+        origin.cache_control = "max-age=60"
+        query, _ = _authorize_query(client_id)
+
+        client.get("/authorize", query_string=query)
+        with app.app_context():
+            before = _expiry(client_id)
+        client.post(
+            "/authorize", query_string=query, data={"username": "admin", "password": "admin"}
+        )
+        with app.app_context():
+            after = _expiry(client_id)
+
+        assert before < clock.time() + CODE_LIFETIME_SECONDS
+        assert after >= clock.time() + CODE_LIFETIME_SECONDS - 5
+
+    def test_a_short_lived_document_still_redeems_its_code(
+        self, app, origin, resolves_to_loopback, monkeypatch
+    ):
+        """End to end, with the lifetime floor taken away: without the
+        extension the entry is gone before the code is presented, and this
+        is the /token failure a developer would have to explain."""
+        monkeypatch.setattr(client_metadata, "MIN_LIFETIME_SECONDS", 0)
+        client = app.test_client()
+        client_id = _client_id(origin)
+        origin.serve_document(metadata_document(client_id, redirect_uris=[REDIRECT]))
+        origin.cache_control = "max-age=0"
+        query, verifier = _authorize_query(client_id)
+
+        client.get("/authorize", query_string=query)
+        authorized = client.post(
+            "/authorize", query_string=query, data={"username": "admin", "password": "admin"}
+        )
+        code = parse_qs(urlparse(authorized.headers["Location"]).query)["code"][0]
+        origin.__exit__()
+
+        token = client.post(
+            "/token",
+            data={
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": REDIRECT,
+                "client_id": client_id,
+                "code_verifier": verifier,
+            },
+        )
+
+        assert token.status_code == 200
+
+    def test_it_does_nothing_for_a_client_that_is_not_cached(self, app):
+        """Declared and runtime clients are not this function's business,
+        and it says so rather than pretending to have done something."""
+        from nanoidp.services.client_metadata import retain_until
+
+        with app.app_context():
+            assert retain_until("demo-client", 1e12) is False
 
 
 class TestDiscovery:

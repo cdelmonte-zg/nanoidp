@@ -12,6 +12,7 @@ import pytest
 import nanoidp.config as config_module
 import nanoidp.services.audit as audit_module
 import nanoidp.services.auth_code as auth_code_module
+import nanoidp.services.client_metadata_fetch as client_metadata_fetch_module
 import nanoidp.services.crypto as crypto_module
 import nanoidp.services.device_code as device_code_module
 import nanoidp.services.identities as identities_module
@@ -124,6 +125,11 @@ def _reset_process_singletons() -> None:
     revocation_module._revocation_store = None
     runtime_identities_module._runtime_identity_store = None
     identities_module._promoting.clear()
+    # The metadata fetch budget is process state like the stores above: a
+    # sliding window of thirty a minute, shared by every caller, so without
+    # this a file that fetches often would spend what the next one needs
+    # and the failure would look like anything but ordering (#196).
+    client_metadata_fetch_module._fetch_times.clear()
 
 
 @pytest.fixture

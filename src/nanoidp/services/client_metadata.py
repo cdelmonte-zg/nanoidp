@@ -39,13 +39,7 @@ ONLY_AUTH_METHOD = "none"
 # the bounds an operator's own answer is clamped to. Lifetimes come from the
 # fetch, which is not here; these are what this module enforces about them.
 DEFAULT_LIFETIME_SECONDS = 3600
-# Not a round number: an authorization code lives ten minutes, and the
-# cache is the only place a CIMD client exists between /authorize and
-# /token. A shorter floor would let a document say max-age=0 and produce
-# the outcome the no-store refusal exists to prevent - a code this server
-# issued, for a client it can no longer resolve, with a slow or retried
-# callback enough to reach it. No attacker required.
-MIN_LIFETIME_SECONDS = 600
+MIN_LIFETIME_SECONDS = 60
 MAX_LIFETIME_SECONDS = 86400
 
 # How many documents this server will hold at once. The entries are filled
@@ -59,14 +53,6 @@ MAX_CACHED_DOCUMENTS = 100
 # The cache is read and written by concurrent requests, and a write is
 # several visits to the repository (sweep, evict, replace). One at a time.
 cache_lock = threading.Lock()
-
-# How often this process will fetch a document, across all callers. A test
-# IdP learning clients does it a handful of times; anything beyond this is
-# somebody making it dial out.
-MAX_FETCHES_PER_MINUTE = 30
-_FETCH_WINDOW_SECONDS = 60.0
-_fetch_times: List[float] = []
-_fetch_budget_lock = threading.Lock()
 
 # The scheme, spelled once, so "is this worth fetching" and "is this a legal
 # identifier" cannot disagree about the same string.
@@ -84,18 +70,6 @@ class ClientIdUrlInvalid(ValueError):
 
 class DocumentInvalid(ValueError):
     """The document at a Client Identifier URL cannot become a client."""
-
-
-class TooManyFetches(ValueError):
-    """This server has fetched as often as it will in this window.
-
-    ``/authorize`` is unauthenticated and only successes are cached, so a
-    caller asking repeatedly for a URL that fails validation would have
-    this server fetch every time, at a DNS lookup, a TLS handshake and up
-    to five seconds of a worker each. The limit is on the fetch rather than
-    on ``/authorize``, because the endpoint is where people log in and the
-    fetch is where the cost is.
-    """
 
 
 class DocumentNotUsable(ValueError):
@@ -190,6 +164,12 @@ def reject_invalid_client_id_url(client_id: str) -> None:
         raise ClientIdUrlInvalid(
             "a client identifier URL must have no '.' or '..' path segments"
         )
+    if not client_id.isascii():
+        # http.client builds the request line from this and cannot encode a
+        # non-ASCII one. A client that wants those characters percent-encodes
+        # them; the encoded form is what the document must then claim, since
+        # the draft compares the two literally.
+        raise ClientIdUrlInvalid("a client identifier URL must be ASCII")
     if parts.query:
         # SHOULD NOT, not MUST NOT. A conforming client may still carry one
         # (a multi-tenant host, say), and refusing would lock it out of this
@@ -358,6 +338,41 @@ def remember(client: OAuthClient, lifetime: Optional[float]) -> CachedClient:
         )
 
 
+def retain_until(client_id: str, moment: float) -> bool:
+    """Keep a cached client resolvable at least until ``moment``.
+
+    The cache is the only place a CIMD client exists between ``/authorize``
+    and ``/token``, so an entry must outlive any authorization code issued
+    against it. A lifetime floor cannot promise that: the document is
+    cached when it is fetched, and the code is minted later, when the login
+    finishes. A document with a short ``max-age`` fetched at 06:00 and a
+    code issued at 06:05 leaves five minutes where the code is valid and
+    the client is not, with nobody doing anything wrong.
+
+    So the moment the code exists, the entry is extended to cover it. A
+    client that is not in the cache - declared, runtime, gone - is not
+    this function's business, and it says so by answering ``False``.
+    """
+    entry = cache().get(client_id)
+    if entry is None:
+        return False
+    if entry.expires_at >= moment:
+        return True
+    with cache_lock:
+        current = cache().get(client_id)
+        if current is None:
+            return False
+        cache().delete(client_id)
+        cache().create(
+            CachedClient(
+                client=current.client,
+                fetched_at=current.fetched_at,
+                expires_at=moment,
+            )
+        )
+    return True
+
+
 def cached_client(client_id: str) -> Optional[OAuthClient]:
     """The cached client for this URL, if one is there and still fresh.
 
@@ -388,24 +403,6 @@ def forget_all() -> int:
     return cache().delete_all()
 
 
-def _spend_fetch_budget() -> None:
-    """One fetch of the window's allowance, or a refusal.
-
-    Checked after the URL rules, so a malformed client_id costs nothing,
-    and before any I/O, which is the thing being rationed.
-    """
-    now = time.time()
-    with _fetch_budget_lock:
-        while _fetch_times and now - _fetch_times[0] > _FETCH_WINDOW_SECONDS:
-            _fetch_times.pop(0)
-        if len(_fetch_times) >= MAX_FETCHES_PER_MINUTE:
-            raise TooManyFetches(
-                "this server has fetched as many metadata documents as it will "
-                "in this window"
-            )
-        _fetch_times.append(now)
-
-
 def learn_client(client_id: str, settings: Any) -> OAuthClient:
     """Fetch a metadata document, validate it, cache it, return the client.
 
@@ -423,7 +420,6 @@ def learn_client(client_id: str, settings: Any) -> OAuthClient:
     from .client_metadata_fetch import DO_NOT_CACHE, fetch_document
 
     reject_invalid_client_id_url(client_id)
-    _spend_fetch_budget()
     document, lifetime = fetch_document(client_id, settings)
     client = client_from_document(client_id, document, list(settings.scopes_supported))
     if lifetime is DO_NOT_CACHE or lifetime == DO_NOT_CACHE:

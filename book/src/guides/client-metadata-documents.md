@@ -109,6 +109,11 @@ between `/authorize` and `/token`, so honouring the header would mean
 issuing a code that could never be redeemed. If a client's host sets that
 header globally, it cannot be identified this way.
 
+An entry is kept at least as long as any authorization code issued against
+it: the document is cached when it is fetched and the code is minted later,
+when the login finishes, so a short `max-age` would otherwise leave a valid
+code with no client behind it.
+
 The web UI lists cached clients read-only with a `cimd` badge, and a
 **Forget** button drops one: that is how a developer re-fetches a document
 they have just changed.
