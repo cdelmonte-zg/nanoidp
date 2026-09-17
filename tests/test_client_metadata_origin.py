@@ -20,12 +20,14 @@ import yaml
 
 from nanoidp.app import create_app
 from nanoidp.config import OAuthClient, get_config
+from nanoidp.services import client_metadata
 from nanoidp.services.client_metadata import (
     DEFAULT_LIFETIME_SECONDS,
     MAX_CACHED_DOCUMENTS,
     MAX_LIFETIME_SECONDS,
     MIN_LIFETIME_SECONDS,
     CachedClient,
+    CacheIsFull,
     ClientIdUrlInvalid,
     DocumentInvalid,
     bounded_lifetime,
@@ -37,6 +39,7 @@ from nanoidp.services.client_metadata import (
     looks_like_client_id_url,
     reject_invalid_client_id_url,
     remember,
+    retain_until,
 )
 from nanoidp.services.identities import get_identities
 
@@ -282,6 +285,79 @@ class TestTheCache:
             newest = f"https://client.example/{MAX_CACHED_DOCUMENTS + 4}.json"
             assert cached_client(newest) is not None
             assert cached_client("https://client.example/0.json") is None
+
+    def test_an_entry_a_live_code_depends_on_is_not_evicted(self, app):
+        """The cap drops the least recently fetched, and an entry a code was
+        issued against is by then one of the oldest. Evicting it breaks a
+        flow already under way, with nobody doing anything wrong: the cap is
+        100, the fetch budget 30 a minute, and a code lives ten."""
+        with app.app_context():
+            remember(client_from_document(URL, _document(), []), None)
+            retain_until(URL, time.time() + 600)
+
+            for index in range(MAX_CACHED_DOCUMENTS + 5):
+                url = f"https://client.example/{index}.json"
+                remember(client_from_document(url, _document(client_id=url), []), None)
+
+            assert cached_client(URL) is not None
+
+    def test_a_cache_full_of_live_codes_refuses_the_newcomer(self, app, monkeypatch):
+        """When every entry is holding up a code, there is no room to make.
+        Refusing a new authorization request is the lesser harm: the
+        alternative breaks a flow already under way, for a client that did
+        nothing wrong and would see only a code that stopped working."""
+        monkeypatch.setattr(client_metadata, "MAX_CACHED_DOCUMENTS", 2)
+        with app.app_context():
+            for index in range(2):
+                url = f"https://client.example/{index}.json"
+                remember(client_from_document(url, _document(client_id=url), []), None)
+                retain_until(url, time.time() + 600)
+
+            with pytest.raises(CacheIsFull):
+                remember(client_from_document(URL, _document(), []), None)
+
+            assert cached_client("https://client.example/0.json") is not None
+
+    def test_an_unprotected_entry_still_goes_at_the_cap(self, app, monkeypatch):
+        """The protection is for entries a code depends on, not a way for
+        any cached document to outstay the cap."""
+        monkeypatch.setattr(client_metadata, "MAX_CACHED_DOCUMENTS", 2)
+        with app.app_context():
+            for index in range(2):
+                url = f"https://client.example/{index}.json"
+                remember(client_from_document(url, _document(client_id=url), []), None)
+            retain_until("https://client.example/1.json", time.time() + 600)
+
+            remember(client_from_document(URL, _document(), []), None)
+
+            assert cached_client("https://client.example/0.json") is None
+            assert cached_client("https://client.example/1.json") is not None
+
+    def test_an_entry_cannot_expire_while_something_depends_on_it(self):
+        """Said once, in the model: a lifetime shorter than the promise
+        would let the sweep drop what the cap was told to keep."""
+        now = time.time()
+
+        entry = CachedClient(
+            client=client_from_document(URL, _document(), []),
+            fetched_at=now,
+            expires_at=now + 1,
+            protected_until=now + 600,
+        )
+
+        assert entry.expires_at == entry.protected_until
+        assert entry.is_fresh(now + 60)
+
+    def test_re_fetching_a_document_keeps_what_depends_on_the_entry(self, app):
+        """The promise was made about the client, not about this copy of
+        its document."""
+        with app.app_context():
+            remember(client_from_document(URL, _document(), []), None)
+            retain_until(URL, time.time() + 600)
+
+            remember(client_from_document(URL, _document(), []), 1)
+
+            assert cache().get(URL).is_fresh(time.time() + 300)
 
     def test_concurrent_writes_for_one_url_do_not_collide(self, app):
         """remember() is a sweep, an evict and a create: two requests for

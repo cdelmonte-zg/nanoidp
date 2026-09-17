@@ -112,7 +112,15 @@ header globally, it cannot be identified this way.
 An entry is kept at least as long as any authorization code issued against
 it: the document is cached when it is fetched and the code is minted later,
 when the login finishes, so a short `max-age` would otherwise leave a valid
-code with no client behind it.
+code with no client behind it. The same promise holds against the cap: an
+entry a live code depends on is not evicted to make room for a new client.
+If every one of the 100 entries is holding up a live code, the new
+authorization request is refused instead, because breaking a flow already
+under way is the worse of the two outcomes.
+
+An operator's **Forget** still drops such an entry, and any code issued
+against it stops being redeemable. That is a deliberate administrative act,
+and it is not treated as an accident.
 
 The web UI lists cached clients read-only with a `cimd` badge, and a
 **Forget** button drops one: that is how a developer re-fetches a document
@@ -126,6 +134,12 @@ Saying which rule refused it would tell whoever chose the URL whether a
 host is allowed, whether it resolved, or what it answered. **The reason is
 in the server log only**: `GET /api/audit` is readable by anyone who can
 reach it, so the audit records that a document was refused and not why.
+
+If the client cannot be held for the code that is about to be minted - it
+has stopped resolving, or the cache has no room to promise anything about
+it - no code is issued. The authorization request comes back through the
+redirect URI with `error=temporarily_unavailable`, since retrying is the
+thing that helps.
 
 The body says nothing, but the clock still does: a host that is not allowed
 is refused before any I/O and answers at once, while an allowed one costs a

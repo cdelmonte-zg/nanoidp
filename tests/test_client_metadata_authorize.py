@@ -14,6 +14,7 @@ import base64
 import hashlib
 import os
 import shutil
+import time as clock
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
@@ -22,6 +23,7 @@ import yaml
 
 from nanoidp.app import create_app
 from nanoidp.config import get_config
+from nanoidp.routes import oauth as oauth_routes
 from nanoidp.services import client_metadata, client_metadata_fetch
 from nanoidp.services.client_metadata import cached_client, cached_entries
 from nanoidp.services.identities import get_identities
@@ -473,8 +475,6 @@ class TestACodeOutlivesTheClientItWasIssuedFor:
     def test_issuing_a_code_extends_the_cached_entry(
         self, app, origin, resolves_to_loopback
     ):
-        import time as clock
-
         from nanoidp.services.auth_code import CODE_LIFETIME_SECONDS
 
         client = app.test_client()
@@ -498,10 +498,12 @@ class TestACodeOutlivesTheClientItWasIssuedFor:
     def test_a_short_lived_document_still_redeems_its_code(
         self, app, origin, resolves_to_loopback, monkeypatch
     ):
-        """End to end, with the lifetime floor taken away: without the
-        extension the entry is gone before the code is presented, and this
-        is the /token failure a developer would have to explain."""
-        monkeypatch.setattr(client_metadata, "MIN_LIFETIME_SECONDS", 0)
+        """End to end, with the floor shortened so the document's own
+        lifetime runs out while the code is still valid. Without the
+        extension this is the /token failure a developer would have to
+        explain: nothing expired that they set, and nobody did anything
+        wrong. The wait is the point of the test, so it is a real one."""
+        monkeypatch.setattr(client_metadata, "MIN_LIFETIME_SECONDS", 3)
         client = app.test_client()
         client_id = _client_id(origin)
         origin.serve_document(metadata_document(client_id, redirect_uris=[REDIRECT]))
@@ -514,6 +516,7 @@ class TestACodeOutlivesTheClientItWasIssuedFor:
         )
         code = parse_qs(urlparse(authorized.headers["Location"]).query)["code"][0]
         origin.__exit__()
+        clock.sleep(3.2)
 
         token = client.post(
             "/token",
@@ -527,6 +530,55 @@ class TestACodeOutlivesTheClientItWasIssuedFor:
         )
 
         assert token.status_code == 200
+
+    def test_a_cache_full_of_live_codes_refuses_a_new_client(
+        self, app, origin, resolves_to_loopback, monkeypatch
+    ):
+        """At the cap the oldest entry goes, and the one a code was issued
+        against is by then among the oldest. The new authorization request
+        is refused instead, because breaking a flow already under way is
+        the worse of the two."""
+        monkeypatch.setattr(client_metadata, "MAX_CACHED_DOCUMENTS", 1)
+        client = app.test_client()
+        first = _client_id(origin)
+        origin.serve_document(metadata_document(first, redirect_uris=[REDIRECT]))
+        query, _ = _authorize_query(first)
+        client.get("/authorize", query_string=query)
+        client.post(
+            "/authorize", query_string=query, data={"username": "admin", "password": "admin"}
+        )
+
+        second = _client_id(origin, "/other.json")
+        origin.serve_document(metadata_document(second, redirect_uris=[REDIRECT]))
+        other_query, _ = _authorize_query(second)
+        refused = client.get("/authorize", query_string=other_query)
+
+        assert refused.status_code == 400
+        assert refused.get_json()["error"] == "invalid_client"
+        with app.app_context():
+            assert cached_client(first) is not None
+
+    def test_no_code_is_issued_when_the_client_cannot_be_held(
+        self, app, origin, resolves_to_loopback, monkeypatch
+    ):
+        """The window between the login being accepted and the code being
+        minted is one instruction wide, so the seam is where the race lands
+        and the seam is what is driven here. A code handed over for a
+        client that is already gone is one nobody can redeem or explain."""
+        client = app.test_client()
+        client_id = _client_id(origin)
+        origin.serve_document(metadata_document(client_id, redirect_uris=[REDIRECT]))
+        query, _ = _authorize_query(client_id)
+        client.get("/authorize", query_string=query)
+        monkeypatch.setattr(oauth_routes, "retain_cached_client_until", lambda *a: False)
+
+        authorized = client.post(
+            "/authorize", query_string=query, data={"username": "admin", "password": "admin"}
+        )
+
+        params = parse_qs(urlparse(authorized.headers["Location"]).query)
+        assert "code" not in params
+        assert params["error"] == ["temporarily_unavailable"]
 
     def test_it_does_nothing_for_a_client_that_is_not_cached(self, app):
         """Declared and runtime clients are not this function's business,

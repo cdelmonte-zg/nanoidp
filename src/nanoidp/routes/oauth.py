@@ -625,6 +625,35 @@ def _validate_authorize_resources(
     return None
 
 
+def _hold_cached_client_for_the_code(
+    config: ConfigManager, p: _AuthorizeParams
+) -> bool:
+    """Make the client survive the code before the code exists (#196).
+
+    A client learned from a metadata document lives only in the cache, so
+    an authorization code naming one is redeemable exactly as long as that
+    entry is there. Holding it afterwards leaves a gap: the entry can be
+    evicted or expire between the login being accepted and the code being
+    minted, and the code would then be handed over already dead.
+
+    So the order is: resolve again, hold, then mint. The resolution is
+    local - the cache is read, never filled, and a declared or runtime
+    client is answered without the cache being consulted at all - so this
+    costs no network and cannot fetch.
+
+    ``False`` means do not issue: either the client is no longer resolvable
+    at all, or the cache has no room to promise anything about it.
+    """
+    resolved = identities_for(config).resolve_client(p.client_id)
+    if resolved is None:
+        return False
+    if resolved.origin != "cimd":
+        # Declared and runtime clients do not depend on the cache, and a
+        # code for one is not this function's business.
+        return True
+    return retain_cached_client_until(p.client_id, time.time() + CODE_LIFETIME_SECONDS)
+
+
 def _issue_authorization_code(
     config: ConfigManager,
     p: _AuthorizeParams,
@@ -642,6 +671,18 @@ def _issue_authorization_code(
     produced this code - ``None`` for a persona/auto-login, since no
     password was checked.
     """
+    # Before the code exists, not after: a code whose client has gone is
+    # one the client cannot redeem and cannot explain (#196).
+    if not _hold_cached_client_for_the_code(config, p):
+        return _authorize_error_redirect(
+            config,
+            p,
+            "temporarily_unavailable",
+            "The authorization request could not be completed, please try again",
+            "the cached metadata document could not be held for the code",
+            username=username,
+        )
+
     auth_code_store = get_auth_code_store()
     code = auth_code_store.create_code(
         client_id=p.client_id,
@@ -656,13 +697,6 @@ def _issue_authorization_code(
         resource=list(p.resources) if p.resources else None,
         amr=amr,
     )
-
-    # A client learned from a metadata document lives only in the cache, so
-    # the entry has to outlive the code just minted against it (#196). Done
-    # here rather than by a lifetime floor, because the document was cached
-    # when it was fetched and this is when the code starts existing. A
-    # no-op for a declared or runtime client.
-    retain_cached_client_until(p.client_id, time.time() + CODE_LIFETIME_SECONDS)
 
     # Clear OAuth session data
     for key in list(session.keys()):

@@ -32,8 +32,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   records that a document was refused and not why, since `GET /api/audit`
   is readable by anyone who can reach it and the reason is exactly what the
   uniform error withholds. An authorization code keeps the cached client it
-  was issued for resolvable until the code expires, so a document with a
-  short `max-age` cannot leave a valid code with no client behind it.
+  was issued for resolvable until the code expires, so neither a short
+  `max-age` nor the cache's own capacity can leave a valid code with no
+  client behind it: such an entry is not evicted to make room, and when
+  every entry is holding up a live code the new authorization request is
+  refused rather than an existing flow broken. The client is held before
+  the code is minted, so a code is never handed over for a client that is
+  already gone; when it cannot be held the authorization request comes back
+  as `temporarily_unavailable`. An operator's Forget still drops the entry
+  and invalidates such a code, which is the point of it.
 - **The metadata document is fetched** (#196, second part), by the one
   outbound request nanoidp makes. `oauth.client_id_metadata_documents`
   gains `allowed_hosts` (exact DNS names, empty by default, so nothing is
