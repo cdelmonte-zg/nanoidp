@@ -451,12 +451,16 @@ def continue_second_factor(
     return SecondFactorContinuation(login=login, username=record.username)
 
 
-def discard_pending_second_factor() -> None:
+def discard_pending_second_factor() -> Optional[str]:
     """Drop the pending second factor this form names, if it is this
-    browser's: "Change username", or a device deny from the code screen."""
+    browser's: "Change username", or a device deny or dead user_code from
+    the code screen. The username it recorded, for a caller that audits
+    what happened next: the code screen's form carries none."""
     record_id = request.form.get(PENDING_SECOND_FACTOR_FIELD, "")
-    if record_id:
-        get_pending_second_factor_store().discard(record_id, browser_flow_binding())
+    if not record_id:
+        return None
+    record = get_pending_second_factor_store().discard(record_id, browser_flow_binding())
+    return record.username if record is not None else None
 
 
 def no_store(response: ResponseReturnValue) -> Response:

@@ -2506,8 +2506,9 @@ def device_verify() -> ResponseReturnValue:
         if on_code_screen and (action == "deny" or store.pending_status(user_code) is not None):
             # A deny needs no credentials, and a dead user_code is reported
             # by verify() below exactly as it always has: either way the
-            # pending second factor is over.
-            discard_pending_second_factor()
+            # pending second factor is over. Its username is the one the
+            # deny's audit names, as the password form's would.
+            username = discard_pending_second_factor() or username
         elif on_code_screen:
             continuation = continue_second_factor(
                 config, purpose="device", context=second_factor_context

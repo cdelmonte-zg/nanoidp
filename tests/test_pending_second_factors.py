@@ -153,7 +153,7 @@ class TestStore:
 
     def test_the_context_digest_is_canonical(self):
         assert context_digest({"a": "1", "b": "2"}) == context_digest({"b": "2", "a": "1"})
-        # No concatenation collision: {"a": "1b", "": ""} is not {"a": "1", "b": ""}.
+        # No concatenation collision: "ab"+"c" and "a"+"bc" read the same.
         assert context_digest({"ab": "c"}) != context_digest({"a": "bc"})
 
     def test_a_record_is_only_for_its_browser_surface_and_context(self):
@@ -177,9 +177,9 @@ class TestStore:
         store = get_pending_second_factor_store()
         record = self._create(store)
 
-        assert store.discard(record.id, "browser-b") is False
-        assert store.discard(record.id, None) is False
-        assert store.discard(record.id, "browser-a") is True
+        assert store.discard(record.id, "browser-b") is None
+        assert store.discard(record.id, None) is None
+        assert store.discard(record.id, "browser-a") is not None
         assert _records() == []
 
     def test_an_expired_record_is_not_found_and_makes_room(self, monkeypatch):
@@ -451,6 +451,14 @@ class TestDevice:
 
         assert b"denied" in response.data.lower()
         assert _records() == []
+        from nanoidp.services.audit import get_audit_log
+
+        (denied,) = [
+            entry
+            for entry in get_audit_log().get_entries(event_type="device_verification")
+            if entry["status"] == "denied"
+        ]
+        assert denied["username"] == "admin"
 
     @pytest.mark.parametrize("two_step", [False, True])
     def test_a_dead_user_code_on_the_code_screen_is_reported_as_such(

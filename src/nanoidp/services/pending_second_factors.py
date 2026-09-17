@@ -160,18 +160,22 @@ class PendingSecondFactorStore:
                 return None
             return record
 
-    def discard(self, record_id: str, browser_binding: Optional[str]) -> bool:
-        """Drop this browser's record whatever its surface or context: the
-        user abandoned the login, or it can no longer complete."""
+    def discard(
+        self, record_id: str, browser_binding: Optional[str]
+    ) -> Optional[PendingSecondFactor]:
+        """Drop this browser's record whatever its surface or context, and
+        return it: the user abandoned the login, or it can no longer
+        complete. ``None`` when there was no such record of this browser."""
         with self._lock:
             record = self._repository.get(record_id)
             if (
                 record is None
                 or browser_binding is None
                 or not hmac.compare_digest(record.browser_binding, browser_binding)
+                or not self._repository.delete(record_id)
             ):
-                return False
-            return self._repository.delete(record_id)
+                return None
+            return record
 
     def prune_expired(self) -> int:
         with self._lock:
