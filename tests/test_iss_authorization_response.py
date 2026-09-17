@@ -43,7 +43,11 @@ def _authorize_redirect(client, extra=None, **headers):
     if extra:
         params.update(extra)
     query = "&".join(f"{k}={v}" for k, v in params.items())
-    client.get("/authorize?" + query, headers=headers)
+    page = client.get("/authorize?" + query, headers=headers)
+    if page.status_code != 200:
+        # A rejected request is answered on its GET and creates no
+        # transaction to post to (#331, #346).
+        return page
     return client.post(
         "/authorize?" + query,
         data={"username": "admin", "password": "admin"},

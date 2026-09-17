@@ -18,7 +18,11 @@ import secrets
 from lxml import etree
 
 from nanoidp.config import get_config
-from tests.conftest import authorization_response_params, oauth_session
+from tests.conftest import (
+    authorization_response_params,
+    pending_transaction_ids,
+    transaction_id_of,
+)
 
 AUTHORIZE_QS = (
     "response_type=code&client_id=demo-client"
@@ -41,7 +45,6 @@ class TestAuthorizePersonaMode:
         assert response.status_code == 200
         assert b'name="password"' in response.data
 
-        client.get(f"/authorize?{AUTHORIZE_QS}")
         response = client.post("/authorize", data={"username": "admin"})
         assert response.status_code == 200
         assert b"Username and password are required" in response.data
@@ -127,7 +130,6 @@ class TestPersonaModeOrthogonalToOauth21:
             assert b'name="password"' not in response.data
             assert b"admin" in response.data
 
-            client.get(f"/authorize?{qs}")
             response = client.post(
                 "/authorize", data={"username": "admin"}, follow_redirects=False
             )
@@ -195,7 +197,7 @@ class TestAuthorizeAutoLogin:
         _enable_auto_login(app)
         original_qs = AUTHORIZE_QS.replace("state=xyz", "state=tab-a")
         assert client.get(f"/authorize?{original_qs}").status_code == 200
-        captured = oauth_session(client)
+        captured = pending_transaction_ids(client)
 
         rejected = client.get(
             f"/authorize?{AUTHORIZE_QS}"
@@ -205,7 +207,7 @@ class TestAuthorizeAutoLogin:
 
         assert rejected.status_code == 302
         assert authorization_response_params(rejected)["error"] == ["invalid_request"]
-        assert oauth_session(client) == captured
+        assert pending_transaction_ids(client) == captured
 
         response = client.post(
             "/authorize", data={"username": "admin"}, follow_redirects=False
@@ -344,9 +346,11 @@ class TestAuthorizeAutoLogin:
             get_config().settings.auto_login = True
         # A fresh GET leg (no login_hint) followed by an explicit picker
         # selection of a DIFFERENT user than the stale hint named.
-        client.get(f"/authorize?{AUTHORIZE_QS}")
+        page = client.get(f"/authorize?{AUTHORIZE_QS}")
         response = client.post(
-            "/authorize", data={"username": "persona-bob"}, follow_redirects=False
+            "/authorize",
+            data={"username": "persona-bob", "transaction_id": transaction_id_of(page)},
+            follow_redirects=False,
         )
 
         assert response.status_code == 302

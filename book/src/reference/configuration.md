@@ -327,10 +327,15 @@ runtime, like every other property of a user:
   password.
 - **One rule, one place.** `login.totp` rides the same phase machinery as
   `login.two_step` (`routes/_auth.py`): the code screen is a further phase
-  after the password step, the username travels forward as a hidden field
-  exactly as it does for two-step, and so does the password - since
-  nothing is stored server-side, the code screen re-submits the password
-  too, and it is re-checked when the code is verified.
+  after the password step. On `/authorize` the verified password is
+  recorded on the authorization transaction (#346), so the code screen
+  carries only the code, and the code is checked against the current secret
+  of the user the transaction names; a user deleted or left without a
+  secret in the meantime ends the request with `access_denied` rather than
+  completing on the password alone. On `/login`, `/saml/sso` and `/device`
+  nothing is stored server-side yet: the username and the password travel
+  forward as hidden fields and the password is re-checked when the code is
+  verified (#373).
 - **Verification.** RFC 6238, six digits, a 30-second period, HMAC-SHA1,
   one step of clock skew either side - the parameters every authenticator
   app assumes by default. Implemented with the standard library only

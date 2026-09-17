@@ -80,12 +80,13 @@ class TestExactMatching:
         response = _authorize(client, "demo-client", "http://anything.example/cb")
         assert response.status_code == 200
 
-    def test_mismatch_enforced_on_login_post_too(self, client, registered_client):
-        """The POST leg (login form submit) revalidates against the registry.
-
-        The login form has no ``action``, so it POSTs back to the GET's own
-        ``/authorize?...`` URL. The rejected GET is not captured for a bare
-        POST (#331), but a POST to that URL still reaches the registry check.
+    def test_a_rejected_get_leaves_nothing_a_login_post_could_complete(
+        self, client, registered_client
+    ):
+        """A POST validates nothing itself (#346): it can only continue a
+        transaction an accepted GET created. A GET refused for its
+        redirect_uri creates none (#331), so neither a bare POST nor a POST
+        to the refused URL reaches a code or a redirect to that URI.
         """
         mismatch = "http://localhost:3000/callbackevil"
         response = _authorize(client, registered_client, mismatch)
@@ -96,7 +97,7 @@ class TestExactMatching:
             data={"username": "admin", "password": "admin"},
         )
         assert bare_post.status_code == 400
-        assert json.loads(bare_post.data)["error_description"] == "client_id is required"
+        assert "Location" not in bare_post.headers
 
         response = client.post(
             f"/authorize?response_type=code&client_id={registered_client}"
@@ -105,7 +106,7 @@ class TestExactMatching:
         )
         assert response.status_code == 400
         assert "Location" not in response.headers
-        assert "not registered" in json.loads(response.data)["error_description"]
+        assert json.loads(response.data)["error"] == "invalid_request"
 
 
 class TestConfigLoadAndPersistence:

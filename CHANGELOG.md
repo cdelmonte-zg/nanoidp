@@ -229,6 +229,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lowered `max_previous_keys` trims the JWKS as soon as it is applied.
 
 ### Changed
+- **`/authorize` keeps each request as a server-side authorization
+  transaction** (#346). An accepted GET validates the request once and
+  stores it, bound to the browser, instead of copying ten parameters into
+  the session; the login page's forms name it with `transaction_id`, and
+  issuing the code consumes it. The TOTP code screen no longer sends the
+  verified password back to the browser: the transaction records it, and
+  the code is checked against the user's current secret. A POST without
+  `transaction_id` (a script posting credentials after its GET) still
+  works while exactly one request is pending in that cookie jar; with
+  several it is now refused instead of completing whichever GET came last,
+  and a POST whose query string names a request no GET of that browser
+  created is refused instead of being authenticated on its own. "Change
+  username" is a form on the transaction rather than a link carrying the
+  request. A request opened before a configuration change keeps the client
+  it was validated against; only a client that no longer exists ends it.
+  Pending requests are capped at 1000 and expire after 10 minutes; at the
+  cap a new request gets `temporarily_unavailable` rather than any pending
+  one being dropped.
 - **MCP tool arguments take their shape from the domain models** (#297).
   An argument that carries a configuration field's value now derives its
   type, enum, bounds, length, pattern and item type from that field; the

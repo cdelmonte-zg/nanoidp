@@ -492,8 +492,35 @@ class TestACodeOutlivesTheClientItWasIssuedFor:
         with app.app_context():
             after = _expiry(client_id)
 
-        assert before < clock.time() + CODE_LIFETIME_SECONDS
+        # The GET already holds the entry for the transaction (#346); the
+        # code extends it from the moment the code exists.
+        assert after >= before
         assert after >= clock.time() + CODE_LIFETIME_SECONDS - 5
+
+    def test_a_pending_transaction_holds_the_cached_entry_for_its_lifetime(
+        self, app, origin, resolves_to_loopback
+    ):
+        """#346: between the GET and the login the transaction is the thing
+        depending on the entry, so the entry is protected for as long as the
+        transaction can be completed, not only from the moment a code exists."""
+        from nanoidp.services.authorization_transactions import (
+            get_authorization_transaction_store,
+        )
+
+        client = app.test_client()
+        client_id = _client_id(origin)
+        origin.serve_document(metadata_document(client_id, redirect_uris=[REDIRECT]))
+        origin.cache_control = "max-age=60"
+        query, _ = _authorize_query(client_id)
+
+        client.get("/authorize", query_string=query)
+
+        with app.app_context():
+            (transaction,) = get_authorization_transaction_store()._repository.list()
+            (entry,) = [e for e in cached_entries() if e.client_id == client_id]
+        assert transaction.client_origin == "cimd"
+        assert entry.protected_until >= transaction.expires_at
+        assert entry.expires_at >= transaction.expires_at
 
     def test_a_short_lived_document_still_redeems_its_code(
         self, app, origin, resolves_to_loopback, monkeypatch
