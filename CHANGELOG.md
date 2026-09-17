@@ -228,6 +228,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   service's certificate instead of re-reading the file per request, and a
   lowered `max_previous_keys` trims the JWKS as soon as it is applied.
 
+### Fixed
+- **Two signed Redirect AuthnRequests in one browser no longer interfere**
+  (#375). With `saml.want_authn_requests_signed`, a verified `GET
+  /saml/sso` was remembered in a single session key, so a second signed
+  request overwrote the first and its login post was then refused as not
+  matching a verified request. Each verified request is now remembered on
+  its own, for the browser that had it verified, for 10 minutes; ten may be
+  in flight per browser and an eleventh makes that browser's oldest
+  non-continuable. What the login post must still present is unchanged.
+
 ### Changed
 - **The TOTP code screen of `/login`, `/saml/sso` and `/device` no longer
   sends the verified password back to the browser** (#373). The password

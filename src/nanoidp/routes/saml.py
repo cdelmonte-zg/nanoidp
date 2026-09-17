@@ -26,6 +26,10 @@ from ..services.saml_verification import (
     verify_post_signature,
     verify_redirect_signature,
 )
+from ..services.saml_verified_requests import (
+    VerifiedRequestStoreFull,
+    get_verified_request_store,
+)
 from ._audit import audit_event
 from ._auth import (
     PENDING_SECOND_FACTOR_FIELD,
@@ -35,6 +39,7 @@ from ._auth import (
     TwoStepPhase,
     authenticate_interactively,
     begin_second_factor,
+    browser_flow_binding,
     continue_second_factor,
     discard_pending_second_factor,
     establish_login_session,
@@ -407,17 +412,31 @@ def _verify_authn_request_signature(
                 load_sp_certificates(config.settings.saml_sp_certificates),
             )
             # A later Redirect-leg POST may only replay exactly this
-            # verified request. Overwritten by each newly verified GET.
-            session["saml_verified_redirect"] = {
-                "SAMLRequest": saml_request_b64,
-                "RelayState": relay_state,
-            }
+            # verified request. Remembered per request, for this browser
+            # (#375): a second signed request in the same browser used to
+            # overwrite the first and make it non-continuable.
+            try:
+                get_verified_request_store().remember_verified(
+                    browser_flow_binding(create=True) or "",
+                    saml_request_b64,
+                    relay_state,
+                )
+            except VerifiedRequestStoreFull as full:
+                audit_event(
+                    "saml_request",
+                    "failed",
+                    endpoint="/saml/sso",
+                    details={"reason": f"AuthnRequest verification not held: {full}"},
+                )
+                return abort(
+                    503,
+                    description=(
+                        "too many signed AuthnRequests are being held, please try again"
+                    ),
+                )
         elif form_leg_verb == "GET":
-            verified = session.get("saml_verified_redirect")
-            if (
-                not isinstance(verified, dict)
-                or verified.get("SAMLRequest") != saml_request_b64
-                or verified.get("RelayState") != relay_state
+            if not get_verified_request_store().is_verified(
+                browser_flow_binding(), saml_request_b64, relay_state
             ):
                 raise SAMLSignatureError(
                     "Redirect-binding login continuation does not match a "
