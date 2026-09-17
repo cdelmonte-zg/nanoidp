@@ -128,6 +128,25 @@ The metadata advertises `WantAuthnRequestsSigned="true"` if and only if
 enforcement is on. A request verifies if any registered certificate
 validates it.
 
+A Redirect-binding signature exists only on the original URL, so it cannot
+be re-verified when the inline login form posts the request back. nanoidp
+therefore remembers, in the browser's own signed session, which Redirect
+requests that browser had verified, and admits the login post only for one
+of them, which is what keeps the hidden form fields from standing in for the
+signature. Each request is remembered on its own (#375, where it used to be
+a single slot, so a second signed request made the first non-continuable):
+ten per browser, an eleventh making the oldest non-continuable, each kept
+for **10 minutes of inactivity** and refreshed while the login is being
+continued. Nothing is shared between browsers, and the set survives a
+restart or several workers as long as they share `session.secret_key`. The
+set travels in the cookie, so two signed requests issued before either
+response's cookie reaches the browser (two SP iframes on one page, a
+prefetch, two tabs restored at once) still leave only the later one
+continuable; requests that follow one another, which is what a person
+opening two logins produces, are unaffected. The
+POST binding needs none of this: its signature travels inside the
+AuthnRequest and is verified again on every leg.
+
 Need a test SP keypair? `python e2e/gen_sp_keypair.py --out .`
 generates `sp-key.pem`/`sp-cert.pem`, and
 `e2e/test_agent.py --saml-signed` exercises the whole behavior

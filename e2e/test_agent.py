@@ -5699,6 +5699,80 @@ class NanoIDPTestAgent:
                 "Signed POST Binding", TestCategory.SAML, False, f"Error: {e}"
             )
 
+        # Two signed Redirect requests in one browser (#375): each verified
+        # request is remembered on its own, so both stay continuable.
+        try:
+            def signed_redirect(request_id: bytes, relay_state: str) -> tuple:
+                body = authn.replace(b"_e2e-signed-1", request_id)
+                compressed = zlib.compress(body, 9)[2:-4]
+                encoded = base64.b64encode(compressed).decode()
+                parts = [
+                    f"SAMLRequest={quote(encoded, safe='')}",
+                    f"RelayState={quote(relay_state, safe='')}",
+                    f"SigAlg={quote(sig_alg, safe='')}",
+                ]
+                signed = sp_key.sign(
+                    "&".join(parts).encode(), c_padding.PKCS1v15(), c_hashes.SHA256()
+                )
+                query = "&".join(parts) + (
+                    f"&Signature={quote(base64.b64encode(signed).decode(), safe='')}"
+                )
+                return query, encoded
+
+            flow = requests.Session()
+            first_query, first_request = signed_redirect(b"_e2e-tab-a", "tab-a")
+            second_query, second_request = signed_redirect(b"_e2e-tab-b", "tab-b")
+            opened = [
+                flow.get(f"{self.base_url}/saml/sso?{first_query}", timeout=5).status_code,
+                flow.get(f"{self.base_url}/saml/sso?{second_query}", timeout=5).status_code,
+            ]
+
+            def login_leg(request_b64: str, relay_state: str) -> requests.Response:
+                return flow.post(
+                    f"{self.base_url}/saml/sso",
+                    data={
+                        "SAMLRequest": request_b64,
+                        "RelayState": relay_state,
+                        "saml_original_verb": "GET",
+                        "username": self.username,
+                        "password": self.password,
+                    },
+                    timeout=5,
+                )
+
+            first_login = login_leg(first_request, "tab-a")
+            second_login = login_leg(second_request, "tab-b")
+            stranger = requests.Session().post(
+                f"{self.base_url}/saml/sso",
+                data={
+                    "SAMLRequest": first_request,
+                    "RelayState": "tab-a",
+                    "saml_original_verb": "GET",
+                    "username": self.username,
+                    "password": self.password,
+                },
+                timeout=5,
+            )
+            self._add_result(
+                "Signed Redirect Concurrent Flows",
+                TestCategory.SAML,
+                opened == [200, 200]
+                and "SAMLResponse" in first_login.text
+                and "SAMLResponse" in second_login.text
+                and stranger.status_code == 400,
+                "both flows completed; another browser refused",
+                {
+                    "opened": opened,
+                    "first_login": first_login.status_code,
+                    "second_login": second_login.status_code,
+                    "stranger": stranger.status_code,
+                },
+            )
+        except Exception as e:
+            self._add_result(
+                "Signed Redirect Concurrent Flows", TestCategory.SAML, False, f"Error: {e}"
+            )
+
         print("\n" + "─" * 70)
         ok_all = self.suite.failed == 0
         print(
