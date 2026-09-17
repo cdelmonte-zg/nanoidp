@@ -167,10 +167,30 @@ def client(app):
     return app.test_client()
 
 
-def oauth_session(client):
-    """Return the pending OAuth request stored in the test client's session."""
+def pending_transaction_ids(client):
+    """The ids of the live authorization transactions (#346) bound to the
+    test client's browser session, sorted."""
+    from nanoidp.services.authorization_transactions import get_authorization_transaction_store
+
     with client.session_transaction() as session:
-        return {key: value for key, value in session.items() if key.startswith("oauth_")}
+        binding = session.get("authorize_binding")
+    if binding is None:
+        return []
+    store = get_authorization_transaction_store()
+    return sorted(
+        transaction.id
+        for transaction in store._repository.list()
+        if transaction.is_bound_to(binding) and transaction.is_live()
+    )
+
+
+def transaction_id_of(response):
+    """The transaction id a rendered /authorize login page carries."""
+    import re
+
+    match = re.search(r'name="transaction_id" value="([^"]+)"', response.get_data(as_text=True))
+    assert match, "the page carries no transaction_id"
+    return match.group(1)
 
 
 def authorization_response_params(response):

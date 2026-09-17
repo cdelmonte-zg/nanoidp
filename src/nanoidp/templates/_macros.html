@@ -12,8 +12,8 @@
    instead, for surfaces (device.html) where a text input shares the form
    and implicit Enter-submission must not silently pick a user; the caller
    is then responsible for the click handler that actually submits. #}
-{# The declarative TOTP second factor's code screen (#348), shared by the
-   same three templates for the same reason. Stateless like two-step: the
+{# The declarative TOTP second factor's code screen (#348) on /login,
+   /saml/sso and /device (#373 tracks moving them off it). Stateless like two-step: the
    username AND the password travel forward as hidden fields (nothing is
    stored server-side; the route re-checks the password and marks the
    response no-store), and the submit button stays with the caller, since
@@ -21,6 +21,12 @@
 {% macro totp_code_fields(login_username, login_password) %}
 <input type="hidden" name="username" value="{{ login_username }}">
 <input type="hidden" name="password" value="{{ login_password }}">
+{{ totp_code_input() }}
+{% endmacro %}
+
+{# The code input alone, for a surface that keeps the verified password on
+   the server (/authorize, #346) and so has nothing to carry forward. #}
+{% macro totp_code_input() %}
 <div class="form-floating mb-4">
     <input type="text" class="form-control" id="totp_code" name="totp_code"
            placeholder="Code" required autofocus inputmode="numeric"

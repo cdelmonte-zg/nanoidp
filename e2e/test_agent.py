@@ -49,7 +49,6 @@ Uso:
 import base64
 import hashlib
 import hmac
-import html
 import json
 import os
 import re
@@ -1860,38 +1859,44 @@ class NanoIDPTestAgent:
                 and "code=" in combined_post.headers.get("Location", "")
             )
 
-            # #323 review round 2: a bare url_for('oauth.authorize') relies
-            # on the session's oauth_* fallback, which is cleared the
-            # moment any /authorize login completes - reproduced here as a
-            # second, unrelated completed login sharing the same cookie jar
-            # ("another tab"). The captured link must carry its own
-            # parameters and keep working regardless.
+            # #346: "Change username" is a form on the page's own
+            # authorization transaction. Another request of the same cookie
+            # jar ("another tab") completing in between leaves it working.
             link_sess = requests.Session()
-            link_sess.get(f"{self.base_url}/authorize", params=auth_params, timeout=5)
+            link_page = link_sess.get(f"{self.base_url}/authorize", params=auth_params, timeout=5)
+            tx_match = re.search(r'name="transaction_id" value="([^"]+)"', link_page.text)
+            link_tx = tx_match.group(1) if tx_match else ""
             link_first = link_sess.post(
-                f"{self.base_url}/authorize", data={"username": self.username}, timeout=5
+                f"{self.base_url}/authorize",
+                data={"username": self.username, "transaction_id": link_tx},
+                timeout=5,
             )
-            match = re.search(r'href="([^"]+)"[^>]*>Change username', link_first.text)
-            change_username_href = html.unescape(match.group(1)) if match else None
+            offers_change_username = 'name="change_username"' in link_first.text
 
-            link_sess.get(f"{self.base_url}/authorize", params=auth_params, timeout=5)
-            link_sess.post(f"{self.base_url}/authorize", data={"username": self.username}, timeout=5)
+            other_page = link_sess.get(
+                f"{self.base_url}/authorize", params={**auth_params, "state": "other-tab"}, timeout=5
+            )
+            other_match = re.search(r'name="transaction_id" value="([^"]+)"', other_page.text)
             link_sess.post(
                 f"{self.base_url}/authorize",
-                data={"username": self.username, "password": self.password},
+                data={
+                    "username": self.username,
+                    "password": self.password,
+                    "transaction_id": other_match.group(1) if other_match else "",
+                },
                 allow_redirects=False,
                 timeout=5,
             )
-            change_username_response = (
-                link_sess.get(f"{self.base_url}{change_username_href}", timeout=5)
-                if change_username_href
-                else None
+            change_username_response = link_sess.post(
+                f"{self.base_url}/authorize",
+                data={"change_username": "1", "transaction_id": link_tx},
+                timeout=5,
             )
-            checks["change_username_link_survives_a_cleared_session"] = (
-                change_username_href is not None
-                and change_username_response is not None
+            checks["change_username_survives_another_completed_request"] = (
+                offers_change_username
                 and change_username_response.status_code == 200
                 and 'id="username"' in change_username_response.text
+                and 'name="password"' not in change_username_response.text
             )
 
             # #323 review round 2: two_step is global, so it also applies
@@ -2032,6 +2037,11 @@ class NanoIDPTestAgent:
                 checks["code_screen_appears"] = (
                     code_screen.status_code == 200 and 'id="totp_code"' in code_screen.text
                 )
+                # #346: the verified password stays on the server.
+                checks["code_screen_carries_no_password"] = (
+                    'name="password"' not in code_screen.text
+                    and 'name="transaction_id"' in code_screen.text
+                )
 
                 wrong_code = code_sess.post(
                     f"{self.base_url}/authorize",
@@ -2096,6 +2106,123 @@ class NanoIDPTestAgent:
                 f"{self.base_url}/settings",
                 data={"totp": "true" if original_totp else "false"},
                 timeout=10,
+            )
+
+    def test_authorization_transactions(self) -> TestResult:
+        """Each accepted GET /authorize is a server-side transaction bound to
+        the browser's cookie (#346), exercised over real HTTP with two
+        independent cookie jars.
+
+        Positive: a POST naming its transaction_id completes it, a bare POST
+        still completes the one pending request of its cookie jar, and a
+        direct POST carrying the whole request in its query string completes
+        with no GET before it.
+        Negative: a transaction_id from another cookie jar is refused and
+        leaves the owner's transaction usable; a completed transaction
+        cannot be replayed; with two requests pending, a bare POST is
+        refused instead of completing whichever came last.
+        """
+        redirect_uri = "http://localhost:3000/callback"
+        credentials = {"username": self.username, "password": self.password}
+
+        def params(state: str) -> Dict[str, str]:
+            return {
+                "response_type": "code",
+                "client_id": self.client_id,
+                "redirect_uri": redirect_uri,
+                "scope": "openid",
+                "state": state,
+            }
+
+        def transaction_id(page: requests.Response) -> Optional[str]:
+            match = re.search(r'name="transaction_id" value="([^"]+)"', page.text)
+            return match.group(1) if match else None
+
+        def issued(response: requests.Response, state: str) -> bool:
+            query = parse_qs(urlparse(response.headers.get("Location", "")).query)
+            return (
+                response.status_code in (302, 303)
+                and bool(query.get("code"))
+                and query.get("state") == [state]
+            )
+
+        try:
+            checks = {}
+            owner = requests.Session()
+            page = owner.get(f"{self.base_url}/authorize", params=params("owner"), timeout=5)
+            owner_tx = transaction_id(page)
+            checks["page_names_its_transaction"] = page.status_code == 200 and bool(owner_tx)
+
+            stranger = requests.Session()
+            stolen = stranger.post(
+                f"{self.base_url}/authorize",
+                data={**credentials, "transaction_id": owner_tx or ""},
+                allow_redirects=False,
+                timeout=5,
+            )
+            checks["foreign_transaction_refused"] = (
+                stolen.status_code == 400 and "Location" not in stolen.headers
+            )
+
+            completed = owner.post(
+                f"{self.base_url}/authorize",
+                data={**credentials, "transaction_id": owner_tx or ""},
+                allow_redirects=False,
+                timeout=5,
+            )
+            checks["owner_completes_after_foreign_attempt"] = issued(completed, "owner")
+
+            replay = owner.post(
+                f"{self.base_url}/authorize",
+                data={**credentials, "transaction_id": owner_tx or ""},
+                allow_redirects=False,
+                timeout=5,
+            )
+            checks["replay_refused"] = replay.status_code == 400
+
+            scripted = requests.Session()
+            scripted.get(f"{self.base_url}/authorize", params=params("first"), timeout=5)
+            second_page = scripted.get(
+                f"{self.base_url}/authorize", params=params("second"), timeout=5
+            )
+            ambiguous = scripted.post(
+                f"{self.base_url}/authorize", data=credentials, allow_redirects=False, timeout=5
+            )
+            checks["bare_post_with_two_pending_refused"] = (
+                ambiguous.status_code == 400 and "Location" not in ambiguous.headers
+            )
+            named = scripted.post(
+                f"{self.base_url}/authorize",
+                data={**credentials, "transaction_id": transaction_id(second_page) or ""},
+                allow_redirects=False,
+                timeout=5,
+            )
+            checks["named_transaction_completes"] = issued(named, "second")
+            bare = scripted.post(
+                f"{self.base_url}/authorize", data=credentials, allow_redirects=False, timeout=5
+            )
+            checks["bare_post_with_one_pending_completes"] = issued(bare, "first")
+
+            # The documented direct entry point: a complete request in the
+            # POST's query string, no GET before it, no transaction_id.
+            direct_params = params("direct")
+            direct = requests.Session().post(
+                f"{self.base_url}/authorize",
+                params=direct_params,
+                data=credentials,
+                allow_redirects=False,
+                timeout=5,
+            )
+            checks["direct_post_without_get_completes"] = issued(direct, "direct")
+
+            success = all(checks.values())
+            return self._add_result(
+                "Authorization Transactions", TestCategory.OAUTH, success,
+                f"checks={checks}", checks,
+            )
+        except Exception as e:
+            return self._add_result(
+                "Authorization Transactions", TestCategory.OAUTH, False, f"Error: {e}"
             )
 
     def test_id_token_audience(self) -> TestResult:
@@ -6129,6 +6256,7 @@ class NanoIDPTestAgent:
                 self.test_client_branding,
                 self.test_two_step_login,
                 self.test_totp_login,
+                self.test_authorization_transactions,
                 self.test_id_token_audience,
                 self.test_id_token_time_claims,
                 self.test_id_token_audience_array,

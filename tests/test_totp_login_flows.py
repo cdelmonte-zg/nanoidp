@@ -3,10 +3,11 @@ surfaces, exactly the way test_two_step_login_flows.py covers two_step.
 
 Off by default; each surface's plain-password behavior must stay unchanged
 when it's off, and a user without a totp_secret must see no change either
-way. The step rides two_step's machinery (routes/_auth.second_factor_phase)
-and is likewise stateless: since nothing is stored server-side, the code
-screen carries the password forward as a hidden field too, re-checked on
-submit.
+way. The step rides two_step's machinery (routes/_auth.second_factor_phase).
+On /login, /saml/sso and /device it is likewise stateless: the code screen
+carries the password forward as a hidden field too, re-checked on submit.
+On /authorize the verified password is recorded on the authorization
+transaction instead (#346, see test_authorization_transactions.py).
 """
 
 import base64
@@ -248,7 +249,12 @@ class TestAuthorizeTotp:
 
         assert response.status_code == 200
         assert b'name="totp_code"' in response.data
-        assert b'name="password" value="admin"' in response.data
+        # #346: the verified password stays on the server; the code screen
+        # carries the transaction id and the code, nothing else.
+        assert b'name="password"' not in response.data
+        assert b'value="admin"' not in response.data
+        assert b'name="transaction_id"' in response.data
+        assert response.headers["Cache-Control"] == "no-store"
 
     def test_valid_code_issues_code_and_amr_reaches_id_token(self, app, client, auth_header):
         _enable_totp(app)

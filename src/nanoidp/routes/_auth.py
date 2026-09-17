@@ -305,6 +305,19 @@ def authenticate_interactively(
         return InteractiveLogin(None, SecondFactorPhase.NOT_REQUIRED, AuthMethod.PASSWORD, None)
     if config.settings.persona_mode_enabled:
         return InteractiveLogin(user, SecondFactorPhase.NOT_REQUIRED, AuthMethod.PERSONA, None)
+    return check_second_factor(config, user)
+
+
+def check_second_factor(config: ConfigManager, user: User) -> InteractiveLogin:
+    """The TOTP phase for a user whose password has already been verified,
+    reading the submitted code from this request's form (#348).
+
+    ``authenticate_interactively`` calls it right after the password check.
+    ``/authorize`` also calls it on its own when an authorization
+    transaction already records the verified password (#346), so the code
+    screen does not have to send the password back: the phase rule and the
+    field name stay spelled once either way.
+    """
     totp_active = config.settings.totp_active
     phase = second_factor_phase(
         totp_active=totp_active,

@@ -9,9 +9,9 @@ login_step sentinel; whether a request is the username-only step or a real
 login attempt is derived from whether it carries a password.
 """
 
-import re
 
 from nanoidp.config import get_config
+from tests.conftest import transaction_id_of
 
 AUTHORIZE_QS = (
     "response_type=code&client_id=demo-client"
@@ -192,33 +192,44 @@ class TestTwoStepAuthorize:
         assert info is not None
         assert info.username == "admin"
 
-    def test_change_username_link_survives_a_cleared_session(self, app, client):
-        """A bare url_for('oauth.authorize') relies on the session's oauth_*
-        fallback and 400s once those keys are gone - e.g. cleared by an
-        unrelated completed login, in another tab, sharing the same cookie
-        (_issue_authorization_code clears every oauth_ key on success).
-        'Change username' must carry the request's own parameters instead."""
+    def test_change_username_is_a_post_on_the_transaction(self, app, client):
+        """#346: "Change username" posts back to the page's own transaction
+        and needs nothing from the session but the browser binding, so it
+        keeps working while another request of the same browser completes."""
         _enable_two_step(app)
-        client.get(f"/authorize?{AUTHORIZE_QS}")
-        response = client.post("/authorize", data={"username": "admin"})
+        page = client.get(f"/authorize?{AUTHORIZE_QS}")
+        response = client.post(
+            "/authorize",
+            data={"username": "admin", "transaction_id": transaction_id_of(page)},
+        )
+        body = response.data.decode()
+        assert 'name="change_username"' in body
 
-        match = re.search(r'href="([^"]+)"[^>]*>Change username', response.data.decode())
-        assert match
-        href = match.group(1).replace("&amp;", "&")
+        # Another request of the same browser starts and completes.
+        other = "response_type=code&client_id=test-client&redirect_uri=http://localhost:4000/callback"
+        other_page = client.get(f"/authorize?{other}")
+        client.post(
+            "/authorize",
+            data={"username": "admin", "transaction_id": transaction_id_of(other_page)},
+        )
+        completed = client.post(
+            "/authorize",
+            data={
+                "username": "admin",
+                "password": "admin",
+                "transaction_id": transaction_id_of(other_page),
+            },
+        )
+        assert completed.status_code == 302
 
-        with client.session_transaction() as sess:
-            for key in list(sess.keys()):
-                if key.startswith("oauth_"):
-                    sess.pop(key)
-
-        # The bare fallback a naive link would use is now broken - proves
-        # the scenario actually reproduces the bug being regression-tested.
-        assert client.get("/authorize").status_code == 400
-
-        response = client.get(href)
+        response = client.post(
+            "/authorize",
+            data={"change_username": "1", "transaction_id": transaction_id_of(page)},
+        )
         assert response.status_code == 200
         assert b'name="username"' in response.data
         assert b'name="password"' not in response.data
+        assert transaction_id_of(response) == transaction_id_of(page)
 
     def test_persona_mode_remains_passwordless(self, app, client):
         _enable_two_step(app)

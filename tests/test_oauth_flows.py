@@ -8,7 +8,12 @@ import json
 
 import pytest
 
-from tests.conftest import authorization_response_params, authorize_error, oauth_session
+from tests.conftest import (
+    authorization_response_params,
+    authorize_error,
+    pending_transaction_ids,
+    transaction_id_of,
+)
 
 
 class TestAuthorizationCodeFlow:
@@ -144,13 +149,10 @@ class TestAuthorizationCodeFlow:
 
     def test_authorize_post_survives_another_tab_clearing_the_session(self, client):
         """#325 review round 1, point 1 ("cross-tab clearing"): a completed
-        login anywhere, sharing the same cookie jar, clears every oauth_
-        session key (_issue_authorization_code). The login form has no
-        ``action``, so a POST always lands back on the exact
-        ``/authorize?...`` URL of the page it rendered - reading that query
-        string first, rather than falling through to the now-empty session,
-        keeps this tab's POST bound to its own request instead of 400ing
-        with "client_id is required".
+        login in another tab sharing the same cookie jar consumes only that
+        tab's own authorization transaction (#346). The login form has no
+        ``action``, so this tab's POST lands back on the exact
+        ``/authorize?...`` URL of its GET, which names its own transaction.
         """
         qs = (
             'response_type=code&client_id=demo-client'
@@ -159,12 +161,16 @@ class TestAuthorizationCodeFlow:
         client.get(f'/authorize?{qs}')
 
         # A second tab, same cookie jar: a different client's request
-        # completes and clears every oauth_ session key.
-        client.get(
-            '/authorize?response_type=code&client_id=test-client'
+        # completes.
+        tab_b = (
+            'response_type=code&client_id=test-client'
             '&redirect_uri=http://localhost:4000/callback&scope=openid&state=tab-b'
         )
-        client.post('/authorize', data={'username': 'admin', 'password': 'admin'})
+        client.get(f'/authorize?{tab_b}')
+        completed = client.post(
+            f'/authorize?{tab_b}', data={'username': 'admin', 'password': 'admin'}
+        )
+        assert completed.status_code == 302
 
         # Tab A submits valid credentials on its OWN URL.
         response = client.post(f'/authorize?{qs}', data={
@@ -179,10 +185,10 @@ class TestAuthorizationCodeFlow:
 
     def test_authorize_post_is_not_hijacked_by_another_tabs_get(self, client):
         """#325 review round 1, point 1 ("cross-tab overwrite"): a second
-        tab's mere GET - no login - overwrites the session's oauth_ keys
-        with its own request. Tab A's POST, landing back on its own
-        ``/authorize?...`` URL, must stay bound to what Tab A's user
-        actually saw and approved, not be redirected to Tab B's client.
+        tab's mere GET creates a transaction of its own (#346) and touches
+        nothing of Tab A's. Tab A's POST, landing back on its own
+        ``/authorize?...`` URL, stays bound to what Tab A's user actually
+        saw and approved, not Tab B's client.
         """
         qs = (
             'response_type=code&client_id=demo-client'
@@ -215,9 +221,8 @@ class TestAuthorizationCodeFlow:
         by tab A, never completed - must not leak into a distinct, later
         request from a different client that simply doesn't send them (a
         client not sending ``state``/``nonce``/PKCE/``claims``/``resource``
-        at all, not one sending them empty). Before the fix, the per-field
-        session fallback in ``_read_authorize_params`` filled each omitted
-        field from whatever an earlier, unrelated request had last stored.
+        at all, not one sending them empty). Each request is its own
+        transaction (#346), so there is nothing to inherit from.
         """
         # Tab A: a request carrying every optional value, then abandoned.
         client.get(
@@ -232,9 +237,13 @@ class TestAuthorizationCodeFlow:
 
         # Tab B: a different client's fresh request that omits scope and all
         # optional binding parameters.
-        response = client.post(
+        tab_b = (
             '/authorize?response_type=code&client_id=test-client'
-            '&redirect_uri=http://localhost:4000/callback',
+            '&redirect_uri=http://localhost:4000/callback'
+        )
+        client.get(tab_b)
+        response = client.post(
+            tab_b,
             data={'username': 'admin', 'password': 'admin'},
             follow_redirects=False,
         )
@@ -276,13 +285,17 @@ class TestAuthorizationCodeFlow:
             '&state=old-state&nonce=old-nonce'
         )
 
-        client.get(
+        page = client.get(
             '/authorize?response_type=code&client_id=demo-client'
             '&redirect_uri=http://localhost:3000/callback&scope=openid'
         )
         response = client.post(
             '/authorize',
-            data={'username': 'admin', 'password': 'admin'},
+            data={
+                'username': 'admin',
+                'password': 'admin',
+                'transaction_id': transaction_id_of(page),
+            },
             follow_redirects=False,
         )
 
@@ -423,12 +436,12 @@ class TestAuthorizationCodeFlow:
             '/authorize?response_type=code&client_id=demo-client'
             '&redirect_uri=http://localhost:3000/callback&scope=openid&state=tab-a'
         )
-        captured = oauth_session(client)
+        captured = pending_transaction_ids(client)
 
         rejected = client.get(f"/authorize?{rejected_query}", follow_redirects=False)
 
         assert rejected.status_code == expected_status
-        assert oauth_session(client) == captured
+        assert pending_transaction_ids(client) == captured
 
         response = client.post(
             '/authorize',
@@ -453,8 +466,9 @@ class TestAuthorizationCodeFlow:
         assert info.scope == "openid"
         assert info.state == "tab-a"
 
-    def test_valid_get_captures_requested_values_before_normalization(self, app, client):
-        """#331: resumed requests revalidate the original scope and resources."""
+    def test_valid_get_stores_the_validated_request(self, app, client):
+        """#346: a transaction holds the request as validated and normalized
+        once; the POST that completes it does not validate it again."""
         resource = "https%3A%2F%2Fapi.example.com%2Fv1"
 
         response = client.get(
@@ -464,9 +478,19 @@ class TestAuthorizationCodeFlow:
         )
 
         assert response.status_code == 200
-        captured = oauth_session(client)
-        assert captured["oauth_scope"] == ""
-        assert captured["oauth_resources"] == [
+        with app.app_context():
+            from nanoidp.services.authorization_transactions import (
+                get_authorization_transaction_store,
+            )
+
+            (transaction,) = [
+                t
+                for t in get_authorization_transaction_store()._repository.list()
+                if t.id == transaction_id_of(response)
+            ]
+        assert transaction.params.scope == "openid"
+        assert transaction.params.resources == ["https://api.example.com/v1"]
+        assert transaction.requested["resource"] == [
             "https://api.example.com/v1",
             "https://api.example.com/v1",
         ]
@@ -489,21 +513,24 @@ class TestAuthorizationCodeFlow:
         assert info.resource == ["https://api.example.com/v1"]
 
     def test_rejected_get_without_pending_request_creates_no_capture(self, client):
-        """#331: a rejected request cannot become resumable by itself."""
+        """#331: a rejected request creates no transaction."""
         response = client.get(
             "/authorize?response_type=code&client_id=unknown-client"
             "&redirect_uri=http://localhost:3000/callback&state=evil"
         )
 
         assert response.status_code == 400
-        assert oauth_session(client) == {}
+        assert pending_transaction_ids(client) == []
 
     def test_failed_post_does_not_rebind_pending_request(self, client):
-        """#328: a direct POST on another URL must not replace the GET fallback."""
+        """#328: a direct POST on another URL must not replace the pending
+        request. With transactions (#346) the direct POST is validated and
+        runs against a transaction of its own, which ends with it."""
         client.get(
             '/authorize?response_type=code&client_id=demo-client'
             '&redirect_uri=http://localhost:3000/callback&scope=openid&state=tab-a'
         )
+        pending = pending_transaction_ids(client)
 
         failed = client.post(
             '/authorize?response_type=code&client_id=test-client'
@@ -512,6 +539,7 @@ class TestAuthorizationCodeFlow:
         )
         assert failed.status_code == 200
         assert b'Invalid username or password' in failed.data
+        assert pending_transaction_ids(client) == pending
 
         response = client.post(
             '/authorize',
@@ -523,23 +551,37 @@ class TestAuthorizationCodeFlow:
         assert response.headers['Location'].startswith('http://localhost:3000/callback')
         assert 'state=tab-a' in response.headers['Location']
 
-    def test_another_tabs_get_rebinds_bare_post_fallback(self, client):
-        """#329 review: the fallback is shared session state, not tab isolation."""
+    def test_bare_post_with_several_pending_requests_is_refused(self, client):
+        """#346: a POST that names no transaction resumes the browser's one
+        pending request; with several it refuses rather than guesses which,
+        and a POST naming one still completes it."""
         client.get(
             '/authorize?response_type=code&client_id=demo-client'
             '&redirect_uri=http://localhost:3000/callback&scope=openid&state=tab-a'
         )
-        client.get(
+        page_b = client.get(
             '/authorize?response_type=code&client_id=test-client'
             '&redirect_uri=http://localhost:4000/callback&scope=openid&state=tab-b'
         )
 
-        response = client.post(
+        ambiguous = client.post(
             '/authorize',
             data={'username': 'admin', 'password': 'admin'},
             follow_redirects=False,
         )
+        assert ambiguous.status_code == 400
+        assert 'Several authorization requests' in ambiguous.get_json()['error_description']
+        assert len(pending_transaction_ids(client)) == 2
 
+        response = client.post(
+            '/authorize',
+            data={
+                'username': 'admin',
+                'password': 'admin',
+                'transaction_id': transaction_id_of(page_b),
+            },
+            follow_redirects=False,
+        )
         assert response.status_code == 302
         assert response.headers['Location'].startswith('http://localhost:4000/callback')
         assert 'state=tab-b' in response.headers['Location']
