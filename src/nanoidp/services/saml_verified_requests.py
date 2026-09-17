@@ -18,6 +18,15 @@ no such coupling, and it survives a restart or several workers, as long as
 they share the Flask secret - which is what sharing a signed session already
 requires.
 
+What this buys has one edge: the set travels in the cookie, so each response
+carries it as the request that produced it saw it. Two signed GETs issued
+before either response's cookie lands - two SP iframes on one page, a
+prefetch, two tabs restored at once - both start from the same set, and the
+browser keeps the last response's. The earlier one is then not continuable.
+Requests that follow one another, which is what a person doing two logins
+produces, are unaffected; and the alternative, a set the server holds for
+every browser, was the worse trade (above).
+
 This module is framework-free: it owns the digest and the bounded, expiring
 set, and the route owns the session it is kept in. The POST binding is not
 here at all: its signature travels inside the XML and is verified again on
@@ -90,6 +99,9 @@ def _parsed(remembered: object) -> List[Entry]:
         if isinstance(entry, (list, tuple))
         and len(entry) == 2
         and isinstance(entry[0], str)
+        # compare_digest refuses a non-ASCII str, and this function
+        # promises never to raise on what it does not recognise.
+        and entry[0].isascii()
         and isinstance(entry[1], (int, float))
         and not isinstance(entry[1], bool)
     ]

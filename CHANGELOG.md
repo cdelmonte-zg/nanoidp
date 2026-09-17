@@ -237,7 +237,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   requests it had verified: ten of them, an eleventh making the oldest
   non-continuable, each kept for 10 minutes of inactivity and refreshed
   while the login is continued, and remembered only when a login actually
-  has to be continued. What the login post must present is unchanged, and
+  has to be continued. Two signed requests issued before either response's
+  cookie reaches the browser still leave only the later one continuable,
+  since the set travels in that cookie. What the login post must present is unchanged, and
   an expired verification now says so in the audit and the log instead of
   reporting the signature as invalid.
 

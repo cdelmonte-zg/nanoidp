@@ -139,6 +139,11 @@ ten per browser, an eleventh making the oldest non-continuable, each kept
 for **10 minutes of inactivity** and refreshed while the login is being
 continued. Nothing is shared between browsers, and the set survives a
 restart or several workers as long as they share `session.secret_key`. The
+set travels in the cookie, so two signed requests issued before either
+response's cookie reaches the browser (two SP iframes on one page, a
+prefetch, two tabs restored at once) still leave only the later one
+continuable; requests that follow one another, which is what a person
+opening two logins produces, are unaffected. The
 POST binding needs none of this: its signature travels inside the
 AuthnRequest and is verified again on every leg.
 

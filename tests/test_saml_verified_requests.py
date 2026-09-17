@@ -70,6 +70,28 @@ def _login_leg(client, request_id: bytes = b"_sig-test-1", relay_state="RS"):
     )
 
 
+class _Clock:
+    """A clock for this module only: the service reads ``time.time`` through
+    its own module attribute, so replacing that leaves the rest of the
+    process - Flask's cookie expiry, other stores' TTLs - on the real one."""
+
+    def __init__(self, now: float) -> None:
+        self.now = now
+
+    def time(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> "_Clock":
+        self.now += seconds
+        return self
+
+
+def _freeze(monkeypatch, now: float) -> _Clock:
+    clock = _Clock(now)
+    monkeypatch.setattr(verified_module, "time", clock)
+    return clock
+
+
 def _remembered(client):
     with client.session_transaction() as session:
         return list(session.get("saml_verified_redirects") or [])
@@ -143,8 +165,7 @@ class TestBounds:
 
     def test_a_verification_expires(self, client, signed_mode, monkeypatch):
         assert client.get(f"/saml/sso?{_signed_query()}").status_code == 200
-        later = time.time() + verified_module.VERIFIED_REQUEST_LIFETIME_SECONDS + 1
-        monkeypatch.setattr(verified_module.time, "time", lambda: later)
+        _freeze(monkeypatch, time.time() + verified_module.VERIFIED_REQUEST_LIFETIME_SECONDS + 1)
 
         response = _login_leg(client)
 
@@ -157,10 +178,9 @@ class TestBounds:
             get_config().settings.two_step = True
         assert client.get(f"/saml/sso?{_signed_query()}").status_code == 200
 
-        clock = time.time()
-        monkeypatch.setattr(verified_module.time, "time", lambda: clock)
+        clock = _freeze(monkeypatch, time.time())
         for _ in range(4):
-            clock += verified_module.VERIFIED_REQUEST_LIFETIME_SECONDS - 60
+            clock.advance(verified_module.VERIFIED_REQUEST_LIFETIME_SECONDS - 60)
             username_step = client.post(
                 "/saml/sso",
                 data={
@@ -213,6 +233,38 @@ class TestBounds:
         assert b"SAMLResponse" not in refused.data
 
 
+class TestRefusals:
+    def test_a_refused_login_leg_writes_no_session(self, client, signed_mode):
+        """A browser that had nothing remembered is not handed a cookie for
+        having been refused."""
+        refused = client.post(
+            "/saml/sso",
+            data={
+                "SAMLRequest": _request_b64(b"_never-verified"),
+                "RelayState": "RS",
+                "saml_original_verb": "GET",
+                "username": "admin",
+                "password": "admin",
+            },
+        )
+
+        assert refused.status_code == 400
+        assert "Set-Cookie" not in refused.headers
+
+    def test_an_expired_verification_keeps_saying_so(self, client, signed_mode, monkeypatch):
+        """The refusal prunes nothing, so a second attempt is not told the
+        request was never verified."""
+        assert client.get(f"/saml/sso?{_signed_query()}").status_code == 200
+        _freeze(monkeypatch, time.time() + verified_module.VERIFIED_REQUEST_LIFETIME_SECONDS + 1)
+
+        first = _login_leg(client)
+        second = _login_leg(client)
+
+        assert first.status_code == second.status_code == 400
+        assert b"expired" in first.data
+        assert b"expired" in second.data
+
+
 class TestTheRememberedSet:
     """The bounded expiring set itself, without Flask."""
 
@@ -250,7 +302,17 @@ class TestTheRememberedSet:
 
     @pytest.mark.parametrize(
         "remembered",
-        ["not-a-list", None, [["d"]], [{"digest": "d"}], [["d", "not-a-number"]], [["d", True]]],
+        [
+            "not-a-list",
+            None,
+            [["d"]],
+            [{"digest": "d"}],
+            [["d", "not-a-number"]],
+            [["d", True]],
+            # compare_digest refuses a non-ASCII str: reading one must not
+            # turn every later request into a 500.
+            [["dÄ", 1000.0]],
+        ],
     )
     def test_anything_else_under_the_key_reads_as_nothing_remembered(self, remembered):
         """The session is signed, not trusted to have this shape: an older

@@ -463,7 +463,7 @@ def _admit_redirect_login_leg(
     the audit and the log, so neither says the signature was invalid; the
     browser gets the same 400 either way.
     """
-    state, live = state_of(
+    state, _live = state_of(
         session.get(_VERIFIED_REDIRECTS_SESSION_KEY),
         request_digest(saml_request_b64, relay_state),
     )
@@ -472,7 +472,10 @@ def _admit_redirect_login_leg(
         # screens (two-step, then a TOTP code).
         _remember_verified_redirect(saml_request_b64, relay_state)
         return None
-    session[_VERIFIED_REDIRECTS_SESSION_KEY] = live
+    # The refusal writes nothing: a browser that had no session gets no
+    # cookie for having been refused, and the expired entry stays there, so
+    # a second attempt is told it expired rather than that it never
+    # happened. The next verification prunes it.
     expired = state is VerificationState.EXPIRED
     reason = (
         "the verified Redirect AuthnRequest expired"
