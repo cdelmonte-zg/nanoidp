@@ -184,6 +184,12 @@ class NanoIDPTestAgent:
         self.refresh_token: Optional[str] = None
         self.id_token: Optional[str] = None
 
+        # One nonce per agent run (#309): every AttributeQuery this agent
+        # sends carries it, so a server-side line says which run, which test
+        # and which leg it came from - and a request from another client or
+        # an earlier run is recognisable on sight.
+        self.run_id = secrets.token_hex(3)
+
         # Test results
         self.suite = TestSuite()
 
@@ -3360,6 +3366,52 @@ class NanoIDPTestAgent:
         except Exception as e:
             return self._add_result("SAML SSO (Redirect binding)", TestCategory.SAML, False, str(e))
 
+    def _attribute_query_id(self, test: str, leg: str) -> str:
+        """The ID an AttributeQuery of this run carries (#309)."""
+        return f"_aq-{self.run_id}-{test}-{leg}"
+
+    def _attribute_query_audit(self, request_ids: List[str]) -> str:
+        """What the server recorded for these queries, for a failure message
+        (#309): the client's view and the server's view in one place, so a
+        failing run does not have to be correlated against a log by hand.
+
+        Entries whose request_id is not one of ours are listed too, under
+        "foreign": that is how an unexplained request from another client
+        gets separated from this run's.
+        """
+        try:
+            response = self.session.get(
+                f"{self.base_url}/api/audit",
+                params={"event_type": "saml_attribute_query", "limit": 20},
+                timeout=5,
+            )
+            if response.status_code != 200:
+                return f" | audit unavailable: {response.status_code}"
+            entries = response.json().get("entries", [])
+        except Exception as e:
+            return f" | audit unavailable: {e}"
+
+        def summarize(entry: dict) -> str:
+            details = entry.get("details") or {}
+            return (
+                f"{entry.get('timestamp', '?')} {entry.get('status', '?')}"
+                f" id={details.get('request_id')!r}"
+                # 'error' is what the catch-all writes, which is the very
+                # outcome #309 is about: never drop it.
+                f" reason={details.get('reason') or details.get('error') or details.get('attributes_count')!r}"
+                f" len={details.get('content_length')}"
+            )
+
+        ours, foreign = [], []
+        for entry in entries:
+            details = entry.get("details") or {}
+            target = ours if details.get("request_id") in request_ids else foreign
+            target.append(summarize(entry))
+        message = " | server audit (ours): " + ("; ".join(ours) if ours else "none")
+        if foreign:
+            message += " | server audit (foreign): " + "; ".join(foreign)
+        return message
+
     def test_saml_attribute_query(self) -> TestResult:
         """SAML Attribute Query endpoint (SOAP binding).
 
@@ -3380,11 +3432,11 @@ class NanoIDPTestAgent:
                 f"<soap:Body>{inner}</soap:Body></soap:Envelope>"
             )
 
-        def _query(name_id: str) -> str:
+        def _query(name_id: str, query_id: str) -> str:
             return _enveloped(
                 '<samlp:AttributeQuery xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"'
                 ' xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion"'
-                ' ID="_attrquery123" Version="2.0" IssueInstant="2024-01-01T00:00:00Z">'
+                f' ID="{query_id}" Version="2.0" IssueInstant="2024-01-01T00:00:00Z">'
                 "<saml:Issuer>test-sp</saml:Issuer>"
                 f"<saml:Subject><saml:NameID>{name_id}</saml:NameID></saml:Subject>"
                 "</samlp:AttributeQuery>"
@@ -3392,10 +3444,14 @@ class NanoIDPTestAgent:
 
         try:
             checks = {}
+            ids = {
+                leg: self._attribute_query_id("query", leg)
+                for leg in ("valid", "unknown", "malformed")
+            }
 
             valid = requests.post(
                 f"{self.base_url}/saml/attribute-query",
-                data=_query(self.username),
+                data=_query(self.username, ids["valid"]),
                 headers={"Content-Type": "text/xml"},
                 timeout=5,
             )
@@ -3405,7 +3461,7 @@ class NanoIDPTestAgent:
 
             unknown = requests.post(
                 f"{self.base_url}/saml/attribute-query",
-                data=_query("no-such-user-e2e"),
+                data=_query("no-such-user-e2e", ids["unknown"]),
                 headers={"Content-Type": "text/xml"},
                 timeout=5,
             )
@@ -3419,7 +3475,7 @@ class NanoIDPTestAgent:
                 f"{self.base_url}/saml/attribute-query",
                 data=_enveloped(
                     '<samlp:AttributeQuery xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"'
-                    ' ID="_x" Version="2.0" IssueInstant="2024-01-01T00:00:00Z"/>'
+                    f' ID="{ids["malformed"]}" Version="2.0" IssueInstant="2024-01-01T00:00:00Z"/>'
                 ),
                 headers={"Content-Type": "text/xml"},
                 timeout=5,
@@ -3433,14 +3489,20 @@ class NanoIDPTestAgent:
             success = all(checks.values())
             message = "; ".join(f"{k}={v}" for k, v in checks.items())
             if not success:
-                # Flake forensics (#309): on failure, capture what the agent
-                # actually SAW - statuses and body prefixes - since the
-                # server log cannot show response bodies.
-                message += (
-                    f" | valid: {valid.status_code} {valid.text[:160]!r}"
-                    f" | unknown: {unknown.status_code} {unknown.text[:160]!r}"
-                    f" | malformed: {malformed.status_code} {malformed.text[:160]!r}"
-                )
+                # Flake forensics (#309): on failure, carry BOTH views - what
+                # the agent saw per leg, named by the id it sent, and what
+                # the server recorded for those ids.
+                message += f" | run={self.run_id}"
+                for leg, response in (
+                    ("valid", valid),
+                    ("unknown", unknown),
+                    ("malformed", malformed),
+                ):
+                    message += (
+                        f" | {leg}: id={ids[leg]} {response.status_code}"
+                        f" {response.text[:160]!r}"
+                    )
+                message += self._attribute_query_audit(list(ids.values()))
             return self._add_result(
                 "SAML Attribute Query",
                 TestCategory.SAML,
@@ -3472,7 +3534,7 @@ class NanoIDPTestAgent:
                 <soap:Body>
                     <samlp:AttributeQuery xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"
                         xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion"
-                        ID="_signtest123" Version="2.0" IssueInstant="2024-01-01T00:00:00Z">
+                        ID="{self._attribute_query_id('signing', 'valid')}" Version="2.0" IssueInstant="2024-01-01T00:00:00Z">
                         <saml:Issuer>test-sp</saml:Issuer>
                         <saml:Subject>
                             <saml:NameID>{self.username}</saml:NameID>
@@ -3556,7 +3618,7 @@ class NanoIDPTestAgent:
                 <soap:Body>
                     <samlp:AttributeQuery xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"
                         xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion"
-                        ID="_c14ntest123" Version="2.0" IssueInstant="2024-01-01T00:00:00Z">
+                        ID="{self._attribute_query_id('c14n', 'valid')}" Version="2.0" IssueInstant="2024-01-01T00:00:00Z">
                         <saml:Issuer>test-sp</saml:Issuer>
                         <saml:Subject>
                             <saml:NameID>{self.username}</saml:NameID>
@@ -3678,7 +3740,7 @@ class NanoIDPTestAgent:
                 <soap:Body>
                     <samlp:AttributeQuery xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"
                         xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion"
-                        ID="_exc_c14n_test" Version="2.0" IssueInstant="2024-01-01T00:00:00Z">
+                        ID="{self._attribute_query_id('exclusive-c14n', 'valid')}" Version="2.0" IssueInstant="2024-01-01T00:00:00Z">
                         <saml:Issuer>test-sp</saml:Issuer>
                         <saml:Subject>
                             <saml:NameID>{self.username}</saml:NameID>
@@ -3907,7 +3969,7 @@ class NanoIDPTestAgent:
                 <soap:Body>
                     <samlp:AttributeQuery xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"
                         xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion"
-                        ID="_attrquery_verify_123" Version="2.0" IssueInstant="2024-01-01T00:00:00Z">
+                        ID="{self._attribute_query_id('verification', 'valid')}" Version="2.0" IssueInstant="2024-01-01T00:00:00Z">
                         <saml:Issuer>test-sp</saml:Issuer>
                         <saml:Subject>
                             <saml:NameID>{self.username}</saml:NameID>
@@ -3993,7 +4055,7 @@ class NanoIDPTestAgent:
                 <soap:Body>
                     <samlp:AttributeQuery xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"
                         xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion"
-                        ID="_attrquery_export_123" Version="2.0" IssueInstant="2024-01-01T00:00:00Z">
+                        ID="{self._attribute_query_id('export', 'valid')}" Version="2.0" IssueInstant="2024-01-01T00:00:00Z">
                         <saml:Issuer>test-sp</saml:Issuer>
                         <saml:Subject>
                             <saml:NameID>{self.username}</saml:NameID>

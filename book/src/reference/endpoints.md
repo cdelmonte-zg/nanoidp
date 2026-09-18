@@ -84,7 +84,12 @@ the REST read surfaces (reads are never gated): nanoidp is a testing IdP and
 its user directory is test data. On a shared instance, anyone who can reach
 the endpoint can read any configured user's attributes; deploy accordingly.
 An unknown NameID gets a SAML error status (`Requester`/`UnknownPrincipal`),
-never a fabricated assertion.
+never a fabricated assertion. Every query it answers is audited, refusals
+included (#309), so the same reachability that lets a stranger read
+attributes also lets one fill the audit ring and push older entries out of
+it; the recorded query id is truncated so a single request cannot store more
+than a name's worth of text - in the audit entry only: the `InResponseTo` of
+the answer carries the id exactly as it was sent.
 
 ## REST API
 

@@ -1021,6 +1021,104 @@ def _soap_fault(message: str, *, client_fault: bool = True) -> "ResponseReturnVa
     return Response(body, status=500, mimetype="text/xml")
 
 
+def _query_id_of(root: Optional[Any]) -> Optional[str]:
+    """The ``ID`` of the AttributeQuery in this body, as early as the body
+    allows (#309).
+
+    A request that is refused before the query is located is exactly the one
+    a log cannot attribute to a sender, so the id is read from whatever
+    shape arrived: the enveloped query, or a bare ``AttributeQuery`` posted
+    without the SOAP envelope, which is what the unexplained 500 of #309
+    was. ``None`` when the body says nothing about it, which is the honest
+    answer rather than a guess.
+    """
+    if root is None:
+        return None
+    query = root.find(".//saml2p:AttributeQuery", _SAML_QUERY_NAMESPACES)
+    if query is None and etree.QName(root).text == (
+        f"{{{_SAML_QUERY_NAMESPACES['saml2p']}}}AttributeQuery"
+    ):
+        # A bare query, posted without the SOAP envelope. The namespace is
+        # part of the match: an element that merely shares the local name is
+        # not a query, and naming it would be the guess this refuses to make.
+        query = root
+    return query.get("ID") if query is not None else None
+
+
+# The id is chosen by an unauthenticated caller and kept in the audit ring,
+# so as EVIDENCE it is bounded: enough to match a sender, never enough to
+# fill the log with. This is a diagnostic shortening and nothing else: the
+# value the protocol carries back in InResponseTo is the id as it arrived.
+MAX_REQUEST_ID_CHARS = 128
+
+
+def _bounded_request_id(request_id: Optional[str]) -> Optional[str]:
+    """The id as it goes into an audit entry or a log line, never into a
+    SAML Response."""
+    if request_id is None:
+        return None
+    if len(request_id) <= MAX_REQUEST_ID_CHARS:
+        return request_id
+    return request_id[:MAX_REQUEST_ID_CHARS] + "...(truncated)"
+
+
+def _audit_attribute_query(
+    status: str,
+    *,
+    request_id: Optional[str],
+    reason: str,
+    size: int,
+    username: Optional[str] = None,
+) -> None:
+    """One audit entry per AttributeQuery outcome, the early refusals
+    included (#309): before this, a request refused for its shape wrote
+    nothing, so the only trace of it was a log line no sender could be
+    matched to."""
+    audit_event(
+        "saml_attribute_query",
+        status,
+        endpoint="/saml/attribute-query",
+        username=username,
+        details={
+            "reason": reason,
+            "request_id": _bounded_request_id(request_id),
+            # The bytes read, not the declared Content-Length: a header can
+            # overstate the body, and a chunked request declares none.
+            "content_length": size,
+        },
+    )
+
+
+def _attribute_query_fault(
+    message: str,
+    *,
+    request_id: Optional[str],
+    body: bytes = b"",
+    detail: Optional[str] = None,
+) -> ResponseReturnValue:
+    """Refuse a malformed AttributeQuery: audited, logged once, and answered
+    with the SOAP fault the caller has always got."""
+    _audit_attribute_query("failed", request_id=request_id, reason=message, size=len(body))
+    logger.warning(
+        "%s (request_id=%s, %d bytes)%s",
+        message,
+        _bounded_request_id(request_id),
+        len(body),
+        f": {detail}" if detail else "",
+    )
+    if body and get_config().settings.verbose_logging:
+        # The body names a principal, so it is operator-only material.
+        logger.debug("AttributeQuery body: %r", body[:2000])
+    return _soap_fault(message)
+
+
+_SAML_QUERY_NAMESPACES = {
+    "soap": "http://schemas.xmlsoap.org/soap/envelope/",
+    "saml2p": "urn:oasis:names:tc:SAML:2.0:protocol",
+    "saml2": "urn:oasis:names:tc:SAML:2.0:assertion",
+}
+
+
 @saml_bp.route("/attribute-query", methods=["POST"])
 def attribute_query() -> ResponseReturnValue:
     """
@@ -1051,37 +1149,56 @@ def attribute_query() -> ResponseReturnValue:
         try:
             root = secure_fromstring(soap_body)
         except Exception as parse_error:
-            logger.warning(f"AttributeQuery request is not well-formed XML: {parse_error}")
-            return _soap_fault("Request body is not well-formed XML")
+            # Nothing in this body can be attributed to a sender (#309), so
+            # the parser's own complaint is the only clue there is.
+            return _attribute_query_fault(
+                "Request body is not well-formed XML",
+                request_id=None,
+                body=soap_body,
+                detail=str(parse_error),
+            )
 
-        # SAML namespaces
-        namespaces = {
-            "soap": "http://schemas.xmlsoap.org/soap/envelope/",
-            "saml2p": "urn:oasis:names:tc:SAML:2.0:protocol",
-            "saml2": "urn:oasis:names:tc:SAML:2.0:assertion",
-        }
+        namespaces = _SAML_QUERY_NAMESPACES
+        # Read who sent this before deciding anything about it (#309).
+        request_id = _query_id_of(root)
 
         # Extract AttributeQuery from SOAP body
         attr_query = root.find(".//saml2p:AttributeQuery", namespaces)
         if attr_query is None:
-            logger.warning("Invalid AttributeQuery: AttributeQuery element not found")
-            return _soap_fault("Invalid AttributeQuery: AttributeQuery element not found")
+            return _attribute_query_fault(
+                "Invalid AttributeQuery: AttributeQuery element not found",
+                request_id=request_id,
+                body=soap_body,
+            )
 
         # Extract Subject/NameID (user identifier)
         subject = attr_query.find(".//saml2:Subject", namespaces)
         if subject is None:
-            logger.warning("Invalid AttributeQuery: Subject not found")
-            return _soap_fault("Invalid AttributeQuery: Subject not found")
+            return _attribute_query_fault(
+                "Invalid AttributeQuery: Subject not found",
+                request_id=request_id,
+                body=soap_body,
+            )
 
         name_id_el = subject.find(".//saml2:NameID", namespaces)
         if name_id_el is None:
-            logger.warning("Invalid AttributeQuery: NameID not found")
-            return _soap_fault("Invalid AttributeQuery: NameID not found")
+            return _attribute_query_fault(
+                "Invalid AttributeQuery: NameID not found",
+                request_id=request_id,
+                body=soap_body,
+            )
 
         user_id = name_id_el.text
-        request_id = attr_query.get("ID", "_unknown")
+        # The id as it arrived: it travels back in InResponseTo, so it is
+        # not the shortened one the audit keeps. An ID="" stays "", as it
+        # always has; only an absent one becomes "_unknown".
+        request_id = request_id if request_id is not None else "_unknown"
 
-        logger.info(f"AttributeQuery for user: {user_id}")
+        logger.info(
+            "AttributeQuery for user: %s (request_id=%s)",
+            user_id,
+            _bounded_request_id(request_id),
+        )
 
         # Get user from config
         user = identities_for(config).get_user(user_id)
@@ -1112,12 +1229,12 @@ def attribute_query() -> ResponseReturnValue:
             error_xml = _sign_attribute_query_response(
                 error_xml, config.settings.saml_sign_responses
             )
-            audit_event(
-                "saml_attribute_query",
+            _audit_attribute_query(
                 "failed",
-                endpoint="/saml/attribute-query",
+                request_id=request_id,
+                reason="unknown principal",
+                size=len(soap_body),
                 username=user_id,
-                details={"reason": "unknown principal"},
             )
             soap_error = f"""<?xml version="1.0" encoding="UTF-8"?>
 <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
@@ -1154,7 +1271,11 @@ def attribute_query() -> ResponseReturnValue:
             "success",
             endpoint="/saml/attribute-query",
             username=user_id,
-            details={"attributes_count": len(attributes)},
+            details={
+                "attributes_count": len(attributes),
+                "request_id": _bounded_request_id(request_id),
+                "content_length": len(soap_body),
+            },
         )
 
         logger.info(
@@ -1170,7 +1291,11 @@ def attribute_query() -> ResponseReturnValue:
             "saml_attribute_query",
             "failed",
             endpoint="/saml/attribute-query",
-            details={"error": str(e)},
+            details={
+                "error": str(e),
+                "request_id": _bounded_request_id(locals().get("request_id")),
+                "content_length": len(request.get_data() or b""),
+            },
         )
 
         return _soap_fault("AttributeQuery failed", client_fault=False)
