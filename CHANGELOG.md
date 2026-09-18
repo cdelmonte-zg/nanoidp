@@ -229,6 +229,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lowered `max_previous_keys` trims the JWKS as soon as it is applied.
 
 ### Changed
+- **SAML XML is parsed through a parser built per call** (#378), not one
+  shared by every request thread. Sharing one was never a correctness
+  problem - an `lxml` parser owns a lock and holds it for each parse - but
+  that lock serialized every SAML parse in the process: measured on 24000
+  parses of a 5 KB document, the shared parser took 3.0 s on one thread and
+  2.3 s on eight, while a parser per call took 3.2 s on one and 0.64 s on
+  eight. The cost sits at the small end, about a microsecond per parse of a
+  300-byte AuthnRequest, against requests that take milliseconds. It also
+  removes the shared object that twice stood as an alternative explanation
+  for a surprising parse while #309 was being diagnosed. The parser options
+  are unchanged and spelled out literally where the parser is built, which
+  is what both a reader and a static analyser go by; they are now pinned by
+  tests, where one of them used to be a comment block asserting nothing.
+
 - **Every `/saml/attribute-query` outcome is attributable to its sender**
   (#309). A query refused for its shape - not well-formed, no
   `AttributeQuery`, no `Subject`, no `NameID` - used to write no audit entry

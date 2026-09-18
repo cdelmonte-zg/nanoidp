@@ -50,18 +50,47 @@ from ._auth import (
 )
 from ._issuer import effective_saml_entity_id, effective_saml_sso_url
 
-# Create secure XML parser (XXE protection without deprecated defusedxml.lxml)
-_secure_parser = etree.XMLParser(
-    resolve_entities=False,
-    no_network=True,
-    dtd_validation=False,
-    load_dtd=False,
-)
+
+def _secure_parser() -> etree.XMLParser:
+    """A parser that resolves no entity, loads no DTD and reaches no
+    network: XXE protection without the deprecated defusedxml.lxml.
+
+    The options are written out here, literally, at the one place that
+    builds a parser. Passing them as a mapping hid them from static
+    analysis - CodeQL reported ``py/xxe`` on the call, because from where it
+    stands a parser built from ``**options`` may resolve entities - and it
+    would also have been a dial a caller could turn process-wide.
+    """
+    return etree.XMLParser(
+        resolve_entities=False,
+        no_network=True,
+        dtd_validation=False,
+        load_dtd=False,
+    )
 
 
 def secure_fromstring(xml_bytes: bytes) -> etree._Element:
-    """Parse XML securely, preventing XXE attacks."""
-    return etree.fromstring(xml_bytes, parser=_secure_parser)
+    """Parse XML securely, preventing XXE attacks.
+
+    The parser is built per call, not once at module scope (#378).
+
+    Sharing one was never a correctness problem: an ``lxml`` parser owns a
+    lock and takes it for the duration of each parse (``_ParserContext``
+    in lxml's ``parser.pxi``). That lock is the reason to stop sharing it -
+    it serializes every SAML parse in the process. Measured here on 24000
+    parses of a 5 KB document: shared, 3.0 s on one thread and 2.3 s on
+    eight, which is no scaling at all; a parser per call, 3.2 s on one
+    thread and 0.64 s on eight. The cost is at the other end of the size
+    range, where building the parser outweighs the parse: about a
+    microsecond per parse of a 300-byte AuthnRequest, against requests that
+    take milliseconds.
+
+    It also removes the shared object that twice stood as an alternative
+    explanation for a surprising parse while #309 was being diagnosed -
+    probed there with three documents across twelve threads and 36000
+    parses, checking every root tag, with no mixes.
+    """
+    return etree.fromstring(xml_bytes, parser=_secure_parser())
 
 
 # Try to import signxml for SAML signing

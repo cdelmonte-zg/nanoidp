@@ -1,3 +1,4 @@
+
 """
 Tests for CodeQL security fixes in NanoIDP.
 
@@ -17,12 +18,17 @@ class TestXXEProtection:
     """Tests for XML External Entity attack prevention."""
 
     def test_secure_parser_is_used_for_saml_parsing(self):
-        """Verify that secure XML parser is used for SAML parsing."""
+        """Verify that secure XML parsing is what SAML goes through."""
+        from lxml import etree
+
         from nanoidp.routes import saml
-        # Check that secure_fromstring is available
-        assert hasattr(saml, 'secure_fromstring')
-        # Check that parser is configured securely
-        assert hasattr(saml, '_secure_parser')
+
+        assert hasattr(saml, "secure_fromstring")
+        # Since #378 the parser is built per call rather than shared
+        # between request threads: a parser object, a new one each time.
+        first, second = saml._secure_parser(), saml._secure_parser()
+        assert isinstance(first, etree.XMLParser)
+        assert first is not second
 
     def test_malicious_xxe_payload_rejected(self, client):
         """Test that XXE payloads in SAML requests are rejected."""
@@ -218,12 +224,167 @@ default_user: admin
 class TestSecureXMLParser:
     """Tests to verify secure XML parser is properly configured."""
 
-    def test_secure_parser_configured(self):
-        """Test that secure XML parser has correct settings."""
+    def test_secure_parser_refuses_a_dtd_it_is_pointed_at(self):
+        """What the options do, asserted through the parser rather than
+        through a table of their names.
 
-        # Verify parser is configured to block XXE attacks
-        # resolve_entities=False prevents entity expansion
-        # no_network=True blocks network access
+        This test used to be a comment block asserting nothing, so the
+        settings it describes were pinned by no test at all (#378). A local
+        DTD the document points at is not fetched, so its declarations
+        never apply - the file could not be read even if it existed.
+        """
+        from nanoidp.routes.saml import secure_fromstring
+
+        document = b"""<?xml version="1.0"?>
+<!DOCTYPE root SYSTEM "file:///nonexistent/there-is-no-such.dtd">
+<root>text</root>"""
+
+        root = secure_fromstring(document)
+
+        assert root.tag == "root"
+        assert root.text == "text"
+
+    def test_a_dtd_the_document_points_at_is_not_applied(self, tmp_path):
+        """``load_dtd=False``, observed rather than asserted on a name.
+
+        A DTD that declares a default attribute changes the tree when it is
+        loaded. This one is a real file the document points at, so nothing
+        but the option stops it from applying.
+        """
+        from nanoidp.routes.saml import secure_fromstring
+
+        dtd = tmp_path / "defaults.dtd"
+        dtd.write_text('<!ATTLIST root loaded CDATA "yes">')
+        document = (
+            f'<?xml version="1.0"?>\n'
+            f'<!DOCTYPE root SYSTEM "file://{dtd}">\n'
+            f"<root>text</root>"
+        ).encode()
+
+        root = secure_fromstring(document)
+
+        assert root.get("loaded") is None
+
+    def test_the_parser_is_built_with_its_options_spelled_out(self):
+        """The four options are literals at the one place that builds a
+        parser (#378 review).
+
+        Read from the source on purpose: ``no_network`` has no observable
+        effect while ``load_dtd`` is off, and a parser does not expose what
+        it was built with. The literals are also what a static analyser
+        reads - CodeQL reported ``py/xxe`` when they were passed as a
+        mapping, because from where it stands ``**options`` may resolve
+        entities.
+        """
+        import inspect
+
+        from nanoidp.routes.saml import _secure_parser
+
+        source = inspect.getsource(_secure_parser)
+
+        for option in (
+            "resolve_entities=False",
+            "no_network=True",
+            "dtd_validation=False",
+            "load_dtd=False",
+        ):
+            assert option in source, option
+
+    def test_each_parse_builds_its_own_parser(self, monkeypatch):
+        """#378's whole invariant, pinned where it can be observed.
+
+        Counted at ``etree.XMLParser`` rather than at this module's own
+        helper, so it holds whatever that helper is called: the shape this
+        replaced - one parser built at import and handed to every parse -
+        fails here, which the concurrency test below could not do, since
+        lxml locks a shared parser and every document still comes back as
+        itself.
+        """
+        from nanoidp.routes import saml
+
+        real_parser = saml.etree.XMLParser
+        created = []
+
+        def counting_parser(**options):
+            parser = real_parser(**options)
+            created.append(parser)
+            return parser
+
+        monkeypatch.setattr(saml.etree, "XMLParser", counting_parser)
+
+        saml.secure_fromstring(b"<a/>")
+        saml.secure_fromstring(b"<b/>")
+
+        assert len(created) == 2
+        assert created[0] is not created[1]
+
+    def test_an_internal_entity_is_not_expanded(self):
+        """The discriminating case for ``resolve_entities=False``.
+
+        An external entity is not fetched by lxml's default parser either,
+        so a payload pointing at /etc/passwd says nothing about which
+        parser ran. An entity declared inline does: the default parser
+        expands it, ours leaves it alone. Without this, every XXE test here
+        passes with no parser at all.
+        """
+        from nanoidp.routes.saml import secure_fromstring
+
+        document = b"""<?xml version="1.0"?>
+<!DOCTYPE root [ <!ENTITY payload "expanded-by-the-wrong-parser"> ]>
+<root>&payload;</root>"""
+
+        root = secure_fromstring(document)
+
+        assert "expanded-by-the-wrong-parser" not in (root.text or "")
+
+    def test_documents_parsed_at_the_same_time_come_back_as_themselves(self):
+        """A stress case, not the proof of anything (#381 review).
+
+        Documents parsed concurrently each come back as themselves. This
+        held with a shared parser too - lxml locks one - so it does not
+        show that parsers are no longer shared; the test above does. It
+        stays as a regression against a future parse that is neither
+        locked nor private.
+        """
+        import threading
+
+        from nanoidp.routes.saml import secure_fromstring
+
+        documents = {
+            b"<a><x/></a>": "a",
+            b'<b xmlns="urn:x"><y/></b>': "b",
+            b"<c>" + b"<item>x</item>" * 200 + b"</c>": "c",
+        }
+        wrong: list = []
+        parsed: list = []
+
+        def parse(document: bytes, expected: str) -> None:
+            # An exception inside a thread kills only that thread, and a
+            # test that merely checks "nothing went wrong" would go green
+            # when nothing was parsed at all: the successes are counted.
+            for _ in range(500):
+                try:
+                    root = secure_fromstring(document)
+                except Exception as error:  # noqa: BLE001 - reported below
+                    wrong.append(error)
+                    continue
+                tag = root.tag.split("}")[-1]
+                if tag != expected:
+                    wrong.append((tag, expected))
+                parsed.append(tag)
+
+        threads = [
+            threading.Thread(target=parse, args=(document, expected))
+            for document, expected in documents.items()
+            for _ in range(3)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        assert wrong == []
+        assert len(parsed) == len(threads) * 500
 
     def test_secure_parser_blocks_entities(self):
         """Test that secure parser blocks external entity expansion."""
