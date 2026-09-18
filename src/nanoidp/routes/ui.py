@@ -29,7 +29,7 @@ from flask.typing import ResponseReturnValue
 from ..branding import effective_logos_dir
 from ..config import ConfigManager, OAuthClient, User, get_config
 from ..config_documents import DocumentRejected
-from ..config_writer import ConflictError, current_revision
+from ..config_writer import ConflictError
 from ..hooks import HookError
 from ..models import Settings
 from ..serialization import OWNED_SETTINGS
@@ -351,7 +351,7 @@ def user_create() -> ResponseReturnValue:
             allowed_identity_classes=config.settings.allowed_identity_classes,
             persona_mode=config.settings.persona_mode_enabled,
             current_user=session.get("user"),
-            revision=current_revision(yaml_writer.users_file),
+            revision=yaml_writer.current_revision("users.yaml"),
         )
 
     # POST: Create user
@@ -433,7 +433,7 @@ def user_edit(username: str) -> ResponseReturnValue:
             allowed_identity_classes=config.settings.allowed_identity_classes,
             persona_mode=config.settings.persona_mode_enabled,
             current_user=session.get("user"),
-            revision=current_revision(yaml_writer.users_file),
+            revision=yaml_writer.current_revision("users.yaml"),
         )
 
     # POST: Update user
@@ -496,7 +496,7 @@ def clients() -> ResponseReturnValue:
         "clients.html",
         clients=identities_for(config).list_clients(),
         current_user=session.get("user"),
-        revision=current_revision(get_yaml_writer().settings_file),
+        revision=get_yaml_writer().current_revision("settings.yaml"),
     )
 
 
@@ -698,7 +698,7 @@ def client_create() -> ResponseReturnValue:
             generated_secret=generated_secret,
             logos_dir=logos_dir,
             current_user=session.get("user"),
-            revision=current_revision(yaml_writer.settings_file),
+            revision=yaml_writer.current_revision("settings.yaml"),
         )
 
     # POST: Create client
@@ -761,7 +761,7 @@ def client_edit(client_id: str) -> ResponseReturnValue:
             generated_secret=None,
             logos_dir=logos_dir,
             current_user=session.get("user"),
-            revision=current_revision(yaml_writer.settings_file),
+            revision=yaml_writer.current_revision("settings.yaml"),
         )
 
     # POST: Update client
@@ -1013,7 +1013,7 @@ def settings() -> ResponseReturnValue:
             effective_saml_entity_id=effective_saml_entity_id(config.settings),
             effective_saml_sso_url=effective_saml_sso_url(config.settings),
             current_user=session.get("user"),
-            revision=current_revision(yaml_writer.settings_file),
+            revision=yaml_writer.current_revision("settings.yaml"),
         )
 
     # POST: Update settings
@@ -1162,7 +1162,7 @@ def claims() -> ResponseReturnValue:
             "claims.html",
             settings=config.settings,
             current_user=session.get("user"),
-            revision=current_revision(yaml_writer.settings_file),
+            revision=yaml_writer.current_revision("settings.yaml"),
         )
 
     # POST: Update authority prefixes

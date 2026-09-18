@@ -6,7 +6,7 @@ import logging
 import os
 from typing import Any, Optional
 
-from flask import Flask, Response, jsonify
+from flask import Flask, Response, jsonify, make_response, request
 from flask_cors import CORS
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
@@ -14,6 +14,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 
 from . import __version__
 from .config import ConfigManager, get_config, init_config
+from .config_writer import LockUnavailableError
 from .routes import api_bp, oauth_bp, registration_bp, runtime_bp, saml_bp, ui_bp
 from .services import activate_crypto_service
 from .services.dynamic_registration import prune_stale_registrations
@@ -170,6 +171,37 @@ def create_app(
         )
 
     # Register blueprints
+    @app.errorhandler(LockUnavailableError)
+    def _configuration_unavailable(exc: LockUnavailableError) -> Response:
+        """503 for a configuration observation that could not be made (#246).
+
+        Reads join the directory lock since #246, so a request that only
+        renders a page can now fail where before it could not: a peer
+        process holding the lock past the timeout, or a filesystem with no
+        advisory locking at all. Without this it reaches the catch-all and
+        answers 500 with a traceback, which says nothing true - the service
+        is fine, it could not observe the configuration right now.
+
+        Terminal rather than a redirect with a flash: the page it redirected
+        to would have to read the configuration too, and would wait again or
+        loop. How each surface phrases this is PR B's question; what belongs
+        here is that no surface answers it with a stack trace.
+        """
+        app.logger.warning("Configuration observation unavailable: %s", exc)
+        wants_json = request.path.startswith("/api/") or "application/json" in (
+            request.headers.get("Accept", "")
+        )
+        if wants_json:
+            response = jsonify({"error": "configuration_unavailable", "kind": exc.kind})
+        else:
+            response = make_response(
+                "<h1>Configuration temporarily unavailable</h1>"
+                "<p>The configuration directory could not be read consistently "
+                "right now. Another process may be writing it. Try again.</p>"
+            )
+        response.status_code = 503
+        return response
+
     app.register_blueprint(oauth_bp)
     app.register_blueprint(saml_bp)
     app.register_blueprint(ui_bp)

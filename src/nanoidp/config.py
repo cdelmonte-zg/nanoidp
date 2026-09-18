@@ -24,7 +24,12 @@ from .config_documents import (
     load_users_document,
     reject_unloadable,
 )
-from .config_writer import compare_and_replace, compare_and_replace_many, revision_of_bytes
+from .config_store import ConfigFileStore
+from .config_writer import (
+    LockUnavailableError,
+    compare_and_replace,
+    revision_of_bytes,
+)
 from .hooks import SOURCE_SETTINGS, HookError, HookRegistry, bootstrap_registry
 from .models import (  # noqa: F401
     SECURITY_PROFILES,
@@ -120,6 +125,11 @@ class ConfigManager:
         # other load's settings. Reentrant, so a hook that reloads from
         # inside a load cannot deadlock the process.
         self._load_lock = threading.RLock()
+        # Every observation of the configuration directory goes through one
+        # store (#246): it owns the filesystem access and the directory
+        # lock, so a read is one consistent look rather than several
+        # independent ones that can compose into a state never on disk.
+        self._store = ConfigFileStore(self.config_dir)
         # A transient CLI/programmatic `--profile` (#172). Kept here, not on
         # Settings, because it must survive every reload() - which rebuilds
         # Settings from YAML - and must never be written back to the file.
@@ -193,13 +203,34 @@ class ConfigManager:
         reports) and before bootstrap.yaml is read. A file that cannot be
         parsed at all returns the default here and fails with its real error
         a moment later, in _stage_directory, where the message belongs.
+
+        This is a SECOND observation of settings.yaml, and deliberately so
+        (#246). It cannot be merged into the load's snapshot: it decides the
+        strictness the bootstrap registry is built with, and that registry
+        must exist before ``on_before_load`` runs - a hook may be what
+        renders settings.yaml in the first place. The accepted consequence,
+        stated rather than hidden: a write landing between this read and the
+        load means the bootstrap registry's strictness came from a
+        settings.yaml the load never saw. Each observation is consistent in
+        itself; they are two moments because the phases they serve are.
         """
-        settings_file = self.config_dir / "settings.yaml"
-        if not settings_file.exists():
+        # A lock failure is NOT swallowed into the default (#246 review):
+        # this decides the bootstrap registry's strictness, so degrading it
+        # silently would boot a directory that declared `strict` with a
+        # failing hook merely logged - exactly the phase strictness gates.
+        # It is classified, though: this runs from __init__, so an
+        # unclassified RuntimeError would leave startup with a bare
+        # traceback where every other refused configuration raises
+        # ConfigurationRejected (#246 review round 2). Startup still fails,
+        # which is right - the directory could not be observed at all.
+        try:
+            observed = self._store.read("settings.yaml")
+        except LockUnavailableError as exc:
+            raise ConfigurationRejected(str(exc), kind=exc.kind) from exc
+        if not observed.exists:
             return "warn"
         try:
-            with open(settings_file, "r") as f:
-                data = yaml.safe_load(f) or {}
+            data = yaml.safe_load(observed.data) or {}
         except Exception:  # noqa: BLE001 - reported by _stage_directory
             return "warn"
         return declared_validation_mode(data) if isinstance(data, dict) else "warn"
@@ -227,6 +258,13 @@ class ConfigManager:
             self.hooks.run_before_load(self.config_dir)
         try:
             staged = self._stage_directory()
+        except LockUnavailableError as exc:
+            # The directory could not be observed at all: a peer holding the
+            # lock past the timeout, or a filesystem that cannot do advisory
+            # locking (#246 review). Classified like every other refused
+            # load, so /api/config/reload and the MCP reload tool answer in
+            # their documented shape instead of a 500.
+            raise ConfigurationRejected(str(exc), kind=exc.kind) from exc
         except (OSError, ValueError, yaml.YAMLError) as exc:
             # OSError: a file that exists but cannot be read (permissions).
             raise ConfigurationRejected(str(exc), kind="invalid") from exc
@@ -289,10 +327,22 @@ class ConfigManager:
 
     def _stage_directory(self) -> Dict[str, Any]:
         """Parse and validate the whole directory into candidates, committing
-        nothing. Any exception here leaves the manager untouched."""
+        nothing. Any exception here leaves the manager untouched.
+
+        The two files are acquired as ONE observation of the directory
+        (#246): a write landing between two separate reads used to be
+        observed as a settings/users pair that never existed on disk. Only
+        the acquisition is inside the lock - parsing, environment expansion,
+        the document models and the profile hardening all run on the bytes
+        afterwards, because the atomic unit is the filesystem snapshot, not
+        the reload.
+        """
         staged: Dict[str, Any] = {}
+        observed = self._store.read_snapshot(("settings.yaml", "users.yaml"))
+        settings_observed = observed["settings.yaml"]
+        users_observed = observed["users.yaml"]
         settings_file = self.config_dir / "settings.yaml"
-        if not settings_file.exists():
+        if not settings_observed.exists:
             logger.warning(f"Settings file not found: {settings_file}, using defaults")
             staged["settings_missing"] = True
             staged["strict"] = self._effective_strict("warn")
@@ -304,15 +354,13 @@ class ConfigManager:
             # hash of empty bytes (#229 phase 5).
             staged["settings_revision"] = revision_of_bytes(b"")
         else:
-            # Read the bytes once and hash exactly what gets parsed (#229
-            # phase 5): the revision must describe the state this runtime
-            # was loaded from, so a save precondition built on it catches
-            # every on-disk change since - hashing a second read could
-            # describe newer content than the parse saw. The read itself
-            # is still unlocked (#246).
-            with open(settings_file, "rb") as f:
-                raw = f.read()
-            staged["settings_revision"] = revision_of_bytes(raw)
+            # The revision describes exactly the bytes being parsed (#229
+            # phase 5): a save precondition built on it therefore catches
+            # every on-disk change since, which hashing a second read could
+            # not promise. Since #246 the bytes and their revision are one
+            # observation, carried by the snapshot rather than recomputed.
+            raw = settings_observed.data
+            staged["settings_revision"] = settings_observed.revision
             data = yaml.safe_load(raw) or {}
             # Candidate strictness: an edited config_validation takes effect
             # on the load that reads it, an explicit --strict-config keeps
@@ -334,14 +382,13 @@ class ConfigManager:
         staged["declared"] = self._apply_profile(staged["settings"])
 
         users_file = self.config_dir / "users.yaml"
-        if not users_file.exists():
+        if not users_observed.exists:
             logger.warning(f"Users file not found: {users_file}, using defaults")
             staged["users"], staged["default_user"] = self._default_users(), "admin"
-            staged["users_revision"] = revision_of_bytes(b"")
+            staged["users_revision"] = users_observed.revision
         else:
-            with open(users_file, "rb") as f:
-                uraw = f.read()
-            staged["users_revision"] = revision_of_bytes(uraw)
+            uraw = users_observed.data
+            staged["users_revision"] = users_observed.revision
             udata = yaml.safe_load(uraw) or {}
             # config_version is checked BEFORE placeholder expansion: it must
             # be a literal integer, never ${VAR} (#175 review).
@@ -551,14 +598,12 @@ class ConfigManager:
         A stale settings revision must not leave a freshly-written
         users.yaml on disk with the in-memory settings change silently
         dropped (#229 review on phase 2). This is a write-side guarantee
-        only: _stage_directory (the read side, used by reload_local()
-        and reload()) opens both files with plain open() under no lock,
-        so it is not the same directory-wide boundary in the cross-process
-        sense - a concurrent save() in another process can still land its
-        users.yaml between this process's settings.yaml and users.yaml
-        reads, pairing an old settings.yaml with a new users.yaml (#229
-        review). None (the default) keeps a file's write unconditional,
-        same as compare_and_replace's own default.
+        only until #246: the read side now goes through the same boundary,
+        so _stage_directory acquires the directory once and observes both
+        files together, and a concurrent save() in another process can no
+        longer land its users.yaml between this process's two reads. None
+        (the default) keeps a file's write unconditional, same as
+        compare_and_replace's own default.
 
         Once both files are written, each fires its own on_config_saved
         hook; the runtime is then refreshed from disk exactly once - not
@@ -591,15 +636,18 @@ class ConfigManager:
         users_file = self.config_dir / "users.yaml"
         settings_file = self.config_dir / "settings.yaml"
 
-        compare_and_replace_many(
+        # Through the store, like every other access to this directory
+        # (#246): one door for reads and writes alike, and the file names
+        # rather than paths, because a store writes its own directory.
+        self._store.compare_and_replace_many(
             [
                 (
-                    users_file,
+                    "users.yaml",
                     expected_users_revision,
                     lambda doc: apply_users_document(doc, self.users, self.default_user),
                 ),
                 (
-                    settings_file,
+                    "settings.yaml",
                     expected_settings_revision,
                     # Declared state, not effective state (#172): see persistable_settings().
                     lambda doc: apply_settings_document(
