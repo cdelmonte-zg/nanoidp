@@ -466,6 +466,10 @@ class OwnedSetting:
       file (``empty`` is the falsy stand-in used for the unchanged check).
     - "omit_when_none": None means absent (derived values, #181); any
       non-None value, including "", is written.
+    - "omit_when_default": absent means the model's default, so the key is
+      written only while it differs from it and removed when it returns
+      (#319). The default is read through ``document_defaults()``, under
+      ``key`` for a top-level row and ``section.key`` for a nested one.
     The writer's per-call semantics are simpler and shared: a kwarg that is
     None was not on the form (leave the file alone, #131); for non-plain
     rows a falsy provided value clears the key.
@@ -522,9 +526,68 @@ OWNED_SETTINGS: tuple[OwnedSetting, ...] = (
     OwnedSetting("saml", "want_authn_requests_signed", "saml_want_authn_requests_signed"),
     OwnedSetting("saml", "sp_certificates", "saml_sp_certificates", "omit_when_falsy", []),
     OwnedSetting("logging", "verbose_logging", "verbose_logging"),
+    # Written only when they differ from the model default, which is what
+    # "absent" means for them in the file (#319). The row needs no default
+    # of its own: where to look it up is the section and the key.
+    OwnedSetting("", "security_profile", "security_profile", "omit_when_default"),
+    OwnedSetting("login", "mode", "login_mode", "omit_when_default"),
+    OwnedSetting("login", "auto_login", "auto_login", "omit_when_default"),
+    OwnedSetting("login", "two_step", "two_step", "omit_when_default"),
+    OwnedSetting("login", "totp", "totp", "omit_when_default"),
     OwnedSetting("", "authority_prefixes", "authority_prefixes"),
     OwnedSetting("", "allowed_identity_classes", "allowed_identity_classes", "omit_when_falsy", []),
 )
+
+
+def default_lookup_key(field: "OwnedSetting") -> str:
+    """Where this row's default lives in ``document_defaults()`` (#319)."""
+    return f"{field.section}.{field.key}" if field.section else field.key
+
+
+def merge_owned_setting_at_default(
+    document: Dict[str, Any], field: "OwnedSetting", value: Any, default: Any
+) -> None:
+    """Write a defaults-dependent key, or remove it once it is back at the
+    default - the two shapes these keys come in (#319).
+
+    A top-level key (``security_profile``) is read and removed on the
+    document itself; a key in an optional section (``login.*``) is read
+    through that section, and the section goes with its last entry. Neither
+    is created to be removed again: a document that does not have the
+    section keeps not having it while the value is the default.
+
+    ``merge_optional_nested_field`` covers only the second shape - passing
+    it an empty section would make it reason about ``document[""]`` - so
+    this is where the rule for both lives.
+    """
+    if field.section:
+        section = document.get(field.section) or {}
+        current = section.get(field.key, default)
+    else:
+        current = document.get(field.key, default)
+
+    if is_unchanged(current, value):
+        return
+
+    if value != default:
+        if not field.section:
+            document[field.key] = value
+            return
+        # Not `setdefault`: a bare `login:` line is the key present with a
+        # None value, which setdefault would hand back unchanged.
+        if document.get(field.section) is None:
+            document[field.section] = {}
+        document[field.section][field.key] = value
+        return
+
+    if not field.section:
+        document.pop(field.key, None)
+        return
+    section = document.get(field.section)
+    if section:
+        section.pop(field.key, None)
+        if not section:
+            document.pop(field.section, None)
 
 
 def apply_settings_document(
@@ -550,9 +613,19 @@ def apply_settings_document(
     ``login.auto_login``, ``login.two_step``, ``login.totp``) are handled
     explicitly below.
     """
+    # "Omit at default" decisions read the loader's defaults (#175 piece 2).
+    resolved_defaults = defaults if defaults is not None else _FALLBACK_DEFAULTS
+
     for field in OWNED_SETTINGS:
-        target = document if not field.section else document.setdefault(field.section, {})
         value = getattr(settings, field.attr)
+        if field.doc_mode == "omit_when_default":
+            # Before the section is touched: creating it here would leave a
+            # `login: {}` behind for a value that is at its default (#319).
+            merge_owned_setting_at_default(
+                document, field, value, resolved_defaults[default_lookup_key(field)]
+            )
+            continue
+        target = document if not field.section else document.setdefault(field.section, {})
         if field.doc_mode == "plain":
             if not is_unchanged(target.get(field.key), value):
                 target[field.key] = value
@@ -577,28 +650,6 @@ def apply_settings_document(
             oauth["clients"] = new_clients
         else:
             oauth.pop("clients", None)
-
-    # "Omit at default" decisions read the loader's defaults (#175 piece 2).
-    resolved_defaults = defaults if defaults is not None else _FALLBACK_DEFAULTS
-    security_profile_default = resolved_defaults["security_profile"]
-    current_security_profile = document.get("security_profile", security_profile_default)
-    if not is_unchanged(current_security_profile, settings.security_profile):
-        if settings.security_profile != security_profile_default:
-            document["security_profile"] = settings.security_profile
-        else:
-            document.pop("security_profile", None)
-
-    login_mode_default = resolved_defaults["login.mode"]
-    merge_optional_nested_field(document, "login", "mode", settings.login_mode, login_mode_default)
-
-    auto_login_default = resolved_defaults["login.auto_login"]
-    merge_optional_nested_field(document, "login", "auto_login", settings.auto_login, auto_login_default)
-
-    two_step_default = resolved_defaults["login.two_step"]
-    merge_optional_nested_field(document, "login", "two_step", settings.two_step, two_step_default)
-
-    totp_default = resolved_defaults["login.totp"]
-    merge_optional_nested_field(document, "login", "totp", settings.totp, totp_default)
 
     return document
 

@@ -5,7 +5,7 @@ Provides atomic write operations for YAML configuration files.
 
 import logging
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Mapping, Optional
 
 from ..config import ConfigurationRejected, OAuthClient, User, get_config
 from ..config_documents import document_defaults, reject_unloadable
@@ -14,12 +14,14 @@ from ..hooks import HookError
 from ..models import validate_login_mode, validate_saml_c14n_algorithm
 from ..serialization import (
     OWNED_SETTINGS,
+    OwnedSetting,
     client_id_matches,
     client_to_yaml,
+    default_lookup_key,
     is_unchanged,
     load_yaml_document,
     merge_client_entry,
-    merge_optional_nested_field,
+    merge_owned_setting_at_default,
     user_to_yaml,
 )
 
@@ -66,47 +68,57 @@ def _mutate_allowed_identity_classes(document: Dict[str, Any], classes: List[str
         document["allowed_identity_classes"] = classes
 
 
-def _mutate_login_mode(document: Dict[str, Any], mode: str, login_mode_default: str) -> None:
-    """Extracted from ``YamlWriter.update_login_settings`` (#229 phase 4
-    review, blocking 1); ``mode`` here is already known truthy and
-    already validated by the caller - see that method's docstring for
-    why validation happens before any write is even attempted."""
-    merge_optional_nested_field(document, "login", "mode", mode, login_mode_default)
+def _applied_login_keys(
+    mode: Optional[str],
+    auto_login: Optional[bool],
+    two_step: Optional[bool],
+    totp: Optional[bool],
+) -> Dict[str, Any]:
+    """Which ``login.*`` keys this call actually applies.
+
+    The writer's parameter semantics, kept where they were: a blank
+    ``mode`` means unchanged, since there is no sensible cleared login mode
+    (#131), and a ``None`` checkbox means the field was not on the form
+    (#250). Everything else is applied, and how it reaches the document is
+    ``_mutate_login_key``'s business.
+    """
+    applied: Dict[str, Any] = {}
+    if mode:
+        applied["mode"] = mode
+    for key, value in (("auto_login", auto_login), ("two_step", two_step), ("totp", totp)):
+        if value is not None:
+            applied[key] = value
+    return applied
 
 
-def _mutate_auto_login(document: Dict[str, Any], auto_login: bool, auto_login_default: bool) -> None:
-    """``auto_login`` here is already known to be an explicit True/False
-    from the caller, not None (#250: None means "absent from the form,
-    leave unchanged", the same convention ``_mutate_login_mode`` follows
-    for its own field)."""
-    merge_optional_nested_field(document, "login", "auto_login", auto_login, auto_login_default)
+_LOGIN_ROWS: Dict[str, OwnedSetting] = {
+    row.key: row for row in OWNED_SETTINGS if row.section == "login"
+}
 
 
-def _mutate_two_step(document: Dict[str, Any], two_step: bool, two_step_default: bool) -> None:
-    """``two_step`` follows the same explicit-True/False checkbox
-    convention as ``_mutate_auto_login`` above (#322/#323 review round 2)."""
-    merge_optional_nested_field(document, "login", "two_step", two_step, two_step_default)
+def _mutate_login_key(
+    document: Dict[str, Any], key: str, value: Any, defaults: Mapping[str, Any]
+) -> None:
+    """Write one ``login.*`` key, or remove it once it is back at its
+    default, through the same rule ``apply_settings_document`` uses (#319).
+
+    Four helpers that were this same line - one per key, each taking its own
+    positional default - stood here before.
+    """
+    row = _LOGIN_ROWS[key]
+    merge_owned_setting_at_default(document, row, value, defaults[default_lookup_key(row)])
 
 
-def _mutate_totp(document: Dict[str, Any], totp: bool, totp_default: bool) -> None:
-    """``totp`` follows the same explicit-True/False checkbox convention
-    as ``_mutate_two_step`` above (#348)."""
-    merge_optional_nested_field(document, "login", "totp", totp, totp_default)
+def _login_settings_defaults() -> Mapping[str, Any]:
+    """The defaults the ``login.*`` keys are omitted at, from one
+    ``document_defaults()`` call, shared by ``update_login_settings`` and
+    ``update_settings_form`` instead of each rebuilding a full
+    ``SettingsDocument`` for the same values.
 
-
-def _login_settings_defaults() -> tuple[str, bool, bool, bool]:
-    """``(login.mode default, login.auto_login default, login.two_step
-    default, login.totp default)`` from one ``document_defaults()`` call,
-    shared by ``update_login_settings`` and ``update_settings_form``
-    instead of each rebuilding a full ``SettingsDocument`` twice for the
-    same values."""
-    defaults = document_defaults()
-    return (
-        defaults["login.mode"],
-        defaults["login.auto_login"],
-        defaults["login.two_step"],
-        defaults["login.totp"],
-    )
+    A mapping rather than the positional four-tuple this replaced (#319): a
+    fifth ``login`` key should not have to be remembered by position.
+    """
+    return document_defaults()
 
 
 class PostWriteError(RuntimeError):
@@ -481,19 +493,12 @@ class YamlWriter:
         """
         if mode:
             validate_login_mode(mode)
-        login_mode_default, auto_login_default, two_step_default, totp_default = (
-            _login_settings_defaults()
-        )
+        defaults = _login_settings_defaults()
+        applied = _applied_login_keys(mode, auto_login, two_step, totp)
 
         def mutate(data: Dict[str, Any]) -> None:
-            if mode:
-                _mutate_login_mode(data, mode, login_mode_default)
-            if auto_login is not None:
-                _mutate_auto_login(data, auto_login, auto_login_default)
-            if two_step is not None:
-                _mutate_two_step(data, two_step, two_step_default)
-            if totp is not None:
-                _mutate_totp(data, totp, totp_default)
+            for key, value in applied.items():
+                _mutate_login_key(data, key, value, defaults)
 
         return self._atomic_write(self.settings_file, mutate, expected_revision)
 
@@ -545,23 +550,16 @@ class YamlWriter:
             validate_login_mode(login_mode)
         if saml_fields.get("c14n_algorithm"):
             validate_saml_c14n_algorithm(saml_fields["c14n_algorithm"])
-        login_mode_default, auto_login_default, two_step_default, totp_default = (
-            _login_settings_defaults()
-        )
+        defaults = _login_settings_defaults()
+        applied = _applied_login_keys(login_mode, auto_login, two_step, totp)
 
         def mutate(data: Dict[str, Any]) -> None:
             _mutate_settings_section(data, "oauth", oauth_fields)
             _mutate_settings_section(data, "saml", saml_fields)
             if allowed_identity_classes:
                 _mutate_allowed_identity_classes(data, allowed_identity_classes)
-            if login_mode:
-                _mutate_login_mode(data, login_mode, login_mode_default)
-            if auto_login is not None:
-                _mutate_auto_login(data, auto_login, auto_login_default)
-            if two_step is not None:
-                _mutate_two_step(data, two_step, two_step_default)
-            if totp is not None:
-                _mutate_totp(data, totp, totp_default)
+            for key, value in applied.items():
+                _mutate_login_key(data, key, value, defaults)
 
         return self._atomic_write(self.settings_file, mutate, expected_revision)
 

@@ -22,7 +22,7 @@ import pytest
 from nanoidp import config_documents as cd
 from nanoidp.mcp_server import _TOOL_SCHEMAS, _UPDATE_SETTINGS_FIELDS
 from nanoidp.models import Settings
-from nanoidp.serialization import OWNED_SETTINGS
+from nanoidp.serialization import _FALLBACK_DEFAULTS, OWNED_SETTINGS
 from nanoidp.services.yaml_writer import YamlWriter
 
 _SECTION_MODELS = {
@@ -30,6 +30,7 @@ _SECTION_MODELS = {
     "oauth": cd.OAuthSection,
     "saml": cd.SamlSection,
     "logging": cd.LoggingSection,
+    "login": cd.LoginSection,
     "": cd.SettingsDocument,
 }
 
@@ -47,6 +48,44 @@ class TestOwnedSettingsDeriveFromTheModels:
     def test_rows_are_unique_per_key(self):
         keys = [(row.section, row.key) for row in OWNED_SETTINGS]
         assert len(keys) == len(set(keys))
+
+
+class TestTheDefaultsDependentRowsKnowTheirDefault:
+    """#319: the keys written only while they differ from the model default
+    are rows now, so the fallback the loader-free path uses is no longer
+    taken on trust.
+
+    ``serialization.py`` must not import ``config_documents`` at runtime
+    (#149), so ``_FALLBACK_DEFAULTS`` is a necessary copy - this pins it to
+    the table and to the real defaults instead of leaving it to be noticed.
+    """
+
+    def _default_keys(self):
+        return {
+            f"{row.section}.{row.key}" if row.section else row.key
+            for row in OWNED_SETTINGS
+            if row.doc_mode == "omit_when_default"
+        }
+
+    def test_the_fallback_names_exactly_those_rows(self):
+        assert set(_FALLBACK_DEFAULTS) == self._default_keys()
+
+    def test_the_fallback_holds_the_real_defaults(self):
+        real = cd.document_defaults()
+
+        assert _FALLBACK_DEFAULTS == {key: real[key] for key in self._default_keys()}
+
+    def test_the_login_rows_are_what_the_writer_takes(self):
+        """``update_login_settings`` names the same keys, under the writer's
+        own spelling for the mode."""
+        import inspect
+
+        signature = inspect.signature(YamlWriter.update_login_settings)
+        parameters = set(signature.parameters) - {"self", "expected_revision"}
+        rows = {row.key for row in OWNED_SETTINGS if row.section == "login"}
+
+        assert parameters == (rows - {"mode"}) | {"mode"}
+        assert rows == parameters
 
 
 class TestYamlWriterMatchesTheTable:
