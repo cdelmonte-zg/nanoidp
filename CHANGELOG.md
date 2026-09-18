@@ -291,6 +291,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   phase - the strictness the hook registry runs under and the file it is
   built from - instead of two. No configuration read path opens a file on
   its own any more.
+
+  `validate-config` gains a third outcome. A run that could not observe the
+  directory at all, because a save held the lock past the timeout, is
+  **`UNAVAILABLE` with exit code 2**, not `invalid` with exit 1: no
+  validation failed, no validation took place, and a CI gate that cannot
+  tell those apart is the defect this work set out to remove rather than to
+  relocate. The MCP tool carries the same distinction as
+  `status: unavailable` beside its existing `valid`. A file the run could
+  not READ stays an ordinary error finding attributed to that file, exactly
+  as before. Nothing is retried automatically: the command says precisely
+  what happened and the caller decides.
 - **`claims_supported` no longer advertises `source_acl` and `authorities`**
   (#316). OpenID Connect Discovery 1.0 §3 defines that field as the Claim
   Names a provider may be able to supply values for; on top of it nanoidp

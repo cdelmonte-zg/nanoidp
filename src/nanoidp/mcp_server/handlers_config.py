@@ -9,7 +9,7 @@ from typing import Any
 
 from ..config import ConfigManager, ConfigurationRejected, ReloadAfterSaveError
 from ..config_documents import DocumentRejected
-from ..config_validation import validate_config_result
+from ..config_validation import UNAVAILABLE, validate_config_result
 from ..config_writer import ConflictError, LockUnavailableError
 from ..hooks import HookError
 from ..services import (
@@ -119,7 +119,18 @@ def _tool_validate_config(arguments: dict[str, Any], config: ConfigManager) -> d
     # --strict-config (#204 review); an explicit argument still wins.
     strict_arg = arguments.get("strict")
     effective = config.strict_config if strict_arg is None else bool(strict_arg)
-    return validate_config_result(config.config_dir, effective)
+    result = validate_config_result(config.config_dir, effective)
+    if result.get("status") == UNAVAILABLE:
+        # No validation took place, so this is not a verdict on the
+        # configuration (#246 PR B review). Structured, so an agent can
+        # tell it from "the configuration is wrong" and decide for itself
+        # whether to retry.
+        return {
+            **result,
+            "error": "configuration_unavailable",
+            "kind": "configuration_unavailable",
+        }
+    return result
 
 
 

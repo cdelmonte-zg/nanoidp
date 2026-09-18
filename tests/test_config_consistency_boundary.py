@@ -882,13 +882,13 @@ class TestTheCliAndTheToolShareOneObservation:
 
         monkeypatch.setattr(config_store, "directory_lock", counting_lock)
 
-        findings, declared = validate_once(directory)
+        result = validate_once(directory)
 
         assert acquisitions == [directory], (
             "the findings and the declared mode came from different "
             "observations of the directory"
         )
-        assert declared in ("warn", "strict")
+        assert result.declared_mode in ("warn", "strict")
 
     def test_the_command_line_goes_through_it(self, directory, monkeypatch):
         """Pinned at the entry point, because fixing only the MCP path is
@@ -907,3 +907,78 @@ class TestTheCliAndTheToolShareOneObservation:
         validate_config_command(str(directory), strict=False)
 
         assert calls == [str(directory)]
+
+
+class TestARunThatDidNotHappenIsNotAVerdict:
+    """Three outcomes, not two (#246 PR B review).
+
+    This work exists because a mixed snapshot made the deploy gate report
+    INVALID for a state that never existed. Answering INVALID because the
+    directory could not be observed would have moved that defect rather
+    than removed it: there is no failed validation, there is no validation.
+    """
+
+    def _with_the_lock_held(self, directory, run):
+        held = os.open(
+            str(directory / ".nanoidp-write.lock"), os.O_CREAT | os.O_RDWR, 0o644
+        )
+        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        try:
+            return run()
+        finally:
+            fcntl.flock(held, fcntl.LOCK_UN)
+            os.close(held)
+
+    def test_contention_is_unavailable_not_invalid(self, directory, monkeypatch):
+        from nanoidp.config_validation import UNAVAILABLE, validate_once
+
+        monkeypatch.setattr("nanoidp.config_writer._LOCK_TIMEOUT_SECONDS", 0.3)
+
+        result = self._with_the_lock_held(directory, lambda: validate_once(directory))
+
+        assert result.status == UNAVAILABLE
+
+    def test_an_unreadable_file_stays_a_verdict(self, directory):
+        """Only the acquisition is UNAVAILABLE. A file the run could not
+        read is still something it found out about the configuration, with
+        the attribution it has always had."""
+        if os.geteuid() == 0:
+            pytest.skip("root ignores the file mode this test relies on")
+        from nanoidp.config_validation import OBSERVED, validate_once
+
+        os.chmod(directory / "settings.yaml", 0o000)
+        try:
+            result = validate_once(directory)
+        finally:
+            os.chmod(directory / "settings.yaml", 0o644)
+
+        assert result.status == OBSERVED
+        assert any("cannot be read" in f.message for f in result.findings)
+
+    def test_the_command_line_exits_two_and_does_not_say_invalid(
+        self, directory, monkeypatch, capsys
+    ):
+        from nanoidp.__main__ import validate_config_command
+
+        monkeypatch.setattr("nanoidp.config_writer._LOCK_TIMEOUT_SECONDS", 0.3)
+
+        code = self._with_the_lock_held(
+            directory, lambda: validate_config_command(str(directory), strict=False)
+        )
+
+        assert code == 2
+        printed = capsys.readouterr().out
+        assert "UNAVAILABLE" in printed
+        assert "invalid" not in printed.lower()
+
+    def test_the_mcp_tool_answers_structured(self, directory, monkeypatch):
+        from nanoidp.config_validation import UNAVAILABLE, validate_config_result
+
+        monkeypatch.setattr("nanoidp.config_writer._LOCK_TIMEOUT_SECONDS", 0.3)
+
+        result = self._with_the_lock_held(
+            directory, lambda: validate_config_result(directory)
+        )
+
+        assert result["status"] == UNAVAILABLE
+        assert result["valid"] is False

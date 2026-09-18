@@ -331,7 +331,31 @@ def report(findings: List[Finding], strict: bool) -> Tuple[List[str], int]:
     return lines, code
 
 
-def validate_once(config_dir: Path | str) -> Tuple[List[Finding], str]:
+#: A run that could not take place at all, told apart from one that ran and
+#: found the configuration wrong (#246 PR B review). "The directory could
+#: not be observed" is not a verdict on the configuration, and a CI gate
+#: that cannot tell the two apart is exactly what this work set out to fix:
+#: replacing a false INVALID caused by a mixed snapshot with a false INVALID
+#: caused by contention would have moved the defect, not removed it.
+OBSERVED = "observed"
+UNAVAILABLE = "unavailable"
+
+
+@dataclass(frozen=True)
+class ValidationResult:
+    """What a run produced, and whether it happened at all.
+
+    ``findings`` stays the human-facing part; ``status`` carries the
+    machine-facing distinction. "Could not observe the directory" is not a
+    finding ABOUT the configuration, so it does not pretend to be one.
+    """
+
+    findings: List[Finding]
+    declared_mode: str
+    status: str = OBSERVED
+
+
+def validate_once(config_dir: Path | str) -> ValidationResult:
     """The findings AND the declared mode, from ONE observation (#246).
 
     Every entry point goes through here - the CLI and the MCP tool alike -
@@ -348,11 +372,29 @@ def validate_once(config_dir: Path | str) -> Tuple[List[Finding], str]:
     """
     directory = Path(config_dir)
     if not directory.is_dir():
-        return [Finding(ERROR, f"{directory}: not a configuration directory", None)], "warn"
-    observed, refusal = _observed_or_findings(directory)
-    if observed is None:
-        return refusal, "warn"
-    return _validate_observation(directory, observed), _declared_mode_of(observed[SETTINGS_FILE])
+        # A verdict about the target, not a failure to reach it: the run
+        # happened and the answer is that this is not a configuration
+        # directory.
+        return ValidationResult(
+            [Finding(ERROR, f"{directory}: not a configuration directory", None)], "warn"
+        )
+    try:
+        observed = _observe(directory)
+    except LockUnavailableError as exc:
+        # No validation took place. Only the acquisition failed, and only
+        # this case is UNAVAILABLE: a per-file OSError is still a finding
+        # about that file, with the attribution it has always had.
+        return ValidationResult(
+            [Finding(ERROR, f"{directory}: {_UNOBSERVABLE} ({exc})", None)],
+            "warn",
+            status=UNAVAILABLE,
+        )
+    except OSError as exc:
+        return ValidationResult(_unobservable(directory, exc), "warn")
+    return ValidationResult(
+        _validate_observation(directory, observed),
+        _declared_mode_of(observed[SETTINGS_FILE]),
+    )
 
 
 def validate_config_result(config_dir: Path | str, strict: bool = False) -> Dict[str, Any]:
@@ -361,15 +403,20 @@ def validate_config_result(config_dir: Path | str, strict: bool = False) -> Dict
     ``valid`` follows the exit code of ``validate-config``: errors always
     invalidate, warnings only when the run is strict.
     """
-    findings, declared = validate_once(config_dir)
-    strict_run = bool(strict) or declared == "strict"
-    _lines, code = report(findings, strict_run)
+    result = validate_once(config_dir)
+    strict_run = bool(strict) or result.declared_mode == "strict"
+    _lines, code = report(result.findings, strict_run)
     return {
         "config_dir": str(config_dir),
-        "config_validation": declared,
+        "config_validation": result.declared_mode,
         "strict": strict_run,
-        "valid": code == 0,
-        "findings": [finding.to_dict() for finding in findings],
+        # `valid` keeps its meaning for every existing caller; `status`
+        # says whether the run happened at all (#246 PR B review), so an
+        # agent can tell "the configuration is wrong" from "I could not
+        # look at it" and decide whether retrying makes sense.
+        "status": result.status,
+        "valid": result.status == OBSERVED and code == 0,
+        "findings": [finding.to_dict() for finding in result.findings],
     }
 
 
@@ -382,5 +429,8 @@ __all__ = [
     "report",
     "validate_config_dir",
     "validate_once",
+    "ValidationResult",
+    "OBSERVED",
+    "UNAVAILABLE",
     "validate_config_result",
 ]

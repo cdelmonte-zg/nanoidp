@@ -156,7 +156,7 @@ def validate_config_command(config_dir: Optional[str], strict: bool) -> int:
     what makes it safe as a pre-commit or CI step on a directory whose
     bootstrap.yaml names commands.
     """
-    from nanoidp.config_validation import report, validate_once
+    from nanoidp.config_validation import UNAVAILABLE, report, validate_once
 
     # Same precedence the server's own discovery uses (ConfigManager).
     directory: str = (
@@ -170,9 +170,19 @@ def validate_config_command(config_dir: Optional[str], strict: bool) -> int:
     # config_validation between the two reads, so the run applied strict
     # rules while printing a header for a directory that no longer declared
     # them.
-    findings, declared = validate_once(directory)
-    strict_run = bool(strict) or declared == "strict"
-    lines, code = report(findings, strict_run)
+    result = validate_once(directory)
+    strict_run = bool(strict) or result.declared_mode == "strict"
+    lines, code = report(result.findings, strict_run)
+    if result.status == UNAVAILABLE:
+        # Three outcomes, not two (#246 PR B review): no validation took
+        # place, so saying INVALID would be a verdict on a configuration
+        # nobody looked at. Exit 2 lets a CI gate decide for itself whether
+        # to retry; retrying is deliberately not done here, which would be
+        # a policy of its own.
+        print(f"validate-config: {directory} (UNAVAILABLE - validation not performed)")
+        for line in lines:
+            print(line)
+        return 2
     print(f"validate-config: {directory} (strict)" if strict_run else f"validate-config: {directory}")
     for line in lines:
         print(line)
