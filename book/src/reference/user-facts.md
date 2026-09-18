@@ -74,6 +74,54 @@ one `attributes` map, a passthrough of what the operator wrote. On the SAML
 surfaces each key becomes its own `Attribute` element, because an assertion
 has no nested shape to carry a map in.
 
+## An empty value, and the three answers to it (#388)
+
+An attribute the operator declared with an empty value - `""`, `[]`, `{}` or
+nothing at all - reaches the three projections differently, and all three
+are right:
+
+| Projection | An empty value under a key | An entirely empty map |
+|---|---|---|
+| `attributes` (the OIDC map) | kept | the claim is omitted |
+| `authorities` (the derived list) | dropped | nothing to derive |
+| SAML attributes | dropped | no attributes |
+
+> Composite and raw representations preserve explicitly configured empty
+> values. Derived projections may omit them when their output
+> representation cannot preserve the distinction usefully, or when that
+> surface has an established omission policy.
+
+**The map keeps them**, once the composite is there at all. A user with no
+attributes carries no `attributes` claim: the map is emitted only when it
+has something in it. Once it is emitted, the values stored under its keys
+are preserved verbatim, `""`, `[]`, `{}` and `null` included, so
+
+```json
+{"x": ""}   {"x": []}   {"x": {}}   {"x": null}
+```
+
+are four different documents and stay that way. For a testing IdP that is a
+useful property, since an operator can deliberately simulate an upstream
+that supplies an empty claim and watch what the consumer does. The key
+existing is itself something they wrote.
+
+**`authorities` drops them** because a flat list of strings cannot say
+"present but empty". Keeping an attribute `x: ""` under the prefix `X_`
+would emit the bare string `X_`, which reads like an ordinary authority and
+loses the distinction it was meant to carry. Representing it properly would
+need an encoding invented for the purpose.
+
+**SAML drops them by policy, not by limitation.** SAML 2.0 Core allows
+`<Attribute Name="x"/>`, an attribute that exists with no values, and that
+is semantically distinct from the attribute being absent. nanoidp could emit
+it; [#315 chose otherwise](saml.md), so an absent or empty fact is an absent
+attribute on both SAML surfaces.
+
+So the disagreement between `authorities` and `attributes` inside one access
+token is not a contradiction. They are two projections with different
+representational capacity, and there is deliberately no shared
+"is this a fact?" predicate: the answer depends on the projection.
+
 ## `claims_supported` and what the resolver addresses
 
 These are two different lists, and the difference is deliberate.
