@@ -50,18 +50,34 @@ from ._auth import (
 )
 from ._issuer import effective_saml_entity_id, effective_saml_sso_url
 
-# Create secure XML parser (XXE protection without deprecated defusedxml.lxml)
-_secure_parser = etree.XMLParser(
-    resolve_entities=False,
-    no_network=True,
-    dtd_validation=False,
-    load_dtd=False,
-)
+# XXE protection without the deprecated defusedxml.lxml: entities are not
+# resolved, no DTD is loaded, and the parser never reaches the network.
+_SECURE_PARSER_OPTIONS = {
+    "resolve_entities": False,
+    "no_network": True,
+    "dtd_validation": False,
+    "load_dtd": False,
+}
 
 
 def secure_fromstring(xml_bytes: bytes) -> etree._Element:
-    """Parse XML securely, preventing XXE attacks."""
-    return etree.fromstring(xml_bytes, parser=_secure_parser)
+    """Parse XML securely, preventing XXE attacks.
+
+    The parser is built per call, not once at module scope (#378). An
+    ``etree.XMLParser`` carries the state of the parse it is running and is
+    not documented as safe to share between threads, and these calls are
+    served by threads: an AuthnRequest at ``/saml/sso``, the SOAP body at
+    ``/saml/attribute-query`` and the Response about to be signed. Sharing
+    one was never shown to break anything - probed in #309 with three
+    documents across twelve threads and 36000 parses, checking every root
+    tag, with no mixes - but while it was shared it stood as an alternative
+    explanation for any parse that surprised someone, which is what made
+    the #309 diagnosis take a detour. A parser costs about a microsecond to
+    build, against requests that take milliseconds; the same shape
+    ``serialization.load_yaml_document`` already uses for ruamel's stateful
+    ``YAML`` instance.
+    """
+    return etree.fromstring(xml_bytes, parser=etree.XMLParser(**_SECURE_PARSER_OPTIONS))
 
 
 # Try to import signxml for SAML signing

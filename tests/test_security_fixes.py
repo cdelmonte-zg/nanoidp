@@ -17,12 +17,18 @@ class TestXXEProtection:
     """Tests for XML External Entity attack prevention."""
 
     def test_secure_parser_is_used_for_saml_parsing(self):
-        """Verify that secure XML parser is used for SAML parsing."""
+        """Verify that secure XML parsing is what SAML goes through."""
         from nanoidp.routes import saml
-        # Check that secure_fromstring is available
-        assert hasattr(saml, 'secure_fromstring')
-        # Check that parser is configured securely
-        assert hasattr(saml, '_secure_parser')
+
+        assert hasattr(saml, "secure_fromstring")
+        # The options, not a parser object: since #378 the parser is built
+        # per call rather than shared between request threads.
+        assert saml._SECURE_PARSER_OPTIONS == {
+            "resolve_entities": False,
+            "no_network": True,
+            "dtd_validation": False,
+            "load_dtd": False,
+        }
 
     def test_malicious_xxe_payload_rejected(self, client):
         """Test that XXE payloads in SAML requests are rejected."""
@@ -219,11 +225,79 @@ class TestSecureXMLParser:
     """Tests to verify secure XML parser is properly configured."""
 
     def test_secure_parser_configured(self):
-        """Test that secure XML parser has correct settings."""
+        """The options are what the parser is actually built with.
 
-        # Verify parser is configured to block XXE attacks
-        # resolve_entities=False prevents entity expansion
-        # no_network=True blocks network access
+        This test used to be a comment block asserting nothing, so the
+        settings it describes were pinned by no test at all (#378).
+        """
+        from lxml import etree
+
+        from nanoidp.routes.saml import _SECURE_PARSER_OPTIONS
+
+        parser = etree.XMLParser(**_SECURE_PARSER_OPTIONS)
+
+        assert parser.resolvers is not None  # a real parser was built
+        assert _SECURE_PARSER_OPTIONS["resolve_entities"] is False
+        assert _SECURE_PARSER_OPTIONS["no_network"] is True
+        assert _SECURE_PARSER_OPTIONS["load_dtd"] is False
+        assert _SECURE_PARSER_OPTIONS["dtd_validation"] is False
+
+    def test_an_internal_entity_is_not_expanded(self):
+        """The discriminating case for ``resolve_entities=False``.
+
+        An external entity is not fetched by lxml's default parser either,
+        so a payload pointing at /etc/passwd says nothing about which
+        parser ran. An entity declared inline does: the default parser
+        expands it, ours leaves it alone. Without this, every XXE test here
+        passes with no parser at all.
+        """
+        from nanoidp.routes.saml import secure_fromstring
+
+        document = b"""<?xml version="1.0"?>
+<!DOCTYPE root [ <!ENTITY payload "expanded-by-the-wrong-parser"> ]>
+<root>&payload;</root>"""
+
+        root = secure_fromstring(document)
+
+        assert "expanded-by-the-wrong-parser" not in (root.text or "")
+
+    def test_a_parse_does_not_share_a_parser_with_another_thread(self):
+        """Each call parses through its own parser (#378).
+
+        The property is behavioural: documents parsed at the same time in
+        different threads each come back as themselves. It held with a
+        shared parser too when it was probed in #309 - this pins what the
+        change is for, rather than asserting the absence of an attribute.
+        """
+        import threading
+
+        from nanoidp.routes.saml import secure_fromstring
+
+        documents = {
+            b"<a><x/></a>": "a",
+            b'<b xmlns="urn:x"><y/></b>': "b",
+            b"<c>" + b"<item>x</item>" * 200 + b"</c>": "c",
+        }
+        wrong: list = []
+
+        def parse(document: bytes, expected: str) -> None:
+            for _ in range(500):
+                root = secure_fromstring(document)
+                tag = root.tag.split("}")[-1]
+                if tag != expected:
+                    wrong.append((tag, expected))
+
+        threads = [
+            threading.Thread(target=parse, args=(document, expected))
+            for document, expected in documents.items()
+            for _ in range(3)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        assert wrong == []
 
     def test_secure_parser_blocks_entities(self):
         """Test that secure parser blocks external entity expansion."""

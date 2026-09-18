@@ -229,6 +229,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lowered `max_previous_keys` trims the JWKS as soon as it is applied.
 
 ### Changed
+- **SAML XML is parsed through a parser built per call** (#378), not one
+  shared by every request thread. An `lxml` parser carries the state of the
+  parse it is running and is not documented as safe to share; while it was
+  shared it also stood as an alternative explanation for any surprising
+  parse, which is what sent the #309 diagnosis on a detour. Measured at
+  1.1 us more per parse, against requests that take milliseconds. The
+  parser options are unchanged, and now pinned by a test that used to be a
+  comment block asserting nothing.
+
 - **Every `/saml/attribute-query` outcome is attributable to its sender**
   (#309). A query refused for its shape - not well-formed, no
   `AttributeQuery`, no `Subject`, no `NameID` - used to write no audit entry
