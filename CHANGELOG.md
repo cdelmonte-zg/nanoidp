@@ -107,18 +107,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   For code embedding nanoidp: `Origin` is now `UserOrigin` and
   `ClientOrigin`, because only a client can have this third one.
 
-### Changed
-- **The users form reports the model's refusal before the missing password**
-  (#298). A create submission that is invalid in two ways, for example a
-  blank password together with a malformed email, used to be answered with
-  "Password is required for new users" and now names the field the model
-  rejected. Nothing is created either way and fixing the reported problem
-  surfaces the other; the order moved because one reader now answers which
-  user the form describes and the route then decides whether it may create
-  it. The client forms are unaffected: a missing secret is still refused
-  before any field is validated.
-
 ### Fixed
+- **A refused field on the users or clients edit form is answered, not
+  reported as a server failure** (#298). An email without `@`, a colour that
+  is not a hex triplet or any other value the model refuses reached the
+  catch-all on the edit routes: the operator was told "Failed to update
+  user: 1 validation error for User ..." and the server logged a stack trace
+  at ERROR for what is ordinary form input. The create routes had always
+  answered the same input with the refusal itself, and both legs now build
+  the record through one reader, so both answer it the same way. Nothing is
+  written in either case.
 - **A write that would leave a file unloadable is refused, not written**
   (#366). Every writer replaced the file and reloaded afterwards, so a
   document the models refuse reached disk first and was discovered second,

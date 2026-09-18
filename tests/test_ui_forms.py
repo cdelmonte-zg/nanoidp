@@ -157,22 +157,20 @@ class TestUserForms:
         with app.app_context():
             assert get_config().get_user("nopw") is None
 
-    def test_a_doubly_invalid_create_reports_the_model_s_refusal_first(self, app, client):
-        """Declared change of #298: the reader answers "which user does this
-        form describe" before the route decides whether it may be created,
-        so a submission that is invalid in two ways now reports the model's
-        refusal rather than the missing password.
-
-        Nothing is created either way, and fixing the reported problem
-        surfaces the other; only which sentence comes first moved.
-        """
+    def test_a_doubly_invalid_create_still_names_the_missing_password(self, app, client):
+        """The route asks its own question before the reader builds a record
+        (#298 review), so a submission that is invalid in two ways keeps the
+        operator sentence instead of falling through to the model's refusal
+        text, which is a pydantic dump with a documentation URL in it."""
         resp = client.post(
             "/users/create",
             data={"username": "dual", "password": "  ", "email": "no-at-sign"},
             follow_redirects=True,
         )
 
-        assert "Invalid email format" in resp.data.decode()
+        page = resp.data.decode()
+        assert "Password is required for new users" in page
+        assert "errors.pydantic.dev" not in page
         with app.app_context():
             assert get_config().get_user("dual") is None
 
@@ -215,6 +213,22 @@ class TestUserForms:
 
         with app.app_context():
             assert get_config().get_user("wsp").password == "  "
+
+    def test_edit_with_a_refused_field_is_not_reported_as_a_failure(self, app, client):
+        """Both legs build through the same reader now, so a field the model
+        refuses on edit is operator input, answered like the create route
+        answers it instead of falling to the catch-all (#298 review)."""
+        client.post("/users/create", data={"username": "badmail", "password": "pw"})
+
+        resp = client.post(
+            "/users/badmail/edit", data={"email": "no-at-sign"}, follow_redirects=True
+        )
+
+        page = resp.data.decode()
+        assert "Invalid email format" in page
+        assert "Failed to update user" not in page
+        with app.app_context():
+            assert get_config().get_user("badmail").email == ""
 
     def test_edit_missing_user_redirects_to_users(self, client):
         resp = client.post("/users/ghost-user/edit", data={"email": "x@example.org"})
@@ -306,6 +320,21 @@ class TestClientForms:
         )
 
         assert _get_client_by_id(app, "ui-client").layout == "horizontal"
+
+    def test_edit_client_with_a_refused_field_is_not_reported_as_a_failure(self, app, client):
+        """The clients form's counterpart: a colour the model refuses is
+        operator input, not a server failure (#298 review)."""
+        client.post("/clients/create", data=self.CREATE)
+
+        resp = client.post(
+            "/clients/ui-client/edit",
+            data={"client_secret": "", "background_color": "not-a-color"},
+            follow_redirects=True,
+        )
+
+        page = resp.data.decode()
+        assert "Failed to update client" not in page
+        assert _get_client_by_id(app, "ui-client").background_color is None
 
     def test_edit_missing_client_redirects(self, client):
         resp = client.post("/clients/ghost/edit", data={"description": "x"})

@@ -361,14 +361,18 @@ def user_create() -> ResponseReturnValue:
             flash("Username is required", "error")
             return redirect(url_for("ui.user_create"))
 
-        user = _user_from_form(username, None)
-        # Whether a password-less user is allowed depends on the current
-        # settings, so the reader does not decide it: it reports the record
-        # the form describes, and this route refuses the ones it may not
-        # create.
-        if user.password is None and not config.settings.persona_mode_enabled:
+        # Whether a password-less user may be created depends on the current
+        # settings, so the reader does not decide it. The question is asked
+        # of the form and asked FIRST: a submission that also trips a field
+        # validator must still be answered with this sentence rather than
+        # with the model's refusal text (#298 review).
+        if not request.form.get("password", "").strip() and not (
+            config.settings.persona_mode_enabled
+        ):
             flash("Password is required for new users", "error")
             return redirect(url_for("ui.user_create"))
+
+        user = _user_from_form(username, None)
 
         yaml_writer.save_user(
             user, is_new=True, expected_revision=_expected_revision_from_form()
@@ -443,6 +447,13 @@ def user_edit(username: str) -> ResponseReturnValue:
         flash(f"User '{username}' updated successfully", "success")
         return redirect(url_for("ui.user_detail", username=username))
 
+    except ValueError as e:
+        # Ordinary operator input, not a failure: both legs build the record
+        # through the same reader, so a field the model refuses must be
+        # answered here the way the create route answers it, instead of
+        # falling to the catch-all and logging a stack trace (#298 review).
+        flash(str(e), "error")
+        return redirect(url_for("ui.user_edit", username=username))
     except ConflictError as e:
         flash(_conflict_message(e), "error")
         return redirect(url_for("ui.user_edit", username=username))
@@ -764,6 +775,11 @@ def client_edit(client_id: str) -> ResponseReturnValue:
         flash(f"OAuth client '{client_id}' updated successfully", "success")
         return redirect(url_for("ui.clients"))
 
+    except ValueError as e:
+        # Same reason as the users form above: a model refusal on the edit
+        # leg is operator input, answered like the create leg answers it.
+        flash(str(e), "error")
+        return redirect(url_for("ui.client_edit", client_id=client_id))
     except ConflictError as e:
         flash(_conflict_message(e), "error")
         return redirect(url_for("ui.client_edit", client_id=client_id))
