@@ -43,6 +43,7 @@ from ..services import (
     identities_for,
 )
 from ..services.client_metadata import forget as forget_cached_client
+from ..services.client_policy import UNSET, ClientSecretRequired, resolve_client_auth
 from ._audit import audit_event
 from ._auth import (
     PENDING_SECOND_FACTOR_FIELD,
@@ -620,24 +621,26 @@ def client_create() -> ResponseReturnValue:
             flash("Client ID is required", "error")
             return redirect(url_for("ui.client_create"))
 
-        auth_method = request.form.get("token_endpoint_auth_method", "client_secret_basic")
-        client_secret: str | None = request.form.get("client_secret", "").strip()
-        if auth_method == "none":
-            # A public client (#188) has no secret. Normalize server-side, not
-            # just in the form JS: the create form pre-generates a secret, and
-            # the JS only lifts the 'required' constraint when 'none' is
-            # picked - it does not clear that generated value, so a real
-            # browser would otherwise persist a dead, ignored secret (#254
-            # review), the same reason edit-to-none drops it.
-            client_secret = None
-        elif not client_secret:
+        # An absent field is not a default spelled here: the resolver owns
+        # what a client with no method named gets (#300 review).
+        auth_method = request.form.get("token_endpoint_auth_method") or UNSET
+        client_secret = request.form.get("client_secret", "").strip()
+        # A public client (#188) has no secret, and the normalization is
+        # server-side, not just in the form JS: the create form
+        # pre-generates a secret and the JS only lifts the 'required'
+        # constraint when 'none' is picked, so a real browser would
+        # otherwise persist a dead, ignored value (#254 review). The rule
+        # itself lives in services/client_policy.py (#300).
+        try:
+            auth = resolve_client_auth(method=auth_method, secret=client_secret)
+        except ClientSecretRequired:
             flash("Client Secret is required unless the auth method is 'none'", "error")
             return redirect(url_for("ui.client_create"))
 
         client = OAuthClient(
             client_id=client_id,
-            client_secret=client_secret,
-            token_endpoint_auth_method=auth_method,  # type: ignore[arg-type]
+            client_secret=auth.secret,
+            token_endpoint_auth_method=auth.method,  # type: ignore[arg-type]
             layout=request.form.get("layout", "vertical"),  # type: ignore[arg-type]
             description=request.form.get("description", ""),
             background_color=request.form.get("background_color") or None,
@@ -705,23 +708,32 @@ def client_edit(client_id: str) -> ResponseReturnValue:
 
     # POST: Update client
     try:
-        auth_method = request.form.get(
-            "token_endpoint_auth_method", client.token_endpoint_auth_method
-        )
-        client_secret: str | None = request.form.get("client_secret", "").strip()
-        if not client_secret:
-            if auth_method == "none":
-                # Switching to public (#188): drop any old secret rather than
-                # carrying a dead, ignored value into the persisted client.
-                client_secret = None
-            else:
-                # Keep the existing secret (blank field = unchanged).
-                client_secret = client.client_secret
+        auth_method = request.form.get("token_endpoint_auth_method") or UNSET
+        submitted_secret: str = request.form.get("client_secret", "").strip()
+        # A blank field means unchanged on this form (#131), which is the
+        # form's convention and stays here: the policy is told "not
+        # provided" and keeps the stored secret, unless the target is
+        # public, where it drops it (#300).
+        try:
+            auth = resolve_client_auth(
+                method=auth_method,
+                secret=submitted_secret if submitted_secret else UNSET,
+                current_method=client.token_endpoint_auth_method,
+                current_secret=client.client_secret,
+            )
+        except ClientSecretRequired:
+            # Ordinary operator input, not a failure: a public client's edit
+            # form never marks the secret required, so switching it to a
+            # confidential method with the field blank arrives here. It gets
+            # the same sentence the create form uses, not a stack trace from
+            # the catch-all below.
+            flash("Client Secret is required unless the auth method is 'none'", "error")
+            return redirect(url_for("ui.client_edit", client_id=client_id))
 
         updated_client = OAuthClient(
             client_id=client_id,
-            client_secret=client_secret,
-            token_endpoint_auth_method=auth_method,  # type: ignore[arg-type]
+            client_secret=auth.secret,
+            token_endpoint_auth_method=auth.method,  # type: ignore[arg-type]
             layout=request.form.get("layout", client.layout),  # type: ignore[arg-type]
             description=request.form.get("description", ""),
             background_color=request.form.get("background_color") or None,

@@ -629,6 +629,21 @@ class TestPublicClientTools:
         assert mcp_config.get_client("pub-mcp").is_public is True
 
     @pytest.mark.asyncio
+    async def test_create_client_without_a_method_gets_the_resolver_s_default(
+        self, mcp_config, mcp_call_tool
+    ):
+        """The handler does not spell a default of its own: an absent key is
+        passed on as "not provided" and the resolver decides (#300 review)."""
+        from nanoidp.services.client_policy import DEFAULT_METHOD
+
+        payload = _payload(
+            await mcp_call_tool("create_client", {"client_id": "no-method", "client_secret": "s"})
+        )
+
+        assert payload["success"] is True
+        assert mcp_config.get_client("no-method").token_endpoint_auth_method == DEFAULT_METHOD
+
+    @pytest.mark.asyncio
     async def test_create_confidential_client_without_secret_is_refused(
         self, mcp_config, mcp_call_tool
     ):

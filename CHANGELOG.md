@@ -229,6 +229,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lowered `max_previous_keys` trims the JWKS as soon as it is applied.
 
 ### Changed
+- **A client's authentication method and secret are normalized in one
+  place** (#300). "`none` drops the secret" was written four times - the UI
+  create and edit forms, MCP `create_client` and `update_client` - with the
+  reasoning repeated at each site, and the order an existing client must be
+  moved through (the model validates on assignment) was a comment in the
+  one place that hit it. Both live in `services/client_policy.py` now.
+  The difference between an omitted secret, which keeps the stored one, and
+  an empty one, which a confidential client refuses, is unchanged, and the
+  UI form's "blank means unchanged" stays in the route, where the convention
+  belongs. The other consequences of a client being
+  public - PKCE at `/authorize`, the refusal at `/introspect`, the ownership
+  check at `/revoke`, the channel rule at `/device_authorization`, forced
+  refresh rotation - deliberately stay where they are applied: they are
+  different rules sharing a predicate, not one policy written ten times.
+
 - **What `/userinfo` returns and what `/introspect` reports are services**
   (#303), not response dicts assembled inside the routes. Which claims a
   token's bearer may see, and what an introspection says about a token, are
@@ -289,6 +304,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   been reproduced, not a fix for it.
 
 ### Fixed
+- **Switching a client to public through the UI edit form drops a secret
+  typed in the same submission** (#300). The form only dropped it when the
+  field was left blank, so an operator who picked
+  `token_endpoint_auth_method: none` while a secret sat in the input
+  persisted a dead, ignored value - the state the create form has refused
+  to write since #254. The two forms now apply the same rule.
+
 - **Two signed Redirect AuthnRequests in one browser no longer interfere**
   (#375). With `saml.want_authn_requests_signed`, a verified `GET
   /saml/sso` was remembered in a single session key, so a second signed

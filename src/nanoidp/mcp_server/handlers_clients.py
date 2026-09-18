@@ -7,6 +7,12 @@ the pre-validate-before-any-assignment ordering comments.
 from typing import Any
 
 from ..config import ConfigManager, OAuthClient
+from ..services.client_policy import (
+    UNSET,
+    ClientSecretRequired,
+    apply_client_auth,
+    resolve_client_auth,
+)
 from .normalize import (
     _normalize_audiences,
     _normalize_auth_method,
@@ -47,25 +53,24 @@ def _tool_create_client(arguments: dict[str, Any], config: ConfigManager) -> dic
     if config.get_client(client_id):
         return {"success": False, "error": f"Client '{client_id}' already exists"}
 
-    auth_method = _normalize_auth_method(
-        arguments.get("token_endpoint_auth_method", "client_secret_basic")
+    # An absent method is not defaulted here: the resolver owns what a
+    # client with no method named gets (#300 review). A public client has no
+    # secret, and a supplied one is dropped rather than persisted as a dead,
+    # ignored value (#188), the rule the UI forms share since #300.
+    auth_method = (
+        _normalize_auth_method(arguments["token_endpoint_auth_method"])
+        if "token_endpoint_auth_method" in arguments
+        else UNSET
     )
-    client_secret = arguments.get("client_secret")
-    if auth_method == "none":
-        # A public client has no secret; drop a supplied one rather than
-        # persisting a dead, ignored value (#188, parity with the UI create
-        # form's server-side normalization).
-        client_secret = None
-    elif not client_secret:
-        return {
-            "success": False,
-            "error": "client_secret is required unless token_endpoint_auth_method is 'none'",
-        }
+    try:
+        auth = resolve_client_auth(method=auth_method, secret=arguments.get("client_secret"))
+    except ClientSecretRequired as refused:
+        return {"success": False, "error": str(refused)}
 
     new_client = OAuthClient(
         client_id=client_id,
-        client_secret=client_secret,
-        token_endpoint_auth_method=auth_method,  # type: ignore[arg-type]
+        client_secret=auth.secret,
+        token_endpoint_auth_method=auth.method,  # type: ignore[arg-type]
         description=arguments.get("description", ""),
         background_color=_normalize_hex_color(
             arguments.get("background_color"), "background_color"
@@ -135,39 +140,26 @@ def _tool_update_client(arguments: dict[str, Any], config: ConfigManager) -> dic
     new_auth_method = (
         _normalize_auth_method(arguments["token_endpoint_auth_method"])
         if "token_endpoint_auth_method" in arguments
-        else None
+        else UNSET
     )
-    # Check the method/secret combination BEFORE any assignment (#188), so
-    # the model validator can never reject mid-sequence and leave the live
-    # client half-updated.
-    effective_method = new_auth_method or client.token_endpoint_auth_method
-    effective_secret = (
-        (arguments["client_secret"] or None)
-        if "client_secret" in arguments
-        else client.client_secret
-    )
-    if effective_method != "none" and not effective_secret:
-        return {
-            "success": False,
-            "error": "client_secret is required unless token_endpoint_auth_method is 'none'",
-        }
+    # The method/secret combination is resolved BEFORE any assignment
+    # (#188), so the model validator can never reject mid-sequence and
+    # leave the live client half-updated. An omitted secret keeps the
+    # stored one; a supplied empty one is an attempt to clear it, which a
+    # confidential client refuses (#300).
+    try:
+        auth = resolve_client_auth(
+            method=new_auth_method,
+            secret=arguments["client_secret"] or None if "client_secret" in arguments else UNSET,
+            current_method=client.token_endpoint_auth_method,
+            current_secret=client.client_secret,
+        )
+    except ClientSecretRequired as refused:
+        return {"success": False, "error": str(refused)}
 
-    # Assignment order matters under validate_assignment (#188). A public
-    # target (whether being switched to 'none' or already 'none') keeps NO
-    # secret: set the method first so clearing the secret is valid, then
-    # clear it - dropping any supplied or existing dead value, parity with
-    # the UI's server-side normalization (#254 review). A confidential
-    # target sets the new secret BEFORE flipping the method, or the model's
-    # confidential-clients-need-a-secret check would reject mid-update.
-    if effective_method == "none":
-        if new_auth_method is not None:
-            client.token_endpoint_auth_method = new_auth_method  # type: ignore[assignment]
-        client.client_secret = None
-    else:
-        if "client_secret" in arguments:
-            client.client_secret = arguments["client_secret"] or None
-        if new_auth_method is not None:
-            client.token_endpoint_auth_method = new_auth_method  # type: ignore[assignment]
+    # The assignment order is the model's rule, not this handler's (#300):
+    # validate_assignment would refuse a half-applied state.
+    apply_client_auth(client, auth)
     if "description" in arguments:
         client.description = arguments["description"]
     if "background_color" in arguments:

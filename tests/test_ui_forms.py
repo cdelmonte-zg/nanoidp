@@ -223,6 +223,17 @@ class TestClientForms:
         assert created.redirect_uris == ["https://app.example/cb", "http://127.0.0.1:7777/cb"]
         assert created.additional_audiences == ["aud-a", "aud-b"]
 
+    def test_create_client_without_a_method_gets_the_resolver_s_default(self, app, client):
+        """The form has no method field on create, and the route does not
+        spell a default of its own: what a client with no method named gets
+        is the resolver's answer, and the resolver reads it off the model
+        (#300 review)."""
+        from nanoidp.services.client_policy import DEFAULT_METHOD
+
+        client.post("/clients/create", data=self.CREATE)
+
+        assert _get_client_by_id(app, "ui-client").token_endpoint_auth_method == DEFAULT_METHOD
+
     def test_create_client_missing_id_or_secret_creates_nothing(self, app, client):
         with app.app_context():
             before = len(get_config().settings.clients)
@@ -691,3 +702,74 @@ class TestBothGates:
         assert "/login" not in resp.headers["Location"]
         with app.app_context():
             assert get_config().get_user("fully-open") is not None
+
+
+class TestSwitchingAClientToPublicThroughTheEditForm:
+    """#300: the edit form now drops a secret typed while switching to
+    public, which the create form has done since #254 - a behaviour change,
+    declared in the CHANGELOG rather than assumed away."""
+
+    def _create(self, client, client_id="edit-public", secret="s3cret"):
+        return client.post(
+            "/clients/create",
+            data={
+                "client_id": client_id,
+                "token_endpoint_auth_method": "client_secret_basic",
+                "client_secret": secret,
+            },
+            follow_redirects=True,
+        )
+
+    def test_a_secret_typed_while_switching_to_public_is_dropped(self, client, app):
+        self._create(client)
+
+        client.post(
+            "/clients/edit-public/edit",
+            data={
+                "client_id": "edit-public",
+                "token_endpoint_auth_method": "none",
+                "client_secret": "typed-by-the-operator",
+            },
+            follow_redirects=True,
+        )
+
+        with app.app_context():
+            from nanoidp.config import get_config
+
+            updated = get_config().get_client("edit-public")
+        assert updated.token_endpoint_auth_method == "none"
+        assert updated.client_secret is None
+
+    def test_a_blank_secret_on_a_public_client_is_refused_with_the_operator_sentence(
+        self, client, app
+    ):
+        """A public client's form never marks the secret required, so this
+        is ordinary input and gets a sentence, not the catch-all's trace."""
+        self._create(client, client_id="edit-back", secret="s3cret")
+        client.post(
+            "/clients/edit-back/edit",
+            data={
+                "client_id": "edit-back",
+                "token_endpoint_auth_method": "none",
+                "client_secret": "",
+            },
+            follow_redirects=True,
+        )
+
+        page = client.post(
+            "/clients/edit-back/edit",
+            data={
+                "client_id": "edit-back",
+                "token_endpoint_auth_method": "client_secret_basic",
+                "client_secret": "",
+            },
+            follow_redirects=True,
+        )
+
+        assert b"Client Secret is required unless the auth method is" in page.data
+        assert b"Failed to update client" not in page.data
+        with app.app_context():
+            from nanoidp.config import get_config
+
+            unchanged = get_config().get_client("edit-back")
+        assert unchanged.token_endpoint_auth_method == "none"
