@@ -108,6 +108,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ClientOrigin`, because only a client can have this third one.
 
 ### Fixed
+- **A password field holding only spaces means "unchanged" on the users edit
+  form, as it already did on create** (#386). The create leg stripped the
+  field before deciding it was blank and the edit leg did not, so `"   "`
+  was no password on one and a real new password on the other: an operator
+  who left stray spaces in the field, from a paste, an autofill or the
+  spacebar, silently replaced that account's password with whitespace, with
+  nothing flashed and nothing logged, and the account stopped authenticating
+  with the password they believed it had. Both legs now share one notion of
+  "the field was left blank". Stripping decides only that: a password that
+  is not blank is stored exactly as typed, leading and trailing spaces
+  included, since those may be deliberate.
 - **A refused field on the users or clients edit form is answered, not
   reported as a server failure** (#298). An email without `@`, a colour that
   is not a hex triplet or any other value the model refuses reached the
