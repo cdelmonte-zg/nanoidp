@@ -113,7 +113,18 @@ def build_discovery_document(
             *(["amr"] if settings.totp_active else []),
             "email", "email_verified", "preferred_username",
             "roles", "groups", "tenant", "identity_class", "entitlements",
-            "source_acl", "attributes", "authorities"
+            # source_acl and authorities are NOT advertised (#316): OIDC
+            # Core 3 §3 defines this field as the claims the provider may
+            # supply VALUES for, and those two reach no identity surface.
+            # They are authorization facts a resource server reads off an
+            # access token, produced by no ID Token and no UserInfo
+            # response, and `resolve_user_claim` does not know them, so a
+            # client that read the document and asked for one got nothing
+            # back. Advertising them broke the rule #41 set for this
+            # document. `attributes` stays: UserInfo does supply the map,
+            # even though it is not a claim NAME the `claims` parameter can
+            # ask for - an individual custom attribute is.
+            "attributes"
         ],
         # The OIDC `claims` request parameter is honoured at /authorize to
         # deliver requested claims in the ID Token / UserInfo (§5.5, #104).

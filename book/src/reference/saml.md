@@ -223,6 +223,10 @@ unknown principal (#275) shares the same envelope and `Issuer`, carries a
 `Requester` / `UnknownPrincipal` status pair instead of `Success`, and has
 no assertion at all.
 
+How these attributes compare with what the OAuth and OIDC surfaces carry
+for the same user, `tenant` and `authorities` included, is in [What each
+surface says about a user](user-facts.md).
+
 Shared rules on both surfaces: an absent or empty fact is an absent
 attribute (no fabricated `email`, no empty `Attribute` elements - None and
 empty list/tuple/set/dict/string alike); a list value becomes one

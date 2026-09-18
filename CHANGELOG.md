@@ -238,6 +238,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lowered `max_previous_keys` trims the JWKS as soon as it is applied.
 
 ### Changed
+- **`claims_supported` no longer advertises `source_acl` and `authorities`**
+  (#316). OpenID Connect Core 3 §3 defines that field as the claims the
+  provider may be able to supply values for, and those two reach no identity
+  surface: they are authorization facts a resource server reads off an
+  access token, produced by no ID Token and no UserInfo response, and the
+  claim resolver does not know them, so a client that read the document and
+  asked for one got nothing back. The document now keeps the rule #41 set
+  for it, and a test checks the rule rather than the two names. `attributes`
+  stays advertised, because `/userinfo` does supply it, even though it is
+  not a claim name the `claims` parameter can ask for: an individual custom
+  attribute is. Nothing else changed: what every surface asserts about a
+  user is now written down in the new reference page rather than being a
+  consequence of two independently written assemblers.
 - **The three SAML Response builders share the part of the document that is
   the same in all three** (#317). The `Response` envelope, the `Issuer`
   pair, the `Status` element and the assertion's head were written three
