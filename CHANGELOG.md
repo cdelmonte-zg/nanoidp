@@ -249,6 +249,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lowered `max_previous_keys` trims the JWKS as soon as it is applied.
 
 ### Changed
+- **A configuration directory is read as one observation, not several**
+  (#246, first part). `settings.yaml` and `users.yaml` were opened by two
+  separate unlocked reads, so a save landing between them, from another
+  process or another thread, was observed as a settings/users pair that
+  never existed on disk, and the runtime was built from it. Reads now go
+  through `ConfigFileStore`, which acquires the directory under the same
+  lock the writer takes and returns each file's bytes together with the
+  revision of exactly those bytes, so a precondition can no longer describe
+  content nobody read. Only the acquisition is inside the lock: parsing,
+  environment expansion, the document models and the profile hardening all
+  run afterwards, because the atomic unit is the filesystem snapshot rather
+  than the whole reload. The revision a form stamps into the page, which the
+  save hands back as its precondition, is observed through the same
+  boundary. A read never abandons an available protocol: contention fails,
+  and so does a filesystem without advisory locking, because both mean the
+  protocol is there and this process could not join it. A **read-only
+  configuration mount keeps working**, which is a supported deployment here
+  and which an earlier version of this change broke: the lock file is
+  reopened read-only, so such a mount still takes part in the protocol
+  rather than stepping outside it, and only a view that can hold no lock
+  file at all, or a directory that does not exist, reads unlocked - neither
+  has a writer to be inconsistent with. The whole acquisition shares one
+  deadline, so waiting for another process is bounded and never leaves this
+  one holding a lock indefinitely. Since a read can now fail, a request that
+  cannot observe the configuration answers **503** with the classified
+  reason instead of a 500 and a traceback.
 - **`claims_supported` no longer advertises `source_acl` and `authorities`**
   (#316). OpenID Connect Discovery 1.0 §3 defines that field as the Claim
   Names a provider may be able to supply values for; on top of it nanoidp

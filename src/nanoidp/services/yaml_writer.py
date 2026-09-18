@@ -9,6 +9,7 @@ from typing import Any, Callable, Dict, List, Mapping, Optional
 
 from ..config import ConfigurationRejected, OAuthClient, User, get_config
 from ..config_documents import document_defaults, reject_unloadable
+from ..config_store import ConfigFileStore
 from ..config_writer import compare_and_replace
 from ..hooks import HookError
 from ..models import validate_login_mode, validate_saml_c14n_algorithm
@@ -145,6 +146,11 @@ class YamlWriter:
         self.config_dir = Path(config_dir or config.config_dir)
         self.users_file = self.config_dir / "users.yaml"
         self.settings_file = self.config_dir / "settings.yaml"
+        # The same boundary the loader reads through (#246). The form
+        # handlers stamp a revision into the page so the POST can hand it
+        # back as expected_revision: that read produces a precondition, so
+        # it belongs inside the protocol rather than beside it.
+        self.store = ConfigFileStore(self.config_dir)
 
     def _atomic_write(
         self,
@@ -212,8 +218,24 @@ class YamlWriter:
         return new_revision
 
     def _load_settings_yaml(self) -> Dict[str, Any]:
-        """Load the current settings.yaml content."""
+        """Load the current settings.yaml content.
+
+        No caller in ``src/`` today; kept because the round-trip tests read
+        the document through it (#127), and because removing a loader is not
+        this branch's business (#246).
+        """
         return load_yaml_document(self.settings_file)
+
+    def current_revision(self, name: str) -> str:
+        """The revision of a file in THIS directory, observed through the
+        store (#246).
+
+        A name rather than a path (#246 review): taking a path invited a
+        caller to pass one from somewhere else and get back the revision of
+        this directory's file of the same name, which would then be stamped
+        into a form as a precondition for the wrong file.
+        """
+        return self.store.current_revision(name)
 
     # ==================== User Operations ====================
 

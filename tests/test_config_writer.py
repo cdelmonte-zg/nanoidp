@@ -236,6 +236,75 @@ class TestConcurrentReadsOutsideTheLock:
         assert errors == []
 
 
+class TestReadersInsideTheProtocol:
+    """The counterpart to the class above, for readers that DO join the
+    protocol (#246).
+
+    That one keeps its reader deliberately outside the lock, because the
+    property it pins is the loader's own thread safety - a fresh ruamel
+    instance per call - which must hold whoever calls it. This one pins what
+    the boundary buys: a reader going through ``ConfigFileStore`` observes
+    the directory under the same lock the writer takes, so it is never
+    holding a file open while a replace happens.
+
+    That is also why the Windows failure disappears here rather than being
+    retried around: on the one platform whose replace refuses a file another
+    handle has open, no reader in the protocol has one open at that moment.
+    """
+
+    def test_readers_through_the_store_see_no_errors_during_a_racing_write(self, tmp_path):
+        from nanoidp.config_store import ConfigFileStore
+
+        settings = tmp_path / "settings.yaml"
+        settings.write_text("oauth:\n  issuer: 'http://localhost:8000'\n")
+        users = tmp_path / "users.yaml"
+        users.write_text("users: {}\n")
+        store = ConfigFileStore(tmp_path)
+
+        errors = []
+        mixed = []
+        stop = threading.Event()
+
+        def read_loop():
+            while not stop.is_set():
+                try:
+                    observed = store.read_snapshot(("settings.yaml", "users.yaml"))
+                except Exception as exc:  # noqa: BLE001 - recorded, not raised
+                    errors.append(exc)
+                    continue
+                # Both files carry the same counter, written together, so a
+                # pair that disagrees is a snapshot that never existed.
+                pair = (observed["settings.yaml"].data, observed["users.yaml"].data)
+                if _counter_of(pair[0]) != _counter_of(pair[1]):
+                    mixed.append(pair)
+
+        readers = [threading.Thread(target=read_loop) for _ in range(4)]
+        for reader in readers:
+            reader.start()
+        try:
+            for i in range(50):
+                compare_and_replace_many(
+                    [
+                        (settings, None, lambda doc, i=i: doc.update({"counter": i})),
+                        (users, None, lambda doc, i=i: doc.update({"counter": i})),
+                    ]
+                )
+        finally:
+            stop.set()
+            for reader in readers:
+                reader.join()
+
+        assert errors == []
+        assert mixed == []
+
+
+def _counter_of(raw: bytes) -> object:
+    for line in raw.decode().splitlines():
+        if line.startswith("counter:"):
+            return line.split(":", 1)[1].strip()
+    return None
+
+
 class TestCrossProcessConflictDetection:
     """Regression pin for the #229 review round-2 finding: compare_and_replace's
     thread lock only serializes threads within one process, so two separate

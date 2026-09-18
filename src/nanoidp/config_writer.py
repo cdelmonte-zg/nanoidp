@@ -39,10 +39,11 @@ a conflict on the second file never leaves the first one already written.
 ``settings.yaml`` as one coordinated save (#229 review on phase 2,
 reproduced: a stale ``settings.yaml`` revision left a fresh ``users.yaml``
 on disk and the in-memory settings change silently unsaved). This is a
-write-side guarantee only, not the same boundary ``ConfigManager._load_config``
-gives reads (#204): ``_stage_directory`` opens both files unlocked, so a
-concurrent save() in another process can still pair an old settings.yaml
-with a new users.yaml on the read side (#229 review round 4).
+write-side guarantee, and since #246 the read side has the matching one:
+``ConfigManager._load_config`` observes both files through
+``config_store.ConfigFileStore`` under this same lock, so a concurrent
+save() in another process can no longer pair an old settings.yaml with a
+new users.yaml (it used to, #229 review round 4).
 ``compare_and_replace`` is the ``len(items) == 1`` case of the same
 function.
 
@@ -86,27 +87,28 @@ two directory locks in opposite order:
   unconditional ``import fcntl`` used to break ``import nanoidp.config``
   outright on Windows, a platform ``pyproject.toml`` declares as
   supported). Acquisition is a bounded, polled non-blocking wait, not a
-  plain blocking acquisition - it is taken while holding the process-wide
-  ``_write_lock``, so an indefinite wait on one stuck peer process would
-  otherwise block every writer thread in this process, including ones
-  targeting an unrelated directory, with nothing in the logs to explain
-  why. A wait past ``_LOCK_TIMEOUT_SECONDS``, or an ``OSError`` that
+  plain blocking acquisition: a stuck peer process must become a bounded,
+  logged failure rather than a hang with nothing in the logs to explain
+  it. Since #246 the wait no longer holds ``_write_lock`` - the ordering
+  is the file lock first, the thread lock second - so a stuck peer stalls
+  only callers of the SAME directory instead of every thread in the
+  process. A wait past ``_LOCK_TIMEOUT_SECONDS``, or an ``OSError`` that
   means the filesystem does not support advisory locks at all (NFS
   without ``lockd``, some 9p/FUSE bind mounts), raises
   ``LockUnavailableError`` instead of hanging forever or leaking a bare
   ``OSError`` from deep inside a write helper.
 
-Readers do not take the file lock: the atomic replace (``os.replace``)
-already guarantees a reader sees a complete file, one revision or the
-next, never a partial one - the lock's job is only to make the
-check-then-replace section atomic against another writer, not to gate
-reads.
+Readers took no file lock until #246. The atomic replace (``os.replace``)
+already guarantees a reader sees a complete FILE, one revision or the
+next, never a partial one, and that was taken to be enough. It is not the
+same property as a reader seeing one consistent observation of the
+DIRECTORY, which is why ``config_store.ConfigFileStore`` now acquires this
+lock for reads too, through ``directory_lock`` below.
 
-Concurrent YAML parsing/dumping is a separate hazard the lock above does
-not touch, because reads never take it: ``reload_local()``, every
-``YamlWriter`` loader and every other read path call
-``serialization.load_yaml_document`` outside this module entirely, so a
-lock here could never cover them without every reader taking it too
+Concurrent YAML parsing/dumping is a separate hazard this lock does not
+touch, and it survives #246: ``serialization.load_yaml_document`` is still
+called directly from outside this module, and a loader has to be safe for
+whoever calls it rather than only for callers that happen to hold a lock
 (which would serialize the whole app's reads against every write, not
 just writes against each other). That hazard is closed at the source
 instead: ``serialization._new_yaml_rt()`` builds a fresh ``ruamel.yaml``
@@ -162,10 +164,11 @@ Revision = str
 _LOCK_FILENAME = ".nanoidp-write.lock"
 
 # Bounded, visible wait instead of an indefinite LOCK_EX (#229 review,
-# non-blocking - applied): _cross_process_lock is taken while holding
-# the process-global _write_lock, so an indefinite wait on one stuck
-# peer process would block every writer thread in this process, even
-# ones targeting an unrelated directory, with no log line to explain why.
+# non-blocking - applied): a stuck peer must fail with an explanation
+# rather than hang silently. The wait is no longer taken while holding
+# _write_lock (#246 review): the order is the directory's file lock
+# first, the process-global thread lock second, so waiting on another
+# process never monopolizes this one.
 _LOCK_TIMEOUT_SECONDS = 10.0
 _LOCK_POLL_INTERVAL_SECONDS = 0.05
 
@@ -188,6 +191,34 @@ class LockUnavailableError(RuntimeError):
         super().__init__(message)
         self.message = message
         self.kind = kind
+
+
+class LockNamespaceUnavailable(LockUnavailableError):
+    """The lock file cannot EXIST through this view of the directory (#246).
+
+    A narrower thing than "the lock could not be acquired": there is nowhere
+    to put the lock at all, because this process cannot open or create the
+    lock file through this view. Such a view cannot write configuration
+    either - ``atomic_write_yaml`` needs the same capability - so no writer
+    participating through it can exist, and a reader has nobody to be
+    inconsistent with.
+
+    NOT raised for a directory that does not exist: that stays a plain
+    ``FileNotFoundError``, the exception the write path has always raised
+    for it (#246 review round 3). The read side handles the absent
+    directory before it ever reaches the lock, where "every file is
+    missing" is the answer rather than an error.
+
+    Deliberately NOT raised for a lock that exists but cannot be opened, for
+    a filesystem without advisory locking, or for a timeout. Those mean the
+    protocol is available and this process could not join it, which is
+    failing to coordinate rather than having nothing to coordinate with, and
+    they stay ``LockUnavailableError``. A subclass, so every existing
+    handler on the write paths keeps catching it.
+    """
+
+    def __init__(self, message: str, kind: str = "lock_namespace_unavailable") -> None:
+        super().__init__(message, kind=kind)
 
 
 def _try_lock_exclusive(fd: int) -> bool:
@@ -233,7 +264,33 @@ def _unlock(fd: int) -> None:
 
 
 @contextlib.contextmanager
-def _cross_process_lock(directory: Path) -> Iterator[None]:
+def _write_lock_within(deadline: float) -> Iterator[None]:
+    """The process-global thread lock, acquired within the budget the whole
+    acquisition shares (#246 review round 2).
+
+    An unbounded ``acquire()`` here would mean holding somebody's file lock
+    indefinitely while waiting on a lock of our own, which is the mirror of
+    the hazard the ordering fixed: a slow writer on one directory could
+    push a peer process writing ANOTHER directory into its timeout. The
+    coupling between directories is not removed by this - that needs
+    per-directory thread locks, which this finding does not justify - but
+    it becomes bounded and explainable rather than open-ended.
+    """
+    remaining = max(0.0, deadline - time.monotonic())
+    if not _write_lock.acquire(timeout=remaining):
+        raise LockUnavailableError(
+            f"Timed out after {_LOCK_TIMEOUT_SECONDS}s waiting for this "
+            "process's own configuration lock",
+            kind="lock_timeout",
+        )
+    try:
+        yield
+    finally:
+        _write_lock.release()
+
+
+@contextlib.contextmanager
+def _cross_process_lock(directory: Path, deadline: Optional[float] = None) -> Iterator[None]:
     """Advisory, cross-process exclusive lock for one config directory.
 
     One lock file per directory (not per target file, same reasoning as
@@ -252,9 +309,53 @@ def _cross_process_lock(directory: Path) -> Iterator[None]:
     write helper.
     """
     lock_path = directory / _LOCK_FILENAME
-    fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o644)
     try:
-        deadline = time.monotonic() + _LOCK_TIMEOUT_SECONDS
+        fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o644)
+    except OSError as exc:
+        if exc.errno not in (errno.EROFS, errno.EACCES, errno.EPERM):
+            raise
+        # A read-only view of the directory. The lock file may still be
+        # THERE - it usually is, since it is part of whatever content was
+        # mounted, and this repository's own config/ has one after any
+        # local save - and flock works perfectly well on a descriptor
+        # opened read-only, so the protocol is still available and this
+        # process still joins it (#246 review round 2; the first fix
+        # checked `not lock_path.exists()` and so skipped the concession
+        # in exactly the common case, breaking `docker compose up` on any
+        # machine that had ever saved configuration).
+        if sys.platform == "win32":
+            # No read-only fallback here (#246 review round 3):
+            # ``msvcrt.locking`` needs a WRITABLE descriptor and answers
+            # EACCES on a read-only one, which _try_lock_exclusive reads as
+            # "someone else holds it" - so the fallback would poll out the
+            # whole timeout and then blame a peer that does not exist. A
+            # descriptor this process cannot open for writing means it
+            # cannot write configuration through this view either, which is
+            # the same conclusion, reached without the wait. ``os.access``
+            # is unreliable on Windows, so it is not consulted.
+            raise LockNamespaceUnavailable(
+                f"{directory} cannot be opened for writing ({exc.strerror}), "
+                "so no writer can participate through this view"
+            ) from exc
+        try:
+            fd = os.open(str(lock_path), os.O_RDONLY)
+        except OSError:
+            # No usable lock file either. Whether that is a view with
+            # nothing to coordinate in, or a namespace that is simply
+            # broken, is decided by the DIRECTORY, not by the lock file: a
+            # writable directory can be written through atomic_write_yaml
+            # whatever state the lock file is in, so there really is a
+            # writer to be inconsistent with and this must fail closed
+            # (#246 review).
+            if os.access(directory, os.W_OK):
+                raise
+            raise LockNamespaceUnavailable(
+                f"{directory} is not writable and holds no usable lock file "
+                f"({exc.strerror}), so no writer can participate through this view"
+            ) from exc
+    try:
+        if deadline is None:
+            deadline = time.monotonic() + _LOCK_TIMEOUT_SECONDS
         warned = False
         while True:
             try:
@@ -305,6 +406,39 @@ def _read_bytes(file_path: Path) -> bytes:
     if not file_path.exists():
         return b""
     return file_path.read_bytes()
+
+
+@contextlib.contextmanager
+def directory_lock(directory: Path) -> Iterator[None]:
+    """The exclusive section for one configuration directory: the
+    directory's advisory file lock and then the process-global thread
+    lock, in that order (#246 - it is the reverse of the order writers
+    used before, see the comment on the acquisition below).
+
+    Published so that READS can join the protocol through
+    ``config_store.ConfigFileStore``. It is NOT reentrant, by design and by
+    the primitives: ``_write_lock`` is a plain ``threading.Lock``, and
+    ``_cross_process_lock`` opens a fresh descriptor whose ``flock`` the
+    same process conflicts with. A caller already inside the section uses
+    the unlocked form of what it needs rather than acquiring again.
+    """
+    # ORDER: the cross-process lock FIRST, the thread lock second, and
+    # never the other way round (#246 review). Taking the global thread
+    # lock first meant polling a peer process while holding it, so one
+    # stuck peer on one directory stalled every thread in this process,
+    # including readers of a completely different directory: measured at
+    # 1.8s of unrelated stall against a 2s timeout. Waiting for another
+    # process is not a reason to own this one.
+    #
+    # This is about the WAIT, not the held section (#246 review round 3):
+    # _write_lock is still process-global, so one directory's critical
+    # section does exclude another's for as long as it runs. That is the
+    # length of a validation and two atomic writes rather than the length
+    # of somebody else's timeout, and making the thread lock per-directory
+    # is a separate refactor with no measured case behind it yet.
+    deadline = time.monotonic() + _LOCK_TIMEOUT_SECONDS
+    with _cross_process_lock(directory, deadline), _write_lock_within(deadline):
+        yield
 
 
 def revision_of_bytes(raw: bytes) -> Revision:
@@ -381,9 +515,15 @@ def compare_and_replace_many(
         raise ValueError(f"compare_and_replace_many got a repeated path: {paths}")
 
     directories = sorted({file_path.parent for file_path, _, _ in items}, key=str)
-    with _write_lock, contextlib.ExitStack() as stack:
+    # Same ordering as directory_lock, and the directories in a stable
+    # sorted order so two batches over the same set cannot deadlock each
+    # other: every cross-process lock first, the process-global thread lock
+    # last (#246 review).
+    deadline = time.monotonic() + _LOCK_TIMEOUT_SECONDS
+    with contextlib.ExitStack() as stack:
         for directory in directories:
-            stack.enter_context(_cross_process_lock(directory))
+            stack.enter_context(_cross_process_lock(directory, deadline))
+        stack.enter_context(_write_lock_within(deadline))
 
         # Phase 1: every precondition checked before anything is loaded.
         for file_path, expected_revision, _mutate in items:
