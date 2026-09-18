@@ -22,7 +22,7 @@ import pytest
 from nanoidp import config_documents as cd
 from nanoidp.mcp_server import _TOOL_SCHEMAS, _UPDATE_SETTINGS_FIELDS
 from nanoidp.models import Settings
-from nanoidp.serialization import OWNED_SETTINGS
+from nanoidp.serialization import _FALLBACK_DEFAULTS, OWNED_SETTINGS
 from nanoidp.services.yaml_writer import YamlWriter
 
 _SECTION_MODELS = {
@@ -30,6 +30,7 @@ _SECTION_MODELS = {
     "oauth": cd.OAuthSection,
     "saml": cd.SamlSection,
     "logging": cd.LoggingSection,
+    "login": cd.LoginSection,
     "": cd.SettingsDocument,
 }
 
@@ -47,6 +48,58 @@ class TestOwnedSettingsDeriveFromTheModels:
     def test_rows_are_unique_per_key(self):
         keys = [(row.section, row.key) for row in OWNED_SETTINGS]
         assert len(keys) == len(set(keys))
+
+
+class TestTheDefaultsDependentRowsKnowTheirDefault:
+    """#319: the keys written only while they differ from the model default
+    are rows now, so the fallback the loader-free path uses is no longer
+    taken on trust.
+
+    ``serialization.py`` must not import ``config_documents`` at runtime
+    (#149), so ``_FALLBACK_DEFAULTS`` is a necessary copy - this pins it to
+    the table and to the real defaults instead of leaving it to be noticed.
+    """
+
+    def _default_keys(self):
+        return {
+            f"{row.section}.{row.key}" if row.section else row.key
+            for row in OWNED_SETTINGS
+            if row.doc_mode == "omit_when_default"
+        }
+
+    def test_the_fallback_names_exactly_those_rows(self):
+        assert set(_FALLBACK_DEFAULTS) == self._default_keys()
+
+    def test_the_fallback_holds_the_real_defaults(self):
+        real = cd.document_defaults()
+
+        assert _FALLBACK_DEFAULTS == {key: real[key] for key in self._default_keys()}
+
+    def test_the_helper_that_applies_them_covers_every_row(self):
+        """The writer's parameters are not the last hand-written list:
+        ``_applied_login_keys`` decides which of them are applied, and a key
+        missing there would be accepted by the API, rendered by the page,
+        and then quietly not written (#382 review).
+        """
+        import inspect
+
+        from nanoidp.services.yaml_writer import _applied_login_keys
+
+        parameters = set(inspect.signature(_applied_login_keys).parameters)
+        rows = {row.key for row in OWNED_SETTINGS if row.section == "login"}
+
+        assert parameters == rows
+
+    def test_the_login_rows_are_what_the_writer_takes(self):
+        """``update_login_settings`` takes exactly these keys, by their YAML
+        names."""
+        import inspect
+
+        signature = inspect.signature(YamlWriter.update_login_settings)
+        parameters = set(signature.parameters) - {"self", "expected_revision"}
+        rows = {row.key for row in OWNED_SETTINGS if row.section == "login"}
+
+        assert parameters == rows
 
 
 class TestYamlWriterMatchesTheTable:
@@ -74,7 +127,15 @@ class TestTheSettingsPageDerivesFromTheTable:
     the page actually carries a field per row, named after the attribute.
     """
 
+    # What the route generates from the table.
     _SECTIONS = ("oauth", "saml")
+    # What the page renders. The login keys reach the writer through their
+    # own parameters rather than through a generated section (#319 keeps
+    # that API), but the page carries them like any other setting, so the
+    # field and its marker are held to the table just the same. The
+    # top-level security_profile is not on this page at all: no surface
+    # writes it.
+    _PAGE_SECTIONS = ("oauth", "saml", "login")
 
     def _page(self):
         from pathlib import Path
@@ -86,7 +147,7 @@ class TestTheSettingsPageDerivesFromTheTable:
         return set(re.findall(r'name="([A-Za-z0-9_]+)"', template.read_text()))
 
     def _rows(self):
-        return [row for row in OWNED_SETTINGS if row.section in self._SECTIONS]
+        return [row for row in OWNED_SETTINGS if row.section in self._PAGE_SECTIONS]
 
     def test_every_row_has_a_field_named_after_its_attribute(self):
         fields = self._page()

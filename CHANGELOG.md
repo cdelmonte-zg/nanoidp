@@ -229,6 +229,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lowered `max_previous_keys` trims the JWKS as soon as it is applied.
 
 ### Changed
+- **The settings keys written only when they differ from their default are
+  table rows** (#319). `security_profile`, `login.mode`, `login.auto_login`,
+  `login.two_step` and `login.totp` were hand-coded below the loop that
+  drives every other key from `OWNED_SETTINGS`, so the parity test that
+  holds a setting to every surface did not cover them; a new `login.*` key
+  had to be threaded by hand through six places, which is the shape of bug
+  that table exists to prevent. They are rows with an `omit_when_default`
+  mode now, one rule serves both a top-level key and a key in a section
+  that disappears with its last entry, and the writer's four one-line
+  helpers and its positional four-tuple of defaults are one helper and one
+  mapping. The fallback defaults `serialization.py` keeps (it must not
+  import the document models) are now pinned to those rows and to the real
+  defaults. No behaviour changes: what a save writes, omits and leaves
+  untouched is unchanged, and the writer keeps its API, including
+  "blank mode means unchanged" and "an absent checkbox means unchanged".
+
 - **SAML XML is parsed through a parser built per call** (#378), not one
   shared by every request thread. Sharing one was never a correctness
   problem - an `lxml` parser owns a lock and holds it for each parse - but
