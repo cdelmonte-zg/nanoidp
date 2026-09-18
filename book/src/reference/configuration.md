@@ -141,10 +141,25 @@ $ echo $?
 1
 ```
 
-One line per finding; exit 0 when clean, or with warnings only and no
-`--strict`; exit 1 on any error, and on any warning under `--strict` (a
-directory that declares `config_validation: strict` is strict either way,
-since that is a directory the server would refuse to start on).
+One line per finding, and three exit codes:
+
+| Exit | Meaning |
+|---|---|
+| 0 | clean, or warnings only without `--strict` |
+| 1 | any error, and any warning under `--strict` |
+| 2 | the directory could not be observed, so **no validation was performed** |
+
+A directory that declares `config_validation: strict` is strict either way,
+since that is a directory the server would refuse to start on.
+
+Exit 2 is not a verdict on the configuration (#246). It means another
+process held the configuration directory long enough that this run could
+not read it consistently, so the command answers `UNAVAILABLE - validation
+not performed` rather than reporting a directory nobody looked at. Nothing
+is retried here: a CI gate that wants to retry can do so on 2 alone, and
+tell it apart from 1, which really does say the configuration is wrong. A
+file the run could *not read* is a different thing and stays an ordinary
+error, exit 1, attributed to that file.
 
 The command reads the three files through the same loaders the server uses,
 and does nothing else: no server, no `ConfigManager`, no hook dispatched, no

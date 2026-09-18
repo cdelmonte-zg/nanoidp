@@ -29,7 +29,7 @@ readonly mode, and the exposure warnings, see the
 | `update_settings` | Update IdP settings |
 | `save_config` | Persist the current configuration to the YAML files, optionally guarded by `expected_users_revision` / `expected_settings_revision` (see below) |
 | `reload_config` | Reload configuration from files (the response carries fresh `users_revision` / `settings_revision`) |
-| `validate_config` | Lint the running config directory without starting or executing anything (no hook, no plugin): `{valid, findings}` |
+| `validate_config` | Lint the running config directory without starting or executing anything (no hook, no plugin): `{valid, findings, status}`. `status: unavailable` means the directory could not be observed, so no validation was performed - not a verdict on the configuration, and the one case where retrying makes sense (#246) |
 | `get_oidc_discovery` | Get OIDC discovery document (same document as `/.well-known/openid-configuration`) |
 | `get_jwks` | Get JSON Web Key Set |
 | `get_audit_log` | Get audit log entries (filter by limit, event type, username) |
