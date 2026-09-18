@@ -10,7 +10,8 @@ import secrets
 from datetime import datetime
 from io import StringIO
 from pathlib import Path
-from typing import Callable
+from types import UnionType
+from typing import Any, Callable, Dict, List, Literal, Union, get_args, get_origin
 
 from flask import (
     Blueprint,
@@ -30,6 +31,8 @@ from ..config import ConfigManager, OAuthClient, User, get_config
 from ..config_documents import DocumentRejected
 from ..config_writer import ConflictError, current_revision
 from ..hooks import HookError
+from ..models import Settings
+from ..serialization import OWNED_SETTINGS
 from ..services import (
     EXTERNAL_KEYS_NOT_ROTATABLE,
     ExternalKeysNotRotatable,
@@ -875,6 +878,74 @@ def _form_textarea_list(name: str) -> list[str] | None:
     return _parse_textarea_list(raw) if raw is not None else None
 
 
+def _form_int(name: str) -> int | None:
+    """Whole number: absent or blank leaves the setting alone.
+
+    Blank is not "clear" here, unlike a string or a list: there is no empty
+    number to write, and this is what the field has always done. The raw
+    value is not stripped first either, so "   " stays the error it is
+    rather than quietly becoming "unchanged" - the route's error flash is
+    where a non-number has always landed.
+    """
+    raw = request.form.get(name)
+    return int(raw) if raw else None
+
+
+def _settings_form_reader(annotation: Any) -> "Callable[[str], Any]":
+    """How a settings field of this declared type is read from the form.
+
+    Derived from the type ``Settings`` declares (#299), so the form's field
+    list is not a second copy of ``OWNED_SETTINGS``. Deliberately not a
+    column on that table: it describes the Settings-to-document mapping and
+    has no business carrying widgets. Deliberately not a generic type
+    adapter either: "absent means unchanged, marker alone means unchecked"
+    is form semantics, not a ``str`` conversion.
+
+    An annotation nobody has taught this raises, and the parity test in
+    tests/test_settings_plumbing_parity.py fails first.
+    """
+    base = _settings_form_type(annotation)
+    if base is bool:
+        return _form_bool
+    if base is int:
+        return _form_int
+    if base is str:
+        return _form_text
+    if base is list:
+        return _form_textarea_list
+    raise TypeError(f"no settings form reader for {annotation!r}")
+
+
+def _settings_form_type(annotation: Any) -> Any:
+    """The type a form field of this annotation carries: ``Optional[T]`` is
+    ``T``, a ``Literal`` of strings is ``str``, ``List[str]`` is ``list``."""
+    origin = get_origin(annotation)
+    if origin is Literal:
+        values = get_args(annotation)
+        return str if values and all(isinstance(value, str) for value in values) else None
+    if origin in (Union, UnionType):
+        named = [arg for arg in get_args(annotation) if arg is not type(None)]
+        return _settings_form_type(named[0]) if len(named) == 1 else None
+    if origin in (list, List):
+        return list if get_args(annotation) == (str,) else None
+    return annotation
+
+
+def _settings_form_fields(section: str) -> Dict[str, Any]:
+    """One settings.yaml section as the writer takes it: the YAML keys the
+    table owns, read from the form fields named after the Settings
+    attributes (#299).
+
+    The route used to repeat those key strings, which is the copy
+    ``OWNED_SETTINGS`` is documented to be the single source of.
+    """
+    return {
+        row.key: _settings_form_reader(Settings.model_fields[row.attr].annotation)(row.attr)
+        for row in OWNED_SETTINGS
+        if row.section == section
+    }
+
+
 @ui_bp.route("/settings", methods=["GET", "POST"])
 def settings() -> ResponseReturnValue:
     """IdP settings configuration page."""
@@ -900,8 +971,6 @@ def settings() -> ResponseReturnValue:
         # leaves it alone, so a partial form (a stale tab, a script, the e2e
         # agent's c14n round-trip) can no longer silently reset settings it
         # never carried. Present-but-blank still means "clear".
-        expiry_raw = request.form.get("token_expiry_minutes")
-
         # One write for the whole submission (#229 phase 4 review,
         # blocking 1): oauth, saml, identity classes and login mode used
         # to be four separate compare_and_replace calls chained by
@@ -912,32 +981,8 @@ def settings() -> ResponseReturnValue:
         identity_classes = [ic.strip() for ic in request.form.get("allowed_identity_classes", "").split("\n") if ic.strip()]
 
         yaml_writer.update_settings_form(
-            oauth_fields={
-                "issuer": _form_text("issuer"),
-                "issuer_from_request": _form_bool("issuer_from_request"),
-                "issuer_allowlist": _form_textarea_list("issuer_allowlist"),
-                "device_verification_base_url": _form_text("device_verification_base_url"),
-                "issuer_from_proxy_headers": _form_bool("issuer_from_proxy_headers"),
-                "audience": _form_text("audience"),
-                "token_expiry_minutes": int(expiry_raw) if expiry_raw else None,
-                "require_pkce": _form_bool("require_pkce"),
-                "refresh_token_rotation": _form_bool("refresh_token_rotation"),
-                "logos_dir": _form_text("logos_dir"),
-            },
-            saml_fields={
-                "entity_id": _form_text("saml_entity_id"),
-                "sso_url": _form_text("saml_sso_url"),
-                "default_acs_url": _form_text("default_acs_url"),
-                "sign_responses": _form_bool("saml_sign_responses"),
-                "strict_binding": _form_bool("strict_saml_binding"),
-                "want_authn_requests_signed": _form_bool("saml_want_authn_requests_signed"),
-                "sp_certificates": _form_textarea_list("saml_sp_certificates"),
-                "c14n_algorithm": _form_text("saml_c14n_algorithm"),
-                "export_roles": _form_bool("saml_export_roles"),
-                "export_groups": _form_bool("saml_export_groups"),
-                "roles_attr_name": _form_text("saml_roles_attr_name"),
-                "groups_attr_name": _form_text("saml_groups_attr_name"),
-            },
+            oauth_fields=_settings_form_fields("oauth"),
+            saml_fields=_settings_form_fields("saml"),
             allowed_identity_classes=identity_classes or None,
             login_mode=_form_text("login_mode"),
             auto_login=_form_bool("auto_login"),
