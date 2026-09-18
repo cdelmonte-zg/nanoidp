@@ -6,29 +6,37 @@ documented only itself, so a difference between them existed only as a
 consequence of two independently written assemblers, and nothing said which
 differences were intended.
 
-This page is that contract. Every cell below is a decision, and
-`tests/test_user_fact_contract.py` fails when one changes without being
-decided again.
+This page is that contract, and `tests/test_user_fact_contract.py` holds
+it: each row below has a test that fails when the difference it states
+appears or disappears. The one thing the tests do not re-derive is the
+matrix itself, so a cell can still be written down wrongly - which is how
+the `roles`/`groups` columns for the attribute query were wrong when this
+page was first written, until a review read them against the resolver.
 
 ## The matrix
 
-| Fact | Access token | ID Token | `/userinfo` (`dev`) | `/userinfo` (gated) | SAML SSO (default) | SAML SSO (exports on) | SAML attribute query |
-|---|---|---|---|---|---|---|---|
-| `email` | no | no | yes | needs the `email` scope | yes | yes | yes |
-| `identity_class` | yes | no | yes | yes | yes | yes | yes |
-| `entitlements` | yes | no | no | no | yes | yes | yes |
-| `roles` | yes | no | yes | yes | no (opt-in) | yes, under the SP's name | no |
-| `groups` | yes | no | yes | yes | no (opt-in) | yes, under the SP's name | no |
-| `tenant` | yes | no | yes | yes | never | never | never |
-| `source_acl` | yes | no | no | no | no | no | yes |
-| `attributes` | a map | no | a map | a map | one attribute per key | one attribute per key | one attribute per key |
-| `authorities` | yes | no | no | no | no | no | no |
+| Fact | Access token | ID Token | `/userinfo` (`dev`) | `/userinfo` (gated) | SAML SSO | SAML attribute query |
+|---|---|---|---|---|---|---|
+| `email` | no | no | yes | needs the `email` scope | yes | yes |
+| `identity_class` | yes | no | yes | yes | yes | yes |
+| `entitlements` | yes | no | no | no | yes | yes |
+| `roles` | yes | no | yes | yes | opt-in, under the SP's name | opt-in, under the SP's name |
+| `groups` | yes | no | yes | yes | opt-in, under the SP's name | opt-in, under the SP's name |
+| `tenant` | yes | no | yes | yes | never | never |
+| `source_acl` | yes | no | no | no | no | yes |
+| `attributes` | a map | no | a map | a map | one attribute per key | one attribute per key |
+| `authorities` | yes | no | no | no | no | no |
 
 The ID Token carries no user fact at all unless the client asks for one
-through the [`claims` request parameter](tokens.md). `saml_export_roles`
-and `saml_export_groups` are **false by default**, so out of the box a SAML
-assertion carries neither roles nor groups while an access token always
-carries both.
+through the [`claims` request parameter](tokens.md).
+
+**Opt-in** means `saml_export_roles` and `saml_export_groups`, which are
+**false by default**: out of the box a SAML assertion carries neither roles
+nor groups while an access token always carries both. The two settings
+govern **both** SAML surfaces, which share one resolver, so turning an
+export on adds the attribute to the login assertion and to the attribute
+query alike. `source_acl` is the only attribute-level difference between
+those two surfaces, as the [SAML reference](saml.md) states.
 
 ## Why the differences are what they are
 
@@ -38,10 +46,12 @@ rather than a decision; it is a decision now, because adding it would
 change the assertions every service provider under test already receives.
 
 **`authorities` exists only on the access token.** It is a derived
-convenience for resource servers - the roles, groups, identity class,
+convenience for resource servers: the roles, groups, identity class,
 entitlements and ACL entries of a user flattened into one prefixed list,
-see [Configuration](configuration.md) for the prefixes. It is not an
-identity claim, and no identity surface offers it.
+plus any custom attribute that has a prefix configured for its name, so
+`authority_prefixes: {department: DEPT_}` puts `DEPT_IT` in the list beside
+`ROLE_DEV`. See [Configuration](configuration.md) for the prefixes. It is
+not an identity claim, and no identity surface offers it.
 
 **`source_acl` is on the access token and the attribute query only.** Both
 are read by a backend deciding what a principal may reach. A login

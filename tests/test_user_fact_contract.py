@@ -82,6 +82,16 @@ def _userinfo(user, **overrides):
     return build_userinfo_response(user, **arguments)
 
 
+def _with_exports(app, **overrides):
+    """The settings with both SAML exports on, which is what makes the
+    roles/groups cells of the matrix observable at all."""
+    with app.app_context():
+        base = get_config().settings.model_dump()
+    return Settings(
+        **{**base, "saml_export_roles": True, "saml_export_groups": True, **overrides}
+    )
+
+
 def _access_token(app, user):
     with app.app_context():
         config = get_config()
@@ -187,6 +197,22 @@ class TestWhatEachSurfaceCarries:
         assert "entitlements" not in _userinfo(user)
         assert _userinfo(user, requested_claims=["entitlements"])["entitlements"] == ["ent-a"]
 
+    def test_the_gated_userinfo_column_is_exercised_too(self, app, user):
+        """The column exists in the matrix, so it is asserted here rather
+        than left to the scope-gating tests elsewhere (#316 review): a
+        regression in the gating branch must fail the contract suite."""
+        gated = _userinfo(user, granted_scope="openid", scope_gating_active=True)
+        with_email = _userinfo(user, granted_scope="openid email", scope_gating_active=True)
+
+        assert "email" not in gated
+        assert "preferred_username" not in gated
+        assert with_email["email"] == "alice@example.org"
+        # The ungated ones are unchanged by gating, which is the row above.
+        assert gated["tenant"] == "acme"
+        assert gated["roles"] == ["DEV"]
+        assert "entitlements" not in gated
+        assert "source_acl" not in gated
+
     def test_email_is_on_no_oauth_token(self, app, user):
         """It is served from UserInfo, which is what tokens.md tells clients
         to expect, and asserted over SAML."""
@@ -209,6 +235,28 @@ class TestWhatEachSurfaceCarries:
         for fact in FULL_USER:
             if fact != "username":
                 assert fact not in id_token
+
+
+class TestWhatAuthoritiesFlattens:
+    def test_a_custom_attribute_with_a_configured_prefix_becomes_an_authority(self, app, user):
+        """The contract page listed the five stored fields and stopped there
+        (#316 review): a custom attribute whose name has a prefix configured
+        is flattened alongside them."""
+        with app.app_context():
+            config = get_config()
+            config.settings.authority_prefixes["department"] = "DEPT_"
+            authorities = TokenService(config).build_authorities(user)
+
+        assert "DEPT_IT" in authorities
+        assert "ROLE_DEV" in authorities
+
+    def test_a_custom_attribute_without_a_prefix_is_not_one(self, app, user):
+        with app.app_context():
+            config = get_config()
+            config.settings.authority_prefixes.pop("department", None)
+            authorities = TokenService(config).build_authorities(user)
+
+        assert not [a for a in authorities if a.endswith("IT")]
 
 
 class TestTheTwoShapesOfACustomAttribute:
@@ -250,18 +298,23 @@ class TestRolesAndGroupsAreUnconditionalOnOidcAndOptInOnSaml:
         assert "roles" not in saml
         assert "groups" not in saml
 
+    def test_the_exports_govern_both_saml_surfaces(self, app, user):
+        """One resolver serves the login assertion and the attribute query,
+        and the route hands it the same settings, so an export reaches both.
+        The contract page said "no" for the query column until a review read
+        it against the resolver (#316 review): source_acl is the only
+        attribute-level difference between those two surfaces."""
+        settings = _with_exports(app)
+
+        sso = resolve_saml_attributes(settings, user, include_source_acl=False)
+        query = resolve_saml_attributes(settings, user, include_source_acl=True)
+
+        assert sso["roles"] == ["DEV"] and sso["groups"] == ["team"]
+        assert query["roles"] == ["DEV"] and query["groups"] == ["team"]
+        assert set(query) - set(sso) == {"source_acl"}
+
     def test_when_exported_they_carry_the_service_provider_s_own_names(self, app, user):
-        with app.app_context():
-            base = get_config().settings.model_dump()
-        settings = Settings(
-            **{
-                **base,
-                "saml_export_roles": True,
-                "saml_export_groups": True,
-                "saml_roles_attr_name": "memberOf",
-                "saml_groups_attr_name": "memberOf",
-            }
-        )
+        settings = _with_exports(app, saml_roles_attr_name="memberOf", saml_groups_attr_name="memberOf")
 
         saml = resolve_saml_attributes(settings, user, include_source_acl=False)
 
