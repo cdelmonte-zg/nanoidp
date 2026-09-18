@@ -157,6 +157,23 @@ class TestUserForms:
         with app.app_context():
             assert get_config().get_user("nopw") is None
 
+    def test_a_doubly_invalid_create_still_names_the_missing_password(self, app, client):
+        """The route asks its own question before the reader builds a record
+        (#298 review), so a submission that is invalid in two ways keeps the
+        operator sentence instead of falling through to the model's refusal
+        text, which is a pydantic dump with a documentation URL in it."""
+        resp = client.post(
+            "/users/create",
+            data={"username": "dual", "password": "  ", "email": "no-at-sign"},
+            follow_redirects=True,
+        )
+
+        page = resp.data.decode()
+        assert "Password is required for new users" in page
+        assert "errors.pydantic.dev" not in page
+        with app.app_context():
+            assert get_config().get_user("dual") is None
+
     def test_create_duplicate_user_does_not_overwrite(self, app, client):
         with app.app_context():
             before = get_config().get_user("admin").password
@@ -183,6 +200,35 @@ class TestUserForms:
         assert user.email == "new@example.org"
         assert user.roles == ["ops"]
         assert user.password == "keepme"
+
+    def test_edit_keeps_a_whitespace_password_that_create_would_refuse(self, app, client):
+        """An asymmetry the one reader preserves rather than tidies away
+        (#298): create strips before deciding the field is blank, edit does
+        not, so "  " is a new password here and no password there. Pinned so
+        that unifying the two conventions is a decision, not a side effect
+        of sharing the code."""
+        client.post("/users/create", data={"username": "wsp", "password": "realpw"})
+
+        client.post("/users/wsp/edit", data={"password": "  "})
+
+        with app.app_context():
+            assert get_config().get_user("wsp").password == "  "
+
+    def test_edit_with_a_refused_field_is_not_reported_as_a_failure(self, app, client):
+        """Both legs build through the same reader now, so a field the model
+        refuses on edit is operator input, answered like the create route
+        answers it instead of falling to the catch-all (#298 review)."""
+        client.post("/users/create", data={"username": "badmail", "password": "pw"})
+
+        resp = client.post(
+            "/users/badmail/edit", data={"email": "no-at-sign"}, follow_redirects=True
+        )
+
+        page = resp.data.decode()
+        assert "Invalid email format" in page
+        assert "Failed to update user" not in page
+        with app.app_context():
+            assert get_config().get_user("badmail").email == ""
 
     def test_edit_missing_user_redirects_to_users(self, client):
         resp = client.post("/users/ghost-user/edit", data={"email": "x@example.org"})
@@ -261,6 +307,34 @@ class TestClientForms:
         assert edited.client_secret == "ui-secret"
         assert edited.redirect_uris == ["https://app.example/cb"]
         assert edited.additional_audiences == []
+
+    def test_edit_client_without_a_layout_keeps_the_stored_one(self, app, client):
+        """The one fallback where create and edit genuinely differ: create
+        has nothing to fall back to and spells the model's "vertical", edit
+        falls back to the client it is editing (#298)."""
+        client.post("/clients/create", data={**self.CREATE, "layout": "horizontal"})
+
+        client.post(
+            "/clients/ui-client/edit",
+            data={"client_secret": "", "description": "no layout submitted"},
+        )
+
+        assert _get_client_by_id(app, "ui-client").layout == "horizontal"
+
+    def test_edit_client_with_a_refused_field_is_not_reported_as_a_failure(self, app, client):
+        """The clients form's counterpart: a colour the model refuses is
+        operator input, not a server failure (#298 review)."""
+        client.post("/clients/create", data=self.CREATE)
+
+        resp = client.post(
+            "/clients/ui-client/edit",
+            data={"client_secret": "", "background_color": "not-a-color"},
+            follow_redirects=True,
+        )
+
+        page = resp.data.decode()
+        assert "Failed to update client" not in page
+        assert _get_client_by_id(app, "ui-client").background_color is None
 
     def test_edit_missing_client_redirects(self, client):
         resp = client.post("/clients/ghost/edit", data={"description": "x"})

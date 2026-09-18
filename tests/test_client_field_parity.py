@@ -57,3 +57,51 @@ class TestClientFieldParity:
         form_names = set(re.findall(r'name="([a-z_]+)"', html))
         missing = _MODEL_FIELDS - form_names
         assert not missing, f"clients_form.html has no input for: {sorted(missing)}"
+
+
+class TestTheImperativeLegsCarryEveryField:
+    """What the parity suite above deliberately left uncovered (#298).
+
+    The docstring of this module says the imperative legs are not proven by
+    it. Two of them are cheap to prove after all: the UI form reader, which
+    is now one function that names every field, and the MCP update handler,
+    whose membership tests can be observed.
+    """
+
+    def test_the_clients_form_reader_sets_every_field(self, app):
+        """`model_fields_set` is the whole model, so nothing is left to a
+        default. A field added to OAuthClient tomorrow and forgotten by the
+        reader fails here instead of being erased on the next edit: the
+        form routes are whole-record writers."""
+        from nanoidp.routes.ui import _client_from_form
+
+        with app.test_request_context("/clients/create", method="POST", data={
+            "client_id": "parity", "client_secret": "s3cret",
+        }):
+            parsed = _client_from_form("parity", None)
+
+        assert parsed.model_fields_set == _MODEL_FIELDS
+
+    def test_the_reader_sets_every_field_on_the_edit_leg_too(self, app):
+        """The leg that can delete: the create leg writes a new entry, this
+        one replaces an existing record."""
+        from nanoidp.routes.ui import _client_from_form
+
+        existing = OAuthClient(client_id="parity", client_secret="stored")
+        with app.test_request_context("/clients/parity/edit", method="POST", data={}):
+            parsed = _client_from_form("parity", existing)
+
+        assert parsed.model_fields_set == _MODEL_FIELDS
+
+    def test_mcp_update_client_asks_about_every_mutable_field(self, app, recording_arguments):
+        """client_id is the identity being updated, not a field the tool
+        can change: it is read positionally, never asked about."""
+        from nanoidp.config import get_config
+        from nanoidp.mcp_server.handlers_clients import _tool_update_client
+
+        arguments = recording_arguments({"client_id": "demo-client"})
+        with app.app_context():
+            result = _tool_update_client(arguments, get_config())
+
+        assert result["success"] is True
+        assert arguments.asked == _MODEL_FIELDS - {"client_id"}

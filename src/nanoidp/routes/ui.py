@@ -361,36 +361,18 @@ def user_create() -> ResponseReturnValue:
             flash("Username is required", "error")
             return redirect(url_for("ui.user_create"))
 
-        # A password-less user only makes sense in persona mode; only the
-        # blank-check is stripped, the stored value is kept verbatim.
-        raw_password = request.form.get("password", "")
-        password = None if not raw_password.strip() else raw_password
-        if password is None and not config.settings.persona_mode_enabled:
+        # Whether a password-less user may be created depends on the current
+        # settings, so the reader does not decide it. The question is asked
+        # of the form and asked FIRST: a submission that also trips a field
+        # validator must still be answered with this sentence rather than
+        # with the model's refusal text (#298 review).
+        if not request.form.get("password", "").strip() and not (
+            config.settings.persona_mode_enabled
+        ):
             flash("Password is required for new users", "error")
             return redirect(url_for("ui.user_create"))
 
-        # Parse roles and entitlements
-        roles = [r.strip() for r in request.form.get("roles", "").split(",") if r.strip()]
-        groups = [g.strip() for g in request.form.get("groups", "").split(",") if g.strip()]
-        entitlements = [e.strip() for e in request.form.get("entitlements", "").split("\n") if e.strip()]
-        source_acl = [a.strip() for a in request.form.get("source_acl", "").split("\n") if a.strip()]
-
-        # Parse dynamic attributes (shared with the edit route, #291)
-        attributes = _parse_attribute_rows()
-
-        user = User(
-            username=username,
-            password=password,
-            description=request.form.get("description", "").strip(),
-            email=request.form.get("email", ""),
-            identity_class=request.form.get("identity_class") or None,
-            entitlements=entitlements,
-            roles=roles,
-            groups=groups,
-            tenant=request.form.get("tenant", "default"),
-            source_acl=source_acl,
-            attributes=attributes,
-        )
+        user = _user_from_form(username, None)
 
         yaml_writer.save_user(
             user, is_new=True, expected_revision=_expected_revision_from_form()
@@ -456,41 +438,7 @@ def user_edit(username: str) -> ResponseReturnValue:
 
     # POST: Update user
     try:
-        # Get password - keep existing if not provided. user.password is
-        # Optional[str] (a persona-mode-only user has none), hence the
-        # annotation - without it mypy infers plain str from request.form.get().
-        password: str | None = request.form.get("password", "")
-        if not password:
-            password = user.password
-
-        # Parse roles and entitlements
-        roles = [r.strip() for r in request.form.get("roles", "").split(",") if r.strip()]
-        groups = [g.strip() for g in request.form.get("groups", "").split(",") if g.strip()]
-        entitlements = [e.strip() for e in request.form.get("entitlements", "").split("\n") if e.strip()]
-        source_acl = [a.strip() for a in request.form.get("source_acl", "").split("\n") if a.strip()]
-
-        # Parse dynamic attributes (shared with the edit route, #291)
-        attributes = _parse_attribute_rows()
-
-        updated_user = User(
-            username=username,
-            password=password,
-            description=request.form.get("description", "").strip(),
-            email=request.form.get("email", ""),
-            identity_class=request.form.get("identity_class") or None,
-            entitlements=entitlements,
-            roles=roles,
-            groups=groups,
-            tenant=request.form.get("tenant", "default"),
-            source_acl=source_acl,
-            attributes=attributes,
-            # totp_secret is YAML-only (#348): the form neither shows nor
-            # accepts it, so an edit through here must not erase it -
-            # save_user() replaces the whole entry, so it has to be carried
-            # forward explicitly from the pre-edit user, same as password
-            # would be if the form omitted it.
-            totp_secret=user.totp_secret,
-        )
+        updated_user = _user_from_form(username, user)
 
         yaml_writer.save_user(
             updated_user, is_new=False, expected_revision=_expected_revision_from_form()
@@ -499,6 +447,13 @@ def user_edit(username: str) -> ResponseReturnValue:
         flash(f"User '{username}' updated successfully", "success")
         return redirect(url_for("ui.user_detail", username=username))
 
+    except ValueError as e:
+        # Ordinary operator input, not a failure: both legs build the record
+        # through the same reader, so a field the model refuses must be
+        # answered here the way the create route answers it, instead of
+        # falling to the catch-all and logging a stack trace (#298 review).
+        flash(str(e), "error")
+        return redirect(url_for("ui.user_edit", username=username))
     except ConflictError as e:
         flash(_conflict_message(e), "error")
         return redirect(url_for("ui.user_edit", username=username))
@@ -594,6 +549,129 @@ def _parse_textarea_list(form_value: str) -> list[str]:
     return [a.strip() for a in (form_value or "").splitlines() if a.strip()]
 
 
+#: The refusal an operator sees, once for both client forms: the service
+#: raises, each route redirects to its own form with this sentence.
+CLIENT_SECRET_REQUIRED_MESSAGE = "Client Secret is required unless the auth method is 'none'"
+
+#: What a NEW client's layout falls back to. Read off the model field
+#: rather than spelled again here, the rule #300's review settled: a
+#: default belongs to whoever owns the field, not to the form that happens
+#: to leave it out.
+_DEFAULT_CLIENT_LAYOUT: str = OAuthClient.model_fields["layout"].default
+
+
+def _user_from_form(username: str, existing: User | None) -> User:
+    """The user this form describes, given the one being edited (#298).
+
+    One reader for both legs. The create and edit routes are whole-record
+    writers - ``save_user()`` replaces the entry - so a field one leg
+    forgets is not a missing update, it is a silent deletion: that is how
+    ``attributes`` went missing from MCP ``update_user`` (#280) and why
+    ``totp_secret`` (#348) has to be carried forward by hand. Every field is
+    named here explicitly, and a parity test asserts that the set of fields
+    this function sets is the model's whole field set, so a field added
+    tomorrow fails the suite rather than being erased on the next edit.
+
+    What the two legs really differ in is expressed by ``existing`` alone.
+    Whether a password-less user is allowed at all is not decided here: it
+    depends on the current settings, and it is the create route's question
+    about its own form.
+    """
+    raw_password = request.form.get("password", "")
+    if existing is None:
+        # A password-less user only makes sense in persona mode; only the
+        # blank check is stripped, the stored value is kept verbatim.
+        password: str | None = raw_password if raw_password.strip() else None
+    else:
+        # Blank means unchanged on this form: keep what is stored.
+        password = raw_password or existing.password
+
+    return User(
+        username=username,
+        password=password,
+        description=request.form.get("description", "").strip(),
+        email=request.form.get("email", ""),
+        identity_class=request.form.get("identity_class") or None,
+        # split("\n") rather than splitlines(): the latter also breaks on
+        # \v, \f and \x1c, which is a parsing change unrelated to #298.
+        entitlements=[
+            e.strip() for e in request.form.get("entitlements", "").split("\n") if e.strip()
+        ],
+        roles=[r.strip() for r in request.form.get("roles", "").split(",") if r.strip()],
+        groups=[g.strip() for g in request.form.get("groups", "").split(",") if g.strip()],
+        tenant=request.form.get("tenant", "default"),
+        source_acl=[
+            a.strip() for a in request.form.get("source_acl", "").split("\n") if a.strip()
+        ],
+        # Dynamic attr_key[]/attr_value[] rows (#291), the part of this
+        # reader that was already shared.
+        attributes=_parse_attribute_rows(),
+        # totp_secret is YAML-only (#348): the form neither shows nor
+        # accepts it, so an edit must not erase it. A new user has none,
+        # since there is nothing to carry forward.
+        totp_secret=existing.totp_secret if existing else None,
+    )
+
+
+def _client_from_form(client_id: str, existing: OAuthClient | None) -> OAuthClient:
+    """The client this form describes, given the one being edited (#298).
+
+    Same shape and same reason as ``_user_from_form``: ``save_client()``
+    replaces the entry, so the two legs must not drift on what they carry.
+
+    Raises ``ClientSecretRequired`` for a confidential client left without a
+    secret. It is raised rather than presented: each route flashes the
+    sentence and redirects to its own form.
+    """
+    # An absent field is not a default spelled here: the resolver owns what
+    # a client with no method named gets (#300 review).
+    auth_method = request.form.get("token_endpoint_auth_method") or UNSET
+    submitted_secret = request.form.get("client_secret", "").strip()
+    if existing is None:
+        # A public client (#188) has no secret, and the normalization is
+        # server-side, not just in the form JS: the create form
+        # pre-generates a secret and the JS only lifts the 'required'
+        # constraint when 'none' is picked, so a real browser would
+        # otherwise persist a dead, ignored value (#254 review). A blank
+        # field is a missing secret here, there being nothing to keep.
+        secret: Any = submitted_secret
+    else:
+        # A blank field means unchanged on this form (#131), which is the
+        # form's convention and stays here: the policy is told "not
+        # provided" and keeps the stored secret, unless the target is
+        # public, where it drops it (#300).
+        secret = submitted_secret if submitted_secret else UNSET
+    auth = resolve_client_auth(
+        method=auth_method,
+        secret=secret,
+        current_method=existing.token_endpoint_auth_method if existing else None,
+        current_secret=existing.client_secret if existing else None,
+    )
+
+    return OAuthClient(
+        client_id=client_id,
+        client_secret=auth.secret,
+        token_endpoint_auth_method=auth.method,  # type: ignore[arg-type]
+        description=request.form.get("description", ""),
+        background_color=request.form.get("background_color") or None,
+        header_color=request.form.get("header_color") or None,
+        footer_color=request.form.get("footer_color") or None,
+        show_client_id=bool(request.form.get("show_client_id")),
+        show_description=bool(request.form.get("show_description")),
+        additional_audiences=_parse_textarea_list(
+            request.form.get("additional_audiences", "")
+        ),
+        redirect_uris=_parse_textarea_list(request.form.get("redirect_uris", "")),
+        allowed_scopes=_parse_textarea_list(request.form.get("allowed_scopes", "")),
+        allowed_resources=_parse_textarea_list(request.form.get("allowed_resources", "")),
+        # The one fallback that differs: a new client gets the model's own
+        # default, an edited one keeps what it has.
+        layout=request.form.get(  # type: ignore[arg-type]
+            "layout", existing.layout if existing else _DEFAULT_CLIENT_LAYOUT
+        ),
+    )
+
+
 @ui_bp.route("/clients/create", methods=["GET", "POST"])
 def client_create() -> ResponseReturnValue:
     """Create new OAuth client."""
@@ -621,40 +699,11 @@ def client_create() -> ResponseReturnValue:
             flash("Client ID is required", "error")
             return redirect(url_for("ui.client_create"))
 
-        # An absent field is not a default spelled here: the resolver owns
-        # what a client with no method named gets (#300 review).
-        auth_method = request.form.get("token_endpoint_auth_method") or UNSET
-        client_secret = request.form.get("client_secret", "").strip()
-        # A public client (#188) has no secret, and the normalization is
-        # server-side, not just in the form JS: the create form
-        # pre-generates a secret and the JS only lifts the 'required'
-        # constraint when 'none' is picked, so a real browser would
-        # otherwise persist a dead, ignored value (#254 review). The rule
-        # itself lives in services/client_policy.py (#300).
         try:
-            auth = resolve_client_auth(method=auth_method, secret=client_secret)
+            client = _client_from_form(client_id, None)
         except ClientSecretRequired:
-            flash("Client Secret is required unless the auth method is 'none'", "error")
+            flash(CLIENT_SECRET_REQUIRED_MESSAGE, "error")
             return redirect(url_for("ui.client_create"))
-
-        client = OAuthClient(
-            client_id=client_id,
-            client_secret=auth.secret,
-            token_endpoint_auth_method=auth.method,  # type: ignore[arg-type]
-            layout=request.form.get("layout", "vertical"),  # type: ignore[arg-type]
-            description=request.form.get("description", ""),
-            background_color=request.form.get("background_color") or None,
-            header_color=request.form.get("header_color") or None,
-            footer_color=request.form.get("footer_color") or None,
-            show_client_id=bool(request.form.get("show_client_id")),
-            show_description=bool(request.form.get("show_description")),
-            additional_audiences=_parse_textarea_list(
-                request.form.get("additional_audiences", "")
-            ),
-            redirect_uris=_parse_textarea_list(request.form.get("redirect_uris", "")),
-            allowed_scopes=_parse_textarea_list(request.form.get("allowed_scopes", "")),
-            allowed_resources=_parse_textarea_list(request.form.get("allowed_resources", "")),
-        )
 
         yaml_writer.save_client(
             client, is_new=True, expected_revision=_expected_revision_from_form()
@@ -708,46 +757,16 @@ def client_edit(client_id: str) -> ResponseReturnValue:
 
     # POST: Update client
     try:
-        auth_method = request.form.get("token_endpoint_auth_method") or UNSET
-        submitted_secret: str = request.form.get("client_secret", "").strip()
-        # A blank field means unchanged on this form (#131), which is the
-        # form's convention and stays here: the policy is told "not
-        # provided" and keeps the stored secret, unless the target is
-        # public, where it drops it (#300).
         try:
-            auth = resolve_client_auth(
-                method=auth_method,
-                secret=submitted_secret if submitted_secret else UNSET,
-                current_method=client.token_endpoint_auth_method,
-                current_secret=client.client_secret,
-            )
+            updated_client = _client_from_form(client_id, client)
         except ClientSecretRequired:
             # Ordinary operator input, not a failure: a public client's edit
             # form never marks the secret required, so switching it to a
             # confidential method with the field blank arrives here. It gets
             # the same sentence the create form uses, not a stack trace from
             # the catch-all below.
-            flash("Client Secret is required unless the auth method is 'none'", "error")
+            flash(CLIENT_SECRET_REQUIRED_MESSAGE, "error")
             return redirect(url_for("ui.client_edit", client_id=client_id))
-
-        updated_client = OAuthClient(
-            client_id=client_id,
-            client_secret=auth.secret,
-            token_endpoint_auth_method=auth.method,  # type: ignore[arg-type]
-            layout=request.form.get("layout", client.layout),  # type: ignore[arg-type]
-            description=request.form.get("description", ""),
-            background_color=request.form.get("background_color") or None,
-            header_color=request.form.get("header_color") or None,
-            footer_color=request.form.get("footer_color") or None,
-            show_client_id=bool(request.form.get("show_client_id")),
-            show_description=bool(request.form.get("show_description")),
-            additional_audiences=_parse_textarea_list(
-                request.form.get("additional_audiences", "")
-            ),
-            redirect_uris=_parse_textarea_list(request.form.get("redirect_uris", "")),
-            allowed_scopes=_parse_textarea_list(request.form.get("allowed_scopes", "")),
-            allowed_resources=_parse_textarea_list(request.form.get("allowed_resources", "")),
-        )
 
         yaml_writer.save_client(
             updated_client, is_new=False, expected_revision=_expected_revision_from_form()
@@ -756,6 +775,11 @@ def client_edit(client_id: str) -> ResponseReturnValue:
         flash(f"OAuth client '{client_id}' updated successfully", "success")
         return redirect(url_for("ui.clients"))
 
+    except ValueError as e:
+        # Same reason as the users form above: a model refusal on the edit
+        # leg is operator input, answered like the create leg answers it.
+        flash(str(e), "error")
+        return redirect(url_for("ui.client_edit", client_id=client_id))
     except ConflictError as e:
         flash(_conflict_message(e), "error")
         return redirect(url_for("ui.client_edit", client_id=client_id))

@@ -96,3 +96,53 @@ class TestUserFieldParity:
         # password/totp_secret elided; authorities is derived and origin (#192)
         # says declared or runtime, neither is a stored field.
         assert keys == (_MODEL_FIELDS - {"password", "totp_secret"}) | {"authorities", "origin"}
+
+
+class TestTheImperativeLegsCarryEveryField:
+    """What the exclusions above deliberately left uncovered (#298).
+
+    This module's docstring says the imperative legs stay on per-feature
+    tests. Two of them are cheap to prove after all: the UI form reader,
+    which is now one function naming every field, and the MCP update
+    handler, whose membership tests can be observed. Both matter because
+    they are whole-record writers: a forgotten field is a deletion, which
+    is exactly what happened to `attributes` in #280.
+    """
+
+    def test_the_users_form_reader_sets_every_field(self, app):
+        from nanoidp.routes.ui import _user_from_form
+
+        with app.test_request_context("/users/create", method="POST", data={
+            "username": "parity", "password": "pw",
+        }):
+            parsed = _user_from_form("parity", None)
+
+        assert parsed.model_fields_set == _MODEL_FIELDS
+
+    def test_the_reader_sets_every_field_on_the_edit_leg_too(self, app):
+        """totp_secret needs no exemption here: the reader carries it
+        forward explicitly (#348), so it is a field it sets, not one it
+        leaves to a default."""
+        from nanoidp.routes.ui import _user_from_form
+
+        existing = User(username="parity", password="pw")
+        with app.test_request_context("/users/parity/edit", method="POST", data={}):
+            parsed = _user_from_form("parity", existing)
+
+        assert parsed.model_fields_set == _MODEL_FIELDS
+
+    def test_mcp_update_user_asks_about_every_mutable_field(self, app, recording_arguments):
+        """The #280 defect made into a suite failure: `attributes` was
+        declared by the schema and silently missing from this chain.
+
+        username is the identity being updated, and totp_secret is
+        YAML-only (#348): neither is a field this tool can change.
+        """
+        from nanoidp.config import get_config
+        from nanoidp.mcp_server.handlers_users import _tool_update_user
+        arguments = recording_arguments({"username": "admin"})
+        with app.app_context():
+            result = _tool_update_user(arguments, get_config())
+
+        assert result["success"] is True
+        assert arguments.asked == _MODEL_FIELDS - {"username", "totp_secret"}

@@ -108,6 +108,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ClientOrigin`, because only a client can have this third one.
 
 ### Fixed
+- **A refused field on the users or clients edit form is answered, not
+  reported as a server failure** (#298). An email without `@`, a colour that
+  is not a hex triplet or any other value the model refuses reached the
+  catch-all on the edit routes: the operator was told "Failed to update
+  user: 1 validation error for User ..." and the server logged a stack trace
+  at ERROR for what is ordinary form input. The create routes had always
+  answered the same input with the refusal itself, and both legs now build
+  the record through one reader, so both answer it the same way. Nothing is
+  written in either case.
 - **A write that would leave a file unloadable is refused, not written**
   (#366). Every writer replaced the file and reloaded afterwards, so a
   document the models refuse reached disk first and was discovered second,
