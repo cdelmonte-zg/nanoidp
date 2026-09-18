@@ -41,6 +41,7 @@ import pytest
 from nanoidp import config_writer
 from nanoidp.config import ConfigManager
 from nanoidp.config_store import ConfigFileStore
+from nanoidp.config_validation import validate_config_result
 from nanoidp.config_writer import (
     LockNamespaceUnavailable,
     LockUnavailableError,
@@ -180,9 +181,11 @@ class TestOneObservationMeansOne:
 
         ConfigManager(config_dir=str(directory))
 
-        # One for the pre-read of config_validation, which is a different
-        # moment on purpose (it runs before the on_before_load hooks, which
-        # may be what renders settings.yaml), and one for the pair itself.
+        # One for the whole pre-load phase - settings.yaml for the
+        # strictness and bootstrap.yaml for the registry, together - which
+        # is a different moment on purpose, since it runs before the
+        # on_before_load hooks that may render settings.yaml. And one for
+        # the load's own pair.
         assert len(acquisitions) == 2, (
             f"the loader observed the directory {len(acquisitions)} times; "
             "settings.yaml and users.yaml must come from one acquisition"
@@ -672,3 +675,395 @@ class TestAMissingDirectoryIsOneDecision:
         for name, snapshot in observed.items():
             assert snapshot.exists is False, name
             assert snapshot.data == b"", name
+
+
+class TestValidateConfigObservesTheDirectoryOnce:
+    """The reason PR B is not cleanup (#246, second part).
+
+    A validation run used to read settings.yaml three times - once for the
+    findings, once for the strictness and once for the report header - and
+    each file on its own besides. So while a save was in progress it could
+    pair the pre-save settings with the post-save users file and report a
+    cross-file version disagreement for a state that never existed on disk:
+    a false failure in the tool operators use to gate a deploy.
+    """
+
+    def test_each_file_is_opened_once_for_a_whole_run(self, directory, monkeypatch):
+        from nanoidp.config_validation import validate_config_result
+
+        opens: list = []
+        real_open = open
+
+        def counting_open(file, *args, **kwargs):
+            name = Path(str(file)).name
+            if name.endswith(".yaml"):
+                opens.append(name)
+            return real_open(file, *args, **kwargs)
+
+        monkeypatch.setattr("builtins.open", counting_open)
+        validate_config_result(directory)
+        monkeypatch.undo()
+
+        assert opens.count("settings.yaml") == 1, opens
+        assert opens.count("users.yaml") == 1, opens
+
+    def test_a_save_between_the_files_cannot_produce_a_cross_file_finding(
+        self, directory, monkeypatch
+    ):
+        """The false positive itself: both files are rewritten together, so
+        a run that observed them at one moment can never see one of each."""
+        from nanoidp.config_validation import validate_config_result
+
+        monkeypatch.setattr("nanoidp.config_writer._LOCK_TIMEOUT_SECONDS", 0.3)
+        reader_thread = threading.current_thread()
+        settings_read = threading.Event()
+        writer_finished = threading.Event()
+        real_open = open
+
+        def seam(file, *args, **kwargs):
+            if (
+                threading.current_thread() is reader_thread
+                and str(file).endswith("users.yaml")
+                and not settings_read.is_set()
+            ):
+                settings_read.set()
+                writer_finished.wait(timeout=5)
+            return real_open(file, *args, **kwargs)
+
+        def rewrite_both_files():
+            try:
+                settings_read.wait(timeout=5)
+                manager = ConfigManager(config_dir=str(directory))
+                manager.settings.issuer = _NEW_ISSUER
+                manager.users.clear()
+                manager.save()
+            except Exception:  # noqa: BLE001 - the reader must never hang on it
+                pass
+            finally:
+                writer_finished.set()
+
+        writer = threading.Thread(target=rewrite_both_files)
+        writer.start()
+        monkeypatch.setattr("builtins.open", seam)
+        try:
+            result = validate_config_result(directory)
+        finally:
+            monkeypatch.undo()
+            writer.join(timeout=10)
+
+        assert settings_read.is_set(), "the seam never fired, so this proves nothing"
+        for finding in result["findings"]:
+            assert "config_version" not in finding["message"], finding
+
+    def test_a_directory_that_cannot_be_observed_is_an_error_finding(
+        self, directory, monkeypatch
+    ):
+        """Consistency is not degraded to get a report out: the refusal is
+        reported, it does not become an unlocked read (#246)."""
+        from nanoidp.config_validation import validate_config_result
+
+        monkeypatch.setattr("nanoidp.config_writer._LOCK_TIMEOUT_SECONDS", 0.3)
+        held = os.open(
+            str(directory / ".nanoidp-write.lock"), os.O_CREAT | os.O_RDWR, 0o644
+        )
+        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        try:
+            result = validate_config_result(directory)
+        finally:
+            fcntl.flock(held, fcntl.LOCK_UN)
+            os.close(held)
+
+        assert result["valid"] is False
+        assert any(
+            finding["level"] == "error" and "consistent configuration snapshot" in finding["message"]
+            for finding in result["findings"]
+        ), result["findings"]
+
+    def test_the_bootstrap_read_joins_the_protocol(self, directory, monkeypatch):
+        """NANOIDP_BOOTSTRAP_HOOK exists so something else can render this
+        file, so an exists()-then-open() pair here was a check against
+        exactly the writer it was written for."""
+        import nanoidp.config_store as config_store
+        from nanoidp.hooks import bootstrap_registry
+
+        (directory / "bootstrap.yaml").write_text("hooks: {}\n")
+        acquisitions = []
+        real_lock = config_store.directory_lock
+
+        @contextlib.contextmanager
+        def counting_lock(path):
+            acquisitions.append(path)
+            with real_lock(path):
+                yield
+
+        monkeypatch.setattr(config_store, "directory_lock", counting_lock)
+
+        bootstrap_registry(directory)
+
+        assert acquisitions == [directory]
+
+
+class TestALintToolAnswersWithAReport:
+    """A lint tool answers with findings, never with a traceback (#246 PR B
+    review).
+
+    Acquiring the bytes moved into the store, so the OSError ``_read_yaml``
+    used to catch per file surfaces at the acquisition instead. It has to
+    come back out as a finding: the CLI prints lines and the MCP tool
+    returns ``{valid, findings}``, and neither is built for an exception.
+    """
+
+    def _unreadable(self, directory):
+        os.chmod(directory / "settings.yaml", 0o000)
+
+    def test_an_unreadable_file_is_a_finding_not_an_exception(self, directory):
+        if os.geteuid() == 0:
+            pytest.skip("root ignores the file mode this test relies on")
+        from nanoidp.config_validation import validate_config_dir
+
+        self._unreadable(directory)
+        try:
+            findings = validate_config_dir(directory)
+        finally:
+            os.chmod(directory / "settings.yaml", 0o644)
+
+        assert any(
+            finding.level == "error" and "cannot be read" in finding.message
+            for finding in findings
+        ), findings
+
+    def test_the_mcp_result_stays_a_result(self, directory):
+        if os.geteuid() == 0:
+            pytest.skip("root ignores the file mode this test relies on")
+        from nanoidp.config_validation import validate_config_result
+
+        self._unreadable(directory)
+        try:
+            result = validate_config_result(directory)
+        finally:
+            os.chmod(directory / "settings.yaml", 0o644)
+
+        assert result["valid"] is False
+        assert any("cannot be read" in f["message"] for f in result["findings"])
+
+    def test_the_report_header_falls_back_instead_of_raising(self, directory):
+        if os.geteuid() == 0:
+            pytest.skip("root ignores the file mode this test relies on")
+        from nanoidp.config_validation import declared_mode, effective_strict
+
+        self._unreadable(directory)
+        try:
+            assert declared_mode(directory) == "warn"
+            assert effective_strict(directory, False) is False
+        finally:
+            os.chmod(directory / "settings.yaml", 0o644)
+
+
+class TestTheCliAndTheToolShareOneObservation:
+    """The gate this work is about is the CLI, and it was the one path left
+    reaching its strictness separately (#246 PR B review).
+
+    A deploy rewriting `config_validation` between the two reads made the
+    run apply strict rules while printing a header for a directory that no
+    longer declared them: the same false failure, in the same tool.
+    """
+
+    def test_one_acquisition_for_findings_and_strictness(self, directory, monkeypatch):
+        import nanoidp.config_store as config_store
+        from nanoidp.config_validation import validate_once
+
+        acquisitions = []
+        real_lock = config_store.directory_lock
+
+        @contextlib.contextmanager
+        def counting_lock(path):
+            acquisitions.append(path)
+            with real_lock(path):
+                yield
+
+        monkeypatch.setattr(config_store, "directory_lock", counting_lock)
+
+        result = validate_once(directory)
+
+        assert acquisitions == [directory], (
+            "the findings and the declared mode came from different "
+            "observations of the directory"
+        )
+        assert result.declared_mode in ("warn", "strict")
+
+    def test_the_command_line_goes_through_it(self, directory, monkeypatch):
+        """Pinned at the entry point, because fixing only the MCP path is
+        exactly the mistake the review caught."""
+        import nanoidp.config_validation as config_validation
+        from nanoidp.__main__ import validate_config_command
+
+        calls = []
+        real = config_validation.validate_once
+        monkeypatch.setattr(
+            config_validation,
+            "validate_once",
+            lambda d: (calls.append(d), real(d))[1],
+        )
+
+        validate_config_command(str(directory), strict=False)
+
+        assert calls == [str(directory)]
+
+
+class TestARunThatDidNotHappenIsNotAVerdict:
+    """Three outcomes, not two (#246 PR B review).
+
+    This work exists because a mixed snapshot made the deploy gate report
+    INVALID for a state that never existed. Answering INVALID because the
+    directory could not be observed would have moved that defect rather
+    than removed it: there is no failed validation, there is no validation.
+    """
+
+    def _with_the_lock_held(self, directory, run):
+        held = os.open(
+            str(directory / ".nanoidp-write.lock"), os.O_CREAT | os.O_RDWR, 0o644
+        )
+        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        try:
+            return run()
+        finally:
+            fcntl.flock(held, fcntl.LOCK_UN)
+            os.close(held)
+
+    def test_contention_is_unavailable_not_invalid(self, directory, monkeypatch):
+        from nanoidp.config_validation import UNAVAILABLE, validate_once
+
+        monkeypatch.setattr("nanoidp.config_writer._LOCK_TIMEOUT_SECONDS", 0.3)
+
+        result = self._with_the_lock_held(directory, lambda: validate_once(directory))
+
+        assert result.status == UNAVAILABLE
+
+    def test_an_unreadable_file_stays_a_verdict(self, directory):
+        """Only the acquisition is UNAVAILABLE. A file the run could not
+        read is still something it found out about the configuration, with
+        the attribution it has always had."""
+        if os.geteuid() == 0:
+            pytest.skip("root ignores the file mode this test relies on")
+        from nanoidp.config_validation import OBSERVED, validate_once
+
+        os.chmod(directory / "settings.yaml", 0o000)
+        try:
+            result = validate_once(directory)
+        finally:
+            os.chmod(directory / "settings.yaml", 0o644)
+
+        assert result.status == OBSERVED
+        assert any("cannot be read" in f.message for f in result.findings)
+
+    def test_the_command_line_exits_two_and_does_not_say_invalid(
+        self, directory, monkeypatch, capsys
+    ):
+        from nanoidp.__main__ import validate_config_command
+
+        monkeypatch.setattr("nanoidp.config_writer._LOCK_TIMEOUT_SECONDS", 0.3)
+
+        code = self._with_the_lock_held(
+            directory, lambda: validate_config_command(str(directory), strict=False)
+        )
+
+        assert code == 2
+        printed = capsys.readouterr().out
+        assert "UNAVAILABLE" in printed
+        assert "invalid" not in printed.lower()
+
+    def test_the_mcp_tool_answers_structured(self, directory, monkeypatch):
+        from nanoidp.config_validation import UNAVAILABLE, validate_config_result
+
+        monkeypatch.setattr("nanoidp.config_writer._LOCK_TIMEOUT_SECONDS", 0.3)
+
+        result = self._with_the_lock_held(
+            directory, lambda: validate_config_result(directory)
+        )
+
+        assert result["status"] == UNAVAILABLE
+        assert result["valid"] is False
+
+
+class TestTheMcpToolTakesItsStrictnessFromTheSameObservation:
+    """The last place findings and strictness came from two moments (#246
+    PR B review).
+
+    `config.strict_config` is not an override: it is the `config_validation`
+    this runtime read when IT loaded. Using it meant a settings.yaml that
+    had since been relaxed was validated under the strictness of a file the
+    run never saw - the defect this work closes, surviving on the one path
+    the earlier fix did not touch.
+    """
+
+    def _write(self, directory, mode, with_warning=False):
+        extra = "  unknown_key: 1\n" if with_warning else ""
+        (directory / "settings.yaml").write_text(
+            f"config_validation: {mode}\noauth:\n  issuer: '{_OLD_ISSUER}'\n"
+            f"  audience: 'default'\n{extra}"
+        )
+
+    def test_the_tool_itself_follows_the_file_not_the_runtime(self, directory):
+        """Pinned at the HANDLER, not at the library call underneath it: a
+        mutation showed that testing validate_config_result directly left
+        the entry point free to keep reading config.strict_config, which is
+        exactly the mistake this fixes (#246 PR B review)."""
+        from nanoidp.mcp_server.handlers_config import _tool_validate_config
+
+        self._write(directory, "strict")
+        manager = ConfigManager(config_dir=str(directory))
+        assert manager.strict_config is True
+
+        self._write(directory, "warn", with_warning=True)
+        result = _tool_validate_config({}, manager)
+
+        assert result["strict"] is False
+        assert result["valid"] is True, result["findings"]
+
+    def test_the_tool_keeps_a_real_override(self, directory):
+        from nanoidp.mcp_server.handlers_config import _tool_validate_config
+
+        self._write(directory, "warn")
+        manager = ConfigManager(config_dir=str(directory), strict_config=True)
+        self._write(directory, "warn", with_warning=True)
+
+        result = _tool_validate_config({}, manager)
+
+        assert result["strict"] is True
+        assert result["valid"] is False
+
+    def test_a_relaxed_file_is_validated_as_relaxed(self, directory):
+        """The runtime loaded a strict directory; the file says warn now,
+        and carries something that is only a warning. The run must follow
+        the file it actually read."""
+        self._write(directory, "strict")
+        manager = ConfigManager(config_dir=str(directory))
+        assert manager.strict_config is True
+
+        self._write(directory, "warn", with_warning=True)
+        result = validate_config_result(directory, manager.strict_config_override)
+
+        assert result["strict"] is False
+        assert result["valid"] is True, result["findings"]
+
+    def test_a_real_override_still_wins(self, directory):
+        """`--strict-config` is a decision about the process, not an
+        observation of the file, so it survives the file being relaxed."""
+        self._write(directory, "warn")
+        manager = ConfigManager(config_dir=str(directory), strict_config=True)
+        self._write(directory, "warn", with_warning=True)
+
+        result = validate_config_result(directory, manager.strict_config_override)
+
+        assert result["strict"] is True
+        assert result["valid"] is False
+
+    def test_an_override_of_false_is_a_decision_too(self, directory):
+        """Collapsing False into "no override" would turn an explicit
+        "not strict" into "whatever the file says"."""
+        self._write(directory, "strict", with_warning=True)
+
+        result = validate_config_result(directory, False)
+
+        assert result["strict"] is False
+        assert result["valid"] is True, result["findings"]

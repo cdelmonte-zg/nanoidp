@@ -33,6 +33,8 @@ from .config_documents import (
     load_settings_document,
     load_users_document,
 )
+from .config_store import ConfigFileStore, FileSnapshot
+from .config_writer import LockUnavailableError
 from .serialization import check_config_version
 from .serialization import expand_env_vars as _expand_env_vars
 
@@ -62,16 +64,26 @@ class Finding:
         return {"level": self.level, "message": self.message, "file": self.file}
 
 
-def _read_yaml(path: Path, findings: List[Finding]) -> Optional[Dict[str, Any]]:
-    """Parse one YAML file into a mapping, recording what went wrong."""
+def _read_yaml(
+    path: Path, raw: bytes, findings: List[Finding]
+) -> Optional[Dict[str, Any]]:
+    """Parse ONE observation of a file into a mapping, recording what went
+    wrong.
+
+    The bytes come from the directory snapshot rather than from an ``open``
+    here (#246, second part): a validation run used to observe
+    ``settings.yaml`` three times, so it could pair the pre-save version of
+    one file with the post-save content of another and report a cross-file
+    disagreement for a state that never existed on disk - a false failure in
+    the tool operators use to gate a deploy.
+    """
     try:
-        with open(path, "r") as handle:
-            data = yaml.safe_load(handle) or {}
+        data = yaml.safe_load(raw.decode("utf-8")) or {}
+    except UnicodeDecodeError as exc:
+        findings.append(Finding(ERROR, f"{path}: cannot be read: {exc}", path.name))
+        return None
     except yaml.YAMLError as exc:
         findings.append(Finding(ERROR, f"{path}: not valid YAML: {exc}", path.name))
-        return None
-    except OSError as exc:
-        findings.append(Finding(ERROR, f"{path}: cannot be read: {exc}", path.name))
         return None
     if not isinstance(data, dict):
         findings.append(
@@ -83,6 +95,7 @@ def _read_yaml(path: Path, findings: List[Finding]) -> Optional[Dict[str, Any]]:
 
 def _validate_file(
     path: Path,
+    raw: bytes,
     model_loader: Any,
     findings: List[Finding],
     expected_version: Optional[int] = None,
@@ -96,7 +109,7 @@ def _validate_file(
     a second code path (and it is what lets the report list every finding
     instead of stopping at the first).
     """
-    data = _read_yaml(path, findings)
+    data = _read_yaml(path, raw, findings)
     if data is None:
         return None, None
 
@@ -130,6 +143,48 @@ def _validate_file(
     return document, version
 
 
+#: The files a validation run looks at, acquired together.
+_VALIDATED_FILES = (SETTINGS_FILE, USERS_FILE, BOOTSTRAP_FILE)
+
+#: What a run reports when it could not observe the directory at all. The
+#: guarantee is not degraded to get a report out (#246): a snapshot that
+#: could not be taken consistently is an ERROR finding, not a quiet
+#: fallback to reading whatever is there.
+_UNOBSERVABLE = "could not acquire a consistent configuration snapshot"
+
+
+def _observe(directory: Path) -> Dict[str, FileSnapshot]:
+    """One observation of the directory for the whole run (#246)."""
+    return ConfigFileStore(directory).read_snapshot(_VALIDATED_FILES)
+
+
+def _unobservable(directory: Path, exc: Exception) -> List[Finding]:
+    """The finding for a directory this run could not read.
+
+    A lint tool answers with a report, never with a traceback: that is what
+    its callers are built for, the CLI printing lines and the MCP tool
+    returning ``{valid, findings}``. Acquiring the bytes moved into the
+    store, so the OSError that ``_read_yaml`` used to catch per file
+    surfaces here instead, and it is turned back into a finding attributed
+    to the file the error names (#246 PR B review).
+    """
+    if isinstance(exc, OSError) and exc.filename:
+        path = Path(exc.filename)
+        return [Finding(ERROR, f"{path}: cannot be read: {exc}", path.name)]
+    return [Finding(ERROR, f"{directory}: {_UNOBSERVABLE} ({exc})", None)]
+
+
+def _observed_or_findings(
+    directory: Path,
+) -> Tuple[Optional[Dict[str, FileSnapshot]], List[Finding]]:
+    """The one acquisition every entry point shares, or what to report
+    instead of it."""
+    try:
+        return _observe(directory), []
+    except (LockUnavailableError, OSError) as exc:
+        return None, _unobservable(directory, exc)
+
+
 def validate_config_dir(config_dir: Path | str) -> List[Finding]:
     """Validate a configuration directory; never starts or runs anything.
 
@@ -137,10 +192,19 @@ def validate_config_dir(config_dir: Path | str) -> List[Finding]:
     it is printed by the CLI or returned to an MCP agent.
     """
     directory = Path(config_dir)
-    findings: List[Finding] = []
-
     if not directory.is_dir():
         return [Finding(ERROR, f"{directory}: not a configuration directory", None)]
+    observed, refusal = _observed_or_findings(directory)
+    if observed is None:
+        return refusal
+    return _validate_observation(directory, observed)
+
+
+def _validate_observation(
+    directory: Path, observed: Dict[str, FileSnapshot]
+) -> List[Finding]:
+    """The run itself, over bytes that were all read at one moment."""
+    findings: List[Finding] = []
 
     settings_path = directory / SETTINGS_FILE
     users_path = directory / USERS_FILE
@@ -148,9 +212,9 @@ def validate_config_dir(config_dir: Path | str) -> List[Finding]:
 
     settings_version: Optional[int] = None
     settings_document: Optional[SettingsDocument] = None
-    if settings_path.exists():
+    if observed[SETTINGS_FILE].exists:
         settings_document, settings_version = _validate_file(
-            settings_path, load_settings_document, findings
+            settings_path, observed[SETTINGS_FILE].data, load_settings_document, findings
         )
         if settings_document is not None:
             try:
@@ -164,9 +228,13 @@ def validate_config_dir(config_dir: Path | str) -> List[Finding]:
             Finding(WARNING, f"{settings_path}: not found, built-in defaults would be used", SETTINGS_FILE)
         )
 
-    if users_path.exists():
+    if observed[USERS_FILE].exists:
         users_document, _ = _validate_file(
-            users_path, load_users_document, findings, expected_version=settings_version
+            users_path,
+            observed[USERS_FILE].data,
+            load_users_document,
+            findings,
+            expected_version=settings_version,
         )
         if isinstance(users_document, UsersDocument):
             try:
@@ -178,31 +246,51 @@ def validate_config_dir(config_dir: Path | str) -> List[Finding]:
             Finding(WARNING, f"{users_path}: not found, the default admin user would be used", USERS_FILE)
         )
 
-    if bootstrap_path.exists():
+    if observed[BOOTSTRAP_FILE].exists:
         # Shape only: hooks and plugins declared here are never dispatched
         # or imported by a validation run (see the module docstring).
         # bootstrap.yaml has no config_version in its schema and the real
         # startup path (bootstrap_registry) never version-checks it: a
         # config_version key there is an unknown key, same as at startup
         # (#204 review: same semantics as the loader, not stricter ones).
-        _validate_file(bootstrap_path, load_bootstrap_document, findings, check_version=False)
+        _validate_file(
+            bootstrap_path,
+            observed[BOOTSTRAP_FILE].data,
+            load_bootstrap_document,
+            findings,
+            check_version=False,
+        )
 
     return findings
 
 
-def declared_mode(config_dir: Path | str) -> str:
-    """``config_validation`` as settings.yaml declares it, for the report
-    header. Unreadable files return the default; validate_config_dir reports
-    what is actually wrong with them."""
-    settings_path = Path(config_dir) / SETTINGS_FILE
-    if not settings_path.exists():
+def _declared_mode_of(settings: FileSnapshot) -> str:
+    """``config_validation`` as an already-observed settings.yaml declares
+    it. Unreadable content returns the default; validate_config_dir reports
+    what is actually wrong with it."""
+    if not settings.exists:
         return "warn"
     try:
-        with open(settings_path, "r") as handle:
-            data = yaml.safe_load(handle) or {}
-    except (yaml.YAMLError, OSError):
+        data = yaml.safe_load(settings.data.decode("utf-8")) or {}
+    except (yaml.YAMLError, UnicodeDecodeError):
         return "warn"
     return declared_validation_mode(data) if isinstance(data, dict) else "warn"
+
+
+def declared_mode(config_dir: Path | str) -> str:
+    """``config_validation`` as settings.yaml declares it, for the report
+    header.
+
+    A directory that cannot be observed, or a settings.yaml that cannot be
+    read, returns the default here rather than raising: this is the
+    report's header, and the run itself reports what is actually wrong as
+    an ERROR finding (#246).
+    """
+    try:
+        observed = ConfigFileStore(Path(config_dir)).read(SETTINGS_FILE)
+    except (LockUnavailableError, OSError):
+        return "warn"
+    return _declared_mode_of(observed)
 
 
 def effective_strict(config_dir: Path | str, strict_flag: bool = False) -> bool:
@@ -243,21 +331,101 @@ def report(findings: List[Finding], strict: bool) -> Tuple[List[str], int]:
     return lines, code
 
 
-def validate_config_result(config_dir: Path | str, strict: bool = False) -> Dict[str, Any]:
+#: A run that could not take place at all, told apart from one that ran and
+#: found the configuration wrong (#246 PR B review). "The directory could
+#: not be observed" is not a verdict on the configuration, and a CI gate
+#: that cannot tell the two apart is exactly what this work set out to fix:
+#: replacing a false INVALID caused by a mixed snapshot with a false INVALID
+#: caused by contention would have moved the defect, not removed it.
+OBSERVED = "observed"
+UNAVAILABLE = "unavailable"
+
+
+@dataclass(frozen=True)
+class ValidationResult:
+    """What a run produced, and whether it happened at all.
+
+    ``findings`` stays the human-facing part; ``status`` carries the
+    machine-facing distinction. "Could not observe the directory" is not a
+    finding ABOUT the configuration, so it does not pretend to be one.
+    """
+
+    findings: List[Finding]
+    declared_mode: str
+    status: str = OBSERVED
+
+
+def validate_once(config_dir: Path | str) -> ValidationResult:
+    """The findings AND the declared mode, from ONE observation (#246).
+
+    Every entry point goes through here - the CLI and the MCP tool alike -
+    because the alternative is what this replaced: a run that read
+    settings.yaml for its findings, again for its strictness and again for
+    its header, and could describe a directory in three states none of
+    which was the one on disk when it answered.
+
+    The CLI reached its strictness separately until the PR B review caught
+    it, which meant a deploy rewriting `config_validation` between the two
+    reads made the run apply strict rules while printing a header for a
+    directory that no longer declared them: the same false failure in the
+    same gate this work exists to close.
+    """
+    directory = Path(config_dir)
+    if not directory.is_dir():
+        # A verdict about the target, not a failure to reach it: the run
+        # happened and the answer is that this is not a configuration
+        # directory.
+        return ValidationResult(
+            [Finding(ERROR, f"{directory}: not a configuration directory", None)], "warn"
+        )
+    try:
+        observed = _observe(directory)
+    except LockUnavailableError as exc:
+        # No validation took place. Only the acquisition failed, and only
+        # this case is UNAVAILABLE: a per-file OSError is still a finding
+        # about that file, with the attribution it has always had.
+        return ValidationResult(
+            [Finding(ERROR, f"{directory}: {_UNOBSERVABLE} ({exc})", None)],
+            "warn",
+            status=UNAVAILABLE,
+        )
+    except OSError as exc:
+        return ValidationResult(_unobservable(directory, exc), "warn")
+    return ValidationResult(
+        _validate_observation(directory, observed),
+        _declared_mode_of(observed[SETTINGS_FILE]),
+    )
+
+
+def validate_config_result(
+    config_dir: Path | str, strict: Optional[bool] = None
+) -> Dict[str, Any]:
     """``{valid, findings, ...}`` for the MCP ``validate_config`` tool.
 
     ``valid`` follows the exit code of ``validate-config``: errors always
     invalidate, warnings only when the run is strict.
+
+    ``strict`` is three-valued (#246 PR B review). ``None`` means "let the
+    directory decide", and the answer comes from the SAME observation the
+    findings came from. ``True`` and ``False`` are both real decisions that
+    win over the file, the way ``--strict-config`` wins at startup in both
+    directions: collapsing ``False`` into "no override" would silently turn
+    an explicit "not strict" into "whatever the file says".
     """
-    findings = validate_config_dir(config_dir)
-    strict_run = effective_strict(config_dir, strict)
-    _lines, code = report(findings, strict_run)
+    result = validate_once(config_dir)
+    strict_run = strict if strict is not None else result.declared_mode == "strict"
+    _lines, code = report(result.findings, strict_run)
     return {
         "config_dir": str(config_dir),
-        "config_validation": declared_mode(config_dir),
+        "config_validation": result.declared_mode,
         "strict": strict_run,
-        "valid": code == 0,
-        "findings": [finding.to_dict() for finding in findings],
+        # `valid` keeps its meaning for every existing caller; `status`
+        # says whether the run happened at all (#246 PR B review), so an
+        # agent can tell "the configuration is wrong" from "I could not
+        # look at it" and decide whether retrying makes sense.
+        "status": result.status,
+        "valid": result.status == OBSERVED and code == 0,
+        "findings": [finding.to_dict() for finding in result.findings],
     }
 
 
@@ -269,5 +437,9 @@ __all__ = [
     "effective_strict",
     "report",
     "validate_config_dir",
+    "validate_once",
+    "ValidationResult",
+    "OBSERVED",
+    "UNAVAILABLE",
     "validate_config_result",
 ]

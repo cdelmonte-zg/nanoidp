@@ -4,10 +4,11 @@ Until this module existed there was no single entry point for reading the
 configuration at all, which is why the same hole was found three times:
 ``_stage_directory`` opened ``settings.yaml`` and ``users.yaml`` with two
 separate unlocked reads, ``config_validation`` opened ``settings.yaml``
-again, and the bootstrap read went its own way. The last two are still
-outside this module: they are the second part of #246, and until then
-``validate-config`` and the bootstrap read keep observing the directory on
-their own. A write landing between two
+again, and the bootstrap read went its own way. All three go through here
+now: no configuration READ PATH opens a file on its own any more. The
+writer's own round-trip loader (``serialization.load_yaml_document``) still
+opens files directly, which is what it is for - it runs inside the critical
+section, where the lock is already held. A write landing between two
 of those reads is observed as a pair that never existed on disk.
 
 The store owns **observations of the filesystem, not configuration

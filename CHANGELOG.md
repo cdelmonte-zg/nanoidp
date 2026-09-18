@@ -275,6 +275,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   one holding a lock indefinitely. Since a read can now fail, a request that
   cannot observe the configuration answers **503** with the classified
   reason instead of a 500 and a traceback.
+- **`validate-config` observes the directory once** (#246, second part).
+  A run read `settings.yaml` three times - once for the findings, once for
+  the strictness and once for the report header - and each other file on
+  its own, all unlocked. So a run overlapping a save could pair the
+  pre-save `settings.yaml` with the post-save `users.yaml` and report a
+  cross-file `config_version` disagreement for a state that never existed
+  on disk: a false failure in the tool used to gate a deploy. The whole run
+  now derives from one `ConfigFileStore` snapshot, and a directory that
+  cannot be observed consistently is reported as an ERROR finding rather
+  than quietly read anyway. The bootstrap read joins the same boundary,
+  which matters more than its once-at-startup frequency suggests, since
+  `NANOIDP_BOOTSTRAP_HOOK` exists precisely so something else can render
+  that file. Startup now takes one observation for its whole pre-load
+  phase - the strictness the hook registry runs under and the file it is
+  built from - instead of two. No configuration read path opens a file on
+  its own any more.
+
+  `validate-config` gains a third outcome. A run that could not observe the
+  directory at all, because a save held the lock past the timeout, is
+  **`UNAVAILABLE` with exit code 2**, not `invalid` with exit 1: no
+  validation failed, no validation took place, and a CI gate that cannot
+  tell those apart is the defect this work set out to remove rather than to
+  relocate. The MCP tool carries the same distinction as
+  `status: unavailable` beside its existing `valid`. A file the run could
+  not READ stays an ordinary error finding attributed to that file, exactly
+  as before. Nothing is retried automatically: the command says precisely
+  what happened and the caller decides.
 - **`claims_supported` no longer advertises `source_acl` and `authorities`**
   (#316). OpenID Connect Discovery 1.0 §3 defines that field as the Claim
   Names a provider may be able to supply values for; on top of it nanoidp
