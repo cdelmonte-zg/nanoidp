@@ -82,7 +82,7 @@ class TestAKeyInAnOmittedSection:
         ],
     )
     def test_absent_and_at_the_default_stays_absent(self, attribute, key, value):
-        document = _applied(_document())
+        document = _applied(_document(), **{attribute: DEFAULTS[f"login.{key}"]})
 
         assert "login" not in document
 

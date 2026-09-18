@@ -121,42 +121,6 @@ def is_unchanged(current_raw: Any, new_value: Any) -> bool:
     return expanded == new_value
 
 
-def merge_optional_nested_field(
-    document: Dict[str, Any],
-    section_key: str,
-    field_key: str,
-    value: Any,
-    default: Any,
-) -> None:
-    """Write ``document[section_key][field_key] = value``, omitting the field
-    (and the whole section, once empty) when ``value`` equals ``default`` -
-    the "omit at default" convention shared by every optional settings
-    section (``security_profile``, ``login.mode``, ...). A bare
-    ``section_key:`` line in YAML parses to ``{section_key: None}``, not a
-    missing key, hence ``or {}`` rather than a ``.get(..., {})`` default.
-
-    Shared between ``apply_settings_document`` (below) and
-    ``YamlWriter.update_login_settings`` so the merge logic isn't duplicated
-    at each call site.
-    """
-    section = document.get(section_key) or {}
-    current = section.get(field_key, default)
-    if is_unchanged(current, value):
-        return
-    if value != default:
-        # Not `setdefault(section_key, {})`: a bare `section_key:` line
-        # already has the key present with a `None` value, and setdefault
-        # only fills in *missing* keys - it would hand back that `None`
-        # unchanged and the subscript assignment below would raise.
-        if document.get(section_key) is None:
-            document[section_key] = {}
-        document[section_key][field_key] = value
-    elif section_key in document:
-        document[section_key].pop(field_key, None)
-        if not document[section_key]:
-            document.pop(section_key, None)
-
-
 def _quoted(value: str) -> SingleQuotedScalarString:
     """Force single-quoted style so an embedded ``#`` is never mistaken for a
     comment and stray leading/trailing whitespace survives (#127).
@@ -471,8 +435,12 @@ class OwnedSetting:
       (#319). The default is read through ``document_defaults()``, under
       ``key`` for a top-level row and ``section.key`` for a nested one.
     The writer's per-call semantics are simpler and shared: a kwarg that is
-    None was not on the form (leave the file alone, #131); for non-plain
-    rows a falsy provided value clears the key.
+    None was not on the form (leave the file alone, #131); for
+    ``omit_when_falsy`` and ``omit_when_none`` rows a falsy provided value
+    clears the key. ``omit_when_default`` rows do not follow that: there is
+    no cleared ``login.mode``, so the writer treats a blank one as unchanged
+    (see ``_applied_login_keys``), and what "clears" such a key is setting
+    it back to its default.
     """
 
     section: str  # "" = a top-level key
@@ -556,9 +524,9 @@ def merge_owned_setting_at_default(
     is created to be removed again: a document that does not have the
     section keeps not having it while the value is the default.
 
-    ``merge_optional_nested_field`` covers only the second shape - passing
-    it an empty section would make it reason about ``document[""]`` - so
-    this is where the rule for both lives.
+    One function for both shapes rather than two: the nested-only helper
+    this replaces could not serve a top-level key, since an empty section
+    would have made it reason about ``document[""]``.
     """
     if field.section:
         section = document.get(field.section) or {}
@@ -608,10 +576,10 @@ def apply_settings_document(
     differs from the new one (#127), so untouched ``${VAR}`` placeholders,
     comments and quote style survive a save that changed something else.
 
-    The per-field encodings live on ``OWNED_SETTINGS`` (#214); the
-    defaults-dependent keys (``security_profile``, ``login.mode``,
-    ``login.auto_login``, ``login.two_step``, ``login.totp``) are handled
-    explicitly below.
+    The per-field encodings live on ``OWNED_SETTINGS`` (#214), the
+    defaults-dependent keys included since #319: they are rows with an
+    ``omit_when_default`` mode, not a block below this loop, so a new one is
+    added by adding a row.
     """
     # "Omit at default" decisions read the loader's defaults (#175 piece 2).
     resolved_defaults = defaults if defaults is not None else _FALLBACK_DEFAULTS
