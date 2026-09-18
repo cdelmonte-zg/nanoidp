@@ -201,18 +201,31 @@ class TestUserForms:
         assert user.roles == ["ops"]
         assert user.password == "keepme"
 
-    def test_edit_keeps_a_whitespace_password_that_create_would_refuse(self, app, client):
-        """An asymmetry the one reader preserves rather than tidies away
-        (#298): create strips before deciding the field is blank, edit does
-        not, so "  " is a new password here and no password there. Pinned so
-        that unifying the two conventions is a decision, not a side effect
-        of sharing the code."""
+    def test_a_whitespace_only_password_means_blank_on_both_legs(self, app, client):
+        """One notion of "the field was left blank", decided in #386. Until
+        then create stripped before deciding and edit did not, so "  " was
+        no password on one leg and a real password on the other: an operator
+        leaving stray spaces in the field silently replaced the account's
+        password with whitespace, with nothing flashed and nothing logged."""
         client.post("/users/create", data={"username": "wsp", "password": "realpw"})
 
-        client.post("/users/wsp/edit", data={"password": "  "})
+        client.post("/users/wsp/edit", data={"password": "   "})
 
         with app.app_context():
-            assert get_config().get_user("wsp").password == "  "
+            assert get_config().get_user("wsp").password == "realpw"
+
+    def test_an_edited_password_that_is_not_blank_is_stored_verbatim(self, app, client):
+        """Strip decides whether the field was filled in; it never rewrites
+        what was typed, because leading and trailing spaces may be
+        deliberate (#386). The create leg already has this in
+        test_persona_login.py, which is also where the persona-mode blank
+        case lives; only the edit leg was uncovered."""
+        client.post("/users/create", data={"username": "spaced", "password": "realpw"})
+
+        client.post("/users/spaced/edit", data={"password": "  new  "})
+
+        with app.app_context():
+            assert get_config().get_user("spaced").password == "  new  "
 
     def test_edit_with_a_refused_field_is_not_reported_as_a_failure(self, app, client):
         """Both legs build through the same reader now, so a field the model

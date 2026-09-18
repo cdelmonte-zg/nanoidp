@@ -577,14 +577,23 @@ def _user_from_form(username: str, existing: User | None) -> User:
     depends on the current settings, and it is the create route's question
     about its own form.
     """
+    # One notion of "the field was left blank", shared by both legs (#386).
+    # Stripping decides only THAT; it never rewrites what was typed, since
+    # leading and trailing spaces may be deliberate. Until #386 the edit leg
+    # tested the raw value, so a field holding only spaces was a real new
+    # password there and no password on create: an operator leaving stray
+    # spaces in it replaced the account's password with whitespace, silently.
     raw_password = request.form.get("password", "")
-    if existing is None:
-        # A password-less user only makes sense in persona mode; only the
-        # blank check is stripped, the stored value is kept verbatim.
-        password: str | None = raw_password if raw_password.strip() else None
+    password: str | None
+    if raw_password.strip():
+        password = raw_password
+    elif existing is None:
+        # A password-less user only makes sense in persona mode, which the
+        # create route decides on its own form.
+        password = None
     else:
         # Blank means unchanged on this form: keep what is stored.
-        password = raw_password or existing.password
+        password = existing.password
 
     return User(
         username=username,
