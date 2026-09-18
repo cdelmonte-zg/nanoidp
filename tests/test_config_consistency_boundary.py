@@ -180,9 +180,11 @@ class TestOneObservationMeansOne:
 
         ConfigManager(config_dir=str(directory))
 
-        # One for the pre-read of config_validation, which is a different
-        # moment on purpose (it runs before the on_before_load hooks, which
-        # may be what renders settings.yaml), and one for the pair itself.
+        # One for the whole pre-load phase - settings.yaml for the
+        # strictness and bootstrap.yaml for the registry, together - which
+        # is a different moment on purpose, since it runs before the
+        # on_before_load hooks that may render settings.yaml. And one for
+        # the load's own pair.
         assert len(acquisitions) == 2, (
             f"the loader observed the directory {len(acquisitions)} times; "
             "settings.yaml and users.yaml must come from one acquisition"
@@ -672,3 +674,129 @@ class TestAMissingDirectoryIsOneDecision:
         for name, snapshot in observed.items():
             assert snapshot.exists is False, name
             assert snapshot.data == b"", name
+
+
+class TestValidateConfigObservesTheDirectoryOnce:
+    """The reason PR B is not cleanup (#246, second part).
+
+    A validation run used to read settings.yaml three times - once for the
+    findings, once for the strictness and once for the report header - and
+    each file on its own besides. So while a save was in progress it could
+    pair the pre-save settings with the post-save users file and report a
+    cross-file version disagreement for a state that never existed on disk:
+    a false failure in the tool operators use to gate a deploy.
+    """
+
+    def test_each_file_is_opened_once_for_a_whole_run(self, directory, monkeypatch):
+        from nanoidp.config_validation import validate_config_result
+
+        opens: list = []
+        real_open = open
+
+        def counting_open(file, *args, **kwargs):
+            name = Path(str(file)).name
+            if name.endswith(".yaml"):
+                opens.append(name)
+            return real_open(file, *args, **kwargs)
+
+        monkeypatch.setattr("builtins.open", counting_open)
+        validate_config_result(directory)
+        monkeypatch.undo()
+
+        assert opens.count("settings.yaml") == 1, opens
+        assert opens.count("users.yaml") == 1, opens
+
+    def test_a_save_between_the_files_cannot_produce_a_cross_file_finding(
+        self, directory, monkeypatch
+    ):
+        """The false positive itself: both files are rewritten together, so
+        a run that observed them at one moment can never see one of each."""
+        from nanoidp.config_validation import validate_config_result
+
+        monkeypatch.setattr("nanoidp.config_writer._LOCK_TIMEOUT_SECONDS", 0.3)
+        reader_thread = threading.current_thread()
+        settings_read = threading.Event()
+        writer_finished = threading.Event()
+        real_open = open
+
+        def seam(file, *args, **kwargs):
+            if (
+                threading.current_thread() is reader_thread
+                and str(file).endswith("users.yaml")
+                and not settings_read.is_set()
+            ):
+                settings_read.set()
+                writer_finished.wait(timeout=5)
+            return real_open(file, *args, **kwargs)
+
+        def rewrite_both_files():
+            try:
+                settings_read.wait(timeout=5)
+                manager = ConfigManager(config_dir=str(directory))
+                manager.settings.issuer = _NEW_ISSUER
+                manager.users.clear()
+                manager.save()
+            except Exception:  # noqa: BLE001 - the reader must never hang on it
+                pass
+            finally:
+                writer_finished.set()
+
+        writer = threading.Thread(target=rewrite_both_files)
+        writer.start()
+        monkeypatch.setattr("builtins.open", seam)
+        try:
+            result = validate_config_result(directory)
+        finally:
+            monkeypatch.undo()
+            writer.join(timeout=10)
+
+        assert settings_read.is_set(), "the seam never fired, so this proves nothing"
+        for finding in result["findings"]:
+            assert "config_version" not in finding["message"], finding
+
+    def test_a_directory_that_cannot_be_observed_is_an_error_finding(
+        self, directory, monkeypatch
+    ):
+        """Consistency is not degraded to get a report out: the refusal is
+        reported, it does not become an unlocked read (#246)."""
+        from nanoidp.config_validation import validate_config_result
+
+        monkeypatch.setattr("nanoidp.config_writer._LOCK_TIMEOUT_SECONDS", 0.3)
+        held = os.open(
+            str(directory / ".nanoidp-write.lock"), os.O_CREAT | os.O_RDWR, 0o644
+        )
+        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        try:
+            result = validate_config_result(directory)
+        finally:
+            fcntl.flock(held, fcntl.LOCK_UN)
+            os.close(held)
+
+        assert result["valid"] is False
+        assert any(
+            finding["level"] == "error" and "consistent configuration snapshot" in finding["message"]
+            for finding in result["findings"]
+        ), result["findings"]
+
+    def test_the_bootstrap_read_joins_the_protocol(self, directory, monkeypatch):
+        """NANOIDP_BOOTSTRAP_HOOK exists so something else can render this
+        file, so an exists()-then-open() pair here was a check against
+        exactly the writer it was written for."""
+        import nanoidp.config_store as config_store
+        from nanoidp.hooks import bootstrap_registry
+
+        (directory / "bootstrap.yaml").write_text("hooks: {}\n")
+        acquisitions = []
+        real_lock = config_store.directory_lock
+
+        @contextlib.contextmanager
+        def counting_lock(path):
+            acquisitions.append(path)
+            with real_lock(path):
+                yield
+
+        monkeypatch.setattr(config_store, "directory_lock", counting_lock)
+
+        bootstrap_registry(directory)
+
+        assert acquisitions == [directory]

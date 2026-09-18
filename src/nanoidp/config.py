@@ -24,7 +24,7 @@ from .config_documents import (
     load_users_document,
     reject_unloadable,
 )
-from .config_store import ConfigFileStore
+from .config_store import ConfigFileStore, FileSnapshot
 from .config_writer import (
     LockUnavailableError,
     compare_and_replace,
@@ -145,7 +145,15 @@ class ConfigManager:
         # "whatever the file declares".
         self.strict_config_override: Optional[bool] = strict_config
         # Effective strictness, re-derived from the file on every load.
-        self.strict_config: bool = self._effective_strict(self._peek_validation_mode())
+        # ONE observation for the whole pre-load phase (#246): the
+        # strictness the bootstrap registry runs under and the bootstrap
+        # file it reads come from the same look at the directory, so a
+        # write landing between them cannot pair one file's strictness with
+        # the other's content.
+        pre_load = self._observe_pre_load()
+        self.strict_config: bool = self._effective_strict(
+            self._declared_mode_of(pre_load["settings.yaml"])
+        )
         self._declared: Dict[str, Any] = {}
         self.settings: Settings = Settings()
         self.users: Dict[str, User] = {}
@@ -161,7 +169,9 @@ class ConfigManager:
         # it), so the strictness it follows comes from a raw peek at
         # settings.yaml's config_validation above: one contract per directory.
         self.hooks: HookRegistry = bootstrap_registry(
-            self.config_dir, strict_config=self.strict_config
+            self.config_dir,
+            strict_config=self.strict_config,
+            observed=pre_load["bootstrap.yaml"],
         )
         # Last settings.yaml hooks:/plugins: declaration applied to the
         # registry; an unchanged declaration is not re-applied on the next
@@ -196,7 +206,22 @@ class ConfigManager:
             return self.strict_config_override
         return declared_mode == "strict"
 
-    def _peek_validation_mode(self) -> str:
+    def _observe_pre_load(self) -> Dict[str, "FileSnapshot"]:
+        """The one look the pre-load phase takes at the directory (#246).
+
+        ``settings.yaml`` for the strictness the bootstrap registry runs
+        under, ``bootstrap.yaml`` for what that registry is built from. Two
+        files of one phase, so one acquisition.
+        """
+        try:
+            return self._store.read_snapshot(("settings.yaml", "bootstrap.yaml"))
+        except LockUnavailableError as exc:
+            # Classified rather than a bare RuntimeError out of __init__,
+            # where startup has no handler for it. It still fails, which is
+            # right: the directory could not be observed at all.
+            raise ConfigurationRejected(str(exc), kind=exc.kind) from exc
+
+    def _declared_mode_of(self, settings: "FileSnapshot") -> str:
         """``config_validation`` as declared by settings.yaml, read raw.
 
         Needed before the document loader runs (it decides how that loader
@@ -204,33 +229,21 @@ class ConfigManager:
         parsed at all returns the default here and fails with its real error
         a moment later, in _stage_directory, where the message belongs.
 
-        This is a SECOND observation of settings.yaml, and deliberately so
-        (#246). It cannot be merged into the load's snapshot: it decides the
-        strictness the bootstrap registry is built with, and that registry
-        must exist before ``on_before_load`` runs - a hook may be what
-        renders settings.yaml in the first place. The accepted consequence,
-        stated rather than hidden: a write landing between this read and the
-        load means the bootstrap registry's strictness came from a
-        settings.yaml the load never saw. Each observation is consistent in
-        itself; they are two moments because the phases they serve are.
+        Reads from the pre-load observation rather than taking one of its
+        own, so this and bootstrap.yaml come from one look at the directory
+        (#246). That observation is deliberately NOT the load's: it decides
+        the strictness the bootstrap registry is built with, and that
+        registry must exist before ``on_before_load`` runs, which may be
+        what renders settings.yaml in the first place. The accepted
+        consequence, stated rather than hidden: a write landing between the
+        two phases means the bootstrap registry's strictness came from a
+        settings.yaml the load never saw. Each phase observes consistently;
+        they are two moments because the phases themselves are.
         """
-        # A lock failure is NOT swallowed into the default (#246 review):
-        # this decides the bootstrap registry's strictness, so degrading it
-        # silently would boot a directory that declared `strict` with a
-        # failing hook merely logged - exactly the phase strictness gates.
-        # It is classified, though: this runs from __init__, so an
-        # unclassified RuntimeError would leave startup with a bare
-        # traceback where every other refused configuration raises
-        # ConfigurationRejected (#246 review round 2). Startup still fails,
-        # which is right - the directory could not be observed at all.
-        try:
-            observed = self._store.read("settings.yaml")
-        except LockUnavailableError as exc:
-            raise ConfigurationRejected(str(exc), kind=exc.kind) from exc
-        if not observed.exists:
+        if not settings.exists:
             return "warn"
         try:
-            data = yaml.safe_load(observed.data) or {}
+            data = yaml.safe_load(settings.data) or {}
         except Exception:  # noqa: BLE001 - reported by _stage_directory
             return "warn"
         return declared_validation_mode(data) if isinstance(data, dict) else "warn"

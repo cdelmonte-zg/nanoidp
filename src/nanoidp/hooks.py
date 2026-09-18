@@ -83,6 +83,7 @@ from typing import Any, Dict, List, Mapping, Optional
 import yaml
 
 from .config_documents import load_bootstrap_document
+from .config_store import ConfigFileStore, FileSnapshot
 from .serialization import expand_env_vars
 
 logger = logging.getLogger(__name__)
@@ -602,6 +603,7 @@ def bootstrap_registry(
     config_dir: Path,
     environ: Optional[Mapping[str, str]] = None,
     strict_config: bool = False,
+    observed: Optional["FileSnapshot"] = None,
 ) -> HookRegistry:
     """Build the registry from the bootstrap surface, before settings.yaml exists.
 
@@ -623,12 +625,22 @@ def bootstrap_registry(
     registry = HookRegistry(config_dir=config_dir)
 
     bootstrap_file = config_dir / BOOTSTRAP_FILE
-    if bootstrap_file.exists():
+    # Observed through the store like every other configuration read (#246,
+    # second part). It matters more here than the "startup only" frequency
+    # suggests: NANOIDP_BOOTSTRAP_HOOK exists so that something else can
+    # render this file, so an exists()-then-open() pair was a check against
+    # exactly the writer it was written for.
+    # The caller may hand over an observation it has already made, so the
+    # whole pre-load phase - the strictness this runs under and the file it
+    # reads - comes from ONE look at the directory (#246). Read here only
+    # when nobody did.
+    if observed is None:
+        observed = ConfigFileStore(config_dir).read(BOOTSTRAP_FILE)
+    if observed.exists:
         # Same path as settings.yaml: ${VAR} expansion first, then the
         # document loader (unknown keys warned with their path, wrong types
         # reported as "<file>: invalid value at <path>").
-        with open(bootstrap_file, "r") as f:
-            raw = yaml.safe_load(f) or {}
+        raw = yaml.safe_load(observed.data.decode("utf-8")) or {}
         raw = expand_env_vars(raw)
         document = load_bootstrap_document(raw, bootstrap_file, strict=strict_config)
         registry.configure_from_sections(document.hooks, document.plugins, SOURCE_BOOTSTRAP_FILE)
