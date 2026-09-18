@@ -27,7 +27,22 @@ def _user(**overrides):
 
 
 def _userinfo(user=None, subject="alice", scope="openid", gating=False, requested=None):
-    return build_userinfo_response(user, subject, scope, gating, requested)
+    return build_userinfo_response(
+        user,
+        subject=subject,
+        granted_scope=scope,
+        scope_gating_active=gating,
+        requested_claims=requested,
+    )
+
+
+class TestTheCallCannotBeMadeWrongly:
+    def test_the_subject_and_the_scope_cannot_be_swapped_silently(self):
+        """Two adjacent optional strings next to each other are a swap
+        waiting to happen, and a swap would answer with the scope as the
+        subject (#303 review): they are keyword-only."""
+        with pytest.raises(TypeError):
+            build_userinfo_response(_user(), "alice", "openid", False, None)
 
 
 class TestWhatTheBearerSees:

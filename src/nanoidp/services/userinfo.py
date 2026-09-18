@@ -31,6 +31,7 @@ _UNGATED_CLAIMS: tuple[str, ...] = ("roles", "groups", "tenant", "identity_class
 
 def build_userinfo_response(
     user: Optional[User],
+    *,
     subject: Optional[str],
     granted_scope: Optional[str],
     scope_gating_active: bool,

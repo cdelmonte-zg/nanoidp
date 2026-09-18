@@ -1880,10 +1880,10 @@ def userinfo() -> ResponseReturnValue:
     # passthrough, and the `claims` request parameter.
     response = build_userinfo_response(
         user,
-        username,
-        payload.get("scope"),
-        settings.userinfo_scope_gating_active,
-        payload.get("req_userinfo_claims"),
+        subject=username,
+        granted_scope=payload.get("scope"),
+        scope_gating_active=settings.userinfo_scope_gating_active,
+        requested_claims=payload.get("req_userinfo_claims"),
     )
 
     audit_event(
