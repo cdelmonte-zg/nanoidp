@@ -25,6 +25,7 @@
 - [Configuration](reference/configuration.md)
 - [Endpoints](reference/endpoints.md)
 - [Tokens and claims](reference/tokens.md)
+- [What each surface says about a user](reference/user-facts.md)
 - [SAML options](reference/saml.md)
 - [MCP server](reference/mcp.md)
 

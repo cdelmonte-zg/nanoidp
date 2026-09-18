@@ -150,7 +150,10 @@ standard OIDC claims are gated by the granted scope (OIDC Core §5.4):
 `preferred_username` requires the `profile` scope. The granted scope is
 carried on the access token as the `scope` claim (RFC 9068 §2.2.3).
 NanoIDP-specific claims (`roles`, `groups`, `tenant`, `identity_class`,
-`attributes`) have no standard scope and are always returned.
+`attributes`) have no standard scope and are always returned. `entitlements`
+and `source_acl` are deliberately outside that list; which facts reach which
+surface, and why, is in [What each surface says about a
+user](user-facts.md).
 
 This is a distinct mechanism from per-client scope *enforcement* (see the
 configuration reference), issue #186: scope gating decides which claims an
