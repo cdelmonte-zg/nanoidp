@@ -239,8 +239,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   300-byte AuthnRequest, against requests that take milliseconds. It also
   removes the shared object that twice stood as an alternative explanation
   for a surprising parse while #309 was being diagnosed. The parser options
-  are unchanged, and now pinned by a test that used to be a comment block
-  asserting nothing.
+  are unchanged and spelled out literally where the parser is built, which
+  is what both a reader and a static analyser go by; they are now pinned by
+  tests, where one of them used to be a comment block asserting nothing.
 
 - **Every `/saml/attribute-query` outcome is attributable to its sender**
   (#309). A query refused for its shape - not well-formed, no

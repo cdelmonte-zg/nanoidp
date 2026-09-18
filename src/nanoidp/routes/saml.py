@@ -8,8 +8,7 @@ import uuid
 import zlib
 from base64 import b64decode, b64encode
 from datetime import datetime, timedelta, timezone
-from types import MappingProxyType
-from typing import Any, Dict, Mapping, Optional
+from typing import Any, Dict, Optional
 
 from flask import Blueprint, Response, abort, render_template, request, session
 from flask.typing import ResponseReturnValue
@@ -51,18 +50,23 @@ from ._auth import (
 )
 from ._issuer import effective_saml_entity_id, effective_saml_sso_url
 
-# XXE protection without the deprecated defusedxml.lxml: entities are not
-# resolved, no DTD is loaded, and the parser never reaches the network.
-# Read-only: these are what every parse is built with, not a dial a caller
-# or a test can turn process-wide.
-_SECURE_PARSER_OPTIONS: Mapping[str, bool] = MappingProxyType(
-    {
-        "resolve_entities": False,
-        "no_network": True,
-        "dtd_validation": False,
-        "load_dtd": False,
-    }
-)
+
+def _secure_parser() -> etree.XMLParser:
+    """A parser that resolves no entity, loads no DTD and reaches no
+    network: XXE protection without the deprecated defusedxml.lxml.
+
+    The options are written out here, literally, at the one place that
+    builds a parser. Passing them as a mapping hid them from static
+    analysis - CodeQL reported ``py/xxe`` on the call, because from where it
+    stands a parser built from ``**options`` may resolve entities - and it
+    would also have been a dial a caller could turn process-wide.
+    """
+    return etree.XMLParser(
+        resolve_entities=False,
+        no_network=True,
+        dtd_validation=False,
+        load_dtd=False,
+    )
 
 
 def secure_fromstring(xml_bytes: bytes) -> etree._Element:
@@ -86,7 +90,7 @@ def secure_fromstring(xml_bytes: bytes) -> etree._Element:
     probed there with three documents across twelve threads and 36000
     parses, checking every root tag, with no mixes.
     """
-    return etree.fromstring(xml_bytes, parser=etree.XMLParser(**_SECURE_PARSER_OPTIONS))
+    return etree.fromstring(xml_bytes, parser=_secure_parser())
 
 
 # Try to import signxml for SAML signing

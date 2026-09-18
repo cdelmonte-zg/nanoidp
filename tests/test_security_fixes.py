@@ -13,25 +13,22 @@ Tests cover:
 import base64
 import json
 
-import pytest
-
 
 class TestXXEProtection:
     """Tests for XML External Entity attack prevention."""
 
     def test_secure_parser_is_used_for_saml_parsing(self):
         """Verify that secure XML parsing is what SAML goes through."""
+        from lxml import etree
+
         from nanoidp.routes import saml
 
         assert hasattr(saml, "secure_fromstring")
-        # The options, not a parser object: since #378 the parser is built
-        # per call rather than shared between request threads.
-        assert saml._SECURE_PARSER_OPTIONS == {
-            "resolve_entities": False,
-            "no_network": True,
-            "dtd_validation": False,
-            "load_dtd": False,
-        }
+        # Since #378 the parser is built per call rather than shared
+        # between request threads: a parser object, a new one each time.
+        first, second = saml._secure_parser(), saml._secure_parser()
+        assert isinstance(first, etree.XMLParser)
+        assert first is not second
 
     def test_malicious_xxe_payload_rejected(self, client):
         """Test that XXE payloads in SAML requests are rejected."""
@@ -227,26 +224,93 @@ default_user: admin
 class TestSecureXMLParser:
     """Tests to verify secure XML parser is properly configured."""
 
-    def test_secure_parser_configured(self):
-        """The options are what the parser is actually built with.
+    def test_secure_parser_refuses_a_dtd_it_is_pointed_at(self):
+        """What the options do, asserted through the parser rather than
+        through a table of their names.
 
         This test used to be a comment block asserting nothing, so the
-        settings it describes were pinned by no test at all (#378).
+        settings it describes were pinned by no test at all (#378). A local
+        DTD the document points at is not fetched, so its declarations
+        never apply - the file could not be read even if it existed.
         """
-        from lxml import etree
+        from nanoidp.routes.saml import secure_fromstring
 
-        from nanoidp.routes.saml import _SECURE_PARSER_OPTIONS
+        document = b"""<?xml version="1.0"?>
+<!DOCTYPE root SYSTEM "file:///nonexistent/there-is-no-such.dtd">
+<root>text</root>"""
 
-        parser = etree.XMLParser(**_SECURE_PARSER_OPTIONS)
+        root = secure_fromstring(document)
 
-        assert parser.resolvers is not None  # a real parser was built
-        # Read-only: a caller cannot turn off entity resolution process-wide.
-        with pytest.raises(TypeError):
-            _SECURE_PARSER_OPTIONS["resolve_entities"] = True  # type: ignore[index]
-        assert _SECURE_PARSER_OPTIONS["resolve_entities"] is False
-        assert _SECURE_PARSER_OPTIONS["no_network"] is True
-        assert _SECURE_PARSER_OPTIONS["load_dtd"] is False
-        assert _SECURE_PARSER_OPTIONS["dtd_validation"] is False
+        assert root.tag == "root"
+        assert root.text == "text"
+
+    def test_a_dtd_the_document_points_at_is_not_applied(self, tmp_path):
+        """``load_dtd=False``, observed rather than asserted on a name.
+
+        A DTD that declares a default attribute changes the tree when it is
+        loaded. This one is a real file the document points at, so nothing
+        but the option stops it from applying.
+        """
+        from nanoidp.routes.saml import secure_fromstring
+
+        dtd = tmp_path / "defaults.dtd"
+        dtd.write_text('<!ATTLIST root loaded CDATA "yes">')
+        document = (
+            f'<?xml version="1.0"?>\n'
+            f'<!DOCTYPE root SYSTEM "file://{dtd}">\n'
+            f"<root>text</root>"
+        ).encode()
+
+        root = secure_fromstring(document)
+
+        assert root.get("loaded") is None
+
+    def test_the_parser_is_built_with_its_options_spelled_out(self):
+        """The four options are literals at the one place that builds a
+        parser (#378 review).
+
+        Read from the source on purpose: ``no_network`` has no observable
+        effect while ``load_dtd`` is off, and a parser does not expose what
+        it was built with. The literals are also what a static analyser
+        reads - CodeQL reported ``py/xxe`` when they were passed as a
+        mapping, because from where it stands ``**options`` may resolve
+        entities.
+        """
+        import inspect
+
+        from nanoidp.routes.saml import _secure_parser
+
+        source = inspect.getsource(_secure_parser)
+
+        for option in (
+            "resolve_entities=False",
+            "no_network=True",
+            "dtd_validation=False",
+            "load_dtd=False",
+        ):
+            assert option in source, option
+
+    def test_each_parse_builds_its_own_parser(self):
+        """#378: the point of the change, pinned where it happens."""
+        from nanoidp.routes import saml
+
+        built = []
+        original = saml._secure_parser
+
+        def counting_parser():
+            parser = original()
+            built.append(parser)
+            return parser
+
+        saml._secure_parser = counting_parser
+        try:
+            for _ in range(3):
+                saml.secure_fromstring(b"<root/>")
+        finally:
+            saml._secure_parser = original
+
+        assert len(built) == 3
+        assert len(set(map(id, built))) == 3
 
     def test_an_internal_entity_is_not_expanded(self):
         """The discriminating case for ``resolve_entities=False``.
