@@ -1,3 +1,4 @@
+
 """
 Tests for CodeQL security fixes in NanoIDP.
 
@@ -11,6 +12,8 @@ Tests cover:
 
 import base64
 import json
+
+import pytest
 
 
 class TestXXEProtection:
@@ -237,6 +240,9 @@ class TestSecureXMLParser:
         parser = etree.XMLParser(**_SECURE_PARSER_OPTIONS)
 
         assert parser.resolvers is not None  # a real parser was built
+        # Read-only: a caller cannot turn off entity resolution process-wide.
+        with pytest.raises(TypeError):
+            _SECURE_PARSER_OPTIONS["resolve_entities"] = True  # type: ignore[index]
         assert _SECURE_PARSER_OPTIONS["resolve_entities"] is False
         assert _SECURE_PARSER_OPTIONS["no_network"] is True
         assert _SECURE_PARSER_OPTIONS["load_dtd"] is False
@@ -279,13 +285,22 @@ class TestSecureXMLParser:
             b"<c>" + b"<item>x</item>" * 200 + b"</c>": "c",
         }
         wrong: list = []
+        parsed: list = []
 
         def parse(document: bytes, expected: str) -> None:
+            # An exception inside a thread kills only that thread, and a
+            # test that merely checks "nothing went wrong" would go green
+            # when nothing was parsed at all: the successes are counted.
             for _ in range(500):
-                root = secure_fromstring(document)
+                try:
+                    root = secure_fromstring(document)
+                except Exception as error:  # noqa: BLE001 - reported below
+                    wrong.append(error)
+                    continue
                 tag = root.tag.split("}")[-1]
                 if tag != expected:
                     wrong.append((tag, expected))
+                parsed.append(tag)
 
         threads = [
             threading.Thread(target=parse, args=(document, expected))
@@ -298,6 +313,7 @@ class TestSecureXMLParser:
             thread.join()
 
         assert wrong == []
+        assert len(parsed) == len(threads) * 500
 
     def test_secure_parser_blocks_entities(self):
         """Test that secure parser blocks external entity expansion."""

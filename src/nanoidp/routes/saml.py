@@ -8,7 +8,8 @@ import uuid
 import zlib
 from base64 import b64decode, b64encode
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Optional
+from types import MappingProxyType
+from typing import Any, Dict, Mapping, Optional
 
 from flask import Blueprint, Response, abort, render_template, request, session
 from flask.typing import ResponseReturnValue
@@ -52,30 +53,38 @@ from ._issuer import effective_saml_entity_id, effective_saml_sso_url
 
 # XXE protection without the deprecated defusedxml.lxml: entities are not
 # resolved, no DTD is loaded, and the parser never reaches the network.
-_SECURE_PARSER_OPTIONS = {
-    "resolve_entities": False,
-    "no_network": True,
-    "dtd_validation": False,
-    "load_dtd": False,
-}
+# Read-only: these are what every parse is built with, not a dial a caller
+# or a test can turn process-wide.
+_SECURE_PARSER_OPTIONS: Mapping[str, bool] = MappingProxyType(
+    {
+        "resolve_entities": False,
+        "no_network": True,
+        "dtd_validation": False,
+        "load_dtd": False,
+    }
+)
 
 
 def secure_fromstring(xml_bytes: bytes) -> etree._Element:
     """Parse XML securely, preventing XXE attacks.
 
-    The parser is built per call, not once at module scope (#378). An
-    ``etree.XMLParser`` carries the state of the parse it is running and is
-    not documented as safe to share between threads, and these calls are
-    served by threads: an AuthnRequest at ``/saml/sso``, the SOAP body at
-    ``/saml/attribute-query`` and the Response about to be signed. Sharing
-    one was never shown to break anything - probed in #309 with three
-    documents across twelve threads and 36000 parses, checking every root
-    tag, with no mixes - but while it was shared it stood as an alternative
-    explanation for any parse that surprised someone, which is what made
-    the #309 diagnosis take a detour. A parser costs about a microsecond to
-    build, against requests that take milliseconds; the same shape
-    ``serialization.load_yaml_document`` already uses for ruamel's stateful
-    ``YAML`` instance.
+    The parser is built per call, not once at module scope (#378).
+
+    Sharing one was never a correctness problem: an ``lxml`` parser owns a
+    lock and takes it for the duration of each parse (``_ParserContext``
+    in lxml's ``parser.pxi``). That lock is the reason to stop sharing it -
+    it serializes every SAML parse in the process. Measured here on 24000
+    parses of a 5 KB document: shared, 3.0 s on one thread and 2.3 s on
+    eight, which is no scaling at all; a parser per call, 3.2 s on one
+    thread and 0.64 s on eight. The cost is at the other end of the size
+    range, where building the parser outweighs the parse: about a
+    microsecond per parse of a 300-byte AuthnRequest, against requests that
+    take milliseconds.
+
+    It also removes the shared object that twice stood as an alternative
+    explanation for a surprising parse while #309 was being diagnosed -
+    probed there with three documents across twelve threads and 36000
+    parses, checking every root tag, with no mixes.
     """
     return etree.fromstring(xml_bytes, parser=etree.XMLParser(**_SECURE_PARSER_OPTIONS))
 
