@@ -192,11 +192,14 @@ important when SPs extract the `<Assertion>` element from the `<Response>`
 to verify the signature independently. With standard C14N, the signature
 includes parent namespaces that break when the Assertion is extracted.
 
-## The two SAML surfaces: one resolver, declared differences (#302)
+## The two SAML surfaces: one resolver, declared differences (#302, #317)
 
 Both the SSO assertion and the attribute-query assertion resolve a user's
-attributes through the same service (`services/saml_attributes.py`), so
-they cannot drift silently. Their remaining differences are deliberate:
+attributes through the same service (`services/saml_attributes.py`), and
+both build the identical part of the document, the `Response` envelope, the
+`Issuer` pair, the `Status` element and the assertion's own head, through
+`services/saml_assertion.py` (#317). So they cannot drift silently. Their
+remaining differences are deliberate:
 
 | Aspect | SSO assertion | Attribute-query assertion | Why |
 |---|---|---|---|
@@ -204,6 +207,21 @@ they cannot drift silently. Their remaining differences are deliberate:
 | `AuthnStatement` / `AuthnContextClassRef` | present | absent | an attribute lookup is not an authentication event; asserting one would be false |
 | `SubjectConfirmation` | present (bearer, 5-minute window) | absent | ties an assertion to a login exchange the query never had |
 | `AudienceRestriction` | pinned to `oauth.audience` | absent | the query requester's audience is unknown (the endpoint is unauthenticated by design) |
+| `Conditions` validity | 5 minutes | 1 hour | a login assertion is spent immediately at an ACS; a backend lookup is not. The two windows have never been decided to be one policy, so they are stated here rather than shared behind an argument |
+| `Response/@Destination` | the ACS URL | absent | only a login assertion is delivered to an endpoint the IdP was told about |
+| `InResponseTo` | only when answering an AuthnRequest | always | an IdP-initiated login answers no request; an attribute query always does |
+| `ds` namespace | declared on the envelope | absent | the SSO document is signed in place, and the prefix is declared whether or not signing runs |
+| Serialization | bytes, with an XML declaration | unicode, pretty-printed | historical, and part of what the SP receives, so it is pinned rather than unified |
+| Signing | inline in the builder | a separate `_sign_attribute_query_response` | the query surface signs after serializing, by reparsing its own output |
+
+The last six rows were found by the #317 census, not declared anywhere
+before it, and none of them were covered by a test. They are pinned
+byte-for-byte in `tests/test_saml_assertion_shapes.py`.
+
+There is a third builder on the query surface: the error Response for an
+unknown principal (#275) shares the same envelope and `Issuer`, carries a
+`Requester` / `UnknownPrincipal` status pair instead of `Success`, and has
+no assertion at all.
 
 Shared rules on both surfaces: an absent or empty fact is an absent
 attribute (no fabricated `email`, no empty `Attribute` elements - None and
