@@ -41,6 +41,7 @@ import pytest
 from nanoidp import config_writer
 from nanoidp.config import ConfigManager
 from nanoidp.config_store import ConfigFileStore
+from nanoidp.config_validation import validate_config_result
 from nanoidp.config_writer import (
     LockNamespaceUnavailable,
     LockUnavailableError,
@@ -982,3 +983,87 @@ class TestARunThatDidNotHappenIsNotAVerdict:
 
         assert result["status"] == UNAVAILABLE
         assert result["valid"] is False
+
+
+class TestTheMcpToolTakesItsStrictnessFromTheSameObservation:
+    """The last place findings and strictness came from two moments (#246
+    PR B review).
+
+    `config.strict_config` is not an override: it is the `config_validation`
+    this runtime read when IT loaded. Using it meant a settings.yaml that
+    had since been relaxed was validated under the strictness of a file the
+    run never saw - the defect this work closes, surviving on the one path
+    the earlier fix did not touch.
+    """
+
+    def _write(self, directory, mode, with_warning=False):
+        extra = "  unknown_key: 1\n" if with_warning else ""
+        (directory / "settings.yaml").write_text(
+            f"config_validation: {mode}\noauth:\n  issuer: '{_OLD_ISSUER}'\n"
+            f"  audience: 'default'\n{extra}"
+        )
+
+    def test_the_tool_itself_follows_the_file_not_the_runtime(self, directory):
+        """Pinned at the HANDLER, not at the library call underneath it: a
+        mutation showed that testing validate_config_result directly left
+        the entry point free to keep reading config.strict_config, which is
+        exactly the mistake this fixes (#246 PR B review)."""
+        from nanoidp.mcp_server.handlers_config import _tool_validate_config
+
+        self._write(directory, "strict")
+        manager = ConfigManager(config_dir=str(directory))
+        assert manager.strict_config is True
+
+        self._write(directory, "warn", with_warning=True)
+        result = _tool_validate_config({}, manager)
+
+        assert result["strict"] is False
+        assert result["valid"] is True, result["findings"]
+
+    def test_the_tool_keeps_a_real_override(self, directory):
+        from nanoidp.mcp_server.handlers_config import _tool_validate_config
+
+        self._write(directory, "warn")
+        manager = ConfigManager(config_dir=str(directory), strict_config=True)
+        self._write(directory, "warn", with_warning=True)
+
+        result = _tool_validate_config({}, manager)
+
+        assert result["strict"] is True
+        assert result["valid"] is False
+
+    def test_a_relaxed_file_is_validated_as_relaxed(self, directory):
+        """The runtime loaded a strict directory; the file says warn now,
+        and carries something that is only a warning. The run must follow
+        the file it actually read."""
+        self._write(directory, "strict")
+        manager = ConfigManager(config_dir=str(directory))
+        assert manager.strict_config is True
+
+        self._write(directory, "warn", with_warning=True)
+        result = validate_config_result(directory, manager.strict_config_override)
+
+        assert result["strict"] is False
+        assert result["valid"] is True, result["findings"]
+
+    def test_a_real_override_still_wins(self, directory):
+        """`--strict-config` is a decision about the process, not an
+        observation of the file, so it survives the file being relaxed."""
+        self._write(directory, "warn")
+        manager = ConfigManager(config_dir=str(directory), strict_config=True)
+        self._write(directory, "warn", with_warning=True)
+
+        result = validate_config_result(directory, manager.strict_config_override)
+
+        assert result["strict"] is True
+        assert result["valid"] is False
+
+    def test_an_override_of_false_is_a_decision_too(self, directory):
+        """Collapsing False into "no override" would turn an explicit
+        "not strict" into "whatever the file says"."""
+        self._write(directory, "strict", with_warning=True)
+
+        result = validate_config_result(directory, False)
+
+        assert result["strict"] is False
+        assert result["valid"] is True, result["findings"]

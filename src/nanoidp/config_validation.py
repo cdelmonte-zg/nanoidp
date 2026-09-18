@@ -397,14 +397,23 @@ def validate_once(config_dir: Path | str) -> ValidationResult:
     )
 
 
-def validate_config_result(config_dir: Path | str, strict: bool = False) -> Dict[str, Any]:
+def validate_config_result(
+    config_dir: Path | str, strict: Optional[bool] = None
+) -> Dict[str, Any]:
     """``{valid, findings, ...}`` for the MCP ``validate_config`` tool.
 
     ``valid`` follows the exit code of ``validate-config``: errors always
     invalidate, warnings only when the run is strict.
+
+    ``strict`` is three-valued (#246 PR B review). ``None`` means "let the
+    directory decide", and the answer comes from the SAME observation the
+    findings came from. ``True`` and ``False`` are both real decisions that
+    win over the file, the way ``--strict-config`` wins at startup in both
+    directions: collapsing ``False`` into "no override" would silently turn
+    an explicit "not strict" into "whatever the file says".
     """
     result = validate_once(config_dir)
-    strict_run = bool(strict) or result.declared_mode == "strict"
+    strict_run = strict if strict is not None else result.declared_mode == "strict"
     _lines, code = report(result.findings, strict_run)
     return {
         "config_dir": str(config_dir),

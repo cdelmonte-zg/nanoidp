@@ -5,7 +5,7 @@ the #229 revision-precondition semantics on save_config and the settings
 normalizer table contract (tests/test_settings_plumbing_parity.py).
 """
 
-from typing import Any
+from typing import Any, Optional
 
 from ..config import ConfigManager, ConfigurationRejected, ReloadAfterSaveError
 from ..config_documents import DocumentRejected
@@ -114,11 +114,18 @@ def _tool_validate_config(arguments: dict[str, Any], config: ConfigManager) -> d
     # The CLI's code path exactly (nanoidp.config_validation): no
     # ConfigManager is built, no hook runs, no plugin is imported, and
     # the running configuration is not touched or reloaded.
-    # strict defaults to the manager's effective mode, so "what the next
-    # reload would hit" stays true for a ConfigManager started with
-    # --strict-config (#204 review); an explicit argument still wins.
+    # NOT config.strict_config (#246 PR B review): that carries the
+    # `config_validation` this runtime read at ITS load, so using it would
+    # pair one observation's strictness with another's findings - the exact
+    # defect this work closes. Only a real override survives a reload; the
+    # declared mode comes from the same snapshot the findings do, which is
+    # what `strict=None` asks for. An override of False is passed through as
+    # False, since it is a decision too.
     strict_arg = arguments.get("strict")
-    effective = config.strict_config if strict_arg is None else bool(strict_arg)
+    if strict_arg is not None:
+        effective: Optional[bool] = bool(strict_arg)
+    else:
+        effective = config.strict_config_override
     result = validate_config_result(config.config_dir, effective)
     if result.get("status") == UNAVAILABLE:
         # No validation took place, so this is not a verdict on the
