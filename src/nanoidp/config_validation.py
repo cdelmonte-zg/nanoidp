@@ -158,6 +158,33 @@ def _observe(directory: Path) -> Dict[str, FileSnapshot]:
     return ConfigFileStore(directory).read_snapshot(_VALIDATED_FILES)
 
 
+def _unobservable(directory: Path, exc: Exception) -> List[Finding]:
+    """The finding for a directory this run could not read.
+
+    A lint tool answers with a report, never with a traceback: that is what
+    its callers are built for, the CLI printing lines and the MCP tool
+    returning ``{valid, findings}``. Acquiring the bytes moved into the
+    store, so the OSError that ``_read_yaml`` used to catch per file
+    surfaces here instead, and it is turned back into a finding attributed
+    to the file the error names (#246 PR B review).
+    """
+    if isinstance(exc, OSError) and exc.filename:
+        path = Path(exc.filename)
+        return [Finding(ERROR, f"{path}: cannot be read: {exc}", path.name)]
+    return [Finding(ERROR, f"{directory}: {_UNOBSERVABLE} ({exc})", None)]
+
+
+def _observed_or_findings(
+    directory: Path,
+) -> Tuple[Optional[Dict[str, FileSnapshot]], List[Finding]]:
+    """The one acquisition every entry point shares, or what to report
+    instead of it."""
+    try:
+        return _observe(directory), []
+    except (LockUnavailableError, OSError) as exc:
+        return None, _unobservable(directory, exc)
+
+
 def validate_config_dir(config_dir: Path | str) -> List[Finding]:
     """Validate a configuration directory; never starts or runs anything.
 
@@ -167,10 +194,9 @@ def validate_config_dir(config_dir: Path | str) -> List[Finding]:
     directory = Path(config_dir)
     if not directory.is_dir():
         return [Finding(ERROR, f"{directory}: not a configuration directory", None)]
-    try:
-        observed = _observe(directory)
-    except LockUnavailableError as exc:
-        return [Finding(ERROR, f"{directory}: {_UNOBSERVABLE} ({exc})", None)]
+    observed, refusal = _observed_or_findings(directory)
+    if observed is None:
+        return refusal
     return _validate_observation(directory, observed)
 
 
@@ -255,13 +281,14 @@ def declared_mode(config_dir: Path | str) -> str:
     """``config_validation`` as settings.yaml declares it, for the report
     header.
 
-    A directory that cannot be observed consistently returns the default
-    here rather than raising: this is the report's header, and the run
-    itself reports the refusal as an ERROR finding (#246).
+    A directory that cannot be observed, or a settings.yaml that cannot be
+    read, returns the default here rather than raising: this is the
+    report's header, and the run itself reports what is actually wrong as
+    an ERROR finding (#246).
     """
     try:
         observed = ConfigFileStore(Path(config_dir)).read(SETTINGS_FILE)
-    except LockUnavailableError:
+    except (LockUnavailableError, OSError):
         return "warn"
     return _declared_mode_of(observed)
 
@@ -304,30 +331,37 @@ def report(findings: List[Finding], strict: bool) -> Tuple[List[str], int]:
     return lines, code
 
 
+def validate_once(config_dir: Path | str) -> Tuple[List[Finding], str]:
+    """The findings AND the declared mode, from ONE observation (#246).
+
+    Every entry point goes through here - the CLI and the MCP tool alike -
+    because the alternative is what this replaced: a run that read
+    settings.yaml for its findings, again for its strictness and again for
+    its header, and could describe a directory in three states none of
+    which was the one on disk when it answered.
+
+    The CLI reached its strictness separately until the PR B review caught
+    it, which meant a deploy rewriting `config_validation` between the two
+    reads made the run apply strict rules while printing a header for a
+    directory that no longer declared them: the same false failure in the
+    same gate this work exists to close.
+    """
+    directory = Path(config_dir)
+    if not directory.is_dir():
+        return [Finding(ERROR, f"{directory}: not a configuration directory", None)], "warn"
+    observed, refusal = _observed_or_findings(directory)
+    if observed is None:
+        return refusal, "warn"
+    return _validate_observation(directory, observed), _declared_mode_of(observed[SETTINGS_FILE])
+
+
 def validate_config_result(config_dir: Path | str, strict: bool = False) -> Dict[str, Any]:
     """``{valid, findings, ...}`` for the MCP ``validate_config`` tool.
 
     ``valid`` follows the exit code of ``validate-config``: errors always
     invalidate, warnings only when the run is strict.
     """
-    # ONE observation for the whole result (#246): the report used to read
-    # settings.yaml three times - once for the findings, once for the
-    # strictness and once for the header - so it could describe a directory
-    # in three states none of which was the one on disk when it answered.
-    directory = Path(config_dir)
-    if not directory.is_dir():
-        findings = [Finding(ERROR, f"{directory}: not a configuration directory", None)]
-        declared = "warn"
-    else:
-        try:
-            observed = _observe(directory)
-        except LockUnavailableError as exc:
-            findings = [Finding(ERROR, f"{directory}: {_UNOBSERVABLE} ({exc})", None)]
-            declared = "warn"
-        else:
-            findings = _validate_observation(directory, observed)
-            declared = _declared_mode_of(observed[SETTINGS_FILE])
-
+    findings, declared = validate_once(config_dir)
     strict_run = bool(strict) or declared == "strict"
     _lines, code = report(findings, strict_run)
     return {
@@ -347,5 +381,6 @@ __all__ = [
     "effective_strict",
     "report",
     "validate_config_dir",
+    "validate_once",
     "validate_config_result",
 ]

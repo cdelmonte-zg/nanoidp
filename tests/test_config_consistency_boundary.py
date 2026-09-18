@@ -800,3 +800,110 @@ class TestValidateConfigObservesTheDirectoryOnce:
         bootstrap_registry(directory)
 
         assert acquisitions == [directory]
+
+
+class TestALintToolAnswersWithAReport:
+    """A lint tool answers with findings, never with a traceback (#246 PR B
+    review).
+
+    Acquiring the bytes moved into the store, so the OSError ``_read_yaml``
+    used to catch per file surfaces at the acquisition instead. It has to
+    come back out as a finding: the CLI prints lines and the MCP tool
+    returns ``{valid, findings}``, and neither is built for an exception.
+    """
+
+    def _unreadable(self, directory):
+        os.chmod(directory / "settings.yaml", 0o000)
+
+    def test_an_unreadable_file_is_a_finding_not_an_exception(self, directory):
+        if os.geteuid() == 0:
+            pytest.skip("root ignores the file mode this test relies on")
+        from nanoidp.config_validation import validate_config_dir
+
+        self._unreadable(directory)
+        try:
+            findings = validate_config_dir(directory)
+        finally:
+            os.chmod(directory / "settings.yaml", 0o644)
+
+        assert any(
+            finding.level == "error" and "cannot be read" in finding.message
+            for finding in findings
+        ), findings
+
+    def test_the_mcp_result_stays_a_result(self, directory):
+        if os.geteuid() == 0:
+            pytest.skip("root ignores the file mode this test relies on")
+        from nanoidp.config_validation import validate_config_result
+
+        self._unreadable(directory)
+        try:
+            result = validate_config_result(directory)
+        finally:
+            os.chmod(directory / "settings.yaml", 0o644)
+
+        assert result["valid"] is False
+        assert any("cannot be read" in f["message"] for f in result["findings"])
+
+    def test_the_report_header_falls_back_instead_of_raising(self, directory):
+        if os.geteuid() == 0:
+            pytest.skip("root ignores the file mode this test relies on")
+        from nanoidp.config_validation import declared_mode, effective_strict
+
+        self._unreadable(directory)
+        try:
+            assert declared_mode(directory) == "warn"
+            assert effective_strict(directory, False) is False
+        finally:
+            os.chmod(directory / "settings.yaml", 0o644)
+
+
+class TestTheCliAndTheToolShareOneObservation:
+    """The gate this work is about is the CLI, and it was the one path left
+    reaching its strictness separately (#246 PR B review).
+
+    A deploy rewriting `config_validation` between the two reads made the
+    run apply strict rules while printing a header for a directory that no
+    longer declared them: the same false failure, in the same tool.
+    """
+
+    def test_one_acquisition_for_findings_and_strictness(self, directory, monkeypatch):
+        import nanoidp.config_store as config_store
+        from nanoidp.config_validation import validate_once
+
+        acquisitions = []
+        real_lock = config_store.directory_lock
+
+        @contextlib.contextmanager
+        def counting_lock(path):
+            acquisitions.append(path)
+            with real_lock(path):
+                yield
+
+        monkeypatch.setattr(config_store, "directory_lock", counting_lock)
+
+        findings, declared = validate_once(directory)
+
+        assert acquisitions == [directory], (
+            "the findings and the declared mode came from different "
+            "observations of the directory"
+        )
+        assert declared in ("warn", "strict")
+
+    def test_the_command_line_goes_through_it(self, directory, monkeypatch):
+        """Pinned at the entry point, because fixing only the MCP path is
+        exactly the mistake the review caught."""
+        import nanoidp.config_validation as config_validation
+        from nanoidp.__main__ import validate_config_command
+
+        calls = []
+        real = config_validation.validate_once
+        monkeypatch.setattr(
+            config_validation,
+            "validate_once",
+            lambda d: (calls.append(d), real(d))[1],
+        )
+
+        validate_config_command(str(directory), strict=False)
+
+        assert calls == [str(directory)]

@@ -289,8 +289,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `NANOIDP_BOOTSTRAP_HOOK` exists precisely so something else can render
   that file. Startup now takes one observation for its whole pre-load
   phase - the strictness the hook registry runs under and the file it is
-  built from - instead of two. Nothing in `src/` opens a configuration file
-  directly any more.
+  built from - instead of two. No configuration read path opens a file on
+  its own any more.
 - **`claims_supported` no longer advertises `source_acl` and `authorities`**
   (#316). OpenID Connect Discovery 1.0 §3 defines that field as the Claim
   Names a provider may be able to supply values for; on top of it nanoidp

@@ -156,7 +156,7 @@ def validate_config_command(config_dir: Optional[str], strict: bool) -> int:
     what makes it safe as a pre-commit or CI step on a directory whose
     bootstrap.yaml names commands.
     """
-    from nanoidp.config_validation import effective_strict, report, validate_config_dir
+    from nanoidp.config_validation import report, validate_once
 
     # Same precedence the server's own discovery uses (ConfigManager).
     directory: str = (
@@ -165,8 +165,13 @@ def validate_config_command(config_dir: Optional[str], strict: bool) -> int:
         or os.getenv("MOCK_IDP_CONFIG_DIR")
         or "./config"
     )
-    strict_run = effective_strict(directory, strict)
-    findings = validate_config_dir(directory)
+    # One observation for the findings AND the strictness (#246 PR B
+    # review): reaching them separately let a deploy rewrite
+    # config_validation between the two reads, so the run applied strict
+    # rules while printing a header for a directory that no longer declared
+    # them.
+    findings, declared = validate_once(directory)
+    strict_run = bool(strict) or declared == "strict"
     lines, code = report(findings, strict_run)
     print(f"validate-config: {directory} (strict)" if strict_run else f"validate-config: {directory}")
     for line in lines:
