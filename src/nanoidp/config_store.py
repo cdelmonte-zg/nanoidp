@@ -28,8 +28,9 @@ that is already inside the critical section, which is every write, uses the
 unlocked one. There is no reentrant lock and no depth counting: the
 cross-process lock opens a fresh descriptor per acquisition and ``flock`` is
 per open file description, so a nested acquisition waits out the whole
-timeout and then fails, and ``_write_lock`` is a plain ``threading.Lock``,
-so a second acquisition on one thread deadlocks with no timeout at all.
+timeout and then fails, and ``_write_lock`` is a plain, non-reentrant
+``threading.Lock`` (its wait is bounded by the acquisition's shared
+deadline, but a thread still cannot hold it twice).
 Writing the two forms out makes "this caller already holds the lock" a fact
 in the code rather than something compensated for at runtime.
 
@@ -98,6 +99,11 @@ class FileSnapshot:
     exists: bool
 
 
+#: What every file of a directory that is not there looks like. A constant,
+#: because the answer must not depend on a second look at the filesystem.
+_MISSING = FileSnapshot(data=b"", revision=revision_of_bytes(b""), exists=False)
+
+
 class ConfigFileStore:
     """Consistent observations of one configuration directory."""
 
@@ -156,7 +162,13 @@ class ConfigFileStore:
         could not join it.
         """
         if not self._directory.is_dir():
-            return {name: self._read_unlocked(name) for name in names}
+            # ONE decision, then no further look at the filesystem in this
+            # call (#246 review round 4). Reading the files here would be a
+            # fresh observation each: another process creating the directory
+            # in between would hand back a snapshot composed of different
+            # moments, which is the very class of bug this module exists to
+            # remove.
+            return dict.fromkeys(names, _MISSING)
         try:
             with directory_lock(self._directory):
                 return {name: self._read_unlocked(name) for name in names}

@@ -637,8 +637,11 @@ class ConfigManager:
         settings_file = self.config_dir / "settings.yaml"
 
         # Through the store, like every other access to this directory
-        # (#246): one door for reads and writes alike, and the file names
-        # rather than paths, because a store writes its own directory.
+        # (#246): the directory's own writes go through its store, named by
+        # file rather than by path, because a store writes its own
+        # directory. Not yet every write in the codebase - YamlWriter's
+        # per-field saves still call compare_and_replace directly, through
+        # the same protocol but not through this door.
         self._store.compare_and_replace_many(
             [
                 (

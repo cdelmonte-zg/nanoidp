@@ -411,8 +411,9 @@ def _read_bytes(file_path: Path) -> bytes:
 @contextlib.contextmanager
 def directory_lock(directory: Path) -> Iterator[None]:
     """The exclusive section for one configuration directory: the
-    process-global thread lock and the directory's advisory file lock,
-    in the order every writer here has always taken them (#246).
+    directory's advisory file lock and then the process-global thread
+    lock, in that order (#246 - it is the reverse of the order writers
+    used before, see the comment on the acquisition below).
 
     Published so that READS can join the protocol through
     ``config_store.ConfigFileStore``. It is NOT reentrant, by design and by

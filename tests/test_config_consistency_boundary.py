@@ -634,3 +634,41 @@ class TestAnUnobservableDirectoryAnswers503:
             "error": "configuration_unavailable",
             "kind": "lock_timeout",
         }
+
+
+class TestAMissingDirectoryIsOneDecision:
+    """The directory's absence is decided once, and then not re-observed
+    (#246 review round 4).
+
+    Reading each file after the check would be a fresh observation each,
+    so a directory appearing in between would hand back a snapshot composed
+    of different moments - the very class of bug this module removes,
+    reintroduced on the path meant to be the simple case.
+    """
+
+    def test_a_directory_that_appears_mid_call_does_not_leak_into_the_snapshot(
+        self, tmp_path, monkeypatch
+    ):
+        absent = tmp_path / "not-there"
+        store = ConfigFileStore(absent)
+
+        real_is_dir = Path.is_dir
+
+        def create_it_right_after_the_check(self):
+            answer = real_is_dir(self)
+            if self == absent and not answer:
+                # Exactly the race: another process gets there between the
+                # decision and whatever would come next.
+                absent.mkdir()
+                (absent / "settings.yaml").write_text(_settings(_NEW_ISSUER))
+                (absent / "users.yaml").write_text(_users("new_user"))
+            return answer
+
+        monkeypatch.setattr(Path, "is_dir", create_it_right_after_the_check)
+
+        observed = store.read_snapshot(("settings.yaml", "users.yaml"))
+
+        assert absent.is_dir(), "the race never happened, so this proves nothing"
+        for name, snapshot in observed.items():
+            assert snapshot.exists is False, name
+            assert snapshot.data == b"", name
