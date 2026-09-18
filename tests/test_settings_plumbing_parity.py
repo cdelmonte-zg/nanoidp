@@ -75,6 +75,21 @@ class TestTheDefaultsDependentRowsKnowTheirDefault:
 
         assert _FALLBACK_DEFAULTS == {key: real[key] for key in self._default_keys()}
 
+    def test_the_helper_that_applies_them_covers_every_row(self):
+        """The writer's parameters are not the last hand-written list:
+        ``_applied_login_keys`` decides which of them are applied, and a key
+        missing there would be accepted by the API, rendered by the page,
+        and then quietly not written (#382 review).
+        """
+        import inspect
+
+        from nanoidp.services.yaml_writer import _applied_login_keys
+
+        parameters = set(inspect.signature(_applied_login_keys).parameters)
+        rows = {row.key for row in OWNED_SETTINGS if row.section == "login"}
+
+        assert parameters == rows
+
     def test_the_login_rows_are_what_the_writer_takes(self):
         """``update_login_settings`` takes exactly these keys, by their YAML
         names."""
