@@ -290,27 +290,33 @@ class TestSecureXMLParser:
         ):
             assert option in source, option
 
-    def test_each_parse_builds_its_own_parser(self):
-        """#378: the point of the change, pinned where it happens."""
+    def test_each_parse_builds_its_own_parser(self, monkeypatch):
+        """#378's whole invariant, pinned where it can be observed.
+
+        Counted at ``etree.XMLParser`` rather than at this module's own
+        helper, so it holds whatever that helper is called: the shape this
+        replaced - one parser built at import and handed to every parse -
+        fails here, which the concurrency test below could not do, since
+        lxml locks a shared parser and every document still comes back as
+        itself.
+        """
         from nanoidp.routes import saml
 
-        built = []
-        original = saml._secure_parser
+        real_parser = saml.etree.XMLParser
+        created = []
 
-        def counting_parser():
-            parser = original()
-            built.append(parser)
+        def counting_parser(**options):
+            parser = real_parser(**options)
+            created.append(parser)
             return parser
 
-        saml._secure_parser = counting_parser
-        try:
-            for _ in range(3):
-                saml.secure_fromstring(b"<root/>")
-        finally:
-            saml._secure_parser = original
+        monkeypatch.setattr(saml.etree, "XMLParser", counting_parser)
 
-        assert len(built) == 3
-        assert len(set(map(id, built))) == 3
+        saml.secure_fromstring(b"<a/>")
+        saml.secure_fromstring(b"<b/>")
+
+        assert len(created) == 2
+        assert created[0] is not created[1]
 
     def test_an_internal_entity_is_not_expanded(self):
         """The discriminating case for ``resolve_entities=False``.
@@ -331,13 +337,14 @@ class TestSecureXMLParser:
 
         assert "expanded-by-the-wrong-parser" not in (root.text or "")
 
-    def test_a_parse_does_not_share_a_parser_with_another_thread(self):
-        """Each call parses through its own parser (#378).
+    def test_documents_parsed_at_the_same_time_come_back_as_themselves(self):
+        """A stress case, not the proof of anything (#381 review).
 
-        The property is behavioural: documents parsed at the same time in
-        different threads each come back as themselves. It held with a
-        shared parser too when it was probed in #309 - this pins what the
-        change is for, rather than asserting the absence of an attribute.
+        Documents parsed concurrently each come back as themselves. This
+        held with a shared parser too - lxml locks one - so it does not
+        show that parsers are no longer shared; the test above does. It
+        stays as a regression against a future parse that is neither
+        locked nor private.
         """
         import threading
 
