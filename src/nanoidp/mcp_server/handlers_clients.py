@@ -53,22 +53,24 @@ def _tool_create_client(arguments: dict[str, Any], config: ConfigManager) -> dic
     if config.get_client(client_id):
         return {"success": False, "error": f"Client '{client_id}' already exists"}
 
-    auth_method = _normalize_auth_method(
-        arguments.get("token_endpoint_auth_method", "client_secret_basic")
+    # An absent method is not defaulted here: the resolver owns what a
+    # client with no method named gets (#300 review). A public client has no
+    # secret, and a supplied one is dropped rather than persisted as a dead,
+    # ignored value (#188), the rule the UI forms share since #300.
+    auth_method = (
+        _normalize_auth_method(arguments["token_endpoint_auth_method"])
+        if "token_endpoint_auth_method" in arguments
+        else UNSET
     )
-    # A public client has no secret; a supplied one is dropped rather than
-    # persisted as a dead, ignored value (#188). The rule is shared with the
-    # UI forms since #300.
     try:
         auth = resolve_client_auth(method=auth_method, secret=arguments.get("client_secret"))
     except ClientSecretRequired as refused:
         return {"success": False, "error": str(refused)}
-    client_secret = auth.secret
 
     new_client = OAuthClient(
         client_id=client_id,
-        client_secret=client_secret,
-        token_endpoint_auth_method=auth_method,  # type: ignore[arg-type]
+        client_secret=auth.secret,
+        token_endpoint_auth_method=auth.method,  # type: ignore[arg-type]
         description=arguments.get("description", ""),
         background_color=_normalize_hex_color(
             arguments.get("background_color"), "background_color"
@@ -138,7 +140,7 @@ def _tool_update_client(arguments: dict[str, Any], config: ConfigManager) -> dic
     new_auth_method = (
         _normalize_auth_method(arguments["token_endpoint_auth_method"])
         if "token_endpoint_auth_method" in arguments
-        else None
+        else UNSET
     )
     # The method/secret combination is resolved BEFORE any assignment
     # (#188), so the model validator can never reject mid-sequence and
@@ -147,7 +149,7 @@ def _tool_update_client(arguments: dict[str, Any], config: ConfigManager) -> dic
     # confidential client refuses (#300).
     try:
         auth = resolve_client_auth(
-            method=new_auth_method if new_auth_method is not None else UNSET,
+            method=new_auth_method,
             secret=arguments["client_secret"] or None if "client_secret" in arguments else UNSET,
             current_method=client.token_endpoint_auth_method,
             current_secret=client.client_secret,

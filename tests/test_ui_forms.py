@@ -223,6 +223,17 @@ class TestClientForms:
         assert created.redirect_uris == ["https://app.example/cb", "http://127.0.0.1:7777/cb"]
         assert created.additional_audiences == ["aud-a", "aud-b"]
 
+    def test_create_client_without_a_method_gets_the_resolver_s_default(self, app, client):
+        """The form has no method field on create, and the route does not
+        spell a default of its own: what a client with no method named gets
+        is the resolver's answer, and the resolver reads it off the model
+        (#300 review)."""
+        from nanoidp.services.client_policy import DEFAULT_METHOD
+
+        client.post("/clients/create", data=self.CREATE)
+
+        assert _get_client_by_id(app, "ui-client").token_endpoint_auth_method == DEFAULT_METHOD
+
     def test_create_client_missing_id_or_secret_creates_nothing(self, app, client):
         with app.app_context():
             before = len(get_config().settings.clients)
