@@ -14,6 +14,10 @@ in tests/test_client_field_parity.py.
 """
 
 import inspect
+import re
+from typing import Literal, Optional
+
+import pytest
 
 from nanoidp import config_documents as cd
 from nanoidp.mcp_server import _TOOL_SCHEMAS, _UPDATE_SETTINGS_FIELDS
@@ -62,6 +66,173 @@ class TestYamlWriterMatchesTheTable:
     def test_update_saml_settings_covers_exactly_the_saml_rows(self):
         table = {row.key for row in OWNED_SETTINGS if row.section == "saml"}
         assert self._writer_params("update_saml_settings") == table
+
+
+class TestTheSettingsPageDerivesFromTheTable:
+    """#299: the settings route used to repeat the YAML key names the table
+    owns. It now builds each section from the table, which only holds while
+    the page actually carries a field per row, named after the attribute.
+    """
+
+    _SECTIONS = ("oauth", "saml")
+
+    def _page(self):
+        from pathlib import Path
+
+        template = (
+            Path(__file__).resolve().parent.parent
+            / "src/nanoidp/templates/settings.html"
+        )
+        return set(re.findall(r'name="([A-Za-z0-9_]+)"', template.read_text()))
+
+    def _rows(self):
+        return [row for row in OWNED_SETTINGS if row.section in self._SECTIONS]
+
+    def test_every_row_has_a_field_named_after_its_attribute(self):
+        fields = self._page()
+        for row in self._rows():
+            assert row.attr in fields, row
+
+    def test_which_rows_count_as_checkboxes_is_asked_of_the_reader(self):
+        """The rule the test above applies, exercised on the shape no row
+        has today: an ``Optional[bool]`` setting is a checkbox, and a test
+        keyed on ``annotation is bool`` would skip it - and with it the
+        missing-marker regression (#131) it exists to catch.
+        """
+        from nanoidp.routes.ui import _form_bool, _settings_form_reader
+
+        assert _settings_form_reader(Optional[bool]) is _form_bool
+        assert Optional[bool] is not bool
+
+    def test_every_checkbox_row_has_its_on_form_marker(self):
+        """Without the marker a cleared checkbox reads as "not on this form",
+        so unchecking it would silently do nothing (#131).
+
+        Which rows are checkboxes is asked of the reader, not of the raw
+        annotation: ``Optional[bool]`` is a checkbox too, and keying this on
+        ``is bool`` would skip it and let exactly that regression through.
+        """
+        from nanoidp.routes.ui import _form_bool, _settings_form_reader
+
+        fields = self._page()
+        for row in self._rows():
+            reader = _settings_form_reader(Settings.model_fields[row.attr].annotation)
+            if reader is _form_bool:
+                assert f"{row.attr}__on_form" in fields, row
+
+    def test_every_row_has_a_reader_for_its_declared_type(self):
+        """A setting added as a shape the form reader does not know fails
+        here, rather than being read as text."""
+        from nanoidp.routes.ui import _settings_form_reader
+
+        for row in self._rows():
+            assert callable(_settings_form_reader(Settings.model_fields[row.attr].annotation))
+
+    @pytest.mark.parametrize(
+        "annotation",
+        [
+            dict[str, str],
+            # A container without its item type spelled out: reading it as a
+            # list of strings would write strings nobody said were strings.
+            list,
+            list[int],
+            float,
+            Optional[dict[str, str]],
+        ],
+        ids=("dict", "bare-list", "list-of-int", "float", "optional-dict"),
+    )
+    def test_an_unknown_shape_is_refused_rather_than_read_as_text(self, annotation):
+        from nanoidp.routes.ui import _settings_form_reader
+
+        with pytest.raises(TypeError):
+            _settings_form_reader(annotation)
+
+    @pytest.mark.parametrize(
+        ("annotation", "reader_name"),
+        [
+            (bool, "_form_bool"),
+            (Optional[bool], "_form_bool"),
+            (int, "_form_int"),
+            (Optional[int], "_form_int"),
+            (str, "_form_text"),
+            (Optional[str], "_form_text"),
+            (Literal["a", "b"], "_form_text"),
+            (list[str], "_form_textarea_list"),
+            (Optional[list[str]], "_form_textarea_list"),
+        ],
+    )
+    def test_each_shape_the_reader_knows(self, annotation, reader_name):
+        from nanoidp.routes import ui
+
+        assert ui._settings_form_reader(annotation) is getattr(ui, reader_name)
+
+    def test_the_route_builds_exactly_the_writer_keywords(self, app):
+        """What the route generates is what the writer takes: compared
+        against the writer's own signature, not against the table both
+        sides derive from."""
+        from nanoidp.routes.ui import _settings_form_fields
+
+        with app.test_request_context("/settings", method="POST", data={}):
+            for section, method in (
+                ("oauth", "update_oauth_settings"),
+                ("saml", "update_saml_settings"),
+            ):
+                signature = inspect.signature(getattr(YamlWriter, method))
+                keywords = set(signature.parameters) - {"self", "expected_revision"}
+                assert set(_settings_form_fields(section)) == keywords
+
+
+class TestTheSettingsPageReadsEachTypeAsItAlwaysHas:
+    """The readers themselves, pinned per kind (#299). "Absent means
+    unchanged" is the contract every one of them shares (#131)."""
+
+    def _submitted(self, app, data):
+        from nanoidp.routes.ui import _settings_form_fields
+
+        with app.test_request_context("/settings", method="POST", data=data):
+            return {**_settings_form_fields("oauth"), **_settings_form_fields("saml")}
+
+    def test_an_empty_form_changes_nothing(self, app):
+        assert set(self._submitted(app, {}).values()) == {None}
+
+    def test_a_checkbox_tells_unchecked_from_absent(self, app):
+        checked = self._submitted(app, {"require_pkce": "true"})
+        unchecked = self._submitted(app, {"require_pkce__on_form": "1"})
+        absent = self._submitted(app, {})
+
+        assert checked["require_pkce"] is True
+        assert unchecked["require_pkce"] is False
+        assert absent["require_pkce"] is None
+
+    def test_a_text_field_clears_when_blank(self, app):
+        assert self._submitted(app, {"audience": "  api  "})["audience"] == "api"
+        assert self._submitted(app, {"audience": ""})["audience"] == ""
+
+    def test_a_list_field_reads_the_textarea(self, app):
+        submitted = self._submitted(app, {"issuer_allowlist": "https://a\nhttps://b"})
+        assert submitted["issuer_allowlist"] == ["https://a", "https://b"]
+        assert self._submitted(app, {"issuer_allowlist": ""})["issuer_allowlist"] == []
+
+    def test_a_number_treats_blank_as_unchanged_and_refuses_a_non_number(self, app):
+        """Unlike a string, an int has no empty value to write; and "   " is
+        the error it always was, not a quiet "unchanged"."""
+        assert self._submitted(app, {"token_expiry_minutes": "60"})["token_expiry_minutes"] == 60
+        assert self._submitted(app, {"token_expiry_minutes": ""})["token_expiry_minutes"] is None
+
+        with pytest.raises(ValueError):
+            self._submitted(app, {"token_expiry_minutes": "   "})
+        with pytest.raises(ValueError):
+            self._submitted(app, {"token_expiry_minutes": "abc"})
+
+    def test_a_literal_field_is_read_as_text(self, app):
+        assert self._submitted(app, {"saml_c14n_algorithm": "c14n11"})["c14n_algorithm"] == "c14n11"
+
+    def test_the_saml_keys_are_the_yaml_names_not_the_attributes(self, app):
+        """entity_id is the key; saml_entity_id is the form field."""
+        submitted = self._submitted(app, {"saml_entity_id": "urn:x"})
+
+        assert submitted["entity_id"] == "urn:x"
+        assert "saml_entity_id" not in submitted
 
 
 class TestMcpUpdateSettingsMatchesItsSchema:
