@@ -238,6 +238,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lowered `max_previous_keys` trims the JWKS as soon as it is applied.
 
 ### Changed
+- **The three SAML Response builders share the part of the document that is
+  the same in all three** (#317). The `Response` envelope, the `Issuer`
+  pair, the `Status` element and the assertion's head were written three
+  times over, in the SSO login assertion, the attribute-query assertion and
+  the error Response for an unknown principal, so a change to the NameID
+  policy had to be made in each. They come from `services/saml_assertion.py`
+  now. What is NOT shared is what actually differs, and the census found six
+  differences that were declared nowhere and covered by no test: the
+  `Conditions` window (five minutes against one hour), `Destination`,
+  whether `InResponseTo` is conditional, the `ds` namespace, the
+  serialization and the signing path. They are documented in the SAML
+  reference and pinned byte-for-byte, deliberately not unified: the two
+  validity windows in particular have never been decided to be one policy,
+  so folding them behind a `ttl` argument would have hidden a difference
+  this work exists to declare. The bytes of all three documents are
+  unchanged.
 - **A client's authentication method and secret are normalized in one
   place** (#300). "`none` drops the secret" was written four times - the UI
   create and edit forms, MCP `create_client` and `update_client` - with the

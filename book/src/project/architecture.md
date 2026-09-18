@@ -87,6 +87,7 @@ single-purpose:
 | `services/discovery.py` | Single source of the OIDC discovery document (HTTP and MCP both render this; metadata never lies) |
 | `services/redirect_uri.py` | Redirect-URI registration matching, including RFC 8252 native-app rules |
 | `services/saml_verification.py` | Signed-AuthnRequest verification |
+| `services/saml_assertion.py` | The parts of a SAML Response every builder spells the same way: the envelope, the `Issuer` pair, the `Status` element and the assertion's head. Deliberately not the `Conditions`: the validity window differs by surface and is declared in the SAML reference instead (#317) |
 | `services/audit.py` | The audit log (in-memory ring, export) |
 | `services/yaml_writer.py` | Writes the YAML files back for the UI's per-field saves. Not the only write path: `ConfigManager.save()` persists whole documents through `serialization.atomic_write_yaml` too - both build their entries in `serialization.py`, but the read-modify-write itself has two owners today (a known debt, tracked for a single write pipeline with conflict detection) |
 

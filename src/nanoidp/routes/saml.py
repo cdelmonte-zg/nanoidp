@@ -17,6 +17,16 @@ from lxml import etree
 from ..config import get_config
 from ..exceptions import SAMLSignatureError
 from ..services import get_crypto_service, identities_for
+from ..services.saml_assertion import (
+    SAML2_NS,
+    STATUS_REQUESTER,
+    STATUS_SUCCESS,
+    STATUS_UNKNOWN_PRINCIPAL,
+    append_status,
+    build_assertion_core,
+    build_response_envelope,
+    saml_instant,
+)
 from ..services.saml_attributes import (
     append_attribute_statement,
     resolve_saml_attributes,
@@ -237,53 +247,31 @@ def _build_saml_response(
 
     now = datetime.now(timezone.utc)
 
-    def iso(dt: datetime) -> str:
-        return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
-
+    # The envelope, the Issuer pair, the Status and the assertion's head are
+    # the same document in all three builders here (#317). The Destination
+    # is not: only a login assertion is delivered to an ACS. InResponseTo is
+    # set after it, and only when there is a request to answer: an
+    # IdP-initiated login has none.
     response_id = f"_{uuid.uuid4().hex}"
     assertion_id = f"_{uuid.uuid4().hex}"
-
-    NSMAP = {
-        "saml2p": "urn:oasis:names:tc:SAML:2.0:protocol",
-        "saml2": "urn:oasis:names:tc:SAML:2.0:assertion",
-        "ds": "http://www.w3.org/2000/09/xmldsig#",
-    }
-
-    resp = etree.Element(
-        "{urn:oasis:names:tc:SAML:2.0:protocol}Response",
-        nsmap=NSMAP,
-        ID=response_id,
-        Version="2.0",
-        IssueInstant=iso(now),
-        Destination=acs_url,
+    resp = build_response_envelope(
+        issuer=issuer,
+        issued_at=now,
+        extra_namespaces={"ds": "http://www.w3.org/2000/09/xmldsig#"},
+        extra_attributes={"Destination": acs_url},
+        response_id=response_id,
     )
     if in_response_to:
         resp.set("InResponseTo", in_response_to)
+    append_status(resp, value=STATUS_SUCCESS)
 
-    issuer_el = etree.SubElement(resp, "{urn:oasis:names:tc:SAML:2.0:assertion}Issuer")
-    issuer_el.text = issuer
-
-    status = etree.SubElement(resp, "{urn:oasis:names:tc:SAML:2.0:protocol}Status")
-    sc = etree.SubElement(status, "{urn:oasis:names:tc:SAML:2.0:protocol}StatusCode")
-    sc.set("Value", "urn:oasis:names:tc:SAML:2.0:status:Success")
-
-    assertion = etree.SubElement(
+    assertion, subject = build_assertion_core(
         resp,
-        "{urn:oasis:names:tc:SAML:2.0:assertion}Assertion",
-        ID=assertion_id,
-        Version="2.0",
-        IssueInstant=iso(now),
+        issuer=issuer,
+        issued_at=now,
+        name_id=name_id,
+        assertion_id=assertion_id,
     )
-    a_issuer = etree.SubElement(assertion, "{urn:oasis:names:tc:SAML:2.0:assertion}Issuer")
-    a_issuer.text = issuer
-
-    subject = etree.SubElement(assertion, "{urn:oasis:names:tc:SAML:2.0:assertion}Subject")
-    nameid = etree.SubElement(
-        subject,
-        "{urn:oasis:names:tc:SAML:2.0:assertion}NameID",
-        Format="urn:oasis:names:tc:SAML:1.1:nameid-format:unspecified",
-    )
-    nameid.text = name_id
 
     subj_conf = etree.SubElement(
         subject,
@@ -293,7 +281,7 @@ def _build_saml_response(
     subj_conf_data = etree.SubElement(
         subj_conf,
         "{urn:oasis:names:tc:SAML:2.0:assertion}SubjectConfirmationData",
-        NotOnOrAfter=iso(now + timedelta(minutes=5)),
+        NotOnOrAfter=saml_instant(now + timedelta(minutes=5)),
         Recipient=acs_url,
     )
     if in_response_to:
@@ -302,8 +290,8 @@ def _build_saml_response(
     cond = etree.SubElement(
         assertion,
         "{urn:oasis:names:tc:SAML:2.0:assertion}Conditions",
-        NotBefore=iso(now),
-        NotOnOrAfter=iso(now + timedelta(minutes=5)),
+        NotBefore=saml_instant(now),
+        NotOnOrAfter=saml_instant(now + timedelta(minutes=5)),
     )
     audr = etree.SubElement(cond, "{urn:oasis:names:tc:SAML:2.0:assertion}AudienceRestriction")
     aud = etree.SubElement(audr, "{urn:oasis:names:tc:SAML:2.0:assertion}Audience")
@@ -312,7 +300,7 @@ def _build_saml_response(
     authn = etree.SubElement(
         assertion,
         "{urn:oasis:names:tc:SAML:2.0:assertion}AuthnStatement",
-        AuthnInstant=iso(now),
+        AuthnInstant=saml_instant(now),
         SessionIndex=f"_{uuid.uuid4().hex}",
     )
     ctx = etree.SubElement(authn, "{urn:oasis:names:tc:SAML:2.0:assertion}AuthnContext")
@@ -900,23 +888,17 @@ def _build_attribute_query_error_response(request_id: str, issuer_url: str) -> s
     with data nanoidp made up about a principal that does not exist.
     """
     now = datetime.now(timezone.utc)
-    SAML2_NS = "urn:oasis:names:tc:SAML:2.0:assertion"
-    SAML2P_NS = "urn:oasis:names:tc:SAML:2.0:protocol"
-    response = etree.Element(
-        f"{{{SAML2P_NS}}}Response",
-        nsmap={"saml2p": SAML2P_NS, "saml2": SAML2_NS},
-        ID=f"_{uuid.uuid4().hex}",
-        Version="2.0",
-        IssueInstant=now.strftime("%Y-%m-%dT%H:%M:%SZ"),
-        InResponseTo=request_id,
+    # Same envelope as the success builder below, and no assertion at all:
+    # the whole answer is the status (#317).
+    response = build_response_envelope(
+        issuer=issuer_url,
+        issued_at=now,
+        extra_attributes={"InResponseTo": request_id},
+        response_id=f"_{uuid.uuid4().hex}",
     )
-    issuer_el = etree.SubElement(response, f"{{{SAML2_NS}}}Issuer")
-    issuer_el.text = issuer_url
-    status = etree.SubElement(response, f"{{{SAML2P_NS}}}Status")
-    status_code = etree.SubElement(status, f"{{{SAML2P_NS}}}StatusCode")
-    status_code.set("Value", "urn:oasis:names:tc:SAML:2.0:status:Requester")
-    sub_code = etree.SubElement(status_code, f"{{{SAML2P_NS}}}StatusCode")
-    sub_code.set("Value", "urn:oasis:names:tc:SAML:2.0:status:UnknownPrincipal")
+    append_status(
+        response, value=STATUS_REQUESTER, subordinate=STATUS_UNKNOWN_PRINCIPAL
+    )
     return etree.tostring(response, pretty_print=False).decode("utf-8")
 
 
@@ -931,60 +913,31 @@ def _build_attribute_query_response(
     """
     now = datetime.now(timezone.utc)
 
-    def iso(dt: datetime) -> str:
-        return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
-
-    SAML2_NS = "urn:oasis:names:tc:SAML:2.0:assertion"
-    SAML2P_NS = "urn:oasis:names:tc:SAML:2.0:protocol"
-
-    NSMAP = {
-        "saml2p": SAML2P_NS,
-        "saml2": SAML2_NS,
-    }
-
-    # Create Response
-    response = etree.Element(
-        f"{{{SAML2P_NS}}}Response",
-        nsmap=NSMAP,
-        ID=f"_{uuid.uuid4().hex}",
-        Version="2.0",
-        IssueInstant=iso(now),
-        InResponseTo=request_id,
+    # The shared core (#317). InResponseTo is always present here: an
+    # attribute query is never unsolicited, unlike an SSO login.
+    response = build_response_envelope(
+        issuer=issuer_url,
+        issued_at=now,
+        extra_attributes={"InResponseTo": request_id},
+        response_id=f"_{uuid.uuid4().hex}",
     )
-
-    # Issuer
-    issuer_el = etree.SubElement(response, f"{{{SAML2_NS}}}Issuer")
-    issuer_el.text = issuer_url
-
-    # Status
-    status = etree.SubElement(response, f"{{{SAML2P_NS}}}Status")
-    status_code = etree.SubElement(status, f"{{{SAML2P_NS}}}StatusCode")
-    status_code.set("Value", "urn:oasis:names:tc:SAML:2.0:status:Success")
-
-    # Assertion
-    assertion = etree.SubElement(
+    append_status(response, value=STATUS_SUCCESS)
+    assertion, _subject = build_assertion_core(
         response,
-        f"{{{SAML2_NS}}}Assertion",
-        ID=f"_{uuid.uuid4().hex}",
-        Version="2.0",
-        IssueInstant=iso(now),
+        issuer=issuer_url,
+        issued_at=now,
+        name_id=user_id,
+        assertion_id=f"_{uuid.uuid4().hex}",
     )
 
-    # Assertion Issuer
-    assertion_issuer = etree.SubElement(assertion, f"{{{SAML2_NS}}}Issuer")
-    assertion_issuer.text = issuer_url
-
-    # Subject
-    subject = etree.SubElement(assertion, f"{{{SAML2_NS}}}Subject")
-    name_id = etree.SubElement(subject, f"{{{SAML2_NS}}}NameID")
-    name_id.set("Format", "urn:oasis:names:tc:SAML:1.1:nameid-format:unspecified")
-    name_id.text = user_id
-
-    # Conditions
+    # Conditions: one hour, against the five minutes of a login assertion.
+    # Deliberately NOT shared (#317): the two windows have never been
+    # decided to be one policy, and the difference is declared in
+    # book/src/reference/saml.md rather than hidden behind an argument.
     conditions = etree.SubElement(assertion, f"{{{SAML2_NS}}}Conditions")
     not_after = now + timedelta(hours=1)
-    conditions.set("NotBefore", iso(now))
-    conditions.set("NotOnOrAfter", iso(not_after))
+    conditions.set("NotBefore", saml_instant(now))
+    conditions.set("NotOnOrAfter", saml_instant(not_after))
 
     # One shared emission path for both builders (#302): strings are never
     # comma-split (the #134 rule the old loop here contradicted), lists are
