@@ -825,6 +825,20 @@ class Settings(BaseModel):
         still can't be used to silently smuggle enforcement off."""
         return self.scope_enforcement or self.security_profile != "dev"
 
+    @property
+    def userinfo_scope_gating_active(self) -> bool:
+        """Whether /userinfo gates the standard claims by the granted scope
+        (OIDC Core §5.4, #102): enforced under the stricter profiles, while
+        the permissive 'dev' default keeps returning email and profile
+        unconditionally.
+
+        Deliberately not 'scope_enforcement_active' above, close as the two
+        read: under 'dev' with scope_enforcement on, that one is active
+        while UserInfo still returns those claims ungated. One predicate
+        answering both questions would change behaviour, not just move it.
+        """
+        return self.security_profile in ("stricter-dev", "oauth21")
+
     @field_validator("issuer")
     @classmethod
     def validate_issuer(cls, v: str) -> str:

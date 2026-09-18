@@ -236,7 +236,7 @@ class TestUserinfoMember:
         # records each resolved name proves the guard: a requested claim that
         # is already present must be resolved exactly once (by the defaults),
         # never re-resolved by the requested-claims loop.
-        import nanoidp.routes.oauth as oauth_module
+        import nanoidp.services.userinfo as userinfo_service
         from nanoidp.services.token import resolve_user_claim as real_resolver
 
         resolved_names = []
@@ -258,8 +258,9 @@ class TestUserinfoMember:
             userinfo_claims=["email", "department"],
         )["access_token"]
 
-        # Patch AFTER minting, and only where /userinfo resolves claims.
-        monkeypatch.setattr(oauth_module, "resolve_user_claim", recording_resolver)
+        # Patch AFTER minting, and only where /userinfo resolves claims -
+        # the UserInfo service since #303, where the assembly moved.
+        monkeypatch.setattr(userinfo_service, "resolve_user_claim", recording_resolver)
         resp = client.get("/userinfo", headers={"Authorization": f"Bearer {token}"})
         assert resp.status_code == 200, resp.data
         data = json.loads(resp.data)

@@ -74,6 +74,8 @@ single-purpose:
 | Module | What it is |
 |---|---|
 | `services/token.py` | JWT building: access tokens, ID Tokens, the `/token` response body |
+| `services/userinfo.py` | What the bearer of an access token may see at `/userinfo`: the scope-to-claim gating, the claims nanoidp has no standard scope to gate by, the raw `attributes` passthrough, the `claims` request parameter |
+| `services/introspection.py` | What an introspection reports about a token (RFC 7662 §2.2), including which client it names and the scope it defaults to |
 | `services/identities.py` | The effective identities: declared users and clients composed with runtime ones. Every login, grant and client check resolves users and clients here (`identities_for(config)`), with the rules in one place: declared first, no runtime object under a declared name, declared wins on reload. The observation surfaces (`/api/users`, the persona picker, the UI lists) show declared and runtime objects with their origin; the edit forms and MCP work on the declared configuration. The lifecycle rules (promotion order, reconciliation with its audit) live here too |
 | `routes/runtime.py` | `/api/runtime`: create, read, delete, reset and promote runtime users and clients, mapped onto the resolver's rules; no update (the store is by value). Same management gate as `/api` |
 | `services/runtime_identities.py` | The runtime identity store: users and clients created while the IdP runs, in memory, two repositories behind one lock. Holds nothing else |

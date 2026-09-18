@@ -60,6 +60,7 @@ from ..services.device_code import (
     DeviceCodeStoreFull,
 )
 from ..services.discovery import issuer_qualifies_for_iss_parameter
+from ..services.introspection import build_introspection_response
 from ..services.redirect_uri import (
     append_authorization_params,
     redirect_uri_is_registered,
@@ -67,7 +68,7 @@ from ..services.redirect_uri import (
 )
 from ..services.resource import resolve_resources
 from ..services.scope import resolve_scope
-from ..services.token import resolve_user_claim, sanitize_claim_names
+from ..services.userinfo import build_userinfo_response
 from ._audit import audit_event
 from ._auth import (
     PENDING_SECOND_FACTOR_FIELD,
@@ -1873,57 +1874,17 @@ def userinfo() -> ResponseReturnValue:
     username = payload.get("sub")
     user = identities_for(config).get_user(username) if username else None
 
-    # Build response
-    response = {
-        "sub": username,
-    }
-
-    if user:
-        # Standard OIDC scope-to-claim gating (OIDC Core §5.4): the email and
-        # profile claims are only returned when the matching scope was granted.
-        # Enforced only under the stricter profiles; the permissive `dev`
-        # default keeps returning them unconditionally so this is not a breaking
-        # change for existing setups (#102). The granted scope is read from the
-        # access token's `scope` claim (RFC 9068 §2.2.3).
-        granted_scopes = set((payload.get("scope") or "").split())
-        strict_scopes = settings.security_profile in ("stricter-dev", "oauth21")
-
-        # The scope-gated standard claims and the nanoidp-specific claims below
-        # all resolve through resolve_user_claim - the same resolver that backs
-        # the `claims` request parameter - so those two mappings cannot diverge
-        # (#113). A claim the resolver cannot supply is omitted. The raw
-        # `attributes` passthrough further down is the one deliberate
-        # exception: the whole dict is not a resolvable claim name.
-        def _put(claim_name: str) -> None:
-            found, value = resolve_user_claim(user, claim_name)
-            if found:
-                response[claim_name] = value
-
-        if not strict_scopes or "email" in granted_scopes:
-            _put("email")
-            _put("email_verified")
-        if not strict_scopes or "profile" in granted_scopes:
-            _put("preferred_username")
-
-        # nanoidp-specific claims have no standard OIDC scope, so they are always
-        # returned for a valid token; gating them would be arbitrary and has no
-        # spec basis (#102).
-        _put("roles")
-        _put("groups")
-        _put("tenant")
-        _put("identity_class")
-        if user.attributes:
-            response["attributes"] = user.attributes
-
-        # Honour the UserInfo member of the OIDC `claims` request parameter
-        # (§5.5, #104): claim names the client asked for are added even when
-        # scope-gating above would have omitted them, provided nanoidp can
-        # supply them. Never overwrites a claim already set. Sanitized because
-        # the value comes straight from the token payload, which may be
-        # hand-crafted (a malformed value must not 500 the endpoint).
-        for claim_name in sanitize_claim_names(payload.get("req_userinfo_claims")) or []:
-            if claim_name not in response:
-                _put(claim_name)
+    # What this token's bearer may see is domain policy, and lives in
+    # services/userinfo.py since #303: scope-to-claim gating, the claims
+    # nanoidp has no standard scope to gate by, the raw attributes
+    # passthrough, and the `claims` request parameter.
+    response = build_userinfo_response(
+        user,
+        username,
+        payload.get("scope"),
+        settings.userinfo_scope_gating_active,
+        payload.get("req_userinfo_claims"),
+    )
 
     audit_event(
         "userinfo_request",
@@ -2018,28 +1979,9 @@ def introspect() -> ResponseReturnValue:
     if get_revocation_store().is_revoked(jti):
         return jsonify({"active": False})
 
-    # Token is valid - return introspection response. RFC 7662 §2.2:
-    # client_id is the client the TOKEN was issued to, not the caller doing
-    # the introspection - the access token carries that claim since #188.
-    # Fall back to the caller only for a legacy token without the claim.
-    response = {
-        "active": True,
-        "token_type": "Bearer",
-        "client_id": payload.get("client_id", client_id),
-        "username": payload.get("sub"),
-        "sub": payload.get("sub"),
-        "aud": payload.get("aud"),
-        "iss": payload.get("iss"),
-        "exp": payload.get("exp"),
-        "iat": payload.get("iat"),
-        "nbf": payload.get("nbf"),
-    }
-
-    # Add scope if present
-    if "scope" in payload:
-        response["scope"] = payload["scope"]
-    else:
-        response["scope"] = "openid"
+    # What an introspection reports is RFC 7662 §2.2, and lives in
+    # services/introspection.py since #303.
+    response = build_introspection_response(payload, client_id)
 
     audit_event(
         "introspection_request",
