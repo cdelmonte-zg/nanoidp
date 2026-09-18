@@ -229,6 +229,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lowered `max_previous_keys` trims the JWKS as soon as it is applied.
 
 ### Changed
+- **What `/userinfo` returns and what `/introspect` reports are services**
+  (#303), not response dicts assembled inside the routes. Which claims a
+  token's bearer may see, and what an introspection says about a token, are
+  protocol policy and are now testable without an HTTP request; the routes
+  keep the adapter's work - the Bearer token, client authentication, the JWT
+  checks, revocation, the user lookup and the audit entries. Behaviour is
+  unchanged, including the two rules that read on key presence rather than
+  truthiness: a token naming a null client reports null rather than the
+  caller, and a token whose scope is empty is reported with an empty scope
+  rather than the default. Which profiles gate the standard claims is now a
+  property of `Settings` next to the other profile-derived predicates.
+
 - **The settings keys written only when they differ from their default are
   table rows** (#319). `security_profile`, `login.mode`, `login.auto_login`,
   `login.two_step` and `login.totp` were hand-coded below the loop that
