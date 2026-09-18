@@ -341,6 +341,24 @@ class TestAnEmptyValueIsKeptByCompositesAndDroppedByProjections:
         assert token["attributes"] == {**EMPTY_SHAPES, "real": "IT"}
         assert _userinfo(user_with_empties)["attributes"] == {**EMPTY_SHAPES, "real": "IT"}
 
+    def test_a_user_with_no_attributes_carries_no_attributes_claim(self, app):
+        """The composite is emitted only when it holds something, so the
+        rule is about values under its keys and not about the map itself
+        (#388 review): an empty map is absent, not an empty claim."""
+        bare = User(**{**FULL_USER, "attributes": {}})
+        token, _ = _access_token(app, bare)
+
+        assert "attributes" not in token
+        assert "attributes" not in _userinfo(bare)
+
+    def test_a_value_that_is_itself_an_empty_map_is_still_kept(self, app):
+        """The distinction the row above could be confused with: `{}` as a
+        VALUE is preserved like any other empty shape."""
+        owner = User(**{**FULL_USER, "attributes": {"x": {}}})
+        token, _ = _access_token(app, owner)
+
+        assert token["attributes"] == {"x": {}}
+
     def test_authorities_drops_every_empty_shape(self, app, user_with_empties):
         """A flat list of strings cannot say "present but empty": keeping
         `e_str` under the prefix `E_STR_` would emit the bare string

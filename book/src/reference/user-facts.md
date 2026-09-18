@@ -80,22 +80,30 @@ An attribute the operator declared with an empty value - `""`, `[]`, `{}` or
 nothing at all - reaches the three projections differently, and all three
 are right:
 
-| Projection | An empty value |
-|---|---|
-| `attributes` (the OIDC map) | kept |
-| `authorities` (the derived list) | dropped |
-| SAML attributes | dropped |
+| Projection | An empty value under a key | An entirely empty map |
+|---|---|---|
+| `attributes` (the OIDC map) | kept | the claim is omitted |
+| `authorities` (the derived list) | dropped | nothing to derive |
+| SAML attributes | dropped | no attributes |
 
 > Composite and raw representations preserve explicitly configured empty
 > values. Derived projections may omit them when their output
 > representation cannot preserve the distinction usefully, or when that
 > surface has an established omission policy.
 
-**The map keeps them** because it is lossless about exactly this: `{}`,
-`{"x": ""}` and `{"x": []}` are three different documents. For a testing IdP
-that is a useful property, since an operator can deliberately simulate an
-upstream that supplies an empty claim and watch what the consumer does. The
-key existing is itself something they wrote.
+**The map keeps them**, once the composite is there at all. A user with no
+attributes carries no `attributes` claim: the map is emitted only when it
+has something in it. Once it is emitted, the values stored under its keys
+are preserved verbatim, `""`, `[]`, `{}` and `null` included, so
+
+```json
+{"x": ""}   {"x": []}   {"x": {}}   {"x": null}
+```
+
+are four different documents and stay that way. For a testing IdP that is a
+useful property, since an operator can deliberately simulate an upstream
+that supplies an empty claim and watch what the consumer does. The key
+existing is itself something they wrote.
 
 **`authorities` drops them** because a flat list of strings cannot say
 "present but empty". Keeping an attribute `x: ""` under the prefix `X_`
