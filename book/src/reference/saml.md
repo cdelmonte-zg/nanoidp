@@ -229,7 +229,12 @@ surface says about a user](user-facts.md).
 
 Shared rules on both surfaces: an absent or empty fact is an absent
 attribute (no fabricated `email`, no empty `Attribute` elements - None and
-empty list/tuple/set/dict/string alike); a list value becomes one
+empty list/tuple/set/dict/string alike). That last one is a **policy, not a
+limitation**: SAML 2.0 Core allows `<Attribute Name="x"/>`, an attribute
+that exists with no values, which is semantically distinct from the
+attribute being absent. nanoidp could emit it and #315 decided not to, so
+the two cases are reported alike here while the OIDC `attributes` map keeps
+them apart (see [What each surface says about a user](user-facts.md)); a list value becomes one
 `AttributeValue` per entry and a string is never split on commas (#134);
 roles/groups exports are opt-in under their configured names. When the
 roles and groups exports target the SAME configured name, their lists are

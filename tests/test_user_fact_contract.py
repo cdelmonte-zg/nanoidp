@@ -307,6 +307,72 @@ class TestTheTwoShapesOfACustomAttribute:
         }
 
 
+#: The four shapes an empty custom attribute can take. `_is_absent` names
+#: all four explicitly and `attributes` is a Dict[str, Any], so testing only
+#: one of them would leave three quarters of the policy implicit (#388).
+EMPTY_SHAPES = {"e_str": "", "e_list": [], "e_dict": {}, "e_none": None}
+
+
+class TestAnEmptyValueIsKeptByCompositesAndDroppedByProjections:
+    """The #388 rule, which changed no behaviour and wrote three down.
+
+    Composite and raw representations preserve explicitly configured empty
+    values; derived projections may omit them when their representation
+    cannot preserve the distinction usefully, or when the surface has an
+    established omission policy. The disagreement between `authorities` and
+    `attributes` inside one access token is therefore not a contradiction:
+    they are two projections with different representational capacity.
+
+    Deliberately not unified behind a shared `is_fact_present()`: the answer
+    depends on the projection, so each of the three call sites would have to
+    override it anyway.
+    """
+
+    @pytest.fixture
+    def user_with_empties(self):
+        return User(**{**FULL_USER, "attributes": {**EMPTY_SHAPES, "real": "IT"}})
+
+    def test_the_attributes_map_keeps_every_empty_shape(self, app, user_with_empties):
+        """The map is lossless about this distinction: `{}`, `{"x": ""}` and
+        `{"x": []}` are three different documents, and an operator can
+        deliberately simulate an upstream that supplies an empty claim."""
+        token, _ = _access_token(app, user_with_empties)
+
+        assert token["attributes"] == {**EMPTY_SHAPES, "real": "IT"}
+        assert _userinfo(user_with_empties)["attributes"] == {**EMPTY_SHAPES, "real": "IT"}
+
+    def test_authorities_drops_every_empty_shape(self, app, user_with_empties):
+        """A flat list of strings cannot say "present but empty": keeping
+        `e_str` under the prefix `E_STR_` would emit the bare string
+        `"E_STR_"`, which reads like an ordinary authority and loses the very
+        distinction it was meant to carry."""
+        with app.app_context():
+            config = get_config()
+            for name in {**EMPTY_SHAPES, "real": None}:
+                config.settings.authority_prefixes[name] = name.upper() + "_"
+            authorities = TokenService(config).build_authorities(user_with_empties)
+
+        assert "REAL_IT" in authorities
+        for name in EMPTY_SHAPES:
+            assert not [a for a in authorities if a.startswith(name.upper() + "_")]
+
+    def test_saml_drops_every_empty_shape_by_policy(self, app, user_with_empties):
+        """Not a limitation of the format: SAML 2.0 Core allows
+        `<Attribute Name="x"/>`, an attribute that exists with no values, and
+        that is distinct from the attribute being absent. #315 chose the
+        other contract, an empty fact is an absent attribute, and #388 keeps
+        it."""
+        with app.app_context():
+            settings = get_config().settings
+            sso = resolve_saml_attributes(settings, user_with_empties, include_source_acl=False)
+            query = resolve_saml_attributes(settings, user_with_empties, include_source_acl=True)
+
+        for attributes in (sso, query):
+            assert attributes["real"] == "IT"
+            for name in EMPTY_SHAPES:
+                assert name not in attributes
+
+
 class TestRolesAndGroupsAreUnconditionalOnOidcAndOptInOnSaml:
     def test_saml_exports_neither_by_default(self, app, user):
         token, _ = _access_token(app, user)
