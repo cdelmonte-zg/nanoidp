@@ -3,9 +3,11 @@
 Three builders in ``routes/saml.py`` produce a ``Response``: the SSO login
 assertion, the attribute-query assertion, and the attribute-query error
 response for an unknown principal (#275). They were written independently,
-so the identical parts, the envelope, the ``Issuer`` pair, the status
-element and the assertion's own head, existed three times over, and a
-change to the NameID policy had to be made in each.
+so the envelope, the ``Issuer`` pair and the status element were spelled
+three times over. The assertion's own head, its ``Issuer``, ``Subject`` and
+``NameID``, was spelled twice: the error response carries no assertion at
+all, the status being the whole answer. Either way a change to the NameID
+policy had to be made in every builder that had one.
 
 What this module knows is the structural identity of a Response and an
 Assertion. What it deliberately does NOT know is why an SSO assertion names
