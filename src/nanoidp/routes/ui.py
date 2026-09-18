@@ -11,7 +11,7 @@ from datetime import datetime
 from io import StringIO
 from pathlib import Path
 from types import UnionType
-from typing import Any, Callable, Dict, List, Literal, Union, get_args, get_origin
+from typing import Any, Callable, Literal, Union, get_args, get_origin
 
 from flask import (
     Blueprint,
@@ -918,7 +918,14 @@ def _settings_form_reader(annotation: Any) -> "Callable[[str], Any]":
 
 def _settings_form_type(annotation: Any) -> Any:
     """The type a form field of this annotation carries: ``Optional[T]`` is
-    ``T``, a ``Literal`` of strings is ``str``, ``List[str]`` is ``list``."""
+    ``T``, a ``Literal`` of strings is ``str``, ``list[str]`` is ``list``.
+
+    Anything else answers ``None``, which the caller refuses. A bare
+    ``list``, or any container without the item type spelled out, is among
+    them: a field whose values would be written as strings without anyone
+    having said they are strings is the silent reading this function exists
+    to prevent.
+    """
     origin = get_origin(annotation)
     if origin is Literal:
         values = get_args(annotation)
@@ -926,12 +933,12 @@ def _settings_form_type(annotation: Any) -> Any:
     if origin in (Union, UnionType):
         named = [arg for arg in get_args(annotation) if arg is not type(None)]
         return _settings_form_type(named[0]) if len(named) == 1 else None
-    if origin in (list, List):
+    if origin is list:
         return list if get_args(annotation) == (str,) else None
-    return annotation
+    return annotation if annotation in (bool, int, str) else None
 
 
-def _settings_form_fields(section: str) -> Dict[str, Any]:
+def _settings_form_fields(section: str) -> dict[str, Any]:
     """One settings.yaml section as the writer takes it: the YAML keys the
     table owns, read from the form fields named after the Settings
     attributes (#299).

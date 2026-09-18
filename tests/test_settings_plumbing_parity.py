@@ -15,6 +15,7 @@ in tests/test_client_field_parity.py.
 
 import inspect
 import re
+from typing import Literal, Optional
 
 import pytest
 
@@ -92,12 +93,31 @@ class TestTheSettingsPageDerivesFromTheTable:
         for row in self._rows():
             assert row.attr in fields, row
 
+    def test_which_rows_count_as_checkboxes_is_asked_of_the_reader(self):
+        """The rule the test above applies, exercised on the shape no row
+        has today: an ``Optional[bool]`` setting is a checkbox, and a test
+        keyed on ``annotation is bool`` would skip it - and with it the
+        missing-marker regression (#131) it exists to catch.
+        """
+        from nanoidp.routes.ui import _form_bool, _settings_form_reader
+
+        assert _settings_form_reader(Optional[bool]) is _form_bool
+        assert Optional[bool] is not bool
+
     def test_every_checkbox_row_has_its_on_form_marker(self):
         """Without the marker a cleared checkbox reads as "not on this form",
-        so unchecking it would silently do nothing (#131)."""
+        so unchecking it would silently do nothing (#131).
+
+        Which rows are checkboxes is asked of the reader, not of the raw
+        annotation: ``Optional[bool]`` is a checkbox too, and keying this on
+        ``is bool`` would skip it and let exactly that regression through.
+        """
+        from nanoidp.routes.ui import _form_bool, _settings_form_reader
+
         fields = self._page()
         for row in self._rows():
-            if Settings.model_fields[row.attr].annotation is bool:
+            reader = _settings_form_reader(Settings.model_fields[row.attr].annotation)
+            if reader is _form_bool:
                 assert f"{row.attr}__on_form" in fields, row
 
     def test_every_row_has_a_reader_for_its_declared_type(self):
@@ -108,23 +128,58 @@ class TestTheSettingsPageDerivesFromTheTable:
         for row in self._rows():
             assert callable(_settings_form_reader(Settings.model_fields[row.attr].annotation))
 
-    def test_an_unknown_shape_is_refused_rather_than_read_as_text(self):
-        from typing import Dict as TypingDict
-
+    @pytest.mark.parametrize(
+        "annotation",
+        [
+            dict[str, str],
+            # A container without its item type spelled out: reading it as a
+            # list of strings would write strings nobody said were strings.
+            list,
+            list[int],
+            float,
+            Optional[dict[str, str]],
+        ],
+        ids=("dict", "bare-list", "list-of-int", "float", "optional-dict"),
+    )
+    def test_an_unknown_shape_is_refused_rather_than_read_as_text(self, annotation):
         from nanoidp.routes.ui import _settings_form_reader
 
         with pytest.raises(TypeError):
-            _settings_form_reader(TypingDict[str, str])
+            _settings_form_reader(annotation)
+
+    @pytest.mark.parametrize(
+        ("annotation", "reader_name"),
+        [
+            (bool, "_form_bool"),
+            (Optional[bool], "_form_bool"),
+            (int, "_form_int"),
+            (Optional[int], "_form_int"),
+            (str, "_form_text"),
+            (Optional[str], "_form_text"),
+            (Literal["a", "b"], "_form_text"),
+            (list[str], "_form_textarea_list"),
+            (Optional[list[str]], "_form_textarea_list"),
+        ],
+    )
+    def test_each_shape_the_reader_knows(self, annotation, reader_name):
+        from nanoidp.routes import ui
+
+        assert ui._settings_form_reader(annotation) is getattr(ui, reader_name)
 
     def test_the_route_builds_exactly_the_writer_keywords(self, app):
-        """The generated section is the writer's keyword set: the table,
-        read once."""
+        """What the route generates is what the writer takes: compared
+        against the writer's own signature, not against the table both
+        sides derive from."""
         from nanoidp.routes.ui import _settings_form_fields
 
         with app.test_request_context("/settings", method="POST", data={}):
-            for section in self._SECTIONS:
-                table = {row.key for row in OWNED_SETTINGS if row.section == section}
-                assert set(_settings_form_fields(section)) == table
+            for section, method in (
+                ("oauth", "update_oauth_settings"),
+                ("saml", "update_saml_settings"),
+            ):
+                signature = inspect.signature(getattr(YamlWriter, method))
+                keywords = set(signature.parameters) - {"self", "expected_revision"}
+                assert set(_settings_form_fields(section)) == keywords
 
 
 class TestTheSettingsPageReadsEachTypeAsItAlwaysHas:
