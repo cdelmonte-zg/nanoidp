@@ -23,17 +23,16 @@ is why it is not a method on the model.
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from ..models import OAuthClient
+from ..models import CLIENT_SECRET_REQUIRED, PUBLIC_AUTH_METHOD, OAuthClient
 
 #: "Not provided", told apart from "provided empty" - the two are different
 #: questions and the callers do not answer them alike: an omitted secret
 #: keeps the current one, an empty one is an attempt to clear it.
 UNSET: Any = object()
 
-PUBLIC_METHOD = "none"
-DEFAULT_METHOD = "client_secret_basic"
-
-SECRET_REQUIRED = "client_secret is required unless token_endpoint_auth_method is 'none'"
+#: The method a client that names no method is given: the model's own
+#: default, read from it rather than spelled again here.
+DEFAULT_METHOD: str = OAuthClient.model_fields["token_endpoint_auth_method"].default
 
 
 class ClientSecretRequired(ValueError):
@@ -44,7 +43,7 @@ class ClientSecretRequired(ValueError):
     UI flashes its sentence, MCP answers with its own.
     """
 
-    def __init__(self, message: str = SECRET_REQUIRED) -> None:
+    def __init__(self, message: str = CLIENT_SECRET_REQUIRED) -> None:
         super().__init__(message)
 
 
@@ -58,7 +57,9 @@ class ClientAuthState:
 
     @property
     def is_public(self) -> bool:
-        return self.method == PUBLIC_METHOD
+        """The same question ``OAuthClient.is_public`` answers, asked of a
+        state that is not a client yet."""
+        return self.method == PUBLIC_AUTH_METHOD
 
 
 def resolve_client_auth(
@@ -81,12 +82,17 @@ def resolve_client_auth(
     passes ``UNSET``, while MCP passes the empty value it was given, which
     is an attempt to clear.
     """
-    effective_method = method if method is not UNSET and method is not None else current_method
+    if method is None:
+        # Not the same as UNSET: there is no "clear the method", so a caller
+        # that arrives here with an explicit null is asking for something
+        # that does not exist rather than for the stored one.
+        raise ValueError("token_endpoint_auth_method cannot be null")
+    effective_method = method if method is not UNSET else current_method
     if effective_method is None:
         effective_method = DEFAULT_METHOD
 
-    if effective_method == PUBLIC_METHOD:
-        return ClientAuthState(PUBLIC_METHOD, None)
+    if effective_method == PUBLIC_AUTH_METHOD:
+        return ClientAuthState(PUBLIC_AUTH_METHOD, None)
 
     effective_secret = secret if secret is not UNSET else current_secret
     if not effective_secret:
@@ -104,9 +110,20 @@ def apply_client_auth(client: OAuthClient, auth: ClientAuthState) -> None:
     secret first, since flipping the method first would be refused while
     the old secret is still absent or empty.
     """
-    if auth.is_public:
+    previous_method = client.token_endpoint_auth_method
+    previous_secret = client.client_secret
+    try:
+        if auth.is_public:
+            client.token_endpoint_auth_method = auth.method  # type: ignore[assignment]
+            client.client_secret = None
+            return
+        client.client_secret = auth.secret
         client.token_endpoint_auth_method = auth.method  # type: ignore[assignment]
-        client.client_secret = None
-        return
-    client.client_secret = auth.secret
-    client.token_endpoint_auth_method = auth.method  # type: ignore[assignment]
+    except Exception:
+        # A refused assignment must leave the live client as it was, not
+        # holding the new secret under the old method: this helper exists to
+        # keep a half-applied state from existing, and the model refuses a
+        # method outside its own set whoever built the state.
+        client.client_secret = previous_secret
+        client.token_endpoint_auth_method = previous_method
+        raise

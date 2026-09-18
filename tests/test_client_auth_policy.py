@@ -97,6 +97,36 @@ class TestNotProvidedIsNotProvidedEmpty:
         assert auth.secret is None
 
 
+class TestTheSentinelSaysWhichQuestionIsAsked:
+    def test_an_explicit_null_method_is_not_the_stored_one(self):
+        """There is no "clear the method": a caller arriving with a null is
+        asking for something that does not exist (#300 review)."""
+        with pytest.raises(ValueError):
+            resolve_client_auth(
+                method=None, secret="s", current_method="client_secret_basic"
+            )
+
+    def test_the_default_method_is_the_model_s_own(self):
+        from nanoidp.models import OAuthClient as Model
+        from nanoidp.services.client_policy import DEFAULT_METHOD
+
+        assert DEFAULT_METHOD == Model.model_fields["token_endpoint_auth_method"].default
+
+    def test_the_refusal_is_worded_once(self):
+        """The model validator and this service must say the same thing:
+        MCP answers with the service's text, and nothing else asserted that
+        the two had not drifted."""
+        from nanoidp.models import CLIENT_SECRET_REQUIRED
+
+        with pytest.raises(ValueError) as model_refusal:
+            OAuthClient(client_id="c", token_endpoint_auth_method="client_secret_basic")
+        with pytest.raises(ClientSecretRequired) as policy_refusal:
+            resolve_client_auth(method="client_secret_basic", secret=UNSET)
+
+        assert CLIENT_SECRET_REQUIRED in str(model_refusal.value)
+        assert str(policy_refusal.value) == CLIENT_SECRET_REQUIRED
+
+
 class TestMovingAnExistingClient:
     """``OAuthClient`` validates on assignment, so the order is the rule."""
 
@@ -137,6 +167,18 @@ class TestMovingAnExistingClient:
 
         with pytest.raises(ValueError):
             client.token_endpoint_auth_method = "client_secret_basic"
+
+    def test_a_refused_assignment_leaves_the_client_as_it_was(self):
+        """The helper's promise, held even for a state it did not build:
+        a method the model refuses must not leave the new secret behind
+        under the old method (#300 review)."""
+        client = self._confidential()
+
+        with pytest.raises(ValueError):
+            apply_client_auth(client, ClientAuthState("not-a-method", "new"))
+
+        assert client.token_endpoint_auth_method == "client_secret_basic"
+        assert client.client_secret == "old"
 
     def test_nothing_is_half_applied_when_the_state_was_refused(self):
         """The state is resolved before any assignment, so a refusal leaves

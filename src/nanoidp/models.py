@@ -207,6 +207,13 @@ class User(BaseModel):
 HEX_COLOR_PATTERN = r"^#[0-9a-fA-F]{6}$"
 
 
+#: The ``token_endpoint_auth_method`` of a client identified by its
+#: client_id alone (#188), and the refusal every surface words for its own
+#: audience when a confidential client is asked for without a secret.
+PUBLIC_AUTH_METHOD = "none"
+CLIENT_SECRET_REQUIRED = "client_secret is required unless token_endpoint_auth_method is 'none'"
+
+
 class OAuthClient(BaseModel):
     """Represents an OAuth client."""
     # Validate on direct attribute assignment too (e.g. MCP update_client), so the
@@ -333,16 +340,16 @@ class OAuthClient(BaseModel):
         Runs on assignment too (validate_assignment), so switching a
         secret-less public client back to a confidential method requires
         setting the secret first."""
-        if self.token_endpoint_auth_method != "none" and not self.client_secret:
+        if self.token_endpoint_auth_method != PUBLIC_AUTH_METHOD and not self.client_secret:
             raise ValueError(
-                "client_secret is required unless token_endpoint_auth_method is 'none'"
+                CLIENT_SECRET_REQUIRED
             )
         return self
 
     @property
     def is_public(self) -> bool:
         """Public client (issue #188): identified by client_id alone."""
-        return self.token_endpoint_auth_method == "none"
+        return self.token_endpoint_auth_method == PUBLIC_AUTH_METHOD
 
 
 class Settings(BaseModel):

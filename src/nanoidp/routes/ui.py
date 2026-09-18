@@ -715,12 +715,21 @@ def client_edit(client_id: str) -> ResponseReturnValue:
         # form's convention and stays here: the policy is told "not
         # provided" and keeps the stored secret, unless the target is
         # public, where it drops it (#300).
-        auth = resolve_client_auth(
-            method=auth_method,
-            secret=submitted_secret if submitted_secret else UNSET,
-            current_method=client.token_endpoint_auth_method,
-            current_secret=client.client_secret,
-        )
+        try:
+            auth = resolve_client_auth(
+                method=auth_method,
+                secret=submitted_secret if submitted_secret else UNSET,
+                current_method=client.token_endpoint_auth_method,
+                current_secret=client.client_secret,
+            )
+        except ClientSecretRequired:
+            # Ordinary operator input, not a failure: a public client's edit
+            # form never marks the secret required, so switching it to a
+            # confidential method with the field blank arrives here. It gets
+            # the same sentence the create form uses, not a stack trace from
+            # the catch-all below.
+            flash("Client Secret is required unless the auth method is 'none'", "error")
+            return redirect(url_for("ui.client_edit", client_id=client_id))
         client_secret: str | None = auth.secret
 
         updated_client = OAuthClient(

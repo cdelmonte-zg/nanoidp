@@ -147,7 +147,7 @@ def _tool_update_client(arguments: dict[str, Any], config: ConfigManager) -> dic
     # confidential client refuses (#300).
     try:
         auth = resolve_client_auth(
-            method=new_auth_method,
+            method=new_auth_method if new_auth_method is not None else UNSET,
             secret=arguments["client_secret"] or None if "client_secret" in arguments else UNSET,
             current_method=client.token_endpoint_auth_method,
             current_secret=client.client_secret,
