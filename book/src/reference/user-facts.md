@@ -27,8 +27,10 @@ page was first written, until a review read them against the resolver.
 | `attributes` | a map | no | a map | a map | one attribute per key | one attribute per key |
 | `authorities` | yes | no | no | no | no | no |
 
-The ID Token carries no user fact at all unless the client asks for one
-through the [`claims` request parameter](tokens.md).
+The ID Token carries `sub`, which is itself a Claim about the End-User. It
+carries none of the application and profile facts in this matrix unless the
+client asks for one through the [`claims` request
+parameter](tokens.md).
 
 **Opt-in** means `saml_export_roles` and `saml_export_groups`, which are
 **false by default**: out of the box a SAML assertion carries neither roles
@@ -72,25 +74,52 @@ one `attributes` map, a passthrough of what the operator wrote. On the SAML
 surfaces each key becomes its own `Attribute` element, because an assertion
 has no nested shape to carry a map in.
 
-## `claims_supported` and what is requestable
+## `claims_supported` and what the resolver addresses
 
 These are two different lists, and the difference is deliberate.
 
-`claims_supported` in the discovery document is what OpenID Connect Core 3
-§3 defines it to be: the claims this provider **may be able to supply
-values for** in an ID Token or a UserInfo response. It is not a list of
-names the `claims` request parameter accepts.
+`claims_supported` in the discovery document is what OpenID Connect
+Discovery 1.0 §3 defines it to be: the Claim Names this provider **may be
+able to supply values for**. It is not a list of names the `claims` request
+parameter accepts, and OpenID Connect Core §5.5 does not require a
+requested claim to be returned at all.
 
-- `attributes` **is** advertised, because `/userinfo` returns it. It is
-  **not** a claim name: a `claims` request asking for `attributes` is
-  skipped like any unknown name.
-- An **individual** custom attribute **is** a claim name: a user with a
-  `department` attribute answers a `claims` request for `department`.
-- Consequently `resolve_user_claim("attributes")` succeeds only for a user
-  who owns a custom attribute called `attributes`, and what it returns is
-  that custom claim, not the UserInfo map. The collision is documented
-  rather than fixed: renaming either would break one of the two meanings.
+On top of that definition nanoidp holds **its own invariant**: only a claim
+that can appear in an ID Token or a UserInfo response is advertised here.
+That is a choice, not something the specification derives, and it is the
+rule #41 applied to `response_types_supported`.
+
 - `source_acl` and `authorities` are **not** advertised, since #316. They
-  reach no ID Token and no UserInfo response, so promising them was a
-  promise the endpoints could not keep, the same rule #41 applied to
-  `response_types_supported`.
+  appear in neither an ID Token nor a UserInfo response, so under that
+  invariant they do not belong, whatever an access token carries.
+- `attributes` **is** advertised, and it **is** a Claim Name: Core §5.6.1
+  says that for Normal Claims represented as JSON, the member name is the
+  Claim Name, and `/userinfo` returns an `attributes` member. What it is
+  not is **resolver-addressable**: `resolve_user_claim` does not know the
+  composite map, so a `claims` request for `attributes` is not answered by
+  the resolver.
+- An **individual** custom attribute **is** resolver-addressable: a user
+  with a `department` attribute answers a `claims` request for
+  `department`.
+
+### One name, two answers
+
+A user who owns a custom attribute literally called `attributes` shows what
+those two lists mean in practice:
+
+```yaml
+attributes:
+  attributes: "custom"
+```
+
+```text
+ID Token, with {"id_token": {"attributes": null}}   ->  "custom"
+/userinfo                                           ->  {"attributes": "custom"}
+```
+
+The ID Token gets the scalar, because the resolver answers a request for
+`attributes` from the user's own attribute map. UserInfo sets the composite
+member first, and a requested claim never overwrites one already present,
+so the map wins there. Both are documented rather than fixed: renaming
+either would break one of the two meanings, and a user with such an
+attribute is a test fixture, not a deployment.

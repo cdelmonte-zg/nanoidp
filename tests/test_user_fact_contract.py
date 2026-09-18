@@ -60,10 +60,12 @@ PROTOCOL_CLAIMS = frozenset(
     {"sub", "iss", "aud", "azp", "exp", "iat", "nbf", "auth_time", "nonce", "at_hash", "amr"}
 )
 
-#: The one advertised claim that is not a claim NAME: UserInfo supplies the
-#: map, and the `claims` request parameter cannot ask for it. Declared here
-#: rather than silently tolerated (#316 decision 2).
-USERINFO_ONLY_EXTENSIONS = frozenset({"attributes"})
+#: Advertised Claim Names that UserInfo supplies as a COMPOSITE member
+#: rather than through the claim resolver. `attributes` is a Claim Name
+#: (Core §5.6.1: for Normal Claims the member name is the Claim Name); what
+#: it is not is resolver-addressable. Declared here rather than silently
+#: tolerated (#316 decision 2).
+COMPOSITE_USERINFO_CLAIMS = frozenset({"attributes"})
 
 
 @pytest.fixture
@@ -105,10 +107,13 @@ def _access_token(app, user):
 class TestDiscoveryAdvertisesOnlyWhatAnIdentitySurfaceCanSupply:
     """The #41 principle, applied to `claims_supported` (#316).
 
-    OIDC Core 3 §3 defines the field as the claims the provider may be able
-    to supply VALUES for. A claim that exists only on the access token is
-    not one of them: no ID Token and no UserInfo response can carry it, and
-    a client that reads the document and asks for it gets nothing back.
+    OpenID Connect Discovery 1.0 §3 defines the field as the Claim Names the
+    provider may be able to supply VALUES for. On top of that, nanoidp holds
+    its own invariant: only a claim that can appear in an ID Token or a
+    UserInfo response is advertised. That is a choice rather than a
+    normative consequence - Core §5.5 does not require a requested claim to
+    be returned, and this field is not the list of names the `claims`
+    parameter accepts - and it is what this suite enforces.
     """
 
     def test_every_advertised_user_claim_resolves(self, app, user):
@@ -119,7 +124,7 @@ class TestDiscoveryAdvertisesOnlyWhatAnIdentitySurfaceCanSupply:
             claim
             for claim in document["claims_supported"]
             if claim not in PROTOCOL_CLAIMS
-            and claim not in USERINFO_ONLY_EXTENSIONS
+            and claim not in COMPOSITE_USERINFO_CLAIMS
             and not resolve_user_claim(user, claim)[0]
         ]
 
@@ -129,10 +134,11 @@ class TestDiscoveryAdvertisesOnlyWhatAnIdentitySurfaceCanSupply:
             "or UserInfo, or the document must not promise them (#41, #316)."
         )
 
-    def test_the_declared_extension_really_is_supplied_by_userinfo(self, app, user):
+    def test_the_composite_claims_really_are_supplied_by_userinfo(self, app, user):
         """An exemption that stops being true must fail too: `attributes` is
-        excused from the resolver only because UserInfo returns it."""
-        for claim in USERINFO_ONLY_EXTENSIONS:
+        excused from the resolver only because UserInfo supplies it as a
+        composite member."""
+        for claim in COMPOSITE_USERINFO_CLAIMS:
             assert claim in _userinfo(user)
 
     def test_the_access_token_only_facts_are_not_advertised(self, app):
@@ -270,18 +276,35 @@ class TestTheTwoShapesOfACustomAttribute:
         assert saml["department"] == "IT"
         assert "attributes" not in saml
 
-    def test_an_individual_attribute_is_a_claim_name_and_the_map_is_not(self, user):
-        """Reads as a contradiction until it is written down (#316 decision
-        2): a custom attribute is requestable, the container that holds them
-        is not."""
+    def test_individual_custom_claim_is_resolver_addressable_but_composite_map_is_not(
+        self, user
+    ):
+        """Both are Claim Names (Core §5.6.1). Only one is addressed by the
+        resolver that answers a `claims` request (#316 decision 2)."""
         assert resolve_user_claim(user, "department") == (True, "IT")
         assert resolve_user_claim(user, "attributes") == (False, None)
 
-    def test_the_map_resolves_only_by_name_collision(self):
-        """And then it is that custom claim, not the UserInfo map."""
+    def test_one_name_gets_two_answers_when_a_user_owns_an_attribute_called_attributes(
+        self, app
+    ):
+        """The consequence, characterized rather than described loosely
+        (#316 review). The resolver answers a request for `attributes` from
+        the user's own map, so an ID Token carries the scalar; UserInfo sets
+        the composite member first and a requested claim never overwrites one
+        already present, so the map wins there."""
         owner = User(**{**FULL_USER, "attributes": {"attributes": "a custom value"}})
+        with app.app_context():
+            config = get_config()
+            config.users[owner.username] = owner
+            response = TokenService(config).create_token(
+                owner, scope="openid", client_id="demo-client", id_token_claims=["attributes"]
+            )
+        id_token = pyjwt.decode(response["id_token"], options={"verify_signature": False})
 
-        assert resolve_user_claim(owner, "attributes") == (True, "a custom value")
+        assert id_token["attributes"] == "a custom value"
+        assert _userinfo(owner, requested_claims=["attributes"])["attributes"] == {
+            "attributes": "a custom value"
+        }
 
 
 class TestRolesAndGroupsAreUnconditionalOnOidcAndOptInOnSaml:

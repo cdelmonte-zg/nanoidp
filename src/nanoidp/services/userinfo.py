@@ -75,7 +75,10 @@ def build_userinfo_response(
         put(claim_name)
 
     # The raw attributes dict is the one deliberate exception to resolving
-    # through resolve_user_claim: it is not a claim name.
+    # through resolve_user_claim. It IS a Claim Name (Core §5.6.1: in Normal
+    # Claims the member name is the Claim Name); what the resolver does not
+    # address is the COMPOSITE map, which is why it is set here instead
+    # (#316 review).
     if user.attributes:
         response["attributes"] = user.attributes
 

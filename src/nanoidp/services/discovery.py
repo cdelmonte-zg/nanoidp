@@ -113,17 +113,17 @@ def build_discovery_document(
             *(["amr"] if settings.totp_active else []),
             "email", "email_verified", "preferred_username",
             "roles", "groups", "tenant", "identity_class", "entitlements",
-            # source_acl and authorities are NOT advertised (#316): OIDC
-            # Core 3 §3 defines this field as the claims the provider may
-            # supply VALUES for, and those two reach no identity surface.
-            # They are authorization facts a resource server reads off an
-            # access token, produced by no ID Token and no UserInfo
-            # response, and `resolve_user_claim` does not know them, so a
-            # client that read the document and asked for one got nothing
-            # back. Advertising them broke the rule #41 set for this
-            # document. `attributes` stays: UserInfo does supply the map,
-            # even though it is not a claim NAME the `claims` parameter can
-            # ask for - an individual custom attribute is.
+            # source_acl and authorities are NOT advertised (#316).
+            # OpenID Connect Discovery 1.0 §3 defines this field as the
+            # Claim Names the provider may be able to supply VALUES for, and
+            # nanoidp reads that as its own invariant: only claims that can
+            # appear in an ID Token or a UserInfo response belong here. Those
+            # two appear in neither - they are authorization facts a resource
+            # server reads off an access token - so advertising them broke
+            # the rule #41 set for this document. `attributes` stays: it is a
+            # Claim Name (Core §5.6.1: in Normal Claims the member name IS
+            # the Claim Name) and /userinfo supplies it, even though
+            # resolve_user_claim does not address the composite map.
             "attributes"
         ],
         # The OIDC `claims` request parameter is honoured at /authorize to
