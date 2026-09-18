@@ -296,3 +296,28 @@ def authorize_error(resp):
     location = resp.headers.get("Location")
     assert location is not None, f"expected an error redirect, got {resp.status_code}"
     return {k: v[0] for k, v in parse_qs(urlparse(location).query).items()}
+
+
+class RecordingArguments(dict):
+    """A tool argument mapping that records which keys were asked about.
+
+    The MCP update handlers are chains of ``if "field" in arguments``. That
+    is the shape ``attributes`` fell out of in #280, unnoticed because no
+    test could see the omission. Recording the membership tests makes a
+    forgotten field a suite failure without touching the handler (#298).
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.asked: set = set()
+
+    def __contains__(self, key: object) -> bool:
+        self.asked.add(key)
+        return super().__contains__(key)
+
+
+@pytest.fixture
+def recording_arguments():
+    """The ``RecordingArguments`` class, as a fixture so the parity suites
+    need no cross-module import."""
+    return RecordingArguments
