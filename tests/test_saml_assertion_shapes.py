@@ -19,12 +19,13 @@ that were in neither the docs nor any test: the Conditions window (5
 minutes against 1 hour) and the ds namespace declaration.
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from lxml import etree
 
 import nanoidp.routes.saml as saml
+from nanoidp.services.saml_assertion import saml_instant
 
 _INSTANT = datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
 
@@ -154,6 +155,28 @@ class TestTheDocumentsThemselves:
         an unknown principal gets a Response with no assertion (#275)."""
         with app.app_context():
             assert _query_error() == ATTRIBUTE_QUERY_ERROR_RESPONSE
+
+
+class TestTheSharedInstantFormat:
+    """``saml_instant`` is the one formatter every timestamp in every
+    builder goes through, so what it promises has to be true of any
+    datetime, not only of the one today's callers happen to pass."""
+
+    def test_an_instant_in_another_zone_is_converted_not_relabelled(self):
+        """The trailing Z asserts UTC. Stamping a Berlin wall clock with it
+        would put the assertion an hour in the future, and a service
+        provider enforcing NotBefore would refuse every login until the
+        clock caught up (#317 review)."""
+        berlin = timezone(timedelta(hours=2))
+
+        assert saml_instant(datetime(2026, 1, 2, 5, 4, 5, tzinfo=berlin)) == "2026-01-02T03:04:05Z"
+
+    def test_an_instant_already_in_utc_is_unchanged(self):
+        assert saml_instant(_INSTANT) == "2026-01-02T03:04:05Z"
+
+    def test_the_format_is_what_the_three_documents_carry(self, app, frozen):
+        with app.app_context():
+            assert saml_instant(_INSTANT).encode() in _sso()
 
 
 class TestWhatTheTwoBuildersDoNotShare:

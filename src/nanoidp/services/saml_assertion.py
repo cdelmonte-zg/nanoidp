@@ -21,7 +21,7 @@ to share code.
 one document cannot carry two different instants, and a test can freeze it.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Mapping, Optional, Tuple
 
 from lxml import etree
@@ -46,8 +46,18 @@ _INSTANT_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 
 
 def saml_instant(moment: datetime) -> str:
-    """A SAML timestamp: UTC, second precision, no offset."""
-    return moment.strftime(_INSTANT_FORMAT)
+    """A SAML timestamp: UTC, second precision, no offset.
+
+    The conversion is not decoration. The trailing ``Z`` is an assertion
+    that the instant is UTC, and this is now the one formatter every
+    timestamp in every builder goes through: ``IssueInstant``,
+    ``NotBefore``, ``NotOnOrAfter`` and ``AuthnInstant``. A caller handing
+    over an aware datetime in another zone would otherwise have it stamped
+    with its local wall clock and a ``Z`` on the end, putting the assertion
+    an hour into the future for a service provider that enforces
+    ``NotBefore`` (#317 review).
+    """
+    return moment.astimezone(timezone.utc).strftime(_INSTANT_FORMAT)
 
 
 def build_response_envelope(
@@ -131,8 +141,6 @@ def build_assertion_core(
     assertion_issuer.text = issuer
 
     subject = etree.SubElement(assertion, f"{{{SAML2_NS}}}Subject")
-    nameid = etree.SubElement(
-        subject, f"{{{SAML2_NS}}}NameID", Format=NAMEID_FORMAT_UNSPECIFIED
-    )
+    nameid = etree.SubElement(subject, f"{{{SAML2_NS}}}NameID", Format=NAMEID_FORMAT_UNSPECIFIED)
     nameid.text = name_id
     return assertion, subject

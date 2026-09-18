@@ -896,9 +896,7 @@ def _build_attribute_query_error_response(request_id: str, issuer_url: str) -> s
         extra_attributes={"InResponseTo": request_id},
         response_id=f"_{uuid.uuid4().hex}",
     )
-    append_status(
-        response, value=STATUS_REQUESTER, subordinate=STATUS_UNKNOWN_PRINCIPAL
-    )
+    append_status(response, value=STATUS_REQUESTER, subordinate=STATUS_UNKNOWN_PRINCIPAL)
     return etree.tostring(response, pretty_print=False).decode("utf-8")
 
 
