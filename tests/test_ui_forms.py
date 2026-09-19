@@ -667,35 +667,20 @@ class TestRequireUiLoginGate:
 
 
 class TestManagementSecretUiGateAcrossEndpoints:
-    """management_secret alone must gate EVERY mutating UI surface.
+    """management_secret gates mutating UI surfaces: the specific semantics.
 
-    tests/test_management_secret.py proves the mechanism on /users/create;
-    the parametrized test below sweeps every POST endpoint ui_bp registers
-    today, and the targeted tests assert on state, not status codes.
-    Caveat the sweep cannot cover: the gate short-circuits on safe methods
-    (_auth.py), so a future mutating route added as GET - the shape
-    /keys/download/<key_type> and /audit/export/<format> already have -
-    would bypass it entirely.
+    That EVERY mutating route on the management surfaces is gated - the
+    completeness of the boundary, fail-closed on new blueprints and methods,
+    across ui/api/runtime - is now one contract in
+    tests/test_management_gate_routing_invariant.py, derived from the URL map
+    rather than a hand-maintained list (this class used to carry that list,
+    and it had gone stale, missing /clients/forget). What stays here is the
+    behaviour that invariant does not assert: an authorized mutation changes
+    the right state, and an unauthorized one changes none. See also
+    tests/test_management_secret.py for the mechanism.
     """
 
     SECRET = "ui-gate-secret"
-
-    # Every mutating (POST) endpoint ui_bp registers, minus the two
-    # deliberate exemptions (ui.login, ui.management_unlock). demo-client
-    # and admin exist in the copied preset config.
-    MUTATING_ENDPOINTS = [
-        ("/users/create", {"username": "x", "password": "p"}),
-        ("/users/admin/edit", {"email": "x@example.org"}),
-        ("/users/admin/delete", {}),
-        ("/clients/create", {"client_id": "x", "client_secret": "s"}),
-        ("/clients/demo-client/edit", {"description": "x"}),
-        ("/clients/demo-client/delete", {}),
-        ("/clients/demo-client/regenerate-secret", {}),
-        ("/settings", {"audience": "x"}),
-        ("/claims", {"prefix_roles": "X_"}),
-        ("/audit/clear", {}),
-        ("/keys/regenerate", {}),
-    ]
 
     @pytest.fixture
     def gated(self, tmp_path):
@@ -706,13 +691,6 @@ class TestManagementSecretUiGateAcrossEndpoints:
         return client.post(
             "/management/unlock", data={"management_secret": secret or self.SECRET}
         )
-
-    @pytest.mark.parametrize("path,data", MUTATING_ENDPOINTS)
-    def test_every_mutating_endpoint_redirects_to_login(self, gated, path, data):
-        app, client = gated
-        resp = client.post(path, data=data)
-        assert resp.status_code == 302
-        assert "/login" in resp.headers["Location"]
 
     def test_client_create_blocked_then_unlocked(self, gated):
         app, client = gated
