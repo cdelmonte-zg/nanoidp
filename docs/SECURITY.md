@@ -146,17 +146,6 @@ the dashboard itself stay reachable exactly as they are today. Off by
 default - unset, nothing is enforced, identical to before this setting
 existed.
 
-What a read can see is bounded, with or without this setting: read-only
-management surfaces (the web UI pages, `GET /api/*`, `GET /api/runtime/*`)
-expose client metadata and configuration state, but never a stored client
-secret or a substring derived from one. The clients page shows the same
-fixed mask for every confidential client, whether it is declared in
-`settings.yaml`, created through `/api/runtime` or registered through
-`/register`, and the mask does not vary with the secret's length. A secret
-is shown exactly once, to the caller that created it: in the response to
-`POST /register`, and after "Regenerate Secret" in the UI, which is a gated
-mutation. To read a declared secret, read `settings.yaml`.
-
 ```yaml
 session:
   management_secret: "your-secret-here"   # default: unset
@@ -211,6 +200,33 @@ both, or neither can be enabled.
 **YAML-only**: like `secret_key`, `require_ui_login`, and `security_profile`,
 this is not exposed on the Settings page or the MCP `update_settings` tool -
 a secret editable through the surface it protects isn't a secret.
+
+### What a read can see
+
+Reads are not gated by `management_secret`, and what they can see is
+bounded, with or without it: read-only management surfaces (the web UI
+pages, `GET /api/*`, `GET /api/runtime/*`) expose client metadata and
+configuration state, but never a stored client secret or a substring
+derived from one. The clients page shows the same fixed mask for every
+confidential client, whether it is declared in `settings.yaml`, created
+through `/api/runtime` or registered through `/register`, and the mask does
+not vary with the secret's length.
+
+Where a client secret is returned, it goes to the party that holds it, not
+to a reader: the response to `POST /register` and every RFC 7592 read
+(`GET /register/<client_id>`), which needs that client's registration access
+token; the "Regenerate Secret" message, shown to the session that performed
+that gated mutation; and the new-client form, which proposes a freshly
+generated secret that is stored only if the form is submitted. To read a
+declared secret, read `settings.yaml`.
+
+Two limits of this. `require_ui_login` is a login, not a role: any
+`users.yaml` account passes it, and under `login_mode: persona` no
+credential is checked at all, so it narrows who can read without changing
+what a read shows. And the built-in test page (`/test`) prints the literal
+`demo-client` / `demo-secret` pair that `nanoidp init` writes. Those are
+public defaults, the same ones the quickstart uses: an instance where a
+client secret matters should not keep them.
 
 ---
 

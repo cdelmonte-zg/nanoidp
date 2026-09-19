@@ -16,11 +16,14 @@ secret would give the length away.
 
 from __future__ import annotations
 
+import itertools
 import pathlib
+import re
 import shutil
 
 import pytest
 import yaml
+from flask import url_for
 from lxml import html
 
 from nanoidp.app import create_app
@@ -151,54 +154,96 @@ def test_a_dynamically_registered_client_gets_the_same_mask(ui):
 
     page = _page(ui)
     assert _cells(page)[body["client_id"]] == declared_mask
-    assert not {gram for gram in _grams(body["client_secret"]) if gram in page}
+    # The client_id is random too: cut it, or one run in ten thousand it
+    # shares four characters with the secret and this reports a leak.
+    rest = page.replace(body["client_id"], "")
+    assert not {gram for gram in _grams(body["client_secret"]) if gram in rest}
 
 
-# What a path argument of a management read is filled with. A read that grows
-# an argument this table does not know fails the sweep below, on purpose: the
-# new route gets looked at instead of being skipped.
+# What a path argument of a read is filled with, per blueprint where the
+# same name means different things. A read that grows an argument this table
+# does not know fails the sweep below, on purpose: the new route gets looked
+# at instead of being skipped.
 _ARGUMENTS = {
-    "client_id": ["declared-12", "declared-40", "runtime-12"],
+    ("runtime", "client_id"): ["runtime-12", "<registered>"],
+    ("runtime", "username"): ["runtime-user"],
+    ("registration", "client_id"): ["<registered>"],
+    "client_id": ["declared-12", "declared-40", "runtime-12", "<registered>"],
     "username": ["admin"],
     "format": ["json", "csv"],
     "key_type": ["public_key", "certificate"],
 }
-_MANAGEMENT_BLUEPRINTS = {"ui", "api", "runtime"}
+# The reads that must answer 200 once redirects are followed: a sweep that
+# searched a 404 or an unfollowed 302 would prove nothing about the page.
+# Every other GET (the protocol endpoints) is swept too, and only has to
+# answer; there is no list of blueprints that are swept, only this one of
+# blueprints that are held to more, so a new surface is never skipped.
+_MUST_RENDER = {"ui", "api", "runtime", "health"}
+_NOT_SWEPT = {"static"}
+# Key pages, the JWKS and the SAML metadata carry thousands of fresh random
+# base64 characters per run: searched for four-character runs they would
+# report a "leak" about once in fifty runs. Long runs are cut before the
+# short-gram search; whole secrets and eight-character runs are still
+# searched in the untouched body.
+_LONG_RUN = re.compile(r"[A-Za-z0-9+/=_-]{32,}")
 
 
-def _management_reads(app):
-    for rule in app.url_map.iter_rules():
-        if "GET" not in rule.methods or rule.endpoint.split(".")[0] not in _MANAGEMENT_BLUEPRINTS:
-            continue
-        unknown = set(rule.arguments) - set(_ARGUMENTS)
-        assert not unknown, f"{rule.rule}: no value for {sorted(unknown)} in _ARGUMENTS"
-        urls = [rule.rule]
-        for argument in rule.arguments:
-            converter = next(c for c in ("<path:", "<string:", "<") if f"{c}{argument}>" in rule.rule)
-            urls = [u.replace(f"{converter}{argument}>", v) for u in urls for v in _ARGUMENTS[argument]]
-        yield from urls
+def _reads(app, registered_id):
+    with app.test_request_context():
+        for rule in app.url_map.iter_rules():
+            blueprint = rule.endpoint.split(".")[0]
+            if "GET" not in rule.methods or blueprint in _NOT_SWEPT:
+                continue
+            choices = []
+            for argument in sorted(rule.arguments):
+                values = _ARGUMENTS.get((blueprint, argument), _ARGUMENTS.get(argument))
+                assert values, f"{rule.rule}: no value for {argument!r} in _ARGUMENTS"
+                choices.append([(argument, v.replace("<registered>", registered_id)) for v in values])
+            for combination in itertools.product(*choices):
+                yield blueprint, url_for(rule.endpoint, **dict(combination))
 
 
-def test_no_management_read_carries_a_stored_client_secret(ui):
+def test_no_read_carries_a_stored_client_secret(ui):
     """The clients page was the one place that did, and nothing keeps it the
-    only candidate: every GET of the UI, of /api and of /api/runtime is
-    fetched without proof and searched for every stored client secret."""
-    created = ui.post(
+    only candidate: every GET the application routes is fetched without proof
+    of the management secret and searched for every stored client secret,
+    declared, runtime and dynamically registered."""
+    assert ui.post(
         "/api/runtime/clients",
         json={"client_id": "runtime-12", "client_secret": _secret(12)[::-1]},
         headers=_PROOF,
-    )
-    assert created.status_code == 201, created.get_json()
-    stored = [_secret(n) for n in LENGTHS if n >= 4] + [_secret(12)[::-1]]
-    grams = set().union(*(_grams(secret) for secret in stored))
+    ).status_code == 201
+    assert ui.post(
+        "/api/runtime/users",
+        json={"username": "runtime-user", "password": "irrelevant-here"},
+        headers=_PROOF,
+    ).status_code == 201
+    registered = ui.post(
+        "/register",
+        json={
+            "redirect_uris": ["https://client.example/callback"],
+            "token_endpoint_auth_method": "client_secret_basic",
+        },
+    ).get_json()
 
-    urls = sorted(set(_management_reads(ui.application)))
-    assert len(urls) > 25, urls
+    stored = [_secret(n) for n in LENGTHS] + [_secret(12)[::-1], registered["client_secret"]]
+    whole = [secret for secret in stored if len(secret) >= 8]
+    long_grams = set().union(*(_grams(secret, 8) for secret in stored))
+    short_grams = set().union(*(_grams(secret, 4) for secret in stored))
+
+    reads = sorted(set(_reads(ui.application, registered["client_id"])))
+    assert len(reads) > 40, reads
     leaks = {}
-    for url in urls:
-        response = ui.get(url)
-        assert response.status_code < 500, url
-        found = {gram for gram in grams if gram in response.get_data(as_text=True)}
+    for blueprint, url in reads:
+        response = ui.get(url, follow_redirects=True)
+        if blueprint in _MUST_RENDER:
+            assert response.status_code == 200, (url, response.status_code)
+        assert response.status_code < 500, (url, response.status_code)
+        # The registered client's id is random too, and short enough to
+        # survive the cut below.
+        body = response.get_data(as_text=True).replace(registered["client_id"], "")
+        found = {s for s in whole if s in body} | {g for g in long_grams if g in body}
+        found |= {g for g in short_grams if g in _LONG_RUN.sub("", body)}
         if found:
             leaks[url] = sorted(found)[:3]
     assert not leaks

@@ -16,6 +16,14 @@ existing deployment is a set of corrections: answers that were wrong, silent
 or unclassified are now refusals with a name. What may need a hand on
 upgrade is collected here, with the details under the entries named.
 
+- **Rotate client secrets that a reader could see** (details under
+  Security). Up to this release the clients page showed the first 8 and
+  the last 4 characters of every client secret, which is all of a secret
+  of 12 characters or fewer. *Migration:* on an instance whose web UI was
+  reachable by someone who was not meant to act as its clients (with
+  `require_ui_login` on, that is anyone holding a user account), rotate
+  the confidential clients' secrets after upgrading. An instance on
+  loopback used by its operator alone needs nothing.
 - **`jwt.external_keys` and `jwt.max_previous_keys` now take effect**
   (#358). Both were documented and silently ignored. A `settings.yaml` that
   already carries them starts signing with the operator's key on upgrade:
@@ -587,13 +595,17 @@ upgrade is collected here, with the details under the entries named.
   declared, created through `/api/runtime` or dynamically registered, and
   the mask does not vary with the secret's length. The preview is in every
   release; the boundary it crossed exists since `management_secret`
-  shipped in 2.8.0, so 2.8.0 and later are affected. Instances with
-  `require_ui_login` on were not readable this way, and nothing else
-  rendered a secret: a test now fetches every GET of the UI, `/api` and
-  `/api/runtime` without proof and searches it for every stored client
-  secret. The Security guide says what a read can and cannot see.
-  *After upgrading:* rotate any client secret of an instance whose UI was
-  reachable by someone who was not meant to act as its clients.
+  shipped in 2.8.0, so 2.8.0 and later are affected. `require_ui_login`
+  narrows who could read the page and nothing more: it is a login, not a
+  role, so any `users.yaml` account could, and under `login_mode: persona`
+  anyone. No other response carried a secret read from the configuration
+  or the runtime store: a test now fetches every GET the application
+  routes, without proof of the management secret and following redirects,
+  and searches it for every stored client secret. (The built-in `/test`
+  page prints the literal `demo-client` / `demo-secret` pair of
+  `nanoidp init`, which is a public default and not a stored value; the
+  Security guide now says so.) The guide gains "What a read can see".
+  *After upgrading:* see Migration notes.
 
 ## [3.2.0] - 2026-09-15
 
