@@ -124,7 +124,7 @@ def test_the_gate_is_on_and_the_page_is_still_a_read(ui):
     assert ui.get("/clients").status_code == 200
 
 
-def test_the_two_canaries_are_distinguishable(ui):
+def test_the_two_canaries_are_distinguishable():
     """No 4-gram in common, so a fragment found in a page is attributable to
     one canary and the declared/runtime/DCR origins do not blur."""
     assert not (_grams(_CANARY) & _grams(_CANARY2))
@@ -278,10 +278,15 @@ def test_no_read_carries_a_stored_client_secret(ui, registered_secret):
     whole = [secret for secret in stored if len(secret) >= 8]
     long_grams = set().union(*(_grams(secret, 8) for secret in stored))
     short_grams = set().union(*(_grams(secret, 4) for secret in stored))
-    # By construction every searched 4-gram is a canary 4-gram, and the two
-    # canaries do not occur in chrome (test_the_canary_is_not_vacuous). This
-    # is what makes the sweep deterministic rather than flaky: it is why a
-    # match is a leak and not a coincidence.
+    # Every searched 4-gram is a canary 4-gram (asserted here) and every
+    # searched secret value is a controlled canary slice, and the canary
+    # 4-grams are verified absent from the /clients chrome
+    # (test_the_canary_is_not_vacuous). That eliminates the observed
+    # false-positive source: a random or reversed secret whose 4-gram lands
+    # in shared markup. It is not a proof of zero collision - whole secrets
+    # and 8-grams are still searched in the uncut body, which carries random
+    # key material - so any residual match is astronomically unlikely rather
+    # than impossible.
     assert short_grams <= _grams(_CANARY) | _grams(_CANARY2)
 
     reads = sorted(set(_reads(ui.application, registered["client_id"])))
