@@ -1,6 +1,6 @@
 [book]
 title = "NanoIDP"
-description = "A lightweight identity provider for development and testing."
+description = "A test identity provider: real OAuth2/OIDC and SAML 2.0, built for testing."
 authors = ["Christian Del Monte"]
 language = "en"
 

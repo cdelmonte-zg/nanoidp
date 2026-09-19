@@ -103,8 +103,8 @@ the answer carries the id exactly as it was sent.
 | `GET /api/audit/stats` | Audit log statistics |
 | `POST /api/audit/clear` | Clear the audit log |
 | `GET /api/config` | Get current configuration |
-| `POST /api/config/reload` | Reload configuration |
-| `POST /api/keys/rotate` | Rotate cryptographic keys |
+| `POST /api/config/reload` | Reload configuration. A rejected reload answers a JSON `422` (`kind`: `invalid` for files that cannot be read or do not validate, `activation` for a signing configuration that cannot be used) and the running configuration stays in effect; a strict hook or plugin failure answers `503` |
+| `POST /api/keys/rotate` | Rotate cryptographic keys; `409` when `jwt.external_keys` is configured, since the operator's key is not nanoidp's to replace |
 | `GET /api/keys/info` | Get key information |
 
 ### Runtime identities

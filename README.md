@@ -17,16 +17,18 @@
   📖 <a href="https://cdelmonte-zg.github.io/nanoidp/"><b>Documentation</b></a>
 </p>
 
-> Design principles, non-goals and medium-term direction live in [VISION.md](VISION.md).
+> Design principles, non-goals and direction live in [VISION.md](VISION.md).
 
 Need a real OAuth2/OIDC or SAML counterpart for an integration test, a demo or
 an agent, without standing up Keycloak or provisioning a cloud tenant?
 
-NanoIDP is an identity test environment: a spec-honest OAuth2/OIDC and
-SAML 2.0 provider you install with `pip`, configure with two YAML files and
-throw away when the test is done. What it advertises is what it implements,
-so your client is tested against the specification, not against a mock's
-guesses. It is a development and testing tool, not a production IdP.
+NanoIDP is a test identity provider: a real, spec-honest OAuth2/OIDC and
+SAML 2.0 provider built for testing, which you install with `pip`,
+configure with two YAML files and throw away when the test is done. It is
+not a mock: it implements the protocols instead of imitating their
+answers, and what it advertises is what it implements, so your client is
+tested against the specification and not against a mock's guesses. It is
+not a production IdP either: it never serves real users.
 
 ## Quick Start
 
@@ -69,14 +71,29 @@ covers the wizard, custom config paths and docker-compose.
   (RFC 7009) and RP-initiated logout; per-client scopes and audiences,
   claims mapping and authority prefixes; an opt-in `oauth21` profile that
   enforces draft OAuth 2.1 strictness.
+- **Clients that were not declared in advance**: public clients with
+  mandatory PKCE, resource indicators (RFC 8707), `iss` in the
+  authorization response (RFC 9207) and authorization server metadata
+  (RFC 8414); opt-in dynamic client registration (RFC 7591, with the read
+  and delete of RFC 7592) and opt-in client ID metadata documents, where
+  the `client_id` is an `https` URL the server fetches under an explicit
+  host allowlist.
 - **SAML 2.0**: SSO and AttributeQuery with signed assertions, and opt-in
   verification of signed AuthnRequests.
+- **Login experience**: a passwordless persona login for demos, two-step
+  login, and a declarative TOTP second factor for testing a client against
+  an MFA login (asked on `/authorize`, `/login`, SAML SSO and the device
+  page).
 - **Agents and MCP**: an MCP server that lets an agent create users and
   clients, mint tokens and read the audit log, with a read-only mode; MCP
   tools and the HTTP API expose the same capabilities.
+- **Disposable test identities**: a CI job creates users and clients on a
+  running instance over `/api/runtime`, uses them in every flow and removes
+  them, without touching the YAML files; one that should stay is promoted
+  into the configuration explicitly.
 - **Running it**: two schema-versioned YAML files with validation, security
-  profiles, a passwordless persona login for demos, an audit log, hooks and
-  plugins for wiring the deploy in, a Docker image.
+  profiles, an audit log, hooks and plugins for wiring the deploy in, a
+  Docker image and a Helm chart.
 
 Every item above has its reference page in the documentation below.
 
@@ -86,6 +103,9 @@ The full documentation lives at
 **<https://cdelmonte-zg.github.io/nanoidp/>**:
 
 - [Requesting tokens](https://cdelmonte-zg.github.io/nanoidp/guides/token-requests.html): curl examples for every grant, introspection, revocation
+- [Disposable test identities](https://cdelmonte-zg.github.io/nanoidp/guides/runtime-identities.html): users and clients for one CI run, over `/api/runtime`
+- [Dynamic client registration](https://cdelmonte-zg.github.io/nanoidp/guides/dynamic-client-registration.html): RFC 7591/7592 for a client that was handed only a server URL
+- [Client ID metadata documents](https://cdelmonte-zg.github.io/nanoidp/guides/client-metadata-documents.html): a `client_id` that is a URL, and what the server will and will not fetch
 - [MCP workflow](https://cdelmonte-zg.github.io/nanoidp/guides/MCP_WORKFLOW.html): drive NanoIDP from Claude Code or any MCP host
 - [Security guide](https://cdelmonte-zg.github.io/nanoidp/guides/SECURITY.html): profiles, key management, MCP hardening
 - [Configuration](https://cdelmonte-zg.github.io/nanoidp/reference/configuration.html): `users.yaml`, `settings.yaml`, logging

@@ -1,6 +1,6 @@
 # NanoIDP
 
-**A lightweight identity provider for development and testing.**
+**A test identity provider: real OAuth2/OIDC and SAML 2.0, built for testing.**
 
 You are building or testing a client that speaks OAuth2/OIDC or SAML 2.0.
 You need a real identity provider to integrate against, but standing up
