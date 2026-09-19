@@ -19,7 +19,6 @@ import yaml
 
 from nanoidp.app import create_app
 from nanoidp.config import OAuthClient, User, get_config
-from nanoidp.services.dynamic_registration import DynamicRegistration
 from nanoidp.services.identities import (
     DeclaredNameCollision,
     ResolvedClient,
@@ -27,10 +26,10 @@ from nanoidp.services.identities import (
     get_identities,
 )
 from nanoidp.services.runtime_identities import (
-    MemoryRuntimeIdentityStore,
     RuntimeObjectExists,
     get_runtime_identity_store,
 )
+from tests.runtime_store_contract import REPOSITORIES, STORE_FACTORIES, registration
 
 _REPO = Path(__file__).resolve().parent.parent
 REDIRECT = "http://localhost:3000/callback"
@@ -57,48 +56,6 @@ def _basic(client_id: str, secret: str) -> dict:
 # Repository contract: written against the interface, so a later backend
 # (#354) runs the same tests by adding its factory here.
 # ---------------------------------------------------------------------------
-
-def _registration(client_id: str) -> DynamicRegistration:
-    return DynamicRegistration(
-        client_id=client_id,
-        registration_token_hash="0" * 64,
-        client_id_issued_at=0,
-        grant_types=["authorization_code"],
-    )
-
-
-STORE_FACTORIES = [pytest.param(MemoryRuntimeIdentityStore, id="memory")]
-# Each entry: how to reach the repository on a store, how to make an object,
-# its name, and a list field to mutate in place. The third one is a record
-# type the store does not know (#190): it is lent the same machinery through
-# repository(), so it owes the same contract.
-REPOSITORIES = [
-    pytest.param(
-        (lambda store: store.users, _user, lambda u: u.username, lambda u: u.roles),
-        id="users",
-    ),
-    pytest.param(
-        (
-            lambda store: store.clients,
-            _client,
-            lambda c: c.client_id,
-            lambda c: c.redirect_uris,
-        ),
-        id="clients",
-    ),
-    pytest.param(
-        (
-            lambda store: store.repository(
-                "dynamic_registrations", lambda r: r.client_id
-            ),
-            _registration,
-            lambda r: r.client_id,
-            lambda r: r.grant_types,
-        ),
-        id="dynamic_registrations",
-    ),
-]
-
 
 @pytest.mark.parametrize("factory", STORE_FACTORIES)
 @pytest.mark.parametrize("repository", REPOSITORIES)
@@ -205,7 +162,7 @@ class TestRepositoryContract:
         lent = store.repository("dynamic_registrations", lambda r: r.client_id)
         store.users.create(_user("same-name"))
         store.clients.create(_client("same-name"))
-        lent.create(_registration("same-name"))
+        lent.create(registration("same-name"))
 
         assert store.users.delete_all() == 1
         assert [c.client_id for c in store.clients.list()] == ["same-name"]
@@ -215,7 +172,7 @@ class TestRepositoryContract:
         """Asked for twice, it is one repository, not two views (#190)."""
         store = factory()
         store.repository("dynamic_registrations", lambda r: r.client_id).create(
-            _registration("once")
+            registration("once")
         )
 
         again = store.repository("dynamic_registrations", lambda r: r.client_id)
