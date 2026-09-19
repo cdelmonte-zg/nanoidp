@@ -17,17 +17,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   durable backend (#354) will have to meet: each object is kept in an entry
   with an `instance_id` the store generates and never reuses, so that an
   object and the one created under its name afterwards can be told apart,
-  and an optional hold; `transact(decide)` runs one decision against a view
+  and an optional hold; a repository keeps any type its codec can copy,
+  write down and read back, declared by the service that owns the type, so
+  the dataclasses of the protocol state (#363) fit and a backend that
+  serializes never has to guess a type; `transact(decide)` runs one
+  decision against a view
   of one repository, and its changes become visible together or, if it
   raises, not at all; `replace`, `consume`, `delete_if` and `create_within`
   are written once on top of it. A decision may use its view and nothing
   else, and only while it runs: the in-memory backend refuses a repository
   reached from inside a decision and a view used after it, accepts as a
   hold's payload only a JSON object, as a backend that writes it down
-  would, and can run every decision twice so that the tests catch one that
-  is not safe to repeat. Nothing uses the new
+  would, and for the tests it can run every decision twice, to catch one
+  that is not safe to repeat, and take every stored value through its
+  codec and JSON and back, which the whole suite now does. Nothing uses
+  the new
   operations yet and no behaviour changes: `get()` and `list()` return what
   they returned, and the identity is not a field of `User` or `OAuthClient`.
+  The one change for code that borrows a repository from the runtime store
+  is that `repository(name, key_of, codec)` now takes the codec.
 
 ### Security
 - **A registration credential no longer reads or deletes a client recreated

@@ -14,10 +14,12 @@ import time
 
 import pytest
 
+from nanoidp.config import User
 from nanoidp.services.runtime_repository import (
     EntryHeld,
     MemoryRuntimeRepository,
     NestedRepositoryUse,
+    PydanticCodec,
     RepositoryFull,
     RuntimeObjectExists,
     RuntimeObjectMissing,
@@ -27,7 +29,7 @@ from nanoidp.services.runtime_repository import (
     delete_if,
     replace,
 )
-from tests.runtime_store_contract import REPOSITORIES, STORE_FACTORIES
+from tests.runtime_store_contract import REPOSITORIES, STORE_FACTORIES, user
 
 THREADS = 8
 
@@ -233,19 +235,27 @@ class TestTransact:
         that may be run again must have no effect outside the view."""
         repo, make, _, _field = kit
         repo.create(make("alice"))
+        another = store.repository("another", lambda u: u.username, PydanticCodec(User))
 
         for side_door in (
             lambda: repo.get("alice"),
             lambda: repo.create(make("bob")),
             lambda: repo.transact(lambda view: None),
             lambda: store.users.list(),
-            lambda: store.repository("another", lambda obj: str(obj)).list(),
+            lambda: another.list(),
+            lambda: store.repository("brand-new", lambda obj: "wrong-key", PydanticCodec(User)),
         ):
             with pytest.raises(NestedRepositoryUse):
                 repo.transact(lambda view, side_door=side_door: side_door())
 
         assert repo.get("alice") is not None
         assert repo.get("bob") is None
+        # Asking for a repository creates it the first time, which is an
+        # effect like any other: the refused call above must not have, or
+        # this one would find a repository keyed the wrong way.
+        brand_new = store.repository("brand-new", lambda u: u.username, PydanticCodec(User))
+        brand_new.create(user("carol"))
+        assert brand_new.get("carol") is not None
 
     def test_a_view_is_of_no_use_once_its_decision_is_over(self, kit):
         """Kept past the call, it would change the repository with no
@@ -261,6 +271,7 @@ class TestTransact:
 
         for view in kept:
             for late in (
+                lambda view=view: view.name_of(make("alice")),
                 lambda view=view: view.entry("alice"),
                 lambda view=view: view.entries(),
                 lambda view=view: view.create(make("carol")),
@@ -295,6 +306,71 @@ class TestTransact:
             repo.transact(lambda view: repo.list())
 
         assert repo.create(make("alice")) is not None
+
+
+class TestCodecs:
+    """A repository keeps any type its codec can copy, write down and read
+    back, not only pydantic models (the contract parameters include a
+    dataclass with a datetime). This backend never writes anything down, so
+    the promise is checked where it can be: with ``verify_codecs`` on, as it
+    is for this whole suite, a value that does not survive is refused."""
+
+    class _Lossy(PydanticCodec):
+        def dump(self, value):
+            return {**super().dump(value), "email": "somebody-else@example.test"}
+
+    class _NotJson(PydanticCodec):
+        """Reads back exactly what it wrote, which is not JSON."""
+
+        def dump(self, value):
+            return {"kept": value}
+
+        def load(self, data):
+            return data["kept"]
+
+    class _Unreadable(PydanticCodec):
+        def load(self, data):
+            raise KeyError("username")
+
+    @pytest.mark.parametrize("codec", [_Lossy, _NotJson, _Unreadable])
+    def test_a_value_that_does_not_survive_its_codec_is_not_stored(self, store, codec):
+        repo = store.repository("checked", lambda u: u.username, codec(User))
+
+        with pytest.raises(ValueError, match="does not survive its codec"):
+            repo.create(user("alice"))
+        repo.transact(lambda view: None)
+
+        assert repo.list() == []
+
+    def test_nor_is_one_that_replaces_a_stored_value(self, store, monkeypatch):
+        repo = store.repository("checked", lambda u: u.username, self._Lossy(User))
+        monkeypatch.setattr(MemoryRuntimeRepository, "verify_codecs", False)
+        repo.create(user("alice"))
+        monkeypatch.setattr(MemoryRuntimeRepository, "verify_codecs", True)
+
+        with pytest.raises(ValueError, match="does not survive its codec"):
+            replace(repo, "alice", lambda value: value)
+
+    def test_the_check_is_for_tests(self, store, monkeypatch):
+        monkeypatch.setattr(MemoryRuntimeRepository, "verify_codecs", False)
+        repo = store.repository("unchecked", lambda u: u.username, self._Lossy(User))
+
+        assert repo.create(user("alice")).username == "alice"
+
+    def test_the_copy_is_the_codecs(self, store):
+        """Not a deep copy the backend chooses for every type."""
+        copies = []
+
+        class Counting(PydanticCodec):
+            def copy(self, value):
+                copies.append(value)
+                return super().copy(value)
+
+        repo = store.repository("counted", lambda u: u.username, Counting(User))
+        repo.create(user("alice"))
+        repo.get("alice")
+
+        assert len(copies) >= 2
 
 
 class TestHolds:

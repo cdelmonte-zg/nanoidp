@@ -19,6 +19,7 @@ import yaml
 
 from nanoidp.app import create_app
 from nanoidp.config import OAuthClient, User, get_config
+from nanoidp.services.dynamic_registration import DynamicRegistration
 from nanoidp.services.identities import (
     DeclaredNameCollision,
     ResolvedClient,
@@ -26,6 +27,7 @@ from nanoidp.services.identities import (
     get_identities,
 )
 from nanoidp.services.runtime_identities import (
+    PydanticCodec,
     RuntimeObjectExists,
     get_runtime_identity_store,
 )
@@ -33,6 +35,7 @@ from tests.runtime_store_contract import REPOSITORIES, STORE_FACTORIES, registra
 from tests.runtime_store_contract import client as _client
 from tests.runtime_store_contract import user as _user
 
+_REGISTRATIONS = PydanticCodec(DynamicRegistration)
 _REPO = Path(__file__).resolve().parent.parent
 REDIRECT = "http://localhost:3000/callback"
 
@@ -148,7 +151,7 @@ class TestRepositoryContract:
 
     def test_the_repositories_are_separate(self, factory, repository):
         store = factory()
-        lent = store.repository("dynamic_registrations", lambda r: r.client_id)
+        lent = store.repository("dynamic_registrations", lambda r: r.client_id, _REGISTRATIONS)
         store.users.create(_user("same-name"))
         store.clients.create(_client("same-name"))
         lent.create(registration("same-name"))
@@ -160,11 +163,11 @@ class TestRepositoryContract:
     def test_a_lent_repository_is_the_same_one_every_time(self, factory, repository):
         """Asked for twice, it is one repository, not two views (#190)."""
         store = factory()
-        store.repository("dynamic_registrations", lambda r: r.client_id).create(
+        store.repository("dynamic_registrations", lambda r: r.client_id, _REGISTRATIONS).create(
             registration("once")
         )
 
-        again = store.repository("dynamic_registrations", lambda r: r.client_id)
+        again = store.repository("dynamic_registrations", lambda r: r.client_id, _REGISTRATIONS)
         assert [r.client_id for r in again.list()] == ["once"]
 
 

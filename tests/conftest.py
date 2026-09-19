@@ -87,6 +87,21 @@ def isolated_repo_config(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def every_stored_value_survives_its_codec(monkeypatch):
+    """Whatever a test stores in a runtime repository is first taken through
+    its codec's dump, JSON and load, and must come back equal (#404).
+
+    The in-memory backend copies and never writes anything down, so without
+    this a codec that loses a field, or a value JSON cannot hold, would pass
+    every test until a backend that serializes (#354). On for the whole
+    suite, so it is the real objects of every flow that are held to it.
+    """
+    from nanoidp.services.runtime_repository import MemoryRuntimeRepository
+
+    monkeypatch.setattr(MemoryRuntimeRepository, "verify_codecs", True)
+
+
+@pytest.fixture(autouse=True)
 def reset_singletons():
     """Reset service singletons before and after each test.
 

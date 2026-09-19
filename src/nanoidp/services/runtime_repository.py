@@ -1,7 +1,11 @@
 """The runtime repository: the contract every piece of runtime state is kept
 behind, and its in-memory backend (#235, #404).
 
-A repository holds objects of one type by name and by value. What it adds to
+A repository holds objects of one type by name and by value. The type is
+whatever its **codec** can copy, write down and read back: whoever owns a
+record type says so when asking for the repository, so that no backend has
+to guess what it is keeping, and pydantic is one such type among others.
+What the repository adds to
 create, get, list and delete is what a caller cannot build from those: an
 operation that is several visits to the repository and must look like one to
 every other caller, in this process or, with a durable backend (#354), in
@@ -38,15 +42,18 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Generic, List, Optional, Protocol, TypeVar
+from typing import Any, Callable, Dict, Generic, List, Optional, Protocol, Type, TypeVar
 
 from pydantic import BaseModel
 
-# Any pydantic model: the repository needs a deep copy and a name, nothing
-# else, so naming the two types that happened to exist first would only
-# describe the day it was written (#190).
-T = TypeVar("T", bound=BaseModel)
+# Any type at all. The first records kept here were pydantic models, and the
+# protocol state that comes next is not (#363: authorization codes, device
+# codes and audit entries are dataclasses, revocations are keys and
+# expiries), so the repository asks nothing of a value but what its codec
+# can do with it.
+T = TypeVar("T")
 R = TypeVar("R")
+M = TypeVar("M", bound=BaseModel)
 
 
 class RuntimeObjectExists(ValueError):
@@ -77,6 +84,45 @@ class NestedRepositoryUse(RuntimeError):
     may be run again (a busy retry), so whatever it does outside the view is
     done twice or not undone.
     """
+
+
+class Codec(Protocol[T]):
+    """What a repository needs to know about the type it keeps: how a value
+    is copied, how it is written down and how it is read back.
+
+    Declared with the repository, by whoever owns the type. The in-memory
+    backend only copies; a backend that serializes (#354) writes down and
+    reads back, and must not have to guess the type of what it finds. So the
+    way is stated here, once, and ``verify_codecs`` lets the tests hold every
+    codec to it on every value that goes through a repository, long before
+    there is such a backend.
+    """
+
+    def copy(self, value: T) -> T:
+        """An independent copy: changing one never changes the other."""
+
+    def dump(self, value: T) -> Any:
+        """``value`` as JSON: what ``json.dumps`` accepts and returns
+        unchanged from ``json.loads``."""
+
+    def load(self, data: Any) -> T:
+        """The value ``dump`` was given: ``load(dump(value)) == value``."""
+
+
+class PydanticCodec(Generic[M]):
+    """The codec of a pydantic model."""
+
+    def __init__(self, model: Type[M]) -> None:
+        self._model = model
+
+    def copy(self, value: M) -> M:
+        return value.model_copy(deep=True)
+
+    def dump(self, value: M) -> Any:
+        return value.model_dump(mode="json")
+
+    def load(self, data: Any) -> M:
+        return self._model.model_validate(data)
 
 
 @dataclass(frozen=True)
@@ -298,7 +344,9 @@ def create_within(
 _deciding = threading.local()
 
 
-def _refuse_inside_a_decision() -> None:
+def refuse_inside_a_decision() -> None:
+    """Raise NestedRepositoryUse on a thread that is inside a decision. For
+    whatever hands out or creates repositories, as well as for them."""
     if getattr(_deciding, "active", False):
         raise NestedRepositoryUse(
             "a decision works on the view it was given and on nothing else"
@@ -319,12 +367,12 @@ def _payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     return dict(copied)
 
 
-def _out(entry: Entry[T]) -> Entry[T]:
+def _out(entry: Entry[T], codec: Codec[T]) -> Entry[T]:
     """The copy of an entry that leaves the repository."""
     hold = entry.hold
     return Entry(
         name=entry.name,
-        value=entry.value.model_copy(deep=True),
+        value=codec.copy(entry.value),
         instance_id=entry.instance_id,
         hold=Hold(hold.hold_id, hold.since, _payload(hold.payload)) if hold is not None else None,
     )
@@ -336,10 +384,18 @@ class _MemoryTransaction(Generic[T]):
     decision returns and drops it when the decision raises. The entries
     themselves are never changed in place, so the copy is a shallow one."""
 
-    def __init__(self, objects: Dict[str, Entry[T]], name_of: Callable[[T], str]) -> None:
+    def __init__(
+        self,
+        objects: Dict[str, Entry[T]],
+        name_of: Callable[[T], str],
+        codec: Codec[T],
+        stored: Callable[[T], T],
+    ) -> None:
         self._committed = objects
         self._staged: Optional[Dict[str, Entry[T]]] = None
         self._name_of = name_of
+        self._codec = codec
+        self._stored = stored
         self._closed = False
 
     def close(self) -> None:
@@ -350,6 +406,7 @@ class _MemoryTransaction(Generic[T]):
             raise TransactionClosed("this view belonged to a decision that is over")
 
     def name_of(self, obj: T) -> str:
+        self._open()
         return self._name_of(obj)
 
     @property
@@ -368,11 +425,11 @@ class _MemoryTransaction(Generic[T]):
     def entry(self, name: str) -> Optional[Entry[T]]:
         self._open()
         stored = self._current.get(name)
-        return _out(stored) if stored is not None else None
+        return _out(stored, self._codec) if stored is not None else None
 
     def entries(self) -> List[Entry[T]]:
         self._open()
-        return [_out(stored) for stored in self._current.values()]
+        return [_out(stored, self._codec) for stored in self._current.values()]
 
     def create(self, obj: T) -> Entry[T]:
         self._open()
@@ -381,18 +438,18 @@ class _MemoryTransaction(Generic[T]):
             raise RuntimeObjectExists(f"runtime object {name!r} already exists")
         # By value, both ways: neither the caller's instance nor the one
         # returned is the stored one, as with a backend that serializes.
-        stored = Entry(name, obj.model_copy(deep=True), uuid.uuid4().hex)
+        stored = Entry(name, self._stored(obj), uuid.uuid4().hex)
         self._writable[name] = stored
-        return _out(stored)
+        return _out(stored, self._codec)
 
     def replace(self, name: str, obj: T) -> Entry[T]:
         self._open()
         if self._name_of(obj) != name:
             raise ValueError(f"a replace cannot rename {name!r} to {self._name_of(obj)!r}")
         current = self._require(name)
-        stored = Entry(name, obj.model_copy(deep=True), current.instance_id, current.hold)
+        stored = Entry(name, self._stored(obj), current.instance_id, current.hold)
         self._writable[name] = stored  # same key: the place in the order is kept
-        return _out(stored)
+        return _out(stored, self._codec)
 
     def delete(self, name: str) -> bool:
         self._open()
@@ -449,11 +506,32 @@ class MemoryRuntimeRepository(Generic[T]):
     # here and fail on a backend that retries. Set, each decision is first
     # run against a view that is thrown away.
     run_decisions_twice = False
+    # For tests, in the same spirit. This backend copies and never writes a
+    # value down, so a codec whose dump loses something, or is not JSON,
+    # would go unnoticed until a backend that serializes. Set, every value
+    # stored is first taken through dump, JSON and load, and must come back
+    # equal.
+    verify_codecs = False
 
-    def __init__(self, lock: threading.RLock, name_of: Callable[[T], str]) -> None:
+    def __init__(
+        self, lock: threading.RLock, name_of: Callable[[T], str], codec: Codec[T]
+    ) -> None:
         self._lock = lock
         self._name_of: Callable[[T], str] = name_of
+        self._codec: Codec[T] = codec
         self._objects: Dict[str, Entry[T]] = {}
+
+    def _stored(self, obj: T) -> T:
+        """The copy of ``obj`` the repository keeps."""
+        if self.verify_codecs:
+            try:
+                written = json.dumps(self._codec.dump(obj), allow_nan=False)
+                read_back = self._codec.load(json.loads(written))
+            except Exception as failure:
+                raise ValueError(f"{type(obj).__name__} does not survive its codec: {failure}") from failure
+            if read_back != obj:
+                raise ValueError(f"{type(obj).__name__} does not survive its codec: it comes back changed")
+        return self._codec.copy(obj)
 
     def create(self, obj: T) -> T:
         return self.create_entry(obj).value
@@ -466,31 +544,31 @@ class MemoryRuntimeRepository(Generic[T]):
         return stored.value if stored is not None else None
 
     def entry(self, name: str) -> Optional[Entry[T]]:
-        _refuse_inside_a_decision()
+        refuse_inside_a_decision()
         with self._lock:
             stored = self._objects.get(name)
-            return _out(stored) if stored is not None else None
+            return _out(stored, self._codec) if stored is not None else None
 
     def list(self) -> List[T]:
         return [stored.value for stored in self.entries()]
 
     def entries(self) -> List[Entry[T]]:
-        _refuse_inside_a_decision()
+        refuse_inside_a_decision()
         with self._lock:
-            return [_out(stored) for stored in self._objects.values()]
+            return [_out(stored, self._codec) for stored in self._objects.values()]
 
     def delete(self, name: str) -> bool:
         return self.transact(lambda view: view.delete(name))
 
     def delete_all(self) -> int:
-        _refuse_inside_a_decision()
+        refuse_inside_a_decision()
         with self._lock:
             count = len(self._objects)
             self._objects = {}
             return count
 
     def transact(self, decide: Callable[[RepositoryTransaction[T]], R]) -> R:
-        _refuse_inside_a_decision()
+        refuse_inside_a_decision()
         with self._lock:
             if self.run_decisions_twice:
                 self._decide(decide)
@@ -504,7 +582,9 @@ class MemoryRuntimeRepository(Generic[T]):
         self, decide: Callable[[RepositoryTransaction[T]], R]
     ) -> "tuple[R, _MemoryTransaction[T]]":
         """Run the decision against a fresh view. Caller holds the lock."""
-        view: _MemoryTransaction[T] = _MemoryTransaction(self._objects, self._name_of)
+        view: _MemoryTransaction[T] = _MemoryTransaction(
+            self._objects, self._name_of, self._codec, self._stored
+        )
         _deciding.active = True
         try:
             return decide(view), view

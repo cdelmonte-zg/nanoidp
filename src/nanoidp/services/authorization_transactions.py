@@ -36,7 +36,11 @@ from pydantic import BaseModel
 from ..models import OAuthClient
 from .auth_code import CODE_LIFETIME_SECONDS
 from .identities import ClientOrigin
-from .runtime_identities import MemoryRuntimeRepository, get_runtime_identity_store
+from .runtime_identities import (
+    MemoryRuntimeRepository,
+    PydanticCodec,
+    get_runtime_identity_store,
+)
 
 # As long as the code the transaction will produce, as the starting value:
 # a login page left open longer than a code would live is a new request.
@@ -156,7 +160,7 @@ class AuthorizationTransactionStore:
         # owner, and whatever replaces it (a reset, #354's durable backend)
         # is what the transactions must be read from.
         return get_runtime_identity_store().repository(
-            "authorization_transactions", lambda transaction: transaction.id
+            "authorization_transactions", lambda transaction: transaction.id, PydanticCodec(AuthorizationTransaction)
         )
 
     def create(
