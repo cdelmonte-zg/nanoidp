@@ -348,6 +348,99 @@ class TestSignatureVerification:
         )
         assert response.status_code == 401
 
+    def test_hs256_signed_with_the_public_key_is_rejected(self, client, auth_header):
+        """Algorithm confusion, the classic RS/HS key-confusion attack:
+        a token whose header says HS256, HMAC-signed with the server's own
+        RSA *public* key - which is public - and carrying the real ``kid``.
+        A verifier that took the algorithm from the header would compute the
+        same HMAC and accept it. The token is built by hand so it does not
+        depend on how PyJWT's encode side treats an asymmetric key.
+
+        The property under test is end-to-end: the token is refused at
+        ``/userinfo`` (401) and reported inactive at ``/introspect`` (RFC 7662
+        ``active: false``). Two independent layers refuse it, measured against
+        PyJWT 2.13, not assumed: nanoidp pins ``algorithms=["RS256"]``, and
+        PyJWT refuses to HMAC with a PEM key at all (``InvalidKeyError``). So
+        the forged token is never *accepted* even if the pin is widened - it
+        turns into an escaping error, not a valid token. The test still fails
+        under both mutations that matter: disabling signature verification
+        (the token would be accepted), and adding an HMAC algorithm to the pin
+        (the clean 401 becomes a 500, since InvalidKeyError is not an
+        InvalidTokenError and escapes verify_jwt - see
+        test_the_verifier_admits_only_rs256)."""
+        import base64
+        import hashlib
+        import hmac
+
+        from nanoidp.config import get_config
+        from nanoidp.services import get_crypto_service
+
+        config = get_config()
+        with client.application.app_context():
+            crypto = get_crypto_service()
+            public_key_pem, real_kid = crypto.pub_pem, crypto.kid
+
+        payload = {
+            "sub": "admin",
+            "iss": config.settings.issuer,
+            "aud": config.settings.audience,
+            "token_use": "access",
+            "exp": int((datetime.now(timezone.utc) + timedelta(hours=1)).timestamp()),
+            "iat": int(datetime.now(timezone.utc).timestamp()),
+        }
+
+        def _b64(raw: bytes) -> str:
+            return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+
+        header = _b64(json.dumps({"alg": "HS256", "typ": "JWT", "kid": real_kid}).encode())
+        body = _b64(json.dumps(payload).encode())
+        signing_input = f"{header}.{body}".encode()
+        signature = _b64(hmac.new(public_key_pem, signing_input, hashlib.sha256).digest())
+        forged = f"{header}.{body}.{signature}"
+
+        assert client.get(
+            "/userinfo", headers={"Authorization": f"Bearer {forged}"}
+        ).status_code == 401
+
+        introspection = client.post("/introspect", data={"token": forged}, headers=auth_header)
+        assert introspection.status_code == 200
+        assert introspection.get_json()["active"] is False
+
+    def test_the_verifier_admits_only_rs256(self):
+        """nanoidp's own line, not the library's. The forged token above is
+        never accepted whatever the allowlist says (PyJWT will not HMAC with a
+        PEM key), so the RS256 pin is not what stops acceptance. What it gives
+        is the clean rejection: verify_jwt catches jwt.InvalidTokenError, and
+        RS256-only makes the refusal an InvalidAlgorithmError (a subclass), a
+        401. Add an HMAC algorithm and the refusal becomes an InvalidKeyError,
+        which is not an InvalidTokenError, so it escapes verify_jwt (a 500, and
+        the behavioural test above stops seeing its 401). So the pin is worth
+        holding. Checked on the AST of the decode call, not a source substring
+        (issue #337 moved these tripwires off text): reformatting is fine, and
+        a second algorithm added to that call is caught."""
+        import ast
+        import inspect
+        import textwrap
+
+        from nanoidp.services.crypto import CryptoService
+
+        tree = ast.parse(textwrap.dedent(inspect.getsource(CryptoService.verify_jwt)))
+        decode_calls = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "decode"
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "jwt"
+        ]
+        assert len(decode_calls) == 1, "expected exactly one jwt.decode in verify_jwt"
+        algorithms = [kw.value for kw in decode_calls[0].keywords if kw.arg == "algorithms"]
+        assert len(algorithms) == 1, "jwt.decode must pin its algorithms= argument"
+        (value,) = algorithms
+        assert isinstance(value, ast.List), "algorithms must be a literal list, not a name"
+        assert [element.value for element in value.elts] == ["RS256"]
+
 
 class TestTokenTypeValidation:
     """Tests for token type enforcement.
