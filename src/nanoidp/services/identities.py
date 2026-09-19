@@ -27,8 +27,9 @@ edit forms and the MCP server work on the declared configuration only.
 
 import logging
 import threading
+from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Literal, Optional, Set, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Literal, Optional, Set, Tuple
 
 from ..config import ConfigManager, ConfigurationRejected, OAuthClient, Settings, User, get_config
 from ..hooks import HookError
@@ -250,9 +251,33 @@ class IdentityResolver:
             if entry.client.client_id not in taken
         ]
 
-    def create_runtime_client(self, client: OAuthClient) -> OAuthClient:
-        # See create_runtime_user.
+    @contextmanager
+    def runtime_client_lifecycle(self) -> Iterator[None]:
+        """One operation on the lifecycle of runtime clients at a time (#403).
+
+        For an operation that is several visits to the store and must look
+        like one to every other: deleting a client together with what was
+        kept about it, resetting, registering a client and its record, and
+        checking a registration credential together with the read or the
+        delete it authorises. Without it, a client created under the same id
+        between two of those visits is taken for the one the operation
+        started with. Creating a runtime client enters it too, which is what
+        makes the others whole.
+
+        Process-local, and for now the lock that holds loads off: a client
+        creation needed that one already (see create_runtime_user), and the
+        sweep after a load runs inside it, so one lock keeps both promises
+        and there is no order between two to get wrong. Reentrant. Several
+        processes on one store need this guarantee from the store itself
+        (#404, #405).
+        """
         with self.config.holding_loads():
+            yield
+
+    def create_runtime_client(self, client: OAuthClient) -> OAuthClient:
+        # See create_runtime_user for the declared check; the scope also
+        # makes the creation one step of the client lifecycle.
+        with self.runtime_client_lifecycle():
             if _find_client(self.config.settings, client.client_id) is not None:
                 raise DeclaredNameCollision(
                     f"client {client.client_id!r} is declared in settings.yaml"
@@ -260,6 +285,19 @@ class IdentityResolver:
             return self.store.clients.create(client)
 
     # ---- lifecycle (#192) ------------------------------------------------
+
+    def refuse_while_promoting(self, kind: Kind, name: str) -> None:
+        """Raise PromotionInProgress if that runtime object is marked.
+
+        For a caller about to wait for the lifecycle scope, which a
+        promotion holds for as long as it writes the file: asked first, a
+        delete of the object being promoted answers at once, as it did
+        before there was a scope to wait for (#192). It changes nothing, so
+        it needs no scope; the delete checks again once inside.
+        """
+        with _promoting_lock:
+            if (kind, name) in _promoting:
+                raise PromotionInProgress(f"runtime {kind} {name!r} is being promoted")
 
     def delete_runtime_user(self, username: str) -> None:
         self._delete("user", username)

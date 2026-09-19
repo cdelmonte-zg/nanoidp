@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Security
+- **A registration credential no longer reads or deletes a client recreated
+  under its id** (#403). A dynamically registered client is two records, the
+  runtime client and the RFC 7592 credential that manages it, linked by
+  name, and the operations on them were each correct alone but not against
+  each other. A runtime client created under the same id at the wrong moment
+  was taken for the registered one: while `DELETE /api/runtime/clients/<id>`
+  or `DELETE /register/<id>` had removed the client and not yet its record;
+  between a `DELETE /api/runtime` and the sweep after it, where the record
+  then survived for good; between the two halves of `POST /register`, which
+  answered `201` for a client a reset had already removed; and between the
+  check of a credential and the read or the delete it authorised. In each
+  case `GET /register/<id>` with the first client's token answered with the
+  second client's `client_secret`, or `DELETE /register/<id>` removed it.
+  Each of these operations, and the creation of a runtime client, is now one
+  step of a single runtime-client lifecycle. It needs a second actor reusing
+  a server-generated id, so it is unlikely; it was reproduced
+  deterministically for every window. The guarantee is that of one process:
+  several processes sharing a runtime store are the subject of #404 and
+  #405. No endpoint changes shape. `DELETE /register/<id>` during a
+  promotion of that client now answers once the promotion is through
+  (`401`, the registration having ended) rather than `409` at once;
+  `DELETE /api/runtime/clients/<id>` still answers `409` at once.
+
 ## [3.3.0] - 2026-09-19
 
 ### Migration notes

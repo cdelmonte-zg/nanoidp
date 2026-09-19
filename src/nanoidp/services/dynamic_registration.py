@@ -13,12 +13,16 @@ about registration, every read checks that the client is still there and
 drops the record if it is not, and ``prune_stale_registrations`` does the
 same sweep for the records nobody asks about. ``source: dcr`` on a client is
 therefore derived from a live record, never from the shape of its id.
+
+Those checks are by name, so they hold only while no other client can take
+the name between two visits to the store. The callers see to that: every
+operation that touches a client and its record, the check of a credential
+included, runs inside ``IdentityResolver.runtime_client_lifecycle`` (#403).
 """
 
 import hashlib
 import logging
 import secrets
-import threading
 import time
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -106,7 +110,8 @@ def _client_is_gone(client_id: str, identities: IdentityResolver) -> bool:
     By name, which is all a record has: this cannot tell the client it was
     issued for from a later one created under the same name. What keeps a
     record from being inherited is that it never survives its client - every
-    surface that removes one drops the record with it, and the sweep after a
+    surface that removes one drops the record with it, in the same lifecycle
+    scope, so no client is created in between (#403), and the sweep after a
     configuration load catches promotion, which is the case nothing else
     would. Code embedding nanoidp that calls
     ``IdentityResolver.delete_runtime_client`` directly, and creates another
@@ -187,10 +192,6 @@ DEFAULT_GRANT_TYPES = ("authorization_code",)
 # RFC 7591 section 2: absent means client_secret_basic, so a secret is issued
 # unless the client asks to be public.
 DEFAULT_AUTH_METHOD = "client_secret_basic"
-# One registration at a time: the sweep, the capacity check and the create
-# are three separate visits to the store, and the limit is the only bound
-# this endpoint has, so they must not interleave.
-registration_lock = threading.Lock()
 
 
 def _string_list(data: Dict[str, Any], field: str) -> List[str]:

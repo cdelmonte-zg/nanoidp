@@ -32,7 +32,6 @@ from ..services.dynamic_registration import (
     new_registration_token,
     prune_stale_registrations,
     record_registration,
-    registration_lock,
     registration_response,
     registrations,
     token_matches,
@@ -155,8 +154,11 @@ def register() -> ResponseReturnValue:
     # The sweep, the capacity check and the two creates are separate visits
     # to the store; under a threaded server they would interleave and let
     # more registrations through than the limit allows, and the limit is
-    # the only bound an open endpoint has.
-    with registration_lock:
+    # the only bound an open endpoint has. The same scope keeps a delete or
+    # a reset from landing between the client and its record, which would
+    # answer 201 for a client that is gone and leave the record to the next
+    # one of that id (#403).
+    with identities.runtime_client_lifecycle():
         # Sweeping first means the limit counts registrations whose client
         # is still there, not the records of promoted or deleted ones.
         prune_stale_registrations(identities)
@@ -215,7 +217,11 @@ def read_registration(client_id: str) -> ResponseReturnValue:
     the caller has just presented, which is why nothing has to keep it.
     """
     identities = identities_for(get_config())
-    authenticated = _authenticated(client_id, identities)
+    # Checking the credential and reading the client are one operation
+    # (#403): the record names its client, so a client recreated under the
+    # id between the two would be read with the first one's credential.
+    with identities.runtime_client_lifecycle():
+        authenticated = _authenticated(client_id, identities)
     if authenticated is None:
         # Not audited: the audit is a bounded deque, and anyone can reach
         # this branch without a credential, so recording it would let a
@@ -237,23 +243,29 @@ def read_registration(client_id: str) -> ResponseReturnValue:
 def delete_registration(client_id: str) -> ResponseReturnValue:
     """RFC 7592 delete: the client goes with the registration."""
     identities = identities_for(get_config())
-    if _authenticated(client_id, identities) is None:
-        return _unauthorized()
-    try:
-        identities.delete_runtime_client(client_id)
-    except PromotionInProgress:
-        # The operator is writing this client into the declared
-        # configuration right now; the same 409 /api/runtime answers.
-        return _error(
-            409, "invalid_request", "this client is being promoted, try again"
-        )
-    except RuntimeObjectNotFound:
-        # It went away between the check and the delete. Nothing to manage,
-        # and the caller learns no more than it would about any other
-        # unknown registration.
+    # The credential check, the client and the record are one operation
+    # (#403): authenticated as one client, the delete must not land on
+    # another that took the id in between.
+    with identities.runtime_client_lifecycle():
+        if _authenticated(client_id, identities) is None:
+            return _unauthorized()
+        try:
+            identities.delete_runtime_client(client_id)
+        except PromotionInProgress:
+            # The operator is writing this client into the declared
+            # configuration; the same 409 /api/runtime answers, and like
+            # there nothing has changed: the record goes after the client.
+            return _error(
+                409, "invalid_request", "this client is being promoted, try again"
+            )
+        except RuntimeObjectNotFound:
+            # Code that removes clients without entering the scope took it
+            # between the check and the delete. Nothing to manage, and the
+            # caller learns no more than it would about any other unknown
+            # registration.
+            forget_registration(client_id)
+            return _unauthorized()
         forget_registration(client_id)
-        return _unauthorized()
-    forget_registration(client_id)
     _audit("client_registration_deleted", "success", client_id)
     return "", 204
 

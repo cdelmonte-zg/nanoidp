@@ -164,7 +164,24 @@ def get_client(client_id: str) -> ResponseReturnValue:
 
 @runtime_bp.route("/clients/<client_id>", methods=["DELETE"])
 def delete_client(client_id: str) -> ResponseReturnValue:
-    return _delete("client", client_id, identities_for(get_config()).delete_runtime_client)
+    resolver = identities_for(get_config())
+
+    def delete(name: str) -> None:
+        # Before the scope, which a promotion of this client would keep
+        # the delete waiting on: the 409 is for now, not for later (#192).
+        resolver.refuse_while_promoting("client", name)
+        # The client and its registration record go as one operation (#403).
+        with resolver.runtime_client_lifecycle():
+            resolver.delete_runtime_client(name)
+            # The record goes with the client, rather than waiting for the
+            # next sweep (#190): a client created again under the same id
+            # would otherwise inherit it, and the credential handed to
+            # whoever registered the first one would read and delete the
+            # second, operator-created one. After the client and not
+            # before: a delete refused above has changed nothing.
+            forget_registration(name)
+
+    return _delete("client", client_id, delete)
 
 
 @runtime_bp.route("/clients/<client_id>/promote", methods=["POST"])
@@ -183,10 +200,13 @@ def reset() -> ResponseReturnValue:
     """Remove every runtime user and client. Never touches the declared
     configuration."""
     resolver = identities_for(get_config())
-    users_deleted, clients_deleted = resolver.reset_runtime_identities()
-    # Same reason as in _delete: a record must not outlive its client and be
-    # inherited by the next one to hold that id (#190).
-    prune_stale_registrations(resolver)
+    with resolver.runtime_client_lifecycle():
+        users_deleted, clients_deleted = resolver.reset_runtime_identities()
+        # Same reason as in delete_client: a record must not outlive its client
+        # and be inherited by the next one to hold that id (#190). Inside
+        # the scope, or a client created between the reset and the sweep
+        # keeps the record alive through it (#403).
+        prune_stale_registrations(resolver)
     audit_event(
         "runtime_identities_reset",
         "success",
@@ -217,13 +237,6 @@ def _delete(kind: str, name: str, delete: Callable[[str], None]) -> ResponseRetu
         return _error(404, f"no runtime {kind} {name!r}", "not_found")
     except PromotionInProgress:
         return _error(409, f"runtime {kind} {name!r} is being promoted", "promotion_in_progress")
-    if kind == "client":
-        # The registration record goes with the client, rather than waiting
-        # for the next sweep (#190): a client created again under the same
-        # id would otherwise inherit it, and the credential handed to
-        # whoever registered the first one would read and delete the
-        # second, operator-created one.
-        forget_registration(name)
     _audit("runtime_identity_deleted", kind, name)
     return jsonify({"deleted": name, "kind": kind})
 
