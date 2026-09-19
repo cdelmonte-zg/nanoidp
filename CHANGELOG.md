@@ -26,10 +26,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a server-generated id, so it is unlikely; it was reproduced
   deterministically for every window. The guarantee is that of one process:
   several processes sharing a runtime store are the subject of #404 and
-  #405. No endpoint changes shape. `DELETE /register/<id>` during a
-  promotion of that client now answers once the promotion is through
-  (`401`, the registration having ended) rather than `409` at once;
-  `DELETE /api/runtime/clients/<id>` still answers `409` at once.
+  #405. No endpoint changes shape. What the single scope costs: it is the
+  lock a configuration load and a promotion hold, so these operations wait
+  for one in progress. `DELETE /api/runtime/clients/<id>` of the client
+  being promoted still answers `409` at once. `DELETE /register/<id>` of
+  that client, with a valid credential, now waits and answers for what it
+  then finds: `401` when the promotion went through (the registration has
+  ended), `204` when it failed before writing, `409` when it wrote its entry
+  and the reload failed. A caller without the credential never waits.
 
 ## [3.3.0] - 2026-09-19
 

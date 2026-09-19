@@ -15,9 +15,14 @@ same sweep for the records nobody asks about. ``source: dcr`` on a client is
 therefore derived from a live record, never from the shape of its id.
 
 Those checks are by name, so they hold only while no other client can take
-the name between two visits to the store. The callers see to that: every
-operation that touches a client and its record, the check of a credential
-included, runs inside ``IdentityResolver.runtime_client_lifecycle`` (#403).
+the name between two visits to the store. Every operation that changes a
+client or its record, or that acts on a credential, therefore runs inside
+``IdentityResolver.runtime_client_lifecycle`` (#403):
+``delete_client_and_registration`` here, the registration and the RFC 7592
+operations in ``routes.registration``, the reset in ``routes.runtime``. A
+read outside it is not authoritative: it may say 401 a moment early, which
+is safe, and ``routes.runtime`` labels a client ``source: dcr`` from one,
+which can be stale for the length of a response and gives nothing away.
 """
 
 import hashlib
@@ -172,6 +177,22 @@ def record_registration(
 
 def forget_registration(client_id: str) -> bool:
     return registrations().delete(client_id)
+
+
+def delete_client_and_registration(client_id: str, identities: IdentityResolver) -> None:
+    """Remove a runtime client together with its record, as one operation.
+
+    The one way a surface deletes a runtime client (#403), registered or
+    not. The record goes with the client rather than waiting for the next
+    sweep (#190): a client created again under the same id would otherwise
+    inherit it, and the credential handed to whoever registered the first
+    one would read and delete the second. After the client and not before,
+    so a delete the resolver refuses (``PromotionInProgress``,
+    ``RuntimeObjectNotFound``) has changed nothing; both propagate.
+    """
+    with identities.runtime_client_lifecycle():
+        identities.delete_runtime_client(client_id)
+        forget_registration(client_id)
 
 
 class RegistrationRejected(ValueError):

@@ -82,6 +82,7 @@ class Operator:
         self.reset = reset
         self.created = None
         self.old_credential_read = None
+        self.arrived = False
         self._thread = threading.Thread(target=self._run)
 
     def _run(self):
@@ -113,21 +114,26 @@ class Operator:
         self.created = self._create(self.application.test_client())
 
     def arrive(self):
+        self.arrived = True
         self._thread.start()
         self._thread.join(WINDOW_SECONDS)
 
     def finish(self):
+        if not self.arrived:
+            pytest.skip("this implementation does not read the record that many times")
         self._thread.join()
 
 
-def _open_window(monkeypatch, repository, method, when, operator):
-    """Let ``operator`` arrive once, right before or right after the first
-    call of ``method`` on ``repository``."""
+def _open_window(monkeypatch, repository, method, when, operator, nth=1):
+    """Let ``operator`` arrive once, right before or right after the
+    ``nth`` call of ``method`` on ``repository``."""
     original = getattr(MemoryRuntimeRepository, method)
-    state = {"open": True}
+    state = {"open": True, "calls": 0}
 
     def placed(self, *args, **kwargs):
-        mine = self is repository and state["open"]
+        if self is repository and state["open"]:
+            state["calls"] += 1
+        mine = self is repository and state["open"] and state["calls"] == nth
         if mine:
             state["open"] = False
             if when == "before":
@@ -165,6 +171,12 @@ def _assert_never_read(operator):
     assert OPERATOR_SECRET not in read.get_data(as_text=True)
 
 
+# The credential's record may be read more than once on the way to an answer
+# (today: once to turn away a caller with no credential without waiting, once
+# for the answer that counts). The swap must be harmless after each of them.
+RECORD_READS = [1, 2]
+
+
 class TestAnOldCredentialNeverReadsARecreatedClient:
     def test_while_the_runtime_api_deletes_the_client(self, application, monkeypatch):
         """W1: the client is gone and its record not yet."""
@@ -194,12 +206,13 @@ class TestAnOldCredentialNeverReadsARecreatedClient:
         _assert_the_operators_client_is_untouched(application, operator)
         _assert_the_old_credential_is_dead(application, client_id, token)
 
-    def test_while_it_is_being_authenticated(self, application, monkeypatch):
+    @pytest.mark.parametrize("nth", RECORD_READS)
+    def test_while_it_is_being_authenticated(self, application, monkeypatch, nth):
         """W7: the credential was checked against the first client; what is
         read next must be that client, not whoever holds the id by then."""
         client_id, token = _register(application)
         operator = Operator(application, client_id, token, delete_first=True)
-        _open_window(monkeypatch, registrations(), "get", "after", operator)
+        _open_window(monkeypatch, registrations(), "get", "after", operator, nth)
 
         read = application.test_client().get(f"/register/{client_id}", headers=_bearer(token))
         operator.finish()
@@ -215,14 +228,15 @@ class TestAnOldCredentialNeverReadsARecreatedClient:
 
 
 class TestAnOldCredentialNeverDeletesARecreatedClient:
-    def test_while_it_is_being_authenticated(self, application, monkeypatch):
+    @pytest.mark.parametrize("nth", RECORD_READS)
+    def test_while_it_is_being_authenticated(self, application, monkeypatch, nth):
         """W6: authenticated as the first client, the delete must not land
         on the second."""
         client_id, token = _register(application)
         operator = Operator(application, client_id, token, delete_first=True)
         # Right after the credential's record is read, as for the read above:
         # any later and the resolver's own lock already holds the window shut.
-        _open_window(monkeypatch, registrations(), "get", "after", operator)
+        _open_window(monkeypatch, registrations(), "get", "after", operator, nth)
 
         deleted = application.test_client().delete(f"/register/{client_id}", headers=_bearer(token))
         operator.finish()
@@ -327,9 +341,9 @@ class TestARefusedDeleteHasNoEffect:
         assert client.get(f"/register/{client_id}", headers=_bearer(token)).status_code == 200
 
 
-def _delete_while_promoting(application, monkeypatch, client_id, delete):
-    """Run ``delete`` while a promotion of ``client_id`` is writing the file.
-    Returns the delete's response, whether it answered before the promotion
+def _while_promoting(application, monkeypatch, client_id, delete):
+    """Run a request while a promotion of ``client_id`` is writing the file.
+    Returns the request's response, whether it answered before the promotion
     was let through, and the promotion's status."""
     from nanoidp.services.yaml_writer import get_yaml_writer
 
@@ -374,7 +388,7 @@ class TestADeleteDuringAPromotion:
         not 404 once the promotion is through."""
         client_id, _ = _register(application)
 
-        deleted, answered_at_once, promoted = _delete_while_promoting(
+        deleted, answered_at_once, promoted = _while_promoting(
             application, monkeypatch, client_id,
             lambda client: client.delete(f"/api/runtime/clients/{client_id}"),
         )
@@ -391,7 +405,7 @@ class TestADeleteDuringAPromotion:
         the one any unknown registration gets."""
         client_id, token = _register(application)
 
-        deleted, _, promoted = _delete_while_promoting(
+        deleted, _, promoted = _while_promoting(
             application, monkeypatch, client_id,
             lambda client: client.delete(f"/register/{client_id}", headers=_bearer(token)),
         )
@@ -399,6 +413,74 @@ class TestADeleteDuringAPromotion:
         assert promoted == 200
         assert deleted.status_code in (401, 409)
         assert any(c.client_id == client_id for c in get_config().settings.clients)
+
+
+class TestAnOpenEndpointDoesNotQueueBehindTheScope:
+    """The scope is, for now, the lock a promotion holds while it writes the
+    file and a reload holds while it runs its hooks. ``/register/<id>`` is
+    open: whoever has no credential for it must be told so without waiting,
+    or anyone could park requests behind every load."""
+
+    @pytest.mark.parametrize("verb", ["get", "delete"])
+    @pytest.mark.parametrize("headers", [{}, {"Authorization": "Bearer not-the-token"}])
+    def test_a_caller_without_the_credential_is_answered_at_once(
+        self, application, monkeypatch, headers, verb
+    ):
+        client_id, _ = _register(application)
+
+        refused, answered_at_once, promoted = _while_promoting(
+            application, monkeypatch, client_id,
+            lambda client: getattr(client, verb)(f"/register/{client_id}", headers=headers),
+        )
+
+        assert answered_at_once
+        assert refused.status_code == 401
+        assert promoted == 200
+
+    def test_a_refused_registration_is_audited_outside_the_scope(self, tmp_path, monkeypatch):
+        """An audit entry runs the on_audit_event hooks. Inside the scope a
+        slow one would hold off every load and every other client
+        operation, for a request anyone can send."""
+        from nanoidp.routes import registration as registration_routes
+
+        config_dir = tmp_path / "config"
+        config_dir.mkdir(parents=True)
+        for name in ("settings.yaml", "users.yaml"):
+            shutil.copy(_REPO / "config" / name, config_dir / name)
+        settings = config_dir / "settings.yaml"
+        document = yaml.safe_load(settings.read_text())
+        document["jwt"]["keys_dir"] = str(tmp_path / "keys")
+        document["oauth"]["dynamic_registration"] = {"enabled": True, "max_clients": 1}
+        settings.write_text(yaml.safe_dump(document))
+        full = create_app(str(config_dir))
+        full.config["TESTING"] = True
+        _register(full)
+        audit = registration_routes._audit
+        scope_was_free = []
+
+        def audited(event_type, *args, **kwargs):
+            if event_type == "client_registration_refused":
+                free = []
+
+                def another_operation():
+                    with get_identities().runtime_client_lifecycle():
+                        free.append(True)
+
+                from nanoidp.services.identities import identities_for
+
+                get_identities = lambda: identities_for(get_config())  # noqa: E731
+                thread = threading.Thread(target=another_operation)
+                thread.start()
+                thread.join(WINDOW_SECONDS)
+                scope_was_free.append(bool(free))
+            return audit(event_type, *args, **kwargs)
+
+        monkeypatch.setattr(registration_routes, "_audit", audited)
+
+        refused = full.test_client().post("/register", json={"redirect_uris": [REDIRECT]})
+
+        assert refused.status_code == 429
+        assert scope_was_free == [True]
 
 
 class TestAReloadIsAlreadySafe:
