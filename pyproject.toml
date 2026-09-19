@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "nanoidp"
-version = "3.3.0rc1"
+version = "3.3.0"
 description = "A test identity provider: real OAuth2/OIDC and SAML 2.0 for development and testing, not for production"
 readme = "README.md"
 license = "MIT"
