@@ -28,7 +28,7 @@ from ..config_documents import (
 from ..config_writer import ConflictError, LockUnavailableError
 from ..hooks import HookError
 from ..services.dynamic_registration import (
-    forget_registration,
+    delete_client_and_registration,
     live_registration,
     prune_stale_registrations,
 )
@@ -138,7 +138,9 @@ def _source_of(client_id: str, resolver: IdentityResolver) -> Optional[str]:
     Read from the record rather than from the shape of the id, which is only
     a hint for a human reading a log - and through the liveness check, so a
     record that outlived its client cannot label the next client to hold
-    that name as one somebody registered.
+    that name as one somebody registered. Outside the lifecycle scope on
+    purpose (#403): this is an open read and only a label, so it does not
+    wait for loads, and the label can be stale for this one response.
     """
     return "dcr" if live_registration(client_id, resolver) is not None else None
 
@@ -164,7 +166,15 @@ def get_client(client_id: str) -> ResponseReturnValue:
 
 @runtime_bp.route("/clients/<client_id>", methods=["DELETE"])
 def delete_client(client_id: str) -> ResponseReturnValue:
-    return _delete("client", client_id, identities_for(get_config()).delete_runtime_client)
+    resolver = identities_for(get_config())
+
+    def delete(name: str) -> None:
+        # Before the scope, which a promotion of this client would keep
+        # the delete waiting on: the 409 is for now, not for later (#192).
+        resolver.refuse_while_promoting("client", name)
+        delete_client_and_registration(name, resolver)
+
+    return _delete("client", client_id, delete)
 
 
 @runtime_bp.route("/clients/<client_id>/promote", methods=["POST"])
@@ -183,10 +193,13 @@ def reset() -> ResponseReturnValue:
     """Remove every runtime user and client. Never touches the declared
     configuration."""
     resolver = identities_for(get_config())
-    users_deleted, clients_deleted = resolver.reset_runtime_identities()
-    # Same reason as in _delete: a record must not outlive its client and be
-    # inherited by the next one to hold that id (#190).
-    prune_stale_registrations(resolver)
+    with resolver.runtime_client_lifecycle():
+        users_deleted, clients_deleted = resolver.reset_runtime_identities()
+        # Same reason as in delete_client: a record must not outlive its client
+        # and be inherited by the next one to hold that id (#190). Inside
+        # the scope, or a client created between the reset and the sweep
+        # keeps the record alive through it (#403).
+        prune_stale_registrations(resolver)
     audit_event(
         "runtime_identities_reset",
         "success",
@@ -217,13 +230,6 @@ def _delete(kind: str, name: str, delete: Callable[[str], None]) -> ResponseRetu
         return _error(404, f"no runtime {kind} {name!r}", "not_found")
     except PromotionInProgress:
         return _error(409, f"runtime {kind} {name!r} is being promoted", "promotion_in_progress")
-    if kind == "client":
-        # The registration record goes with the client, rather than waiting
-        # for the next sweep (#190): a client created again under the same
-        # id would otherwise inherit it, and the credential handed to
-        # whoever registered the first one would read and delete the
-        # second, operator-created one.
-        forget_registration(name)
     _audit("runtime_identity_deleted", kind, name)
     return jsonify({"deleted": name, "kind": kind})
 

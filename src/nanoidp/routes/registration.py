@@ -25,6 +25,7 @@ from ..services.discovery import build_discovery_document
 from ..services.dynamic_registration import (
     DynamicRegistration,
     RegistrationRejected,
+    delete_client_and_registration,
     forget_registration,
     live_registration,
     new_client_id,
@@ -32,7 +33,6 @@ from ..services.dynamic_registration import (
     new_registration_token,
     prune_stale_registrations,
     record_registration,
-    registration_lock,
     registration_response,
     registrations,
     token_matches,
@@ -121,6 +121,42 @@ def _authenticated(
     return resolved.client, registration, token
 
 
+class _Refused(Exception):
+    """A registration refused inside the lifecycle scope, to be answered and
+    audited once outside it: an audit entry runs hooks, and the scope holds
+    off every load and every other client operation (#403)."""
+
+    def __init__(self, status: int, error: str, description: str, audited: bool = True) -> None:
+        super().__init__(description)
+        self.status = status
+        self.error = error
+        self.description = description
+        self.audited = audited
+
+
+def _authenticated_in_scope(
+    client_id: str, identities: IdentityResolver
+) -> Optional[Tuple[OAuthClient, DynamicRegistration, str]]:
+    """``_authenticated`` with the check of the credential and the
+    resolution of the client as one operation (#403): the record names its
+    client, so a client recreated under the id between the two would be
+    read with the first one's credential. What comes back is by value, so
+    a response is built from it after the scope is left: a client deleted
+    and recreated by then cannot change it, and the read answers with the
+    client it authenticated, which is a read that already happened.
+
+    Asked once without the scope first. This endpoint is open and the scope
+    waits for loads and promotions, so a caller with no credential, or not
+    this client's, is told so without waiting and can hold nothing up. That
+    first answer is not authoritative, and a wrong one can only be a 401 for
+    a registration that is ending; the one that counts is the second.
+    """
+    if _authenticated(client_id, identities) is None:
+        return None
+    with identities.runtime_client_lifecycle():
+        return _authenticated(client_id, identities)
+
+
 def _audit(event_type: str, status: str, client_id: str, **details: Any) -> None:
     """Never the registration token and never the client secret (#190)."""
     audit_event(
@@ -155,45 +191,51 @@ def register() -> ResponseReturnValue:
     # The sweep, the capacity check and the two creates are separate visits
     # to the store; under a threaded server they would interleave and let
     # more registrations through than the limit allows, and the limit is
-    # the only bound an open endpoint has.
-    with registration_lock:
-        # Sweeping first means the limit counts registrations whose client
-        # is still there, not the records of promoted or deleted ones.
-        prune_stale_registrations(identities)
-        if len(registrations().list()) >= settings.dynamic_registration_max_clients:
-            _audit(
-                "client_registration_refused", "failure", "", error=REGISTRATION_LIMIT_REACHED
-            )
-            return _error(
-                429,
-                REGISTRATION_LIMIT_REACHED,
-                "this server is holding as many dynamic registrations as it accepts",
-            )
+    # the only bound an open endpoint has. The same scope keeps a delete or
+    # a reset from landing between the client and its record, which would
+    # answer 201 for a client that is gone and leave the record to the next
+    # one of that id (#403).
+    try:
+        with identities.runtime_client_lifecycle():
+            # Sweeping first means the limit counts registrations whose
+            # client is still there, not the records of promoted or deleted
+            # ones.
+            prune_stale_registrations(identities)
+            if len(registrations().list()) >= settings.dynamic_registration_max_clients:
+                raise _Refused(
+                    429,
+                    REGISTRATION_LIMIT_REACHED,
+                    "this server is holding as many dynamic registrations as it accepts",
+                )
 
-        client_id = new_client_id(identities)
-        entry["client_id"] = client_id
-        if include_secret:
-            entry["client_secret"] = new_client_secret()
+            client_id = new_client_id(identities)
+            entry["client_id"] = client_id
+            if include_secret:
+                entry["client_secret"] = new_client_secret()
 
-        try:
-            client = parse_client_entry(entry, "POST /register")
-        except EntryInvalid as invalid:
-            # The metadata passed the translation but not the client model.
-            _audit(
-                "client_registration_refused", "failure", "", error="invalid_client_metadata"
-            )
-            return _error(400, "invalid_client_metadata", invalid.message)
+            try:
+                client = parse_client_entry(entry, "POST /register")
+            except EntryInvalid as invalid:
+                # The metadata passed the translation but not the client model.
+                raise _Refused(400, "invalid_client_metadata", invalid.message) from invalid
 
-        try:
-            created = identities.create_runtime_client(client)
-        except (DeclaredNameCollision, RuntimeObjectExists):
-            # new_client_id checked, so this is a client that appeared in
-            # between. Nothing is half-created: the record comes after.
-            current_app.logger.warning("Registration lost a race for %s", client_id)
-            return _error(400, "invalid_client_metadata", "could not register, please retry")
+            try:
+                created = identities.create_runtime_client(client)
+            except (DeclaredNameCollision, RuntimeObjectExists) as lost:
+                # new_client_id checked, so this is a client created by code
+                # that does not enter the scope. Nothing is half-created: the
+                # record comes after.
+                current_app.logger.warning("Registration lost a race for %s", client_id)
+                raise _Refused(
+                    400, "invalid_client_metadata", "could not register, please retry", audited=False
+                ) from lost
 
-        token = new_registration_token()
-        registration = record_registration(client_id, grant_types, token)
+            token = new_registration_token()
+            registration = record_registration(client_id, grant_types, token)
+    except _Refused as refused:
+        if refused.audited:
+            _audit("client_registration_refused", "failure", "", error=refused.error)
+        return _error(refused.status, refused.error, refused.description)
     _audit(
         "client_registered",
         "success",
@@ -215,7 +257,7 @@ def read_registration(client_id: str) -> ResponseReturnValue:
     the caller has just presented, which is why nothing has to keep it.
     """
     identities = identities_for(get_config())
-    authenticated = _authenticated(client_id, identities)
+    authenticated = _authenticated_in_scope(client_id, identities)
     if authenticated is None:
         # Not audited: the audit is a bounded deque, and anyone can reach
         # this branch without a credential, so recording it would let a
@@ -237,23 +279,37 @@ def read_registration(client_id: str) -> ResponseReturnValue:
 def delete_registration(client_id: str) -> ResponseReturnValue:
     """RFC 7592 delete: the client goes with the registration."""
     identities = identities_for(get_config())
+    # The credential check, the client and the record are one operation
+    # (#403): authenticated as one client, the delete must not land on
+    # another that took the id in between.
     if _authenticated(client_id, identities) is None:
+        # Before the scope and not authoritative, for the reason given in
+        # _authenticated_in_scope: no credential, no waiting.
         return _unauthorized()
-    try:
-        identities.delete_runtime_client(client_id)
-    except PromotionInProgress:
-        # The operator is writing this client into the declared
-        # configuration right now; the same 409 /api/runtime answers.
-        return _error(
-            409, "invalid_request", "this client is being promoted, try again"
-        )
-    except RuntimeObjectNotFound:
-        # It went away between the check and the delete. Nothing to manage,
-        # and the caller learns no more than it would about any other
-        # unknown registration.
-        forget_registration(client_id)
-        return _unauthorized()
-    forget_registration(client_id)
+    with identities.runtime_client_lifecycle():
+        if _authenticated(client_id, identities) is None:
+            return _unauthorized()
+        try:
+            delete_client_and_registration(client_id, identities)
+        except PromotionInProgress:
+            # A promotion in progress holds the scope, so this is one that
+            # wrote its entry and whose reload failed: the client is on its
+            # way to being declared and stays until a load succeeds. The
+            # same 409 /api/runtime answers, and like there nothing has
+            # changed: the record goes after the client.
+            return _error(
+                409,
+                "invalid_request",
+                "this client is being promoted; its registration ends when the "
+                "configuration next loads",
+            )
+        except RuntimeObjectNotFound:
+            # Code that removes clients without entering the scope took it
+            # between the check and the delete. Nothing to manage, and the
+            # caller learns no more than it would about any other unknown
+            # registration.
+            forget_registration(client_id)
+            return _unauthorized()
     _audit("client_registration_deleted", "success", client_id)
     return "", 204
 

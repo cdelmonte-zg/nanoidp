@@ -13,12 +13,21 @@ about registration, every read checks that the client is still there and
 drops the record if it is not, and ``prune_stale_registrations`` does the
 same sweep for the records nobody asks about. ``source: dcr`` on a client is
 therefore derived from a live record, never from the shape of its id.
+
+Those checks are by name, so they hold only while no other client can take
+the name between two visits to the store. Every operation that changes a
+client or its record, or that acts on a credential, therefore runs inside
+``IdentityResolver.runtime_client_lifecycle`` (#403):
+``delete_client_and_registration`` here, the registration and the RFC 7592
+operations in ``routes.registration``, the reset in ``routes.runtime``. A
+read outside it is not authoritative: it may say 401 a moment early, which
+is safe, and ``routes.runtime`` labels a client ``source: dcr`` from one,
+which can be stale for the length of a response and gives nothing away.
 """
 
 import hashlib
 import logging
 import secrets
-import threading
 import time
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -106,7 +115,8 @@ def _client_is_gone(client_id: str, identities: IdentityResolver) -> bool:
     By name, which is all a record has: this cannot tell the client it was
     issued for from a later one created under the same name. What keeps a
     record from being inherited is that it never survives its client - every
-    surface that removes one drops the record with it, and the sweep after a
+    surface that removes one drops the record with it, in the same lifecycle
+    scope, so no client is created in between (#403), and the sweep after a
     configuration load catches promotion, which is the case nothing else
     would. Code embedding nanoidp that calls
     ``IdentityResolver.delete_runtime_client`` directly, and creates another
@@ -169,6 +179,22 @@ def forget_registration(client_id: str) -> bool:
     return registrations().delete(client_id)
 
 
+def delete_client_and_registration(client_id: str, identities: IdentityResolver) -> None:
+    """Remove a runtime client together with its record, as one operation.
+
+    The one way a surface deletes a runtime client (#403), registered or
+    not. The record goes with the client rather than waiting for the next
+    sweep (#190): a client created again under the same id would otherwise
+    inherit it, and the credential handed to whoever registered the first
+    one would read and delete the second. After the client and not before,
+    so a delete the resolver refuses (``PromotionInProgress``,
+    ``RuntimeObjectNotFound``) has changed nothing; both propagate.
+    """
+    with identities.runtime_client_lifecycle():
+        identities.delete_runtime_client(client_id)
+        forget_registration(client_id)
+
+
 class RegistrationRejected(ValueError):
     """The metadata cannot become a client. Carries the RFC 7591 error code.
 
@@ -187,10 +213,6 @@ DEFAULT_GRANT_TYPES = ("authorization_code",)
 # RFC 7591 section 2: absent means client_secret_basic, so a secret is issued
 # unless the client asks to be public.
 DEFAULT_AUTH_METHOD = "client_secret_basic"
-# One registration at a time: the sweep, the capacity check and the create
-# are three separate visits to the store, and the limit is the only bound
-# this endpoint has, so they must not interleave.
-registration_lock = threading.Lock()
 
 
 def _string_list(data: Dict[str, Any], field: str) -> List[str]:
