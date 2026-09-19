@@ -29,6 +29,7 @@ from nanoidp.services.runtime_repository import (
     delete_if,
     delete_where,
     replace,
+    transact_refusing,
 )
 from tests.runtime_store_contract import REPOSITORIES, STORE_FACTORIES, user
 
@@ -373,6 +374,29 @@ class TestCodecs:
         assert len(copies) >= 2
 
 
+class TestTransactRefusing:
+    def test_a_refusal_is_raised_with_its_changes_in(self, kit):
+        """The difference from raising inside, which takes them back."""
+        repo, make, name_of, _ = kit
+        repo.create(make("stale"))
+
+        def decide(view):
+            view.delete("stale")
+            return LookupError("no room after tidying up")
+
+        with pytest.raises(LookupError, match="no room"):
+            transact_refusing(repo, decide)
+
+        assert repo.list() == []
+
+    def test_anything_else_is_the_result(self, kit):
+        repo, make, _, _field = kit
+
+        created = transact_refusing(repo, lambda view: view.create(make("alice")))
+
+        assert created == repo.entry("alice")
+
+
 class TestHolds:
     def test_a_hold_is_a_claim_with_its_own_identity(self, kit):
         repo, make, _, _field = kit
@@ -662,6 +686,18 @@ class TestCreateWithin:
             create_within(repo, make("alice"), limit=limit, is_expired=lambda value: name_of(value) == "stale")
 
         assert [name_of(obj) for obj in repo.list()] == ["alice", "other"]
+
+    def test_full_is_said_in_the_callers_own_words(self, kit):
+        repo, make, _, _field = kit
+
+        class TooManyLogins(Exception):
+            pass
+
+        create_within(repo, make("a"), limit=1)
+        with pytest.raises(TooManyLogins):
+            create_within(repo, make("b"), limit=1, full=TooManyLogins())
+        with pytest.raises(RuntimeObjectExists):
+            create_within(repo, make("a"), limit=1, full=TooManyLogins())
 
     def test_the_limit_holds_under_concurrent_creates(self, kit):
         repo, make, _, _field = kit

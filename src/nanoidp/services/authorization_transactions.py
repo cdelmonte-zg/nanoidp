@@ -43,7 +43,6 @@ from .runtime_identities import (
 )
 from .runtime_repository import (
     Entry,
-    RepositoryFull,
     RepositoryTransaction,
     create_within,
     delete_where,
@@ -134,6 +133,12 @@ class AuthorizationTransaction(BaseModel):
             self.browser_binding, browser_binding
         )
 
+    def is_live_for(self, browser_binding: Optional[str]) -> bool:
+        """This browser's, and live now: the one rule for which transaction
+        a read or a transition may touch. "Now" is when it is asked, so a
+        transition asks from inside its decision, after any wait."""
+        return self.is_bound_to(browser_binding) and self.is_live()
+
 
 class LookupOutcome(Enum):
     NONE = "none"
@@ -183,26 +188,24 @@ class AuthorizationTransactionStore:
             client_snapshot=ClientSnapshot.of(client),
             client_origin=client_origin,
         )
-        try:
-            return create_within(
-                self._repository,
-                transaction,
-                MAX_PENDING_TRANSACTIONS,
-                is_expired=lambda stored: not stored.is_live(now),
-            ).value
-        except RepositoryFull as full:
-            raise TransactionStoreFull(
+        return create_within(
+            self._repository,
+            transaction,
+            MAX_PENDING_TRANSACTIONS,
+            is_expired=lambda stored: not stored.is_live(),
+            full=TransactionStoreFull(
                 f"{MAX_PENDING_TRANSACTIONS} authorization requests already pending"
-            ) from full
+            ),
+        ).value
 
     def get_bound(
         self, transaction_id: str, browser_binding: Optional[str]
     ) -> Optional[AuthorizationTransaction]:
         """The live transaction with this id, if this browser created it."""
         transaction = self._repository.get(transaction_id)
-        if transaction is None or not transaction.is_bound_to(browser_binding):
+        if transaction is None or not transaction.is_live_for(browser_binding):
             return None
-        return transaction if transaction.is_live() else None
+        return transaction
 
     def find_unique_for_binding(self, browser_binding: Optional[str]) -> Lookup:
         """The one live transaction of this browser, for a request that does
@@ -233,12 +236,10 @@ class AuthorizationTransactionStore:
     ) -> Optional[AuthorizationTransaction]:
         """Record a verified password on a pending transaction. ``None`` when
         the transaction is gone, not this browser's, or no longer pending."""
-        now = time.time()
-
         def decide(
             view: RepositoryTransaction[AuthorizationTransaction],
         ) -> Optional[AuthorizationTransaction]:
-            current = _bound(view, transaction_id, browser_binding, now)
+            current = _bound(view, transaction_id, browser_binding)
             if current is None or current.state is not TransactionState.PENDING:
                 return None
             changed = _changed(
@@ -246,7 +247,7 @@ class AuthorizationTransactionStore:
                 state=TransactionState.PRIMARY_VERIFIED,
                 primary_username=username,
                 primary_amr=list(amr) if amr else None,
-                primary_verified_at=now,
+                primary_verified_at=time.time(),
             )
             return view.replace(transaction_id, changed).value
 
@@ -256,12 +257,10 @@ class AuthorizationTransactionStore:
         self, transaction_id: str, browser_binding: Optional[str]
     ) -> Optional[AuthorizationTransaction]:
         """Back to the username step: forget any verified password."""
-        now = time.time()
-
         def decide(
             view: RepositoryTransaction[AuthorizationTransaction],
         ) -> Optional[AuthorizationTransaction]:
-            current = _bound(view, transaction_id, browser_binding, now)
+            current = _bound(view, transaction_id, browser_binding)
             if current is None or current.state is TransactionState.PENDING:
                 return current
             changed = _changed(
@@ -290,11 +289,9 @@ class AuthorizationTransactionStore:
         user, checked inside the decision, since a concurrent "Change username"
         may have reset it after the caller read it.
         """
-        now = time.time()
-
         def this_one(entry: Entry[AuthorizationTransaction]) -> bool:
             current = entry.value
-            if not current.is_bound_to(browser_binding) or not current.is_live(now):
+            if not current.is_live_for(browser_binding):
                 return False
             return verified_username is None or (
                 current.state is TransactionState.PRIMARY_VERIFIED
@@ -305,8 +302,7 @@ class AuthorizationTransactionStore:
         return taken.value if taken is not None else None
 
     def prune_expired(self) -> int:
-        now = time.time()
-        return delete_where(self._repository, lambda stored: not stored.is_live(now))
+        return delete_where(self._repository, lambda stored: not stored.is_live())
 
     def delete_all(self) -> int:
         return self._repository.delete_all()
@@ -316,13 +312,10 @@ def _bound(
     view: RepositoryTransaction[AuthorizationTransaction],
     transaction_id: str,
     browser_binding: Optional[str],
-    now: float,
 ) -> Optional[AuthorizationTransaction]:
     """What ``get_bound`` answers, from inside a decision."""
     entry = view.entry(transaction_id)
-    if entry is None or not entry.value.is_bound_to(browser_binding):
-        return None
-    return entry.value if entry.value.is_live(now) else None
+    return entry.value if entry is not None and entry.value.is_live_for(browser_binding) else None
 
 
 def _changed(current: AuthorizationTransaction, **changes: object) -> AuthorizationTransaction:

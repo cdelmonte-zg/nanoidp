@@ -53,6 +53,32 @@ def interleaved(monkeypatch):
     for owner in (runtime_repository.MemoryRuntimeRepository, runtime_repository._MemoryTransaction):
         for method in ("entry", "entries"):
             monkeypatch.setattr(owner, method, giving_way(getattr(owner, method)))
+    # And after a delete on the repository: a change made as a delete and a
+    # create leaves the object absent between the two.
+    repository = runtime_repository.MemoryRuntimeRepository
+    monkeypatch.setattr(repository, "delete", giving_way(repository.delete))
+
+
+def _while_the_store_is_busy(seconds, work):
+    """Run ``work`` so that it has to wait ``seconds`` for the repository: a
+    backend that retries on busy can keep a caller waiting that long."""
+    from nanoidp.services.runtime_identities import PydanticCodec, get_runtime_identity_store
+
+    busy = get_runtime_identity_store().repository(
+        "kept-busy", lambda client: client.client_id, PydanticCodec(OAuthClient)
+    )
+    holding = threading.Event()
+
+    def hold(view):
+        holding.set()
+        time.sleep(seconds)
+
+    holder = threading.Thread(target=lambda: busy.transact(hold))
+    holder.start()
+    assert holding.wait(5)
+    result = work()
+    holder.join()
+    return result
 
 
 def _race(work):
@@ -113,8 +139,77 @@ def _cached(url):
     )
 
 
+class TestExpiryIsJudgedWhenTheDecisionIsMade:
+    """Not when the caller started waiting for the store. A record that
+    expires during the wait is expired: a clock read before the wait would
+    issue a code, or complete a second factor, past ``expires_at``."""
+
+    def test_an_authorization_transaction(self, monkeypatch):
+        monkeypatch.setattr(transactions_module, "TRANSACTION_LIFETIME_SECONDS", 0.3)
+        store = get_authorization_transaction_store()
+        consumed = _transaction(store)
+        marked = _transaction(store)
+        reset = _transaction(store)
+        store.mark_primary_verified(reset.id, "browser-a", username="admin", amr=["pwd"])
+
+        outcomes = _while_the_store_is_busy(
+            0.6,
+            lambda: (
+                store.consume(consumed.id, "browser-a"),
+                store.mark_primary_verified(marked.id, "browser-a", username="admin", amr=["pwd"]),
+                store.reset_login(reset.id, "browser-a"),
+            ),
+        )
+
+        assert outcomes == (None, None, None)
+
+    @pytest.mark.parametrize("operation", ["consume"])
+    def test_a_pending_second_factor(self, monkeypatch, operation):
+        monkeypatch.setattr(second_factors_module, "PENDING_SECOND_FACTOR_LIFETIME_SECONDS", 0.3)
+        store = get_pending_second_factor_store()
+        record = _second_factor(store)
+
+        taken = _while_the_store_is_busy(
+            0.6,
+            lambda: store.consume(record.id, "browser-a", purpose="login", context={"next": "/"}),
+        )
+
+        assert taken is None
+
+
 @pytest.mark.usefixtures("interleaved")
 class TestAuthorizationTransactions:
+    def test_a_transaction_in_transition_is_never_read_as_gone(self):
+        """A transition changes a record in place. Made as a delete and a
+        create, it leaves a live transaction absent in between, and a read
+        landing there tells a user in the middle of a login that the login
+        does not exist."""
+        store = get_authorization_transaction_store()
+        transaction = _transaction(store)
+        stop = threading.Event()
+        gone = []
+
+        def read():
+            while not stop.is_set():
+                if store.get_bound(transaction.id, "browser-a") is None:
+                    gone.append(True)
+                if store.find_unique_for_binding("browser-a").transaction is None:
+                    gone.append(True)
+
+        readers = [threading.Thread(target=read) for _ in range(2)]
+        for reader in readers:
+            reader.start()
+        try:
+            for _ in range(15):
+                store.mark_primary_verified(transaction.id, "browser-a", username="admin", amr=["pwd"])
+                store.reset_login(transaction.id, "browser-a")
+        finally:
+            stop.set()
+            for reader in readers:
+                reader.join()
+
+        assert gone == []
+
     def test_a_transaction_is_consumed_once(self):
         store = get_authorization_transaction_store()
         transaction = _transaction(store)
@@ -278,6 +373,10 @@ class TestClientMetadataCache:
 
         _race(work)
 
+        assert cimd.cache().get(url).protected_until == until
+        # And in the order that decides it, which the race only sometimes
+        # takes: the promise first, the document fetched again after.
+        cimd.remember(_cached(url), None)
         assert cimd.cache().get(url).protected_until == until
 
     def test_an_expired_document_is_dropped_but_not_the_fresh_one_that_replaced_it(self):

@@ -152,15 +152,18 @@ class TestStore:
 
 
 class TestReadsSeeTransitionsWhole:
-    """A read during a transition finds the transaction, and finds it whole:
-    as it was before or as it is after, never absent and never half changed.
+    """A read during a transition finds the transaction whole: as it was
+    before or as it is after, never half changed.
 
     Until #404 a transition was a delete and a create, so a read between
     the two saw a live transaction as gone, and reads took the transitions'
     lock to wait it out (#346 review). A transition is now one change in
-    place. The test stops it in the middle of its decision and reads: it
+    place. This test stops one in the middle of its decision and reads; it
     does not ask whether the read waited, which is this backend's way and
-    need not be another's."""
+    need not be another's. It cannot see an absence, because it stops
+    before anything is written: that a transaction in transition is never
+    read as gone is pinned in tests/test_runtime_services_atomicity.py,
+    where a reader runs against transitions that give way."""
 
     @staticmethod
     def _is_whole(transaction):

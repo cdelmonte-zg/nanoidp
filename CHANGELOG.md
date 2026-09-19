@@ -44,14 +44,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   back a verified password, remembering a metadata document (sweep, evict,
   replace) and extending its protection are each one decision of the
   repository's, so they are whole for whoever shares the store and not only
-  for the threads of one process. The three module locks are gone, and reads
-  no longer wait for a transition: a record is now changed in place, so
-  there is no moment at which a live one is absent. No behaviour changes,
-  with one exception nobody should notice: a cached metadata document that
-  is fetched again, or whose protection is extended, keeps its place in the
-  listing instead of moving to the end. The test suite now runs every
-  decision twice, which is how a decision that is not safe to repeat would
-  show before a backend that retries.
+  for the threads of one process. The three module locks are gone. Reads
+  no longer take the transitions' lock, only the repository's own for the
+  length of one look: a record is now changed in place, so there is no
+  moment at which a live one is absent for a read to wait out. Expiry is
+  judged inside the decision, after any wait for the store, as it was under
+  the locks. No endpoint behaves differently, with one exception nobody
+  should notice: a cached metadata document that is fetched again, or whose
+  protection is extended, keeps its place in the listing instead of moving
+  to the end (and, inside the store, its identity). CI's second pass over
+  the suite now runs every decision twice, which is how an effect outside
+  a decision's view would show before a backend that retries.
 
 ### Security
 - **A registration credential no longer reads or deletes a client recreated

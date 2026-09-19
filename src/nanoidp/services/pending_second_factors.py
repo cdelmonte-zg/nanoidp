@@ -35,8 +35,8 @@ from .runtime_identities import (
     PydanticCodec,
     get_runtime_identity_store,
 )
-from .runtime_repository import Entry, RepositoryFull, create_within, delete_where
 from .runtime_repository import consume as consume_entry
+from .runtime_repository import create_within, delete_where
 
 # A code screen is a continuation of the login that just happened, not a
 # page to come back to.
@@ -87,6 +87,14 @@ class PendingSecondFactor(BaseModel):
             and hmac.compare_digest(self.context_digest, context_digest(context))
         )
 
+    def is_live_for(
+        self, browser_binding: Optional[str], purpose: Purpose, context: Mapping[str, str]
+    ) -> bool:
+        """``is_for``, and live now: the one rule for which record a read
+        or a consume may touch. "Now" is when it is asked, so a consume
+        asks from inside its decision, after any wait."""
+        return self.is_for(browser_binding, purpose, context) and self.is_live()
+
 
 class PendingSecondFactorStore:
     """The operations on pending second factors, each one atomic with
@@ -121,17 +129,15 @@ class PendingSecondFactorStore:
             verified_at=now,
             expires_at=now + PENDING_SECOND_FACTOR_LIFETIME_SECONDS,
         )
-        try:
-            return create_within(
-                self._repository,
-                record,
-                MAX_PENDING_SECOND_FACTORS,
-                is_expired=lambda stored: not stored.is_live(now),
-            ).value
-        except RepositoryFull as full:
-            raise PendingSecondFactorStoreFull(
+        return create_within(
+            self._repository,
+            record,
+            MAX_PENDING_SECOND_FACTORS,
+            is_expired=lambda stored: not stored.is_live(),
+            full=PendingSecondFactorStoreFull(
                 f"{MAX_PENDING_SECOND_FACTORS} logins already waiting for a code"
-            ) from full
+            ),
+        ).value
 
     def get_bound(
         self,
@@ -144,9 +150,9 @@ class PendingSecondFactorStore:
         """The live record with this id, if it is this browser's, for this
         surface and this context."""
         record = self._repository.get(record_id)
-        if record is None or not record.is_for(browser_binding, purpose, context):
+        if record is None or not record.is_live_for(browser_binding, purpose, context):
             return None
-        return record if record.is_live() else None
+        return record
 
     def consume(
         self,
@@ -158,12 +164,11 @@ class PendingSecondFactorStore:
     ) -> Optional[PendingSecondFactor]:
         """Remove the record and return it, exactly once. ``None`` when it is
         gone, expired, or not this browser's, surface's or context's."""
-        now = time.time()
-
-        def this_one(entry: Entry[PendingSecondFactor]) -> bool:
-            return entry.value.is_for(browser_binding, purpose, context) and entry.value.is_live(now)
-
-        taken = consume_entry(self._repository, record_id, this_one)
+        taken = consume_entry(
+            self._repository,
+            record_id,
+            lambda entry: entry.value.is_live_for(browser_binding, purpose, context),
+        )
         return taken.value if taken is not None else None
 
     def discard(
@@ -187,8 +192,7 @@ class PendingSecondFactorStore:
         return taken.value if taken is not None else None
 
     def prune_expired(self) -> int:
-        now = time.time()
-        return delete_where(self._repository, lambda stored: not stored.is_live(now))
+        return delete_where(self._repository, lambda stored: not stored.is_live())
 
 
 def get_pending_second_factor_store() -> PendingSecondFactorStore:

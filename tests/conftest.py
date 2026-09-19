@@ -3,6 +3,7 @@ Pytest configuration and shared fixtures for NanoIDP tests.
 """
 
 import base64
+import os
 import shutil
 from pathlib import Path
 from typing import Optional
@@ -99,11 +100,17 @@ def every_stored_value_survives_its_codec(monkeypatch):
     from nanoidp.services.runtime_repository import MemoryRuntimeRepository
 
     monkeypatch.setattr(MemoryRuntimeRepository, "verify_codecs", True)
-    # And every decision is run twice, the first time against a view that
-    # is thrown away: a backend with real transactions may retry one, and
-    # this one never would, so a decision that counts, logs, draws a random
-    # value or changes what it captured would pass here and fail there.
-    monkeypatch.setattr(MemoryRuntimeRepository, "run_decisions_twice", True)
+    # With NANOIDP_TEST_DECISIONS_TWICE set, every decision is run twice,
+    # the first time against a view that is thrown away: a backend with
+    # real transactions may retry one, and this one never would. What that
+    # catches is an effect outside the view that adds up (a counter, a list
+    # appended to, a log line a test counts, a captured object changed), not
+    # a value drawn at random, which the second run simply draws again. Not
+    # the default, because a decision run once is what production does and
+    # has to be what most runs test; CI's coverage pass sets it, so every
+    # push runs the suite both ways.
+    if os.environ.get("NANOIDP_TEST_DECISIONS_TWICE"):
+        monkeypatch.setattr(MemoryRuntimeRepository, "run_decisions_twice", True)
 
 
 @pytest.fixture(autouse=True)
