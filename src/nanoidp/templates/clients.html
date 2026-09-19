@@ -39,7 +39,10 @@
                             {% if client.is_public %}
                             <span class="badge bg-secondary">public (none)</span>
                             {% elif client.client_secret %}
-                            <code class="text-muted">{{ client.client_secret[:8] }}...{{ client.client_secret[-4:] }}</code>
+                            {# A fixed mask, never a part of the secret and never its
+                               length: this page is a read, and management_secret
+                               gates mutations only. #}
+                            <span class="text-muted" title="A secret is set. It is never shown here.">&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;</span>
                             {% else %}
                             <span class="text-muted">-</span>
                             {% endif %}

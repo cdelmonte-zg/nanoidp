@@ -201,6 +201,33 @@ both, or neither can be enabled.
 this is not exposed on the Settings page or the MCP `update_settings` tool -
 a secret editable through the surface it protects isn't a secret.
 
+### What a read can see
+
+Reads are not gated by `management_secret`, and what they can see is
+bounded, with or without it: read-only management surfaces (the web UI
+pages, `GET /api/*`, `GET /api/runtime/*`) expose client metadata and
+configuration state, but render no material derived from a stored client
+secret. On the clients page the secret cell is independent of both the
+value and the length of the stored secret: every confidential client gets
+the same fixed mask, whether it is declared in `settings.yaml`, created
+through `/api/runtime` or registered through `/register`.
+
+Where a client secret is returned, it goes to the party that holds it, not
+to a reader: the response to `POST /register` and every RFC 7592 read
+(`GET /register/<client_id>`), which needs that client's registration access
+token; the "Regenerate Secret" message, shown to the session that performed
+that gated mutation; and the new-client form, which proposes a freshly
+generated secret that is stored only if the form is submitted. To read a
+declared secret, read `settings.yaml`.
+
+Two limits of this. `require_ui_login` is a login, not a role: any
+`users.yaml` account passes it, and under `login_mode: persona` no
+credential is checked at all, so it narrows who can read without changing
+what a read shows. And the built-in test page (`/test`) prints the literal
+`demo-client` / `demo-secret` pair that `nanoidp init` writes. Those are
+public defaults, the same ones the quickstart uses: an instance where a
+client secret matters should not keep them.
+
 ---
 
 ## Security Profiles
