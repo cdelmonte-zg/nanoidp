@@ -21,7 +21,8 @@ else, so the guarantee belongs here.
   Everything the decision did becomes visible at once, or, if it raises, not
   at all. The OAuth semantics stay in the services, which write the
   decision; SQL, when there is some, stays in the backend, which runs it.
-- ``replace``, ``consume``, ``delete_if`` and ``create_within`` are the
+- ``replace``, ``consume``, ``delete_if``, ``delete_where`` and
+  ``create_within`` are the
   decisions most callers need, written once on top of ``transact`` so that
   every backend gets them by implementing it.
 
@@ -296,6 +297,21 @@ def delete_if(
         if (current.hold.hold_id if current.hold is not None else None) != hold_id:
             return False
         return view.delete(name)
+
+    return repository.transact(decide)
+
+
+def delete_where(repository: RuntimeRepository[T], condemned: Callable[[T], bool]) -> int:
+    """Remove every object ``condemned`` names, as one step, and say how
+    many. A scan, so for collections with a small cap: how expired objects
+    leave a large one is not settled here (see the module docstring)."""
+
+    def decide(view: RepositoryTransaction[T]) -> int:
+        dropped = 0
+        for current in view.entries():
+            if condemned(current.value) and view.delete(current.name):
+                dropped += 1
+        return dropped
 
     return repository.transact(decide)
 

@@ -27,6 +27,7 @@ from nanoidp.services.runtime_repository import (
     consume,
     create_within,
     delete_if,
+    delete_where,
     replace,
 )
 from tests.runtime_store_contract import REPOSITORIES, STORE_FACTORIES, user
@@ -70,8 +71,7 @@ def decisions_run(request, monkeypatch):
     pass with a decision that is not safe to repeat. So the whole contract
     runs a second time with each decision run twice, the first against a
     view that is then thrown away."""
-    if request.param == "twice":
-        monkeypatch.setattr(MemoryRuntimeRepository, "run_decisions_twice", True)
+    monkeypatch.setattr(MemoryRuntimeRepository, "run_decisions_twice", request.param == "twice")
 
 
 @pytest.fixture(params=STORE_FACTORIES)
@@ -587,6 +587,35 @@ class TestDeleteIf:
 
         assert delete_if(repo, "alice", created.instance_id, hold_id="released-meanwhile") is False
         assert repo.entry("alice") == created
+
+
+class TestDeleteWhere:
+    def test_the_condemned_go_and_the_rest_stay_in_order(self, kit):
+        repo, make, name_of, _ = kit
+        for name in ("a", "stale-1", "b", "stale-2"):
+            repo.create(make(name))
+
+        assert delete_where(repo, lambda value: name_of(value).startswith("stale")) == 2
+        assert [name_of(obj) for obj in repo.list()] == ["a", "b"]
+        assert delete_where(repo, lambda value: False) == 0
+
+    def test_an_object_condemned_by_several_is_counted_once(self, kit):
+        repo, make, _, _field = kit
+        for index in range(20):
+            repo.create(make(f"stale-{index}"))
+        counts = []
+
+        def condemned(value):
+            _give_way()
+            return True
+
+        def work(index):
+            counts.append(delete_where(repo, condemned))
+
+        _race(work)
+
+        assert sum(counts) == 20
+        assert repo.list() == []
 
 
 class TestCreateWithin:

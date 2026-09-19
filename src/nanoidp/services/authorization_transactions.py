@@ -17,15 +17,15 @@ A transaction is a snapshot of the request at the time its GET was
 accepted. Configuration changes do not revalidate it; the route only
 requires, before issuing a code, that the client still resolve.
 
-The records live in the runtime store (#235), which is storage by value
-with no update or compare-and-set. The transitions are this module's: each
-one is a single critical section under this module's lock, so the route
-calls them and never composes repository visits of its own.
+The records live in the runtime store (#235). The transitions are this
+module's, and each one is one decision of the repository's (#404): read the
+record, check it is this browser's, live and in the right state, and change
+or remove it, as a single step for whoever shares the store. The route calls
+them and never composes repository visits of its own.
 """
 
 import hmac
 import secrets
-import threading
 import time
 from dataclasses import dataclass
 from enum import Enum
@@ -41,6 +41,14 @@ from .runtime_identities import (
     PydanticCodec,
     get_runtime_identity_store,
 )
+from .runtime_repository import (
+    Entry,
+    RepositoryFull,
+    RepositoryTransaction,
+    create_within,
+    delete_where,
+)
+from .runtime_repository import consume as consume_entry
 
 # As long as the code the transaction will produce, as the starting value:
 # a login page left open longer than a code would live is a new request.
@@ -139,20 +147,11 @@ class Lookup:
     transaction: Optional[AuthorizationTransaction] = None
 
 
-# One lock for every operation, whichever store object makes it: the store
-# below is a view over the runtime store's repository, not an owner of state.
-# Reads take it too: a transition replaces a record with a delete and a
-# create, and a read between the two would see a live transaction as gone.
-# Reentrant, because the transitions read through get_bound while holding it.
-_store_lock = threading.RLock()
-
-
 class AuthorizationTransactionStore:
     """The operations on transactions, each one atomic with respect to the
-    others, reads included."""
-
-    def __init__(self) -> None:
-        self._lock = _store_lock
+    others. A read is a single look at the repository: a transition changes
+    a record in place, so there is no moment at which a live transaction is
+    absent for a read to find."""
 
     @property
     def _repository(self) -> MemoryRuntimeRepository[AuthorizationTransaction]:
@@ -184,20 +183,23 @@ class AuthorizationTransactionStore:
             client_snapshot=ClientSnapshot.of(client),
             client_origin=client_origin,
         )
-        with self._lock:
-            self._prune_expired(now)
-            if len(self._repository.list()) >= MAX_PENDING_TRANSACTIONS:
-                raise TransactionStoreFull(
-                    f"{MAX_PENDING_TRANSACTIONS} authorization requests already pending"
-                )
-            return self._repository.create(transaction)
+        try:
+            return create_within(
+                self._repository,
+                transaction,
+                MAX_PENDING_TRANSACTIONS,
+                is_expired=lambda stored: not stored.is_live(now),
+            ).value
+        except RepositoryFull as full:
+            raise TransactionStoreFull(
+                f"{MAX_PENDING_TRANSACTIONS} authorization requests already pending"
+            ) from full
 
     def get_bound(
         self, transaction_id: str, browser_binding: Optional[str]
     ) -> Optional[AuthorizationTransaction]:
         """The live transaction with this id, if this browser created it."""
-        with self._lock:
-            transaction = self._repository.get(transaction_id)
+        transaction = self._repository.get(transaction_id)
         if transaction is None or not transaction.is_bound_to(browser_binding):
             return None
         return transaction if transaction.is_live() else None
@@ -209,8 +211,7 @@ class AuthorizationTransactionStore:
         if browser_binding is None:
             return Lookup(LookupOutcome.NONE)
         now = time.time()
-        with self._lock:
-            transactions = self._repository.list()
+        transactions = self._repository.list()
         candidates = [
             transaction
             for transaction in transactions
@@ -232,35 +233,47 @@ class AuthorizationTransactionStore:
     ) -> Optional[AuthorizationTransaction]:
         """Record a verified password on a pending transaction. ``None`` when
         the transaction is gone, not this browser's, or no longer pending."""
-        with self._lock:
-            current = self.get_bound(transaction_id, browser_binding)
+        now = time.time()
+
+        def decide(
+            view: RepositoryTransaction[AuthorizationTransaction],
+        ) -> Optional[AuthorizationTransaction]:
+            current = _bound(view, transaction_id, browser_binding, now)
             if current is None or current.state is not TransactionState.PENDING:
                 return None
-            return self._replace(
+            changed = _changed(
                 current,
                 state=TransactionState.PRIMARY_VERIFIED,
                 primary_username=username,
                 primary_amr=list(amr) if amr else None,
-                primary_verified_at=time.time(),
+                primary_verified_at=now,
             )
+            return view.replace(transaction_id, changed).value
+
+        return self._repository.transact(decide)
 
     def reset_login(
         self, transaction_id: str, browser_binding: Optional[str]
     ) -> Optional[AuthorizationTransaction]:
         """Back to the username step: forget any verified password."""
-        with self._lock:
-            current = self.get_bound(transaction_id, browser_binding)
-            if current is None:
-                return None
-            if current.state is TransactionState.PENDING:
+        now = time.time()
+
+        def decide(
+            view: RepositoryTransaction[AuthorizationTransaction],
+        ) -> Optional[AuthorizationTransaction]:
+            current = _bound(view, transaction_id, browser_binding, now)
+            if current is None or current.state is TransactionState.PENDING:
                 return current
-            return self._replace(
+            changed = _changed(
                 current,
                 state=TransactionState.PENDING,
                 primary_username=None,
                 primary_amr=None,
                 primary_verified_at=None,
             )
+            return view.replace(transaction_id, changed).value
+
+        return self._repository.transact(decide)
 
     def consume(
         self,
@@ -274,43 +287,48 @@ class AuthorizationTransactionStore:
 
         ``verified_username`` is for a completion that rests on a password
         verified earlier: the transaction must still record it for that
-        user, checked under the lock, since a concurrent "Change username"
+        user, checked inside the decision, since a concurrent "Change username"
         may have reset it after the caller read it.
         """
-        with self._lock:
-            current = self.get_bound(transaction_id, browser_binding)
-            if current is None:
-                return None
-            if verified_username is not None and (
-                current.state is not TransactionState.PRIMARY_VERIFIED
-                or current.primary_username != verified_username
-            ):
-                return None
-            if not self._repository.delete(transaction_id):
-                return None
-            return current
+        now = time.time()
+
+        def this_one(entry: Entry[AuthorizationTransaction]) -> bool:
+            current = entry.value
+            if not current.is_bound_to(browser_binding) or not current.is_live(now):
+                return False
+            return verified_username is None or (
+                current.state is TransactionState.PRIMARY_VERIFIED
+                and current.primary_username == verified_username
+            )
+
+        taken = consume_entry(self._repository, transaction_id, this_one)
+        return taken.value if taken is not None else None
 
     def prune_expired(self) -> int:
-        with self._lock:
-            return self._prune_expired(time.time())
+        now = time.time()
+        return delete_where(self._repository, lambda stored: not stored.is_live(now))
 
     def delete_all(self) -> int:
-        with self._lock:
-            return self._repository.delete_all()
+        return self._repository.delete_all()
 
-    def _prune_expired(self, now: float) -> int:
-        dropped = 0
-        for transaction in self._repository.list():
-            if not transaction.is_live(now) and self._repository.delete(transaction.id):
-                dropped += 1
-        return dropped
 
-    def _replace(self, current: AuthorizationTransaction, **changes: object) -> AuthorizationTransaction:
-        # Caller holds the lock. model_copy(update=) does not validate, so
-        # the changed record is rebuilt through the model.
-        updated = AuthorizationTransaction.model_validate({**current.model_dump(), **changes})
-        self._repository.delete(current.id)
-        return self._repository.create(updated)
+def _bound(
+    view: RepositoryTransaction[AuthorizationTransaction],
+    transaction_id: str,
+    browser_binding: Optional[str],
+    now: float,
+) -> Optional[AuthorizationTransaction]:
+    """What ``get_bound`` answers, from inside a decision."""
+    entry = view.entry(transaction_id)
+    if entry is None or not entry.value.is_bound_to(browser_binding):
+        return None
+    return entry.value if entry.value.is_live(now) else None
+
+
+def _changed(current: AuthorizationTransaction, **changes: object) -> AuthorizationTransaction:
+    # model_copy(update=) does not validate, so the changed record is
+    # rebuilt through the model.
+    return AuthorizationTransaction.model_validate({**current.model_dump(), **changes})
 
 
 def get_authorization_transaction_store() -> AuthorizationTransactionStore:

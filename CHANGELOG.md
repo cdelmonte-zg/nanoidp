@@ -37,6 +37,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The one change for code that borrows a repository from the runtime store
   is that `repository(name, key_of, codec)` now takes the codec.
 
+- **Authorization transactions, pending second factors and the client
+  metadata cache keep their operations whole through the repository, not
+  through a lock of their own** (#404, second of four steps). Creating
+  under the cap, consuming or discarding exactly once, recording or taking
+  back a verified password, remembering a metadata document (sweep, evict,
+  replace) and extending its protection are each one decision of the
+  repository's, so they are whole for whoever shares the store and not only
+  for the threads of one process. The three module locks are gone, and reads
+  no longer wait for a transition: a record is now changed in place, so
+  there is no moment at which a live one is absent. No behaviour changes,
+  with one exception nobody should notice: a cached metadata document that
+  is fetched again, or whose protection is extended, keeps its place in the
+  listing instead of moving to the end. The test suite now runs every
+  decision twice, which is how a decision that is not safe to repeat would
+  show before a backend that retries.
+
 ### Security
 - **A registration credential no longer reads or deletes a client recreated
   under its id** (#403). A dynamically registered client is two records, the

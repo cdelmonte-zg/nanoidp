@@ -15,9 +15,8 @@ the draft MCP 2026-07-28 references.
 """
 
 import logging
-import threading
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple, Union
 from urllib.parse import unquote, urlsplit
 
 from pydantic import BaseModel, model_validator
@@ -30,6 +29,8 @@ from .runtime_identities import (
     PydanticCodec,
     get_runtime_identity_store,
 )
+from .runtime_repository import RepositoryTransaction, delete_where, replace
+from .runtime_repository import consume as consume_entry
 
 logger = logging.getLogger(__name__)
 
@@ -53,10 +54,6 @@ MAX_LIFETIME_SECONDS = 86400
 # than the newest refused, because this is a cache and a client that is
 # actually being used will simply be fetched again.
 MAX_CACHED_DOCUMENTS = 100
-
-# The cache is read and written by concurrent requests, and a write is
-# several visits to the repository (sweep, evict, replace). One at a time.
-cache_lock = threading.Lock()
 
 # The scheme, spelled once, so "is this worth fetching" and "is this a legal
 # identifier" cannot disagree about the same string.
@@ -323,16 +320,12 @@ def prune_expired() -> int:
     into a write, which is the only moment anything grows.
     """
     now = time.time()
-    dropped = 0
-    for entry in cache().list():
-        if not entry.is_fresh(now) and cache().delete(entry.client_id):
-            dropped += 1
-    return dropped
+    return delete_where(cache(), lambda entry: not entry.is_fresh(now))
 
 
-def _evict_oldest(room_for: int) -> int:
-    """Make room at the cap by dropping the least recently fetched entries
-    that nothing depends on.
+def _oldest_to_evict(live: List[CachedClient], room_for: int, now: float) -> List[str]:
+    """Which entries to drop to make room at the cap: the least recently
+    fetched ones that nothing depends on. Raises ``CacheIsFull``.
 
     An entry holding up a live authorization code is not a candidate, and
     it would otherwise be among the first: it was fetched before the login
@@ -343,13 +336,11 @@ def _evict_oldest(room_for: int) -> int:
     If every entry is protected there is no room to make, and the caller is
     refused rather than served at the cost of a flow already under way.
     """
-    now = time.time()
-    entries = cache().list()
-    room_needed = len(entries) + room_for - MAX_CACHED_DOCUMENTS
+    room_needed = len(live) + room_for - MAX_CACHED_DOCUMENTS
     if room_needed <= 0:
-        return 0
+        return []
     candidates = sorted(
-        (entry for entry in entries if not entry.is_protected(now)),
+        (entry for entry in live if not entry.is_protected(now)),
         key=lambda entry: entry.fetched_at,
     )
     if len(candidates) < room_needed:
@@ -357,15 +348,7 @@ def _evict_oldest(room_for: int) -> int:
             "every cached metadata document is holding up an authorization "
             "code that is still valid"
         )
-    dropped = 0
-    for entry in candidates[:room_needed]:
-        if cache().delete(entry.client_id):
-            logger.info(
-                "Dropped the oldest cached client metadata document to stay "
-                "within %d entries", MAX_CACHED_DOCUMENTS
-            )
-        dropped += 1
-    return dropped
+    return [entry.client_id for entry in candidates[:room_needed]]
 
 
 def remember(client: OAuthClient, lifetime: Optional[float]) -> CachedClient:
@@ -382,29 +365,62 @@ def remember(client: OAuthClient, lifetime: Optional[float]) -> CachedClient:
     URL the specification does not allow, and nothing can be filed under a
     URL other than the one it answers to.
 
-    Sweep, evict and replace are one critical section. They are three visits
-    to the repository, and two requests for the same uncached URL would
-    otherwise both fetch and collide on the create.
+    Sweep, evict and replace are one decision of the repository's (#404):
+    two requests for the same uncached URL would otherwise both fetch and
+    collide on the create, and a second process sharing the store would see
+    the cache over its cap or a document missing in between. A refusal is
+    decided inside and raised outside, so what the sweep dropped stays
+    dropped, as it always did.
     """
     client_id = client.client_id
     reject_invalid_client_id_url(client_id)
     now = time.time()
-    with cache_lock:
-        prune_expired()
-        replaced = cache().get(client_id)
-        forget(client_id)
-        _evict_oldest(room_for=1)
-        return cache().create(
-            CachedClient(
-                client=client,
-                fetched_at=now,
-                expires_at=now + bounded_lifetime(lifetime),
-                # Re-fetching a document does not release what depends on
-                # the entry it replaces: the promise was made about the
-                # client, not about this copy of its document.
-                protected_until=replaced.protected_until if replaced else 0.0,
-            )
+    expires_at = now + bounded_lifetime(lifetime)
+
+    def decide(
+        view: RepositoryTransaction[CachedClient],
+    ) -> Union[Tuple[CachedClient, int], CacheIsFull]:
+        replaced: Optional[CachedClient] = None
+        others: List[CachedClient] = []
+        for entry in view.entries():
+            if not entry.value.is_fresh(now):
+                view.delete(entry.name)
+            elif entry.name == client_id:
+                replaced = entry.value
+            else:
+                others.append(entry.value)
+        try:
+            evicted = _oldest_to_evict(others, room_for=1, now=now)
+        except CacheIsFull as full:
+            return full
+        for name in evicted:
+            view.delete(name)
+        remembered = CachedClient(
+            client=client,
+            fetched_at=now,
+            expires_at=expires_at,
+            # Re-fetching a document does not release what depends on the
+            # entry it replaces: the promise was made about the client, not
+            # about this copy of its document.
+            protected_until=replaced.protected_until if replaced else 0.0,
         )
+        stored = (
+            view.replace(client_id, remembered) if replaced else view.create(remembered)
+        )
+        return stored.value, len(evicted)
+
+    outcome = cache().transact(decide)
+    if isinstance(outcome, CacheIsFull):
+        raise outcome
+    remembered, evicted = outcome
+    # Logged here and not where they are dropped: a decision may be run
+    # again, and has no effect outside its view.
+    for _ in range(evicted):
+        logger.info(
+            "Dropped the oldest cached client metadata document to stay "
+            "within %d entries", MAX_CACHED_DOCUMENTS
+        )
+    return remembered
 
 
 def retain_until(client_id: str, moment: float) -> bool:
@@ -433,20 +449,17 @@ def retain_until(client_id: str, moment: float) -> bool:
         return False
     if entry.protected_until >= moment:
         return True
-    with cache_lock:
-        current = cache().get(client_id)
-        if current is None:
-            return False
-        cache().delete(client_id)
-        cache().create(
-            CachedClient(
-                client=current.client,
-                fetched_at=current.fetched_at,
-                expires_at=current.expires_at,
-                protected_until=moment,
-            )
+    def retained(current: CachedClient) -> CachedClient:
+        if current.protected_until >= moment:
+            return current  # someone else got there first, and further
+        return CachedClient(
+            client=current.client,
+            fetched_at=current.fetched_at,
+            expires_at=current.expires_at,
+            protected_until=moment,
         )
-    return True
+
+    return replace(cache(), client_id, retained) is not None
 
 
 def cached_client(client_id: str) -> Optional[OAuthClient]:
@@ -460,13 +473,12 @@ def cached_client(client_id: str) -> Optional[OAuthClient]:
         return None
     if entry.is_fresh():
         return entry.client
-    with cache_lock:
-        # Re-read under the lock: a concurrent remember may have replaced
-        # the expired entry with a fresh one between the check and here.
-        current = cache().get(client_id)
-        if current is not None and not current.is_fresh():
-            cache().delete(client_id)
-        return current.client if current is not None and current.is_fresh() else None
+    # Dropped only if it is still the expired one: a concurrent remember
+    # may have replaced it with a fresh document between the check and here.
+    now = time.time()
+    consume_entry(cache(), client_id, lambda current: not current.value.is_fresh(now))
+    current = cache().get(client_id)
+    return current.client if current is not None and current.is_fresh() else None
 
 
 def forget(client_id: str) -> bool:

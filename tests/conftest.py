@@ -99,6 +99,11 @@ def every_stored_value_survives_its_codec(monkeypatch):
     from nanoidp.services.runtime_repository import MemoryRuntimeRepository
 
     monkeypatch.setattr(MemoryRuntimeRepository, "verify_codecs", True)
+    # And every decision is run twice, the first time against a view that
+    # is thrown away: a backend with real transactions may retry one, and
+    # this one never would, so a decision that counts, logs, draws a random
+    # value or changes what it captured would pass here and fail there.
+    monkeypatch.setattr(MemoryRuntimeRepository, "run_decisions_twice", True)
 
 
 @pytest.fixture(autouse=True)

@@ -14,16 +14,17 @@ SAML request in flight, the device ``user_code``), and is used at most once.
 
 Unlike an authorization transaction a record never changes once created: a
 wrong code leaves it as it is, a correct code consumes it, and everything
-else discards it. So every operation is a single visit to the repository,
-and all of them take one lock, reads included, so that none of them can
-observe another half done.
+else discards it. Each operation that is more than one look at the
+repository (create under the cap, consume, discard, prune) is one decision
+of the repository's (#404), so it is whole for whoever shares the store, not
+only for the threads of this process; a read is a single look and needs
+nothing.
 """
 
 import hashlib
 import hmac
 import json
 import secrets
-import threading
 import time
 from typing import List, Literal, Mapping, Optional, Sequence
 
@@ -34,6 +35,8 @@ from .runtime_identities import (
     PydanticCodec,
     get_runtime_identity_store,
 )
+from .runtime_repository import Entry, RepositoryFull, create_within, delete_where
+from .runtime_repository import consume as consume_entry
 
 # A code screen is a continuation of the login that just happened, not a
 # page to come back to.
@@ -85,15 +88,9 @@ class PendingSecondFactor(BaseModel):
         )
 
 
-_store_lock = threading.RLock()
-
-
 class PendingSecondFactorStore:
     """The operations on pending second factors, each one atomic with
     respect to the others."""
-
-    def __init__(self) -> None:
-        self._lock = _store_lock
 
     @property
     def _repository(self) -> MemoryRuntimeRepository[PendingSecondFactor]:
@@ -124,13 +121,17 @@ class PendingSecondFactorStore:
             verified_at=now,
             expires_at=now + PENDING_SECOND_FACTOR_LIFETIME_SECONDS,
         )
-        with self._lock:
-            self._prune_expired(now)
-            if len(self._repository.list()) >= MAX_PENDING_SECOND_FACTORS:
-                raise PendingSecondFactorStoreFull(
-                    f"{MAX_PENDING_SECOND_FACTORS} logins already waiting for a code"
-                )
-            return self._repository.create(record)
+        try:
+            return create_within(
+                self._repository,
+                record,
+                MAX_PENDING_SECOND_FACTORS,
+                is_expired=lambda stored: not stored.is_live(now),
+            ).value
+        except RepositoryFull as full:
+            raise PendingSecondFactorStoreFull(
+                f"{MAX_PENDING_SECOND_FACTORS} logins already waiting for a code"
+            ) from full
 
     def get_bound(
         self,
@@ -142,8 +143,7 @@ class PendingSecondFactorStore:
     ) -> Optional[PendingSecondFactor]:
         """The live record with this id, if it is this browser's, for this
         surface and this context."""
-        with self._lock:
-            record = self._repository.get(record_id)
+        record = self._repository.get(record_id)
         if record is None or not record.is_for(browser_binding, purpose, context):
             return None
         return record if record.is_live() else None
@@ -158,11 +158,13 @@ class PendingSecondFactorStore:
     ) -> Optional[PendingSecondFactor]:
         """Remove the record and return it, exactly once. ``None`` when it is
         gone, expired, or not this browser's, surface's or context's."""
-        with self._lock:
-            record = self.get_bound(record_id, browser_binding, purpose=purpose, context=context)
-            if record is None or not self._repository.delete(record_id):
-                return None
-            return record
+        now = time.time()
+
+        def this_one(entry: Entry[PendingSecondFactor]) -> bool:
+            return entry.value.is_for(browser_binding, purpose, context) and entry.value.is_live(now)
+
+        taken = consume_entry(self._repository, record_id, this_one)
+        return taken.value if taken is not None else None
 
     def discard(
         self,
@@ -177,26 +179,16 @@ class PendingSecondFactorStore:
         browser's record, for this surface and this context, so abandoning
         one flow never ends another flow of the same browser. ``None`` when
         there was no such record. An expired record is dropped too."""
-        with self._lock:
-            record = self._repository.get(record_id)
-            if (
-                record is None
-                or not record.is_for(browser_binding, purpose, context)
-                or not self._repository.delete(record_id)
-            ):
-                return None
-            return record
+        taken = consume_entry(
+            self._repository,
+            record_id,
+            lambda entry: entry.value.is_for(browser_binding, purpose, context),
+        )
+        return taken.value if taken is not None else None
 
     def prune_expired(self) -> int:
-        with self._lock:
-            return self._prune_expired(time.time())
-
-    def _prune_expired(self, now: float) -> int:
-        dropped = 0
-        for record in self._repository.list():
-            if not record.is_live(now) and self._repository.delete(record.id):
-                dropped += 1
-        return dropped
+        now = time.time()
+        return delete_where(self._repository, lambda stored: not stored.is_live(now))
 
 
 def get_pending_second_factor_store() -> PendingSecondFactorStore:
