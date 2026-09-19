@@ -16,10 +16,12 @@ import pytest
 
 from nanoidp.services.runtime_repository import (
     EntryHeld,
+    MemoryRuntimeRepository,
     NestedRepositoryUse,
     RepositoryFull,
     RuntimeObjectExists,
     RuntimeObjectMissing,
+    TransactionClosed,
     consume,
     create_within,
     delete_if,
@@ -57,6 +59,17 @@ def _race(work):
     for thread in threads:
         thread.join()
     assert failures == []
+
+
+@pytest.fixture(params=["once", "twice"], autouse=True)
+def decisions_run(request, monkeypatch):
+    """A decision may be run again (a busy retry on a backend with real
+    transactions), and a backend that never does would let every test here
+    pass with a decision that is not safe to repeat. So the whole contract
+    runs a second time with each decision run twice, the first against a
+    view that is then thrown away."""
+    if request.param == "twice":
+        monkeypatch.setattr(MemoryRuntimeRepository, "run_decisions_twice", True)
 
 
 @pytest.fixture(params=STORE_FACTORIES)
@@ -234,6 +247,48 @@ class TestTransact:
         assert repo.get("alice") is not None
         assert repo.get("bob") is None
 
+    def test_a_view_is_of_no_use_once_its_decision_is_over(self, kit):
+        """Kept past the call, it would change the repository with no
+        atomicity and no lock, or lose what it was told, depending on what
+        the decision happened to do."""
+        repo, make, name_of, _ = kit
+        repo.create(make("alice"))
+        kept = []
+
+        repo.transact(lambda view: kept.append(view) or view.create(make("bob")))
+        with pytest.raises(LookupError):
+            repo.transact(lambda view: kept.append(view) or view.hold("missing", {}))
+
+        for view in kept:
+            for late in (
+                lambda view=view: view.entry("alice"),
+                lambda view=view: view.entries(),
+                lambda view=view: view.create(make("carol")),
+                lambda view=view: view.replace("alice", make("alice")),
+                lambda view=view: view.delete("alice"),
+                lambda view=view: view.hold("alice", {}),
+                lambda view=view: view.update_hold("alice", "any", {}),
+                lambda view=view: view.release_hold("alice", "any"),
+            ):
+                with pytest.raises(TransactionClosed):
+                    late()
+        assert [name_of(obj) for obj in repo.list()] == ["alice", "bob"]
+        assert repo.entry("alice").hold is None
+
+    def test_a_decision_run_twice_leaves_what_one_run_leaves(self, kit, monkeypatch):
+        repo, make, name_of, _ = kit
+        monkeypatch.setattr(MemoryRuntimeRepository, "run_decisions_twice", True)
+        runs = []
+
+        def decide(view):
+            runs.append(len(view.entries()))
+            return view.create(make("alice"))
+
+        created = repo.transact(decide)
+
+        assert runs == [0, 0]
+        assert repo.entries() == [created]
+
     def test_the_repository_works_again_after_a_refused_side_door(self, kit):
         repo, make, _, _field = kit
         with pytest.raises(NestedRepositoryUse):
@@ -300,6 +355,23 @@ class TestHolds:
         repo.entry("alice").hold.payload["context"]["endpoint"] = "MUTATED"
 
         assert repo.entry("alice").hold.payload == {"context": {"endpoint": "/x"}}
+
+    def test_a_payload_is_what_any_backend_could_keep(self, kit):
+        """A JSON object: a backend that serializes must be able to store
+        it, so the one that does not must not accept more."""
+        import datetime
+
+        repo, make, _, _field = kit
+        repo.create(make("alice"))
+
+        for payload in ({"at": datetime.datetime.now()}, {"who": make("bob")}, {1: "int key"}, ["a list"]):
+            with pytest.raises(ValueError):
+                repo.transact(lambda view, payload=payload: view.hold("alice", payload))
+        hold = repo.transact(lambda view: view.hold("alice", {"n": 1, "nested": {"list": [1, "a", None]}}))
+        with pytest.raises(ValueError):
+            repo.transact(lambda view: view.update_hold("alice", hold.hold_id, {"at": object()}))
+
+        assert repo.entry("alice").hold == hold
 
     def test_the_store_attaches_no_meaning_to_a_hold(self, kit):
         """It keeps the claim and compares it; refusing to delete a held
@@ -472,12 +544,19 @@ class TestCreateWithin:
 
         assert [name_of(obj) for obj in repo.list()] == ["live-1", "live-2"]
 
-    def test_a_taken_name_is_refused_as_ever(self, kit):
-        repo, make, _, _field = kit
+    @pytest.mark.parametrize("limit", [10, 2])
+    def test_a_taken_name_is_refused_as_ever(self, kit, limit):
+        """The same answer for the same request whether or not there was
+        room, and what expired goes all the same."""
+        repo, make, name_of, _ = kit
+        repo.create(make("stale"))
         repo.create(make("alice"))
+        repo.create(make("other"))
 
         with pytest.raises(RuntimeObjectExists):
-            create_within(repo, make("alice"), limit=10)
+            create_within(repo, make("alice"), limit=limit, is_expired=lambda value: name_of(value) == "stale")
+
+        assert [name_of(obj) for obj in repo.list()] == ["alice", "other"]
 
     def test_the_limit_holds_under_concurrent_creates(self, kit):
         repo, make, _, _field = kit

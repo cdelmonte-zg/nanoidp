@@ -33,7 +33,7 @@ that path, and until then no backend is promised that ``transact`` and the
 four plain operations are all it will ever be asked for.
 """
 
-import copy
+import json
 import threading
 import time
 import uuid
@@ -65,6 +65,11 @@ class RepositoryFull(Exception):
     """``create_within`` found the repository at its limit."""
 
 
+class TransactionClosed(RuntimeError):
+    """A view was used after its decision was over. Whatever it was told
+    then would bypass both the atomicity and the lock."""
+
+
 class NestedRepositoryUse(RuntimeError):
     """A decision reached a repository other than through its view.
 
@@ -81,7 +86,10 @@ class Hold:
     ``hold_id`` is the store's, so that a continuation or a recovery changes
     or releases the hold it installed and not one installed later by someone
     else. ``payload`` is opaque here: what a hold means, and what it forbids,
-    are rules of whoever installed it.
+    are rules of whoever installed it. It is a JSON object and nothing a
+    backend that serializes could not keep, whichever backend is in use.
+    ``since`` is wall-clock time, because the reader of a hold may be another
+    process (#354), to which a monotonic clock means nothing.
     """
 
     hold_id: str
@@ -112,6 +120,9 @@ class RepositoryTransaction(Protocol[T]):
     nothing else: no I/O, no other repository, no service, no hook, no
     audit. It may be run more than once.
     """
+
+    def name_of(self, obj: T) -> str:
+        """The name this repository keeps ``obj`` under."""
 
     def entry(self, name: str) -> Optional[Entry[T]]:
         """The entry with that name, or None."""
@@ -250,25 +261,33 @@ def create_within(
     is_expired: Optional[Callable[[T], bool]] = None,
 ) -> Entry[T]:
     """Store ``obj`` unless the repository already holds ``limit`` objects,
-    after dropping the ones ``is_expired`` names. Raises RepositoryFull.
+    after dropping the ones ``is_expired`` names. Raises RuntimeObjectExists
+    for a name still taken after that, whether or not there was room, and
+    RepositoryFull otherwise.
 
     Counts by scanning, so for collections with a small cap. What expired is
-    dropped whether or not there was room afterwards.
+    dropped whatever the answer: a refusal is decided inside and raised
+    outside, because raising inside would take the dropping back with it.
     """
 
-    def decide(view: RepositoryTransaction[T]) -> Optional[Entry[T]]:
+    def decide(view: RepositoryTransaction[T]) -> "Entry[T] | Exception":
         live = 0
         for current in view.entries():
             if is_expired is not None and is_expired(current.value):
                 view.delete(current.name)
             else:
                 live += 1
-        return view.create(obj) if live < limit else None
+        name = view.name_of(obj)
+        if view.entry(name) is not None:
+            return RuntimeObjectExists(f"runtime object {name!r} already exists")
+        if live >= limit:
+            return RepositoryFull(f"the repository already holds {limit} objects")
+        return view.create(obj)
 
-    created = repository.transact(decide)
-    if created is None:
-        raise RepositoryFull(f"the repository already holds {limit} objects")
-    return created
+    outcome = repository.transact(decide)
+    if isinstance(outcome, Exception):
+        raise outcome
+    return outcome
 
 
 # ---- the in-memory backend -----------------------------------------------------
@@ -286,6 +305,20 @@ def _refuse_inside_a_decision() -> None:
         )
 
 
+def _payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """A copy of a hold's payload, which is also the check that it is one:
+    through JSON and back, and the same on return. So a datetime, a model,
+    a tuple or a key that is not a string is refused here as it would be by
+    a backend that has to write it down."""
+    try:
+        copied = json.loads(json.dumps(payload, allow_nan=False))
+    except (TypeError, ValueError) as unserializable:
+        raise ValueError(f"a hold's payload must be a JSON object: {unserializable}") from unserializable
+    if not isinstance(payload, dict) or copied != payload:
+        raise ValueError("a hold's payload must be a JSON object")
+    return dict(copied)
+
+
 def _out(entry: Entry[T]) -> Entry[T]:
     """The copy of an entry that leaves the repository."""
     hold = entry.hold
@@ -293,7 +326,7 @@ def _out(entry: Entry[T]) -> Entry[T]:
         name=entry.name,
         value=entry.value.model_copy(deep=True),
         instance_id=entry.instance_id,
-        hold=Hold(hold.hold_id, hold.since, copy.deepcopy(hold.payload)) if hold is not None else None,
+        hold=Hold(hold.hold_id, hold.since, _payload(hold.payload)) if hold is not None else None,
     )
 
 
@@ -307,6 +340,17 @@ class _MemoryTransaction(Generic[T]):
         self._committed = objects
         self._staged: Optional[Dict[str, Entry[T]]] = None
         self._name_of = name_of
+        self._closed = False
+
+    def close(self) -> None:
+        self._closed = True
+
+    def _open(self) -> None:
+        if self._closed:
+            raise TransactionClosed("this view belonged to a decision that is over")
+
+    def name_of(self, obj: T) -> str:
+        return self._name_of(obj)
 
     @property
     def _current(self) -> Dict[str, Entry[T]]:
@@ -322,13 +366,16 @@ class _MemoryTransaction(Generic[T]):
         return self._current
 
     def entry(self, name: str) -> Optional[Entry[T]]:
+        self._open()
         stored = self._current.get(name)
         return _out(stored) if stored is not None else None
 
     def entries(self) -> List[Entry[T]]:
+        self._open()
         return [_out(stored) for stored in self._current.values()]
 
     def create(self, obj: T) -> Entry[T]:
+        self._open()
         name = self._name_of(obj)
         if name in self._current:
             raise RuntimeObjectExists(f"runtime object {name!r} already exists")
@@ -339,6 +386,7 @@ class _MemoryTransaction(Generic[T]):
         return _out(stored)
 
     def replace(self, name: str, obj: T) -> Entry[T]:
+        self._open()
         if self._name_of(obj) != name:
             raise ValueError(f"a replace cannot rename {name!r} to {self._name_of(obj)!r}")
         current = self._require(name)
@@ -347,28 +395,33 @@ class _MemoryTransaction(Generic[T]):
         return _out(stored)
 
     def delete(self, name: str) -> bool:
+        self._open()
         if name not in self._current:
             return False
         del self._writable[name]
         return True
 
     def hold(self, name: str, payload: Dict[str, Any]) -> Hold:
+        self._open()
         current = self._require(name)
         if current.hold is not None:
             raise EntryHeld(f"runtime object {name!r} is already held")
-        installed = Hold(uuid.uuid4().hex, time.time(), copy.deepcopy(payload))
+        installed = Hold(uuid.uuid4().hex, time.time(), _payload(payload))
         self._writable[name] = Entry(name, current.value, current.instance_id, installed)
-        return Hold(installed.hold_id, installed.since, copy.deepcopy(installed.payload))
+        return Hold(installed.hold_id, installed.since, _payload(installed.payload))
 
     def update_hold(self, name: str, hold_id: str, payload: Dict[str, Any]) -> bool:
+        self._open()
+        checked = _payload(payload)
         current = self._carrying(name, hold_id)
         if current is None or current.hold is None:
             return False
-        updated = Hold(current.hold.hold_id, current.hold.since, copy.deepcopy(payload))
+        updated = Hold(current.hold.hold_id, current.hold.since, checked)
         self._writable[name] = Entry(name, current.value, current.instance_id, updated)
         return True
 
     def release_hold(self, name: str, hold_id: str) -> bool:
+        self._open()
         current = self._carrying(name, hold_id)
         if current is None:
             return False
@@ -390,6 +443,12 @@ class _MemoryTransaction(Generic[T]):
 
 class MemoryRuntimeRepository(Generic[T]):
     """A runtime repository in process memory, keyed by the object's name."""
+
+    # For tests. This backend has no reason of its own to run a decision
+    # again, so a decision that is not safe to repeat would pass every test
+    # here and fail on a backend that retries. Set, each decision is first
+    # run against a view that is thrown away.
+    run_decisions_twice = False
 
     def __init__(self, lock: threading.RLock, name_of: Callable[[T], str]) -> None:
         self._lock = lock
@@ -433,13 +492,25 @@ class MemoryRuntimeRepository(Generic[T]):
     def transact(self, decide: Callable[[RepositoryTransaction[T]], R]) -> R:
         _refuse_inside_a_decision()
         with self._lock:
-            view: _MemoryTransaction[T] = _MemoryTransaction(self._objects, self._name_of)
-            _deciding.active = True
-            try:
-                result = decide(view)
-            finally:
-                _deciding.active = False
+            if self.run_decisions_twice:
+                self._decide(decide)
+            result, view = self._decide(decide)
             # Reached only when the decision returned: adopted in one
             # assignment, so a reader sees all of it or none.
             self._objects = view.result()
             return result
+
+    def _decide(
+        self, decide: Callable[[RepositoryTransaction[T]], R]
+    ) -> "tuple[R, _MemoryTransaction[T]]":
+        """Run the decision against a fresh view. Caller holds the lock."""
+        view: _MemoryTransaction[T] = _MemoryTransaction(self._objects, self._name_of)
+        _deciding.active = True
+        try:
+            return decide(view), view
+        finally:
+            _deciding.active = False
+            # Whether it returned or raised, the view is done: kept by the
+            # decision and used later, it would change what the repository
+            # adopted from it, outside the lock.
+            view.close()

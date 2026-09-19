@@ -21,7 +21,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of one repository, and its changes become visible together or, if it
   raises, not at all; `replace`, `consume`, `delete_if` and `create_within`
   are written once on top of it. A decision may use its view and nothing
-  else, which the in-memory backend enforces. Nothing uses the new
+  else, and only while it runs: the in-memory backend refuses a repository
+  reached from inside a decision and a view used after it, accepts as a
+  hold's payload only a JSON object, as a backend that writes it down
+  would, and can run every decision twice so that the tests catch one that
+  is not safe to repeat. Nothing uses the new
   operations yet and no behaviour changes: `get()` and `list()` return what
   they returned, and the identity is not a field of `User` or `OAuthClient`.
 

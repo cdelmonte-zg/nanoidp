@@ -14,11 +14,11 @@ from nanoidp.services.runtime_identities import MemoryRuntimeIdentityStore
 REDIRECT = "http://localhost:3000/callback"
 
 
-def _user(name: str, password: str = "pw") -> User:
+def user(name: str, password: str = "pw") -> User:
     return User(username=name, password=password, email=f"{name}@runtime.test")
 
 
-def _client(client_id: str, secret: str = "runtime-secret") -> OAuthClient:
+def client(client_id: str, secret: str = "runtime-secret") -> OAuthClient:
     return OAuthClient(
         client_id=client_id,
         client_secret=secret,
@@ -43,13 +43,13 @@ STORE_FACTORIES = [pytest.param(MemoryRuntimeIdentityStore, id="memory")]
 # repository(), so it owes the same contract.
 REPOSITORIES = [
     pytest.param(
-        (lambda store: store.users, _user, lambda u: u.username, lambda u: u.roles),
+        (lambda store: store.users, user, lambda u: u.username, lambda u: u.roles),
         id="users",
     ),
     pytest.param(
         (
             lambda store: store.clients,
-            _client,
+            client,
             lambda c: c.client_id,
             lambda c: c.redirect_uris,
         ),

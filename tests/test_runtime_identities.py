@@ -30,22 +30,11 @@ from nanoidp.services.runtime_identities import (
     get_runtime_identity_store,
 )
 from tests.runtime_store_contract import REPOSITORIES, STORE_FACTORIES, registration
+from tests.runtime_store_contract import client as _client
+from tests.runtime_store_contract import user as _user
 
 _REPO = Path(__file__).resolve().parent.parent
 REDIRECT = "http://localhost:3000/callback"
-
-
-def _user(name: str, password: str = "pw") -> User:
-    return User(username=name, password=password, email=f"{name}@runtime.test")
-
-
-def _client(client_id: str, secret: str = "runtime-secret") -> OAuthClient:
-    return OAuthClient(
-        client_id=client_id,
-        client_secret=secret,
-        redirect_uris=[REDIRECT],
-        allowed_scopes=["openid", "profile", "email"],
-    )
 
 
 def _basic(client_id: str, secret: str) -> dict:
