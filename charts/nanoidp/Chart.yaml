@@ -1,6 +1,6 @@
 apiVersion: v2
 name: nanoidp
-description: A configurable mock Identity Provider for testing OAuth2/OIDC and SAML integrations.
+description: A test identity provider for testing OAuth2/OIDC and SAML integrations. Not for production.
 type: application
 # Placeholder only. The real version is set at publish time from the git
 # tag, via `helm package --version`.

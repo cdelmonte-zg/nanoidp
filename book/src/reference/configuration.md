@@ -475,6 +475,13 @@ oauth:
   # scope_enforcement: true          # optional; false is a dev-only escape
                                       # hatch back to "any scope string is
                                       # accepted" - see "Registered scopes"
+  # dynamic_registration:            # optional; RFC 7591/7592 at POST /register.
+  #   enabled: false                 # Off by default, and set in this file only:
+  #   max_clients: 100               # not in the settings form or the MCP tools.
+  # client_id_metadata_documents:    # optional; a client_id that is an https URL
+  #   enabled: false                 # is fetched at /authorize. File only, too.
+  #   allowed_hosts: []              # exact host[:port]; nothing is fetched
+  #   allow_loopback: false          # until a host is named here
 
 saml:
   # Both optional: when absent they are derived from the effective issuer as
@@ -693,7 +700,12 @@ all a visual check needs. This only affects `/authorize`; the dashboard's
 own `/login` and the SAML SSO login page are unbranded.
 
 The SAML options (`strict_binding`, `sign_responses`, `c14n_algorithm`)
-are covered in detail in [SAML options](saml.md). Security-related
+are covered in detail in [SAML options](saml.md). The two ways a client can
+exist without being declared here have a guide each:
+[Dynamic client registration](../guides/dynamic-client-registration.md)
+(`oauth.dynamic_registration`) and
+[Client ID metadata documents](../guides/client-metadata-documents.md)
+(`oauth.client_id_metadata_documents`). Security-related
 settings are covered in the [Security guide](../guides/SECURITY.md):
 profiles, `require_pkce`, key management, `jwt.external_keys`, the
 config UI's opt-in [login gate](../guides/SECURITY.md#config-ui-login-gate)

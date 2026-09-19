@@ -1,7 +1,7 @@
 # nanoidp Helm Chart
 
-Deploys [nanoidp](https://github.com/cdelmonte-zg/nanoidp), a configurable
-mock Identity Provider for testing OAuth2/OIDC and SAML integrations, on
+Deploys [nanoidp](https://github.com/cdelmonte-zg/nanoidp), a test
+identity provider for testing OAuth2/OIDC and SAML integrations, on
 Kubernetes.
 
 ## Installation
@@ -239,7 +239,7 @@ code flow against `admin`/`admin`, with its secret never committed to
 
 ## Security
 
-nanoidp is a test/mock Identity Provider, not a production-hardened one.
+nanoidp is a test identity provider, not a production-hardened one.
 We recommend keeping an Ingress on an internal cluster network or behind
 an authenticating reverse proxy, rather than exposed to the public
 internet, the right boundary depends on your own security requirements.
