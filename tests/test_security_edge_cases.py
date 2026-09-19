@@ -349,7 +349,7 @@ class TestSignatureVerification:
         assert response.status_code == 401
 
     def test_hs256_signed_with_the_public_key_is_rejected(self, client, auth_header):
-        """Algorithm confusion (the RS/HS class of CVE-2016-5431-style bugs):
+        """Algorithm confusion, the classic RS/HS key-confusion attack:
         a token whose header says HS256, HMAC-signed with the server's own
         RSA *public* key - which is public - and carrying the real ``kid``.
         A verifier that took the algorithm from the header would compute the
@@ -425,15 +425,19 @@ class TestSignatureVerification:
         from nanoidp.services.crypto import CryptoService
 
         tree = ast.parse(textwrap.dedent(inspect.getsource(CryptoService.verify_jwt)))
-        algorithms_args = [
-            keyword.value
+        decode_calls = [
+            node
             for node in ast.walk(tree)
             if isinstance(node, ast.Call)
-            for keyword in node.keywords
-            if keyword.arg == "algorithms"
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "decode"
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "jwt"
         ]
-        assert len(algorithms_args) == 1, "expected one decode with an algorithms= argument"
-        (value,) = algorithms_args
+        assert len(decode_calls) == 1, "expected exactly one jwt.decode in verify_jwt"
+        algorithms = [kw.value for kw in decode_calls[0].keywords if kw.arg == "algorithms"]
+        assert len(algorithms) == 1, "jwt.decode must pin its algorithms= argument"
+        (value,) = algorithms
         assert isinstance(value, ast.List), "algorithms must be a literal list, not a name"
         assert [element.value for element in value.elts] == ["RS256"]
 
