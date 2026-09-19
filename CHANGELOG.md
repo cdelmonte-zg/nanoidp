@@ -7,7 +7,175 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Migration notes
+
+This release stays a minor. The new protocol surfaces (`/api/runtime`,
+dynamic client registration, client ID metadata documents) are additive, and
+the last two are off until the file enables them. What changes for an
+existing deployment is a set of corrections: answers that were wrong, silent
+or unclassified are now refusals with a name. What may need a hand on
+upgrade is collected here, with the details under the entries named.
+
+- **`jwt.external_keys` and `jwt.max_previous_keys` now take effect**
+  (#358). Both were documented and silently ignored. A `settings.yaml` that
+  already carries them starts signing with the operator's key on upgrade:
+  the `kid` and the JWKS change, tokens signed by the previously generated
+  key stop verifying, `POST /api/keys/rotate` answers `409`, and key files
+  that are missing, malformed or not a pair reject the configuration.
+  *Migration:* if the file names external keys, check that they are the ones
+  you mean to sign with before upgrading, or remove the block to keep the
+  generated keys.
+- **`saml.c14n_algorithm` is a closed set** (#297). An unknown value used to
+  sign silently with Exclusive C14N; it now fails the configuration load.
+  Blank still means the default. *Migration:* run `nanoidp validate-config`
+  against the directory before upgrading.
+- **A rejected reload answers a JSON `422`** (#359) where it used to answer
+  Flask's HTML 500, and a configuration whose signing service cannot be
+  built is no longer activated with a 200. A script that reloads and checks
+  only for 200 keeps working; one that matched on 500 needs the new status.
+  At startup the same conditions exit 1 with
+  `error: configuration rejected: ...` instead of a traceback.
+- **`validate-config` has a third exit code** (#246): 2, `UNAVAILABLE`, when
+  the directory could not be observed at all. 0 and 1 mean what they meant.
+  A CI gate that fails on any non-zero status is unaffected; one that tests
+  for exactly 1 should decide what a run that validated nothing means to it.
+  A request that cannot observe the configuration answers `503` with the
+  classified reason.
+- **`claims_supported` no longer lists `source_acl` and `authorities`**
+  (#316). Neither was ever supplied in an ID Token or by `/userinfo`; they
+  are authorization facts of the access token, which is unchanged.
+- **MCP arguments are checked against the domain models before dispatch**
+  (#297). A value the model refuses, such as an empty name or
+  `token_expiry_minutes: 0`, is now a dispatch refusal
+  (`MCP_INVALID_ARGUMENTS`); `update_settings` used to apply some of them
+  and report success.
+- **`POST /authorize` without `transaction_id`** (#346) still works while
+  exactly one request is pending in that cookie jar. With several pending it
+  is refused, where it used to complete whichever GET came last.
+  *Migration:* a script that opens several authorization requests in one
+  cookie jar posts the `transaction_id` the login page carries. Browser
+  flows are unaffected.
+- **For code embedding nanoidp as a library** (#230, #235, #359):
+  `TokenService()` needs the manager, `TokenService(config)`;
+  `nanoidp.mcp_server._config` no longer exists; `get_crypto_service()`
+  takes no argument and `init_crypto_service` is replaced by
+  `activate_crypto_service`, passed as `init_config(..., activate=...)`;
+  `ConfigManager.authenticate`, `interactive_authenticate` and
+  `check_client` moved to `IdentityResolver` (`identities_for(config)`); a
+  failed load raises `nanoidp.config.ConfigurationRejected`, a `ValueError`.
+  These are internal Python entry points that no guide or reference
+  documents, which is why they do not make the release a major.
+
 ### Added
+- **Disposable runtime users and clients: `/api/runtime`** (#192). A CI job or
+  an integration test creates users and clients on a running IdP, uses them in
+  every protocol flow, and removes them without touching `users.yaml` or
+  `settings.yaml`: `POST /api/runtime/users` and `/api/runtime/clients` (the
+  body is a declared entry, validated by the same models), `GET` and `DELETE`
+  per object, `DELETE /api/runtime` for all of them (answers the counts), and
+  `POST .../promote` to write one into the declared file through the web UI's
+  writer and retire the runtime copy. There is no update. A name the
+  configuration declares answers `409`; a reload that declares a runtime
+  object's name removes it with a warning and an audit event; a promotion
+  records exactly one `runtime_identity_promoted` event, holds reloads off
+  while it runs, and a promotion whose entry reached the file but whose
+  reload failed resolves on the next successful load (promoted, or abandoned
+  with a warning). Runtime objects
+  survive reloads, not restarts. `GET /api/users`, `GET /api/users/{username}`,
+  the token endpoint, the persona picker and the web UI's users and clients
+  pages now show the effective identities, runtime ones marked with their
+  origin and read-only in the UI; the dashboard counts them separately;
+  `GET /api/config` and the MCP server stay on the declared configuration.
+  Writes follow the `management_secret` gate of `/api`. See the new guide,
+  "Disposable test identities".
+- **Dynamic client registration** (#190), RFC 7591 with the read and delete
+  of RFC 7592, behind `oauth.dynamic_registration.enabled` (off by default).
+  `POST /register` issues a client from the metadata a host sends and is
+  open when enabled: the flag is the gate, not `management_secret`, because
+  a client that was handed only a server URL has nothing else to present.
+  A registered client is a runtime client (#235): in memory, listed by
+  `GET /api/runtime/clients` with `"source": "dcr"`, gone on restart, and
+  written to `settings.yaml` only if an operator promotes it through
+  `/api/runtime` - registering never writes the operator's file. The
+  registration access token is shown once and stored only as a hash;
+  promotion, deletion or a reload that declares the name ends RFC 7592
+  management of that client. `oauth.dynamic_registration.max_clients`
+  (default 100) bounds live registrations and answers `429
+  registration_limit_reached`, a nanoidp name, since RFC 7591's error codes
+  describe metadata. `grant_types` are validated and echoed but do not
+  restrict the client: nanoidp has no per-client grant enforcement, which
+  is also why `redirect_uris` are required for every registration and not
+  only for the authorization code grant. With `rate_limit_enabled`, the
+  rate configured for `/token` applies to `/register` as well.
+  The flag is deliberately absent from the settings form and from the MCP
+  `update_settings` tool.
+- **RFC 8414 authorization server metadata** (#190).
+  `/.well-known/oauth-authorization-server` serves the same document as
+  `/.well-known/openid-configuration`, from the same builder and the same
+  issuer resolution, so `issuer_from_request` applies to both and the two
+  cannot drift. nanoidp is one server advertising one set of endpoints; a
+  client that speaks only OAuth looks under this name and used to get a
+  404 and a longer route to the same answer. `registration_endpoint` is
+  advertised only while dynamic registration is enabled, so the metadata
+  never promises an endpoint that answers 404.
+- **A client can come from a metadata document it publishes** (#196, first
+  part): `IdentityResolver` resolves a third origin, `cimd`, after the two
+  it already knew. Precedence is declared, then runtime, then a cached
+  metadata document, and the first two are answered without the cache being
+  consulted at all: an `https` client_id does not by itself make a client a
+  CIMD one. The rules about what a client identifier URL is, and what a
+  document must say to become a client, live in
+  `services/client_metadata.py` as pure functions, with the cache as a
+  repository the runtime store lends them. A document authenticates with
+  `none` and nothing else, since the draft forbids every shared-secret
+  method and those are two of the three nanoidp supports.
+  `oauth.client_id_metadata_documents.enabled` is off by default and set in
+  the file only, like `dynamic_registration`.
+  Only successes are cached, at most 100 documents at a time with the
+  oldest fetch evicted at the cap and expired entries swept on every write:
+  the entries will come from client-chosen URLs on an unauthenticated
+  endpoint, so a lifetime per entry is not a bound. There is deliberately
+  no negative cache, which the draft forbids.
+  The resolver reads the cache and never fills it, which is what keeps
+  network I/O out of `/token` and the other fifteen places that resolve a
+  client; the fetch and the one place that calls it are the next two
+  entries.
+  For code embedding nanoidp: the origin types are `UserOrigin` and
+  `ClientOrigin`, because only a client can have this third one.
+- **The metadata document is fetched** (#196, second part), by the one
+  outbound request nanoidp makes. `oauth.client_id_metadata_documents`
+  gains `allowed_hosts` (exact DNS names, empty by default, so nothing is
+  fetched until an operator names a host) and `allow_loopback` (the draft's
+  development exception: loopback only, only when this server is itself on
+  loopback, only for the family it is bound to; private, link-local and
+  unique-local addresses stay refused).
+  Built on the standard library rather than an HTTP client, so the rules
+  are the shape rather than flags: the connection goes to an address this
+  code resolved and checked while the hostname is kept for TLS and `Host`,
+  which is what makes it not a DNS time-of-check-to-time-of-use; a name is
+  refused unless **every** address it answers with is acceptable, so one
+  that offers a public address and a loopback one cannot be raced;
+  redirects cannot be followed; the body is bounded at 5 KiB while it is
+  read, so a missing or dishonest `Content-Length` changes nothing; and
+  there is exactly one request, with no retry and no second address.
+  The 5 second budget covers the whole fetch, not each operation, so a
+  server sending a few bytes at a time cannot hold a worker: the timeout is
+  recomputed from one deadline before every HTTP read, the name is resolved
+  under the same deadline through a process-wide resolver pool, and the TLS
+  handshake takes what is left of it as its own whole-handshake timeout,
+  which is what `ssl` applies it as. An address is judged by what it reaches, so an IPv4 address
+  carried inside an IPv6 one (`::ffff:169.254.169.254`, NAT64) is read as
+  the address it translates to, and the ranges CVE-2024-4032 affects are
+  named in the code rather than left to `ipaddress`: nanoidp supports
+  Python 3.10, where older patch releases call several special-purpose
+  ranges globally reachable, and raising the floor would not settle it
+  either. Only `max-age` is read from `Cache-Control`;
+  `no-store` and `no-cache` answer that the document is valid and must not be
+  cached, rather than discarding it: what a caller can do with a document it
+  may not keep is the caller's decision, and with the cache the only place a
+  CIMD client exists between `/authorize` and `/token`, `/authorize`
+  refuses such an authorization request rather than issue a code for a client
+  `/token` could not resolve.
 - **A client ID metadata document is fetched at `/authorize`** (#196, last
   part). An `https` `client_id` that no declared and no runtime client
   holds is looked up: the document is fetched, validated, cached, and the
@@ -47,208 +215,77 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   server can invalidate long before its expiry is worse than one it never
   issued. `/device_authorization` answers such a client_id exactly as it
   answers a name nobody knows.
-- **The metadata document is fetched** (#196, second part), by the one
-  outbound request nanoidp makes. `oauth.client_id_metadata_documents`
-  gains `allowed_hosts` (exact DNS names, empty by default, so nothing is
-  fetched until an operator names a host) and `allow_loopback` (the draft's
-  development exception: loopback only, only when this server is itself on
-  loopback, only for the family it is bound to; private, link-local and
-  unique-local addresses stay refused).
-  Built on the standard library rather than an HTTP client, so the rules
-  are the shape rather than flags: the connection goes to an address this
-  code resolved and checked while the hostname is kept for TLS and `Host`,
-  which is what makes it not a DNS time-of-check-to-time-of-use; a name is
-  refused unless **every** address it answers with is acceptable, so one
-  that offers a public address and a loopback one cannot be raced;
-  redirects cannot be followed; the body is bounded at 5 KiB while it is
-  read, so a missing or dishonest `Content-Length` changes nothing; and
-  there is exactly one request, with no retry and no second address.
-  The 5 second budget covers the whole fetch, not each operation, so a
-  server sending a few bytes at a time cannot hold a worker: the timeout is
-  recomputed from one deadline before every HTTP read, the name is resolved
-  under the same deadline through a process-wide resolver pool, and the TLS
-  handshake takes what is left of it as its own whole-handshake timeout,
-  which is what `ssl` applies it as. An address is judged by what it reaches, so an IPv4 address
-  carried inside an IPv6 one (`::ffff:169.254.169.254`, NAT64) is read as
-  the address it translates to, and the ranges CVE-2024-4032 affects are
-  named in the code rather than left to `ipaddress`: nanoidp supports
-  Python 3.10, where older patch releases call several special-purpose
-  ranges globally reachable, and raising the floor would not settle it
-  either. Only `max-age` is read from `Cache-Control`;
-  `no-store` and `no-cache` answer that the document is valid and must not be
-  cached, rather than discarding it: what a caller can do with a document it
-  may not keep is the caller's decision, and with the cache the only place a
-  CIMD client exists between `/authorize` and `/token`, the wiring will
-  refuse such an authorization request rather than issue a code for a client
-  `/token` could not resolve.
-  **Nothing calls this yet**: `/authorize` is the rest of #196.
-- **A client can come from a metadata document it publishes** (#196, first
-  part): `IdentityResolver` resolves a third origin, `cimd`, after the two
-  it already knew. Precedence is declared, then runtime, then a cached
-  metadata document, and the first two are answered without the cache being
-  consulted at all: an `https` client_id does not by itself make a client a
-  CIMD one. The rules about what a client identifier URL is, and what a
-  document must say to become a client, live in
-  `services/client_metadata.py` as pure functions, with the cache as a
-  repository the runtime store lends them. A document authenticates with
-  `none` and nothing else, since the draft forbids every shared-secret
-  method and those are two of the three nanoidp supports.
-  `oauth.client_id_metadata_documents.enabled` is off by default and set in
-  the file only, like `dynamic_registration`.
-  Only successes are cached, at most 100 documents at a time with the
-  oldest fetch evicted at the cap and expired entries swept on every write:
-  the entries will come from client-chosen URLs on an unauthenticated
-  endpoint, so a lifetime per entry is not a bound. There is deliberately
-  no negative cache, which the draft forbids.
-  **Nothing fetches yet**: the resolver reads the cache and never fills it,
-  which is what keeps network I/O out of `/token` and the other fifteen
-  places that resolve a client. The fetcher and the wiring to `/authorize`
-  are the rest of #196.
-  For code embedding nanoidp: `Origin` is now `UserOrigin` and
-  `ClientOrigin`, because only a client can have this third one.
-
-### Fixed
-- **A password field holding only spaces means "unchanged" on the users edit
-  form, as it already did on create** (#386). The create leg stripped the
-  field before deciding it was blank and the edit leg did not, so `"   "`
-  was no password on one and a real new password on the other: an operator
-  who left stray spaces in the field, from a paste, an autofill or the
-  spacebar, silently replaced that account's password with whitespace, with
-  nothing flashed and nothing logged, and the account stopped authenticating
-  with the password they believed it had. Both legs now share one notion of
-  "the field was left blank". Stripping decides only that: a password that
-  is not blank is stored exactly as typed, leading and trailing spaces
-  included, since those may be deliberate.
-- **A refused field on the users or clients edit form is answered, not
-  reported as a server failure** (#298). An email without `@`, a colour that
-  is not a hex triplet or any other value the model refuses reached the
-  catch-all on the edit routes: the operator was told "Failed to update
-  user: 1 validation error for User ..." and the server logged a stack trace
-  at ERROR for what is ordinary form input. The create routes had always
-  answered the same input with the refusal itself, and both legs now build
-  the record through one reader, so both answer it the same way. Nothing is
-  written in either case.
-- **A write that would leave a file unloadable is refused, not written**
-  (#366). Every writer replaced the file and reloaded afterwards, so a
-  document the models refuse reached disk first and was discovered second,
-  leaving a `settings.yaml` the next process could not start from. The
-  composed document is now parsed, exactly as a load parses it, before any
-  file is replaced: the error names the file and the key and nothing is
-  written. Reachable from the settings form (a blank `oauth.audience` or
-  `oauth.issuer`) and from the MCP tools, where `update_settings` writes
-  onto a model without `validate_assignment` and `save_config` persisted
-  the result, so an `issuer` refused by a validator rather than by a field
-  constraint could be saved and then fail to load back. `${VAR}`
-  placeholders are expanded into a copy for the check, so what is written
-  keeps them. The check is of the document only, never of activation.
-  `nanoidp init` and the setup wizard go through it too: they validated the
-  document model but not the domain rules, so an issuer like
-  `localhost:8000` finished the wizard and left a directory the server it
-  had just configured could not start from. Both files are now checked
-  before either is written, so a refused answer leaves no half-configured
-  directory behind. The check follows the loader's order, `config_version`
-  included: that rule lives on the raw mapping rather than in the document
-  models, so without it a candidate could pass every model and be refused
-  by the very next load, and a batch holding both files also has to see
-  them declare the same version.
-
-### Added
-- **Dynamic client registration** (#190), RFC 7591 with the read and delete
-  of RFC 7592, behind `oauth.dynamic_registration.enabled` (off by default).
-  `POST /register` issues a client from the metadata a host sends and is
-  open when enabled: the flag is the gate, not `management_secret`, because
-  a client that was handed only a server URL has nothing else to present.
-  A registered client is a runtime client (#235): in memory, listed by
-  `GET /api/runtime/clients` with `"source": "dcr"`, gone on restart, and
-  written to `settings.yaml` only if an operator promotes it through
-  `/api/runtime` - registering never writes the operator's file. The
-  registration access token is shown once and stored only as a hash;
-  promotion, deletion or a reload that declares the name ends RFC 7592
-  management of that client. `oauth.dynamic_registration.max_clients`
-  (default 100) bounds live registrations and answers `429
-  registration_limit_reached`, a nanoidp name, since RFC 7591's error codes
-  describe metadata. `grant_types` are validated and echoed but do not
-  restrict the client: nanoidp has no per-client grant enforcement, which
-  is also why `redirect_uris` are required for every registration and not
-  only for the authorization code grant. With `rate_limit_enabled`, the
-  rate configured for `/token` applies to `/register` as well.
-  The flag is deliberately absent from the settings form and from the MCP
-  `update_settings` tool.
-- **RFC 8414 authorization server metadata** (#190).
-  `/.well-known/oauth-authorization-server` serves the same document as
-  `/.well-known/openid-configuration`, from the same builder and the same
-  issuer resolution, so `issuer_from_request` applies to both and the two
-  cannot drift. nanoidp is one server advertising one set of endpoints; a
-  client that speaks only OAuth looks under this name and used to get a
-  404 and a longer route to the same answer. A client registration
-  endpoint is not advertised yet: that is the rest of #190.
-- **Disposable runtime users and clients: `/api/runtime`** (#192). A CI job or
-  an integration test creates users and clients on a running IdP, uses them in
-  every protocol flow, and removes them without touching `users.yaml` or
-  `settings.yaml`: `POST /api/runtime/users` and `/api/runtime/clients` (the
-  body is a declared entry, validated by the same models), `GET` and `DELETE`
-  per object, `DELETE /api/runtime` for all of them (answers the counts), and
-  `POST .../promote` to write one into the declared file through the web UI's
-  writer and retire the runtime copy. There is no update. A name the
-  configuration declares answers `409`; a reload that declares a runtime
-  object's name removes it with a warning and an audit event; a promotion
-  records exactly one `runtime_identity_promoted` event, holds reloads off
-  while it runs, and a promotion whose entry reached the file but whose
-  reload failed resolves on the next successful load (promoted, or abandoned
-  with a warning). Runtime objects
-  survive reloads, not restarts. `GET /api/users`, `GET /api/users/{username}`,
-  the token endpoint, the persona picker and the web UI's users and clients
-  pages now show the effective identities, runtime ones marked with their
-  origin and read-only in the UI; the dashboard counts them separately;
-  `GET /api/config` and the MCP server stay on the declared configuration.
-  Writes follow the `management_secret` gate of `/api`. See the new guide,
-  "Disposable test identities".
-
-### Fixed
-- **Tokens are signed with the key the JWKS serves after a reload changes
-  `jwt.keys_dir`** (#230). The token service kept the signing key it was
-  built with, so after `POST /api/config/reload` had moved `keys_dir`,
-  every grant at `/token` and `POST /api/users/<username>/token` kept
-  signing with the old key while the JWKS, introspection and `/userinfo`
-  already used the new one: tokens issued after the reload failed
-  verification until a restart.
-- **A reload no longer activates a configuration whose signing service
-  cannot be built** (#359). `POST /api/config/reload` accepted a
-  `jwt.keys_dir` the process could not create and answered 200, after which
-  the JWKS answered 500 and `/token` failed (before #357 it kept signing with
-  a key the JWKS no longer served). The load now prepares the signing
-  service from the candidate settings before it commits anything: a
-  configuration that cannot build it is rejected and the running one stays
-  in effect, on `POST /api/config/reload`, on MCP `reload_config` and on
-  the refresh that follows a UI write. An unrelated reload reuses the running
-  signing service instead of rebuilding it, and loads now run one at a time,
-  so two concurrent reloads can no longer generate keys into a new
-  `keys_dir` over each other.
-- **`jwt.external_keys` and `jwt.max_previous_keys` are read from
-  `settings.yaml`** (#358). Both were documented in the security guide, but
-  the loader ignored them as unknown keys, so an operator's own signing key
-  was silently replaced by a generated one and the retention stayed at 2.
-  They are now part of the settings document and the JSON schema, and they
-  are signing inputs of #359's activation: the configured key signs tokens
-  and is the only key the JWKS serves, the MCP server signs with it too, and
-  a reload that changes either setting reinitialises the signing service.
-  `private_key` and `public_key` are given together; a missing, unreadable
-  or malformed key file, or a public key that does not belong to the private
-  key, rejects the configuration. Without `kid`, the key id is the RFC 7638
-  thumbprint of the public key (the docs promised a fingerprint; a random id
-  was generated on every start). Rotation is refused for external keys
-  (`409` from `POST /api/keys/rotate`, an error on the keys page and from
-  MCP `rotate_keys`) instead of replacing the operator's key with a
-  generated one. The key files are not watched: a key replaced at the same
-  paths is read at the next start. The SAML certificate for an external key
-  lives in its own file (`external-cert-<thumbprint>.pem`, stable across
-  starts), so switching back to generated keys no longer leaves SAML
-  signing with a certificate for the wrong key; a certificate that does not
-  belong to the signing key is regenerated, SAML signing uses the published
-  service's certificate instead of re-reading the file per request, and a
-  lowered `max_previous_keys` trims the JWKS as soon as it is applied.
 
 ### Changed
+- **`/authorize` keeps each request as a server-side authorization
+  transaction** (#346). An accepted GET validates the request once and
+  stores it, bound to the browser, instead of copying ten parameters into
+  the session; the login page's forms name it with `transaction_id`, and
+  issuing the code consumes it. The TOTP code screen no longer sends the
+  verified password back to the browser: the transaction records it, and
+  the code is checked against the user's current secret. A POST without
+  `transaction_id` (a script posting credentials after its GET) still
+  works while exactly one request is pending in that cookie jar; with
+  several it is now refused instead of completing whichever GET came last.
+  A POST carrying the whole request in its query string keeps working with
+  or without a GET before it, and still leaves the browser's pending
+  requests alone. "Change
+  username" is a form on the transaction rather than a link carrying the
+  request. A request opened before a configuration change keeps the client
+  it was validated against; only a client that no longer exists ends it.
+  Pending requests are capped at 1000 and expire after 10 minutes; at the
+  cap a new request gets `temporarily_unavailable` rather than any pending
+  one being dropped.
+- **The TOTP code screen of `/login`, `/saml/sso` and `/device` no longer
+  sends the verified password back to the browser** (#373). The password
+  check is recorded on the server as a pending second factor, bound to the
+  browser, to the surface and to what the login is for there (the SAML
+  request in flight, the device `user_code`), valid for 5 minutes and used
+  once, and the code screen carries only its id. The code is checked
+  against the user's current secret; a user deleted or left without a
+  secret, TOTP switched off or persona mode switched on in between ends the
+  login with an error instead. "Change username" is a form post that
+  discards it, and on `/device` a deny from the code screen discards it too
+  and still needs no credentials; the `user_code` is read-only on that
+  screen. A post carrying the password and the code together works as
+  before, with nothing stored. At most 1000 such logins wait at once.
+- **Users and clients resolve through one identity resolver** (#235),
+  which is what the runtime identities of `/api/runtime` (#192, under
+  Added) stand on. Every login,
+  grant, client authentication and SAML lookup resolves users and clients
+  through `nanoidp.services.identities`, which composes the declared
+  configuration with an in-memory runtime identity store, declared first;
+  a reload that declares a name a runtime object holds removes the runtime
+  one with a warning. Which management surfaces show the effective
+  identities and which stay on the declared configuration is in the
+  `/api/runtime` entry. For code embedding nanoidp:
+  `ConfigManager.authenticate`, `interactive_authenticate` and
+  `check_client` moved to `IdentityResolver` (`identities_for(config)`);
+  `ConfigManager.get_user` and `get_client` stay, and return declared
+  objects only; `init_config` gains `after_load`, which `create_app` uses
+  for the reconciliation.
+- **One `ConfigManager` per process** (#230). The MCP server no longer keeps
+  a configuration global of its own next to `nanoidp.config`'s; its tools,
+  the HTTP routes and the token service resolve the same manager, and
+  `TokenService` takes that manager explicitly instead of looking it up and
+  caching it. No change to the MCP tools or to any HTTP surface. For code
+  embedding nanoidp: `nanoidp.mcp_server._config` no longer exists (use
+  `nanoidp.config.init_config`), and `TokenService()` now needs the
+  manager, `TokenService(config)`; `get_token_service()` is unchanged.
+- **A rejected reload answers a JSON `422`** (#359): `{"status": "error",
+  "error": ..., "kind": "invalid" | "activation"}` from
+  `POST /api/config/reload`, and an error result with the same `kind` from
+  MCP `reload_config`, for files that cannot be read or do not validate as
+  well as for a signing configuration that cannot be used. Such a file used
+  to answer Flask's HTML 500. A strict hook or plugin failure keeps its
+  `503`. At startup the same conditions print
+  `error: configuration rejected: ...` and exit 1 instead of a traceback.
+  For code embedding nanoidp: a failed load raises
+  `nanoidp.config.ConfigurationRejected` (a `ValueError`, with the original
+  error as its cause); `get_crypto_service()` takes no argument and returns
+  the service the configuration published; `init_crypto_service` is replaced
+  by the activation step `activate_crypto_service`, passed as
+  `init_config(..., activate=...)`.
 - **A configuration directory is read as one observation, not several**
   (#246, first part). `settings.yaml` and `users.yaml` were opened by two
   separate unlocked reads, so a save landing between them, from another
@@ -265,8 +302,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   boundary. A read never abandons an available protocol: contention fails,
   and so does a filesystem without advisory locking, because both mean the
   protocol is there and this process could not join it. A **read-only
-  configuration mount keeps working**, which is a supported deployment here
-  and which an earlier version of this change broke: the lock file is
+  configuration mount keeps working**, which is a supported deployment
+  here: the lock file is
   reopened read-only, so such a mount still takes part in the protocol
   rather than stepping outside it, and only a view that can hold no lock
   file at all, or a directory that does not exist, reads unlocked - neither
@@ -317,6 +354,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   attribute by that name. What every surface asserts about a user is now
   written down in the new reference page rather than being a consequence of
   two independently written assemblers.
+- **MCP tool arguments take their shape from the domain models** (#297).
+  An argument that carries a configuration field's value now derives its
+  type, enum, bounds, length, pattern and item type from that field; the
+  tool keeps its own description, its `required` list and the wider
+  vocabulary it defines (an empty `client_secret` or branding colour still
+  means "none"/"clear it", an empty `get_audit_log` username still means
+  "no filter", and the handler answers those). The schemas gained 16
+  constraints the models already enforced and nobody advertised:
+  `minLength` on every name and secret that has no wider tool vocabulary,
+  and the range of `token_expiry_minutes`. For a client this moves those
+  rejections to a dispatch refusal (`MCP_INVALID_ARGUMENTS`), the two
+  layers the MCP error model already describes.
+- **`update_settings` no longer applies a value the model would refuse**
+  (#297). It writes its arguments onto `Settings` with `setattr`, and
+  `Settings` has no `validate_assignment`, so its tool schema was the only
+  check between an argument and the running configuration - and that schema
+  carried two enums and no bounds. `update_settings` with
+  `token_expiry_minutes: 0` or `99999` was applied and reported as a
+  success; both are now refused before dispatch.
+- **`saml.c14n_algorithm` is a closed set** (#297), in the models and in
+  the configuration document. An unknown value used to reach `routes/saml.py`,
+  which silently signed with Exclusive C14N, so a typo changed the algorithm
+  without a word; it now fails the configuration load. Blank keeps meaning
+  "the default", so an unset `${VAR}` placeholder loads exactly as before,
+  and the settings writer checks the value before it replaces the file.
+  (`login.mode` was already a closed set on the `Settings` model and only
+  moves into the document type here.)
+- **Every `/saml/attribute-query` outcome is attributable to its sender**
+  (#309). A query refused for its shape - not well-formed, no
+  `AttributeQuery`, no `Subject`, no `NameID` - used to write no audit entry
+  at all, and the query's own `ID` was read only after those three were
+  found, so a refused request could not be matched to whoever sent it. Each
+  outcome now writes a `saml_attribute_query` entry carrying `request_id`
+  and `content_length`, and the id is read as early as the body allows,
+  including from a query posted without the SOAP envelope. The body itself
+  is logged only under `verbose_logging`, since it names a principal, and
+  the recorded id is truncated, since it comes from an unauthenticated
+  caller and is kept in the audit ring - a shortening of the evidence only:
+  what the protocol sends back in `InResponseTo` is the id exactly as it
+  arrived. Auditing refusals also means that
+  reaching this endpoint is a way to push older audit entries out, which the
+  endpoint reference now says. This is diagnosis for a flake that has not
+  been reproduced, not a fix for it.
+- **SAML XML is parsed through a parser built per call** (#378), not one
+  shared by every request thread. Sharing one was never a correctness
+  problem - an `lxml` parser owns a lock and holds it for each parse - but
+  that lock serialized every SAML parse in the process: measured on 24000
+  parses of a 5 KB document, the shared parser took 3.0 s on one thread and
+  2.3 s on eight, while a parser per call took 3.2 s on one and 0.64 s on
+  eight. The cost sits at the small end, about a microsecond per parse of a
+  300-byte AuthnRequest, against requests that take milliseconds. It also
+  removes the shared object that twice stood as an alternative explanation
+  for a surprising parse while #309 was being diagnosed. The parser options
+  are unchanged and spelled out literally where the parser is built, which
+  is what both a reader and a static analyser go by; they are now pinned by
+  tests, where one of them used to be a comment block asserting nothing.
 - **The three SAML Response builders share the part of the document that is
   the same in all three** (#317). The `Response` envelope, the `Issuer`
   pair, the `Status` element and the assertion's head were written three
@@ -347,7 +440,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   check at `/revoke`, the channel rule at `/device_authorization`, forced
   refresh rotation - deliberately stay where they are applied: they are
   different rules sharing a predicate, not one policy written ten times.
-
 - **What `/userinfo` returns and what `/introspect` reports are services**
   (#303), not response dicts assembled inside the routes. Which claims a
   token's bearer may see, and what an introspection says about a token, are
@@ -359,7 +451,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   caller, and a token whose scope is empty is reported with an empty scope
   rather than the default. Which profiles gate the standard claims is now a
   property of `Settings` next to the other profile-derived predicates.
-
 - **The settings keys written only when they differ from their default are
   table rows** (#319). `security_profile`, `login.mode`, `login.auto_login`,
   `login.two_step` and `login.totp` were hand-coded below the loop that
@@ -376,45 +467,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   untouched is unchanged, and the writer keeps its API, including
   "blank mode means unchanged" and "an absent checkbox means unchanged".
 
-- **SAML XML is parsed through a parser built per call** (#378), not one
-  shared by every request thread. Sharing one was never a correctness
-  problem - an `lxml` parser owns a lock and holds it for each parse - but
-  that lock serialized every SAML parse in the process: measured on 24000
-  parses of a 5 KB document, the shared parser took 3.0 s on one thread and
-  2.3 s on eight, while a parser per call took 3.2 s on one and 0.64 s on
-  eight. The cost sits at the small end, about a microsecond per parse of a
-  300-byte AuthnRequest, against requests that take milliseconds. It also
-  removes the shared object that twice stood as an alternative explanation
-  for a surprising parse while #309 was being diagnosed. The parser options
-  are unchanged and spelled out literally where the parser is built, which
-  is what both a reader and a static analyser go by; they are now pinned by
-  tests, where one of them used to be a comment block asserting nothing.
-
-- **Every `/saml/attribute-query` outcome is attributable to its sender**
-  (#309). A query refused for its shape - not well-formed, no
-  `AttributeQuery`, no `Subject`, no `NameID` - used to write no audit entry
-  at all, and the query's own `ID` was read only after those three were
-  found, so a refused request could not be matched to whoever sent it. Each
-  outcome now writes a `saml_attribute_query` entry carrying `request_id`
-  and `content_length`, and the id is read as early as the body allows,
-  including from a query posted without the SOAP envelope. The body itself
-  is logged only under `verbose_logging`, since it names a principal, and
-  the recorded id is truncated, since it comes from an unauthenticated
-  caller and is kept in the audit ring - a shortening of the evidence only:
-  what the protocol sends back in `InResponseTo` is the id exactly as it
-  arrived. Auditing refusals also means that
-  reaching this endpoint is a way to push older audit entries out, which the
-  endpoint reference now says. This is diagnosis for a flake that has not
-  been reproduced, not a fix for it.
-
 ### Fixed
-- **Switching a client to public through the UI edit form drops a secret
-  typed in the same submission** (#300). The form only dropped it when the
-  field was left blank, so an operator who picked
-  `token_endpoint_auth_method: none` while a secret sat in the input
-  persisted a dead, ignored value - the state the create form has refused
-  to write since #254. The two forms now apply the same rule.
-
+- **Tokens are signed with the key the JWKS serves after a reload changes
+  `jwt.keys_dir`** (#230). The token service kept the signing key it was
+  built with, so after `POST /api/config/reload` had moved `keys_dir`,
+  every grant at `/token` and `POST /api/users/<username>/token` kept
+  signing with the old key while the JWKS, introspection and `/userinfo`
+  already used the new one: tokens issued after the reload failed
+  verification until a restart.
+- **A reload no longer activates a configuration whose signing service
+  cannot be built** (#359). `POST /api/config/reload` accepted a
+  `jwt.keys_dir` the process could not create and answered 200, after which
+  the JWKS answered 500 and `/token` failed (before #357 it kept signing with
+  a key the JWKS no longer served). The load now prepares the signing
+  service from the candidate settings before it commits anything: a
+  configuration that cannot build it is rejected and the running one stays
+  in effect, on `POST /api/config/reload`, on MCP `reload_config` and on
+  the refresh that follows a UI write. An unrelated reload reuses the running
+  signing service instead of rebuilding it, and loads now run one at a time,
+  so two concurrent reloads can no longer generate keys into a new
+  `keys_dir` over each other.
+- **`jwt.external_keys` and `jwt.max_previous_keys` are read from
+  `settings.yaml`** (#358). Both were documented in the security guide, but
+  the loader ignored them as unknown keys, so an operator's own signing key
+  was silently replaced by a generated one and the retention stayed at 2.
+  They are now part of the settings document and the JSON schema, and they
+  are signing inputs of #359's activation: the configured key signs tokens
+  and is the only key the JWKS serves, the MCP server signs with it too, and
+  a reload that changes either setting reinitialises the signing service.
+  `private_key` and `public_key` are given together; a missing, unreadable
+  or malformed key file, or a public key that does not belong to the private
+  key, rejects the configuration. Without `kid`, the key id is the RFC 7638
+  thumbprint of the public key (the docs promised a fingerprint; a random id
+  was generated on every start). Rotation is refused for external keys
+  (`409` from `POST /api/keys/rotate`, an error on the keys page and from
+  MCP `rotate_keys`) instead of replacing the operator's key with a
+  generated one. The key files are not watched: a key replaced at the same
+  paths is read at the next start. The SAML certificate for an external key
+  lives in its own file (`external-cert-<thumbprint>.pem`, stable across
+  starts), so switching back to generated keys no longer leaves SAML
+  signing with a certificate for the wrong key; a certificate that does not
+  belong to the signing key is regenerated, SAML signing uses the published
+  service's certificate instead of re-reading the file per request, and a
+  lowered `max_previous_keys` trims the JWKS as soon as it is applied.
+- **A write that would leave a file unloadable is refused, not written**
+  (#366). Every writer replaced the file and reloaded afterwards, so a
+  document the models refuse reached disk first and was discovered second,
+  leaving a `settings.yaml` the next process could not start from. The
+  composed document is now parsed, exactly as a load parses it, before any
+  file is replaced: the error names the file and the key and nothing is
+  written. Reachable from the settings form (a blank `oauth.audience` or
+  `oauth.issuer`) and from the MCP tools, where `update_settings` writes
+  onto a model without `validate_assignment` and `save_config` persisted
+  the result, so an `issuer` refused by a validator rather than by a field
+  constraint could be saved and then fail to load back. `${VAR}`
+  placeholders are expanded into a copy for the check, so what is written
+  keeps them. The check is of the document only, never of activation.
+  `nanoidp init` and the setup wizard go through it too: they validated the
+  document model but not the domain rules, so an issuer like
+  `localhost:8000` finished the wizard and left a directory the server it
+  had just configured could not start from. Both files are now checked
+  before either is written, so a refused answer leaves no half-configured
+  directory behind. The check follows the loader's order, `config_version`
+  included: that rule lives on the raw mapping rather than in the document
+  models, so without it a candidate could pass every model and be refused
+  by the very next load, and a batch holding both files also has to see
+  them declare the same version.
 - **Two signed Redirect AuthnRequests in one browser no longer interfere**
   (#375). With `saml.want_authn_requests_signed`, a verified `GET
   /saml/sso` was remembered in a single session key, so a second signed
@@ -428,104 +546,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   since the set travels in that cookie. What the login post must present is unchanged, and
   an expired verification now says so in the audit and the log instead of
   reporting the signature as invalid.
-
-### Changed
-- **The TOTP code screen of `/login`, `/saml/sso` and `/device` no longer
-  sends the verified password back to the browser** (#373). The password
-  check is recorded on the server as a pending second factor, bound to the
-  browser, to the surface and to what the login is for there (the SAML
-  request in flight, the device `user_code`), valid for 5 minutes and used
-  once, and the code screen carries only its id. The code is checked
-  against the user's current secret; a user deleted or left without a
-  secret, TOTP switched off or persona mode switched on in between ends the
-  login with an error instead. "Change username" is a form post that
-  discards it, and on `/device` a deny from the code screen discards it too
-  and still needs no credentials; the `user_code` is read-only on that
-  screen. A post carrying the password and the code together works as
-  before, with nothing stored. At most 1000 such logins wait at once.
-- **`/authorize` keeps each request as a server-side authorization
-  transaction** (#346). An accepted GET validates the request once and
-  stores it, bound to the browser, instead of copying ten parameters into
-  the session; the login page's forms name it with `transaction_id`, and
-  issuing the code consumes it. The TOTP code screen no longer sends the
-  verified password back to the browser: the transaction records it, and
-  the code is checked against the user's current secret. A POST without
-  `transaction_id` (a script posting credentials after its GET) still
-  works while exactly one request is pending in that cookie jar; with
-  several it is now refused instead of completing whichever GET came last.
-  A POST carrying the whole request in its query string keeps working with
-  or without a GET before it, and still leaves the browser's pending
-  requests alone. "Change
-  username" is a form on the transaction rather than a link carrying the
-  request. A request opened before a configuration change keeps the client
-  it was validated against; only a client that no longer exists ends it.
-  Pending requests are capped at 1000 and expire after 10 minutes; at the
-  cap a new request gets `temporarily_unavailable` rather than any pending
-  one being dropped.
-- **MCP tool arguments take their shape from the domain models** (#297).
-  An argument that carries a configuration field's value now derives its
-  type, enum, bounds, length, pattern and item type from that field; the
-  tool keeps its own description, its `required` list and the wider
-  vocabulary it defines (an empty `client_secret` or branding colour still
-  means "none"/"clear it", an empty `get_audit_log` username still means
-  "no filter", and the handler answers those). The schemas gained 16
-  constraints the models already enforced and nobody advertised:
-  `minLength` on every name and secret that has no wider tool vocabulary,
-  and the range of `token_expiry_minutes`. For a client this moves those
-  rejections to a dispatch refusal (`MCP_INVALID_ARGUMENTS`), the two
-  layers the MCP error model already describes.
-- **`update_settings` no longer applies a value the model would refuse**
-  (#297). It writes its arguments onto `Settings` with `setattr`, and
-  `Settings` has no `validate_assignment`, so its tool schema was the only
-  check between an argument and the running configuration - and that schema
-  carried two enums and no bounds. `update_settings` with
-  `token_expiry_minutes: 0` or `99999` was applied and reported as a
-  success; both are now refused before dispatch.
-- **`saml.c14n_algorithm` is a closed set** (#297), in the models and in
-  the configuration document. An unknown value used to reach `routes/saml.py`,
-  which silently signed with Exclusive C14N, so a typo changed the algorithm
-  without a word; it now fails the configuration load. Blank keeps meaning
-  "the default", so an unset `${VAR}` placeholder loads exactly as before,
-  and the settings writer checks the value before it replaces the file.
-  (`login.mode` was already a closed set on the `Settings` model and only
-  moves into the document type here.)
-- **Users and clients resolve through one identity resolver** (#235), in
-  preparation for runtime-created test identities (#192). Every login,
-  grant, client authentication and SAML lookup resolves users and clients
-  through `nanoidp.services.identities`, which composes the declared
-  configuration with an in-memory runtime identity store, declared first;
-  a reload that declares a name a runtime object holds removes the runtime
-  one with a warning. Nothing creates runtime objects yet, so no HTTP, UI
-  or MCP behaviour changes. The management surfaces (UI pages and forms,
-  the persona picker, `/api/users` including its token endpoint, MCP) stay
-  on the declared configuration until #192. For code embedding nanoidp:
-  `ConfigManager.authenticate`, `interactive_authenticate` and
-  `check_client` moved to `IdentityResolver` (`identities_for(config)`);
-  `ConfigManager.get_user` and `get_client` stay, and return declared
-  objects only; `init_config` gains `after_load`, which `create_app` uses
-  for the reconciliation.
-- **One `ConfigManager` per process** (#230). The MCP server no longer keeps
-  a configuration global of its own next to `nanoidp.config`'s; its tools,
-  the HTTP routes and the token service resolve the same manager, and
-  `TokenService` takes that manager explicitly instead of looking it up and
-  caching it. No change to the MCP tools or to any HTTP surface. For code
-  embedding nanoidp: `nanoidp.mcp_server._config` no longer exists (use
-  `nanoidp.config.init_config`), and `TokenService()` now needs the
-  manager, `TokenService(config)`; `get_token_service()` is unchanged.
-- **A rejected reload answers a JSON `422`** (#359): `{"status": "error",
-  "error": ..., "kind": "invalid" | "activation"}` from
-  `POST /api/config/reload`, and an error result with the same `kind` from
-  MCP `reload_config`, for files that cannot be read or do not validate as
-  well as for a signing configuration that cannot be used. Such a file used
-  to answer Flask's HTML 500. A strict hook or plugin failure keeps its
-  `503`. At startup the same conditions print
-  `error: configuration rejected: ...` and exit 1 instead of a traceback.
-  For code embedding nanoidp: a failed load raises
-  `nanoidp.config.ConfigurationRejected` (a `ValueError`, with the original
-  error as its cause); `get_crypto_service()` takes no argument and returns
-  the service the configuration published; `init_crypto_service` is replaced
-  by the activation step `activate_crypto_service`, passed as
-  `init_config(..., activate=...)`.
+- **Switching a client to public through the UI edit form drops a secret
+  typed in the same submission** (#300). The form only dropped it when the
+  field was left blank, so an operator who picked
+  `token_endpoint_auth_method: none` while a secret sat in the input
+  persisted a dead, ignored value - the state the create form has refused
+  to write since #254. The two forms now apply the same rule.
+- **A refused field on the users or clients edit form is answered, not
+  reported as a server failure** (#298). An email without `@`, a colour that
+  is not a hex triplet or any other value the model refuses reached the
+  catch-all on the edit routes: the operator was told "Failed to update
+  user: 1 validation error for User ..." and the server logged a stack trace
+  at ERROR for what is ordinary form input. The create routes had always
+  answered the same input with the refusal itself, and both legs now build
+  the record through one reader, so both answer it the same way. Nothing is
+  written in either case.
+- **A password field holding only spaces means "unchanged" on the users edit
+  form, as it already did on create** (#386). The create leg stripped the
+  field before deciding it was blank and the edit leg did not, so `"   "`
+  was no password on one and a real new password on the other: an operator
+  who left stray spaces in the field, from a paste, an autofill or the
+  spacebar, silently replaced that account's password with whitespace, with
+  nothing flashed and nothing logged, and the account stopped authenticating
+  with the password they believed it had. Both legs now share one notion of
+  "the field was left blank". Stripping decides only that: a password that
+  is not blank is stored exactly as typed, leading and trailing spaces
+  included, since those may be deliberate.
 
 ## [3.2.0] - 2026-09-15
 
