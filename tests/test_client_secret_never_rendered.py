@@ -41,9 +41,22 @@ _PROOF = {"X-Management-Secret": MANAGEMENT_SECRET}
 
 # 40 distinct characters, mixed so that no run of four reads as a word the
 # page could contain by accident; test_the_canary_is_not_vacuous checks that
-# rather than trusting it.
+# rather than trusting it. The declared secrets are slices of it.
 _CANARY = "Zq7Xj9Kw3Vy5Rb1Tn8Mc2Ld6Pf4Gs0HhUuWwIiOo"
+# A second canary for the runtime and dynamically-registered secrets. Those
+# two are the only secrets the sweep used to search that were not slices of
+# _CANARY - the runtime one was reversed, the DCR one was server-generated
+# and random - so their 4-grams were outside the canary's vacuity guarantee
+# and could coincide with page chrome (the ~2.3%/run false positive this
+# change removes). Giving them slices of a second canary puts every searched
+# 4-gram back under that guarantee. Its 4-grams are disjoint from _CANARY's
+# (test_the_two_canaries_are_distinguishable), so a match stays attributable.
+_CANARY2 = "OgZwiYPV0XvzUJrdeBfIbuL3yacFoM2AQDR6Tkp1"
 LENGTHS = range(1, 41)
+
+# The runtime and DCR secrets, as disjoint forward slices of _CANARY2.
+RUNTIME_SECRET = _CANARY2[:16]
+REGISTERED_SECRET = _CANARY2[16:36]
 
 
 def _secret(length: int) -> str:
@@ -76,6 +89,20 @@ def ui(tmp_path):
     return app.test_client()
 
 
+@pytest.fixture
+def registered_secret(monkeypatch):
+    """`POST /register` issues a server-generated secret (`token_urlsafe`).
+    Patch the generator at the name `routes/registration.py` resolved it to
+    (it imports `new_client_secret` by name), so the sweep searches a
+    canary-controlled value rather than a random one whose 4-grams can
+    coincide with page chrome. `token_urlsafe` itself is left alone, so the
+    client_id and the registration access token stay random."""
+    monkeypatch.setattr(
+        "nanoidp.routes.registration.new_client_secret", lambda: REGISTERED_SECRET
+    )
+    return REGISTERED_SECRET
+
+
 def _cells(page: str) -> dict[str, str]:
     """client_id -> the text of its secret cell, for every row of the table."""
     cells = {}
@@ -97,11 +124,20 @@ def test_the_gate_is_on_and_the_page_is_still_a_read(ui):
     assert ui.get("/clients").status_code == 200
 
 
+def test_the_two_canaries_are_distinguishable():
+    """No 4-gram in common, so a fragment found in a page is attributable to
+    one canary and the declared/runtime/DCR origins do not blur."""
+    assert not (_grams(_CANARY) & _grams(_CANARY2))
+
+
 def test_the_canary_is_not_vacuous(ui):
-    """A four-character run of the canary appearing in the page for another
-    reason would make the absence checks below flaky, and a page that lost
-    its rows would make them pass for nothing. Checked on the page with the
-    secret cells cut out, so that this holds before and after the fix."""
+    """The whole approach rests on one fact: neither canary's 4-grams occur in
+    the page for any reason other than a secret. If they did, the absence
+    checks below would flake (a canary gram in chrome reads as a leak) or pass
+    for nothing (a page that lost its rows). Checked on the clients page with
+    the secret cells cut out - the only page that renders a secret at all - so
+    it holds before and after the fix, and for both canaries now that both are
+    searched."""
     document = html.fromstring(_page(ui))
     rows = document.xpath("//table//tbody/tr")
     assert len(rows) >= len(LENGTHS) + 1
@@ -109,7 +145,8 @@ def test_the_canary_is_not_vacuous(ui):
         cell = row.xpath("./td")[2]
         cell.getparent().remove(cell)
     rest = html.tostring(document, encoding="unicode")
-    assert not {gram for gram in _grams(_CANARY) if gram in rest}
+    canary_grams = _grams(_CANARY) | _grams(_CANARY2)
+    assert not {gram for gram in canary_grams if gram in rest}
 
 
 @pytest.mark.parametrize("length", LENGTHS)
@@ -135,7 +172,7 @@ def test_a_runtime_client_gets_the_same_mask(ui):
     for length in (5, 12, 13, 32):
         created = ui.post(
             "/api/runtime/clients",
-            json={"client_id": f"runtime-{length:02d}", "client_secret": _secret(length)[::-1]},
+            json={"client_id": f"runtime-{length:02d}", "client_secret": _CANARY2[:length]},
             headers=_PROOF,
         )
         assert created.status_code == 201, created.get_json()
@@ -144,10 +181,10 @@ def test_a_runtime_client_gets_the_same_mask(ui):
     cells = _cells(page)
     for length in (5, 12, 13, 32):
         assert cells[f"runtime-{length:02d}"] == declared_mask
-        assert not {gram for gram in _grams(_secret(length)[::-1]) if gram in page}
+        assert not {gram for gram in _grams(_CANARY2[:length]) if gram in page}
 
 
-def test_a_dynamically_registered_client_gets_the_same_mask(ui):
+def test_a_dynamically_registered_client_gets_the_same_mask(ui, registered_secret):
     declared_mask = _cells(_page(ui))["declared-20"]
     registered = ui.post(
         "/register",
@@ -158,11 +195,14 @@ def test_a_dynamically_registered_client_gets_the_same_mask(ui):
     )
     assert registered.status_code == 201, registered.get_json()
     body = registered.get_json()
+    # The registration really did carry the controlled secret, so the search
+    # below is testing what it claims to.
+    assert body["client_secret"] == registered_secret
 
     page = _page(ui)
     assert _cells(page)[body["client_id"]] == declared_mask
-    # The client_id is random too: cut it, or one run in ten thousand it
-    # shares four characters with the secret and this reports a leak.
+    # The client_id is still random (token_urlsafe is not patched): cut it, or
+    # one run in ten thousand it shares four characters with the secret.
     rest = page.replace(body["client_id"], "")
     assert not {gram for gram in _grams(body["client_secret"]) if gram in rest}
 
@@ -210,14 +250,14 @@ def _reads(app, registered_id):
                 yield blueprint, url_for(rule.endpoint, **dict(combination))
 
 
-def test_no_read_carries_a_stored_client_secret(ui):
+def test_no_read_carries_a_stored_client_secret(ui, registered_secret):
     """The clients page was the one place that did, and nothing keeps it the
     only candidate: every GET the application routes is fetched without proof
     of the management secret and searched for every stored client secret,
     declared, runtime and dynamically registered."""
     assert ui.post(
         "/api/runtime/clients",
-        json={"client_id": "runtime-12", "client_secret": _secret(12)[::-1]},
+        json={"client_id": "runtime-12", "client_secret": RUNTIME_SECRET},
         headers=_PROOF,
     ).status_code == 201
     assert ui.post(
@@ -232,11 +272,22 @@ def test_no_read_carries_a_stored_client_secret(ui):
             "token_endpoint_auth_method": "client_secret_basic",
         },
     ).get_json()
+    assert registered["client_secret"] == registered_secret
 
-    stored = [_secret(n) for n in LENGTHS] + [_secret(12)[::-1], registered["client_secret"]]
+    stored = [_secret(n) for n in LENGTHS] + [RUNTIME_SECRET, registered["client_secret"]]
     whole = [secret for secret in stored if len(secret) >= 8]
     long_grams = set().union(*(_grams(secret, 8) for secret in stored))
     short_grams = set().union(*(_grams(secret, 4) for secret in stored))
+    # Every searched 4-gram is a canary 4-gram (asserted here) and every
+    # searched secret value is a controlled canary slice, and the canary
+    # 4-grams are verified absent from the /clients chrome
+    # (test_the_canary_is_not_vacuous). That eliminates the observed
+    # false-positive source: a random or reversed secret whose 4-gram lands
+    # in shared markup. It is not a proof of zero collision - whole secrets
+    # and 8-grams are still searched in the uncut body, which carries random
+    # key material - so any residual match is astronomically unlikely rather
+    # than impossible.
+    assert short_grams <= _grams(_CANARY) | _grams(_CANARY2)
 
     reads = sorted(set(_reads(ui.application, registered["client_id"])))
     assert len(reads) > 40, reads
