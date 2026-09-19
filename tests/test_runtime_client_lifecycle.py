@@ -227,6 +227,34 @@ class TestAnOldCredentialNeverReadsARecreatedClient:
         _assert_the_old_credential_is_dead(application, client_id, token)
 
 
+    def test_nor_once_it_has_been_authenticated(self, application, monkeypatch):
+        """The read is over when the client has been resolved, by value. A
+        swap that lands after that, while the response is being built,
+        cannot change it: the answer is the first client, which is a read
+        that already happened, and never the second one's secret."""
+        from nanoidp.routes import registration as registration_routes
+
+        client_id, token = _register(application)
+        operator = Operator(application, client_id, token, delete_first=True)
+        build = registration_routes.registration_response
+
+        def swapped_first(*args, **kwargs):
+            operator.arrive()
+            return build(*args, **kwargs)
+
+        monkeypatch.setattr(registration_routes, "registration_response", swapped_first)
+
+        read = application.test_client().get(f"/register/{client_id}", headers=_bearer(token))
+        operator.finish()
+
+        assert read.status_code == 200
+        assert read.get_json()["redirect_uris"] == [REDIRECT]
+        assert OPERATOR_SECRET not in read.get_data(as_text=True)
+        _assert_never_read(operator)
+        _assert_the_operators_client_is_untouched(application, operator)
+        _assert_the_old_credential_is_dead(application, client_id, token)
+
+
 class TestAnOldCredentialNeverDeletesARecreatedClient:
     @pytest.mark.parametrize("nth", RECORD_READS)
     def test_while_it_is_being_authenticated(self, application, monkeypatch, nth):

@@ -137,10 +137,13 @@ class _Refused(Exception):
 def _authenticated_in_scope(
     client_id: str, identities: IdentityResolver
 ) -> Optional[Tuple[OAuthClient, DynamicRegistration, str]]:
-    """``_authenticated``, as one operation with whatever the caller does
-    next inside the same scope (#403): the record names its client, so a
-    client recreated under the id between the check and the read or the
-    delete would be managed with the first one's credential.
+    """``_authenticated`` with the check of the credential and the
+    resolution of the client as one operation (#403): the record names its
+    client, so a client recreated under the id between the two would be
+    read with the first one's credential. What comes back is by value, so
+    a response is built from it after the scope is left: a client deleted
+    and recreated by then cannot change it, and the read answers with the
+    client it authenticated, which is a read that already happened.
 
     Asked once without the scope first. This endpoint is open and the scope
     waits for loads and promotions, so a caller with no credential, or not
