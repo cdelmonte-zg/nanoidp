@@ -1,4 +1,4 @@
-"""No stored client secret, and no substring of one, is rendered by a read.
+"""No management read renders material derived from a stored client secret.
 
 The clients page used to show ``secret[:8] + "..." + secret[-4:]``. For a
 secret of 12 characters or fewer that is every character of it, and the page
@@ -6,12 +6,19 @@ is a read: ``management_secret`` gates mutations only, so with the gate on a
 caller who could change nothing could still read a client's secret off the
 page and authenticate as that client at ``/token``.
 
-The contract pinned here is the simple one: the cell shows the same fixed
-mask for every confidential client, whatever the secret and however long it
-is, for the three origins a confidential client can have (declared, created
-through ``/api/runtime``, registered through ``/register``). The mask being
-constant matters as much as the secret being absent: a mask as long as the
-secret would give the length away.
+Two properties are pinned here. The strong one is about the cell: it is
+independent of both the value and the length of the stored secret, one fixed
+mask for the three origins a confidential client can have (declared, created
+through ``/api/runtime``, registered through ``/register``). A mask as long
+as the secret would hide the value and give the length away.
+
+The other is about every read: none renders material derived from a stored
+secret. "No substring" would be the wrong way to say it, since a one-letter
+secret is a substring of any page; that is why the checks below use a canary,
+runs of four and eight characters, and cut random base64 before the short
+search. And it is about reads available without client-specific
+authorization: an RFC 7592 read returns that client's own secret to the
+holder of its registration access token, which the sweep does not present.
 """
 
 from __future__ import annotations

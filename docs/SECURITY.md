@@ -206,11 +206,11 @@ a secret editable through the surface it protects isn't a secret.
 Reads are not gated by `management_secret`, and what they can see is
 bounded, with or without it: read-only management surfaces (the web UI
 pages, `GET /api/*`, `GET /api/runtime/*`) expose client metadata and
-configuration state, but never a stored client secret or a substring
-derived from one. The clients page shows the same fixed mask for every
-confidential client, whether it is declared in `settings.yaml`, created
-through `/api/runtime` or registered through `/register`, and the mask does
-not vary with the secret's length.
+configuration state, but render no material derived from a stored client
+secret. On the clients page the secret cell is independent of both the
+value and the length of the stored secret: every confidential client gets
+the same fixed mask, whether it is declared in `settings.yaml`, created
+through `/api/runtime` or registered through `/register`.
 
 Where a client secret is returned, it goes to the party that holds it, not
 to a reader: the response to `POST /register` and every RFC 7592 read

@@ -598,10 +598,14 @@ upgrade is collected here, with the details under the entries named.
   shipped in 2.8.0, so 2.8.0 and later are affected. `require_ui_login`
   narrows who could read the page and nothing more: it is a login, not a
   role, so any `users.yaml` account could, and under `login_mode: persona`
-  anyone. No other response carried a secret read from the configuration
-  or the runtime store: a test now fetches every GET the application
-  routes, without proof of the management secret and following redirects,
-  and searches it for every stored client secret. (The built-in `/test`
+  anyone. A sweep now verifies that no management read available without
+  additional client-specific authorization exposes stored client-secret
+  material: it fetches every GET the application routes, without proof of
+  the management secret and without any client's credentials, following
+  redirects, and searches each response for every stored client secret.
+  An RFC 7592 read (`GET /register/<client_id>`) does return that client's
+  own secret, to the holder of its registration access token; that is the
+  client's channel, not a management read. (The built-in `/test`
   page prints the literal `demo-client` / `demo-secret` pair of
   `nanoidp init`, which is a public default and not a stored value; the
   Security guide now says so.) The guide gains "What a read can see".
