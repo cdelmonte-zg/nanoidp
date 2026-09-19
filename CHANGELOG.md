@@ -573,6 +573,28 @@ upgrade is collected here, with the details under the entries named.
   is not blank is stored exactly as typed, leading and trailing spaces
   included, since those may be deliberate.
 
+### Security
+- **The clients page no longer shows any part of a client secret.** The
+  secret column rendered the first 8 and the last 4 characters of each
+  confidential client's secret. For a secret of 12 characters or fewer
+  that is the whole secret, the one `nanoidp init` writes included, and for
+  a longer one it is 12 characters of it. The page is a read, and
+  `session.management_secret` gates mutations only: on an instance with
+  the management gate on and `require_ui_login` off, a caller who could
+  change nothing could read a client's secret off the page and
+  authenticate as that client at `/token`, `/introspect` and `/revoke`.
+  The column now shows one fixed mask for every confidential client,
+  declared, created through `/api/runtime` or dynamically registered, and
+  the mask does not vary with the secret's length. The preview is in every
+  release; the boundary it crossed exists since `management_secret`
+  shipped in 2.8.0, so 2.8.0 and later are affected. Instances with
+  `require_ui_login` on were not readable this way, and nothing else
+  rendered a secret: a test now fetches every GET of the UI, `/api` and
+  `/api/runtime` without proof and searches it for every stored client
+  secret. The Security guide says what a read can and cannot see.
+  *After upgrading:* rotate any client secret of an instance whose UI was
+  reachable by someone who was not meant to act as its clients.
+
 ## [3.2.0] - 2026-09-15
 
 ### Added

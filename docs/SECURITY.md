@@ -146,6 +146,17 @@ the dashboard itself stay reachable exactly as they are today. Off by
 default - unset, nothing is enforced, identical to before this setting
 existed.
 
+What a read can see is bounded, with or without this setting: read-only
+management surfaces (the web UI pages, `GET /api/*`, `GET /api/runtime/*`)
+expose client metadata and configuration state, but never a stored client
+secret or a substring derived from one. The clients page shows the same
+fixed mask for every confidential client, whether it is declared in
+`settings.yaml`, created through `/api/runtime` or registered through
+`/register`, and the mask does not vary with the secret's length. A secret
+is shown exactly once, to the caller that created it: in the response to
+`POST /register`, and after "Regenerate Secret" in the UI, which is a gated
+mutation. To read a declared secret, read `settings.yaml`.
+
 ```yaml
 session:
   management_secret: "your-secret-here"   # default: unset
