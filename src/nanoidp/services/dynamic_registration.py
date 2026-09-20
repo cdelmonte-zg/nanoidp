@@ -22,7 +22,10 @@ an orphan that matches nothing: it authenticates nothing, it labels nothing
 and the record is built from that identity, a conditional delete and, for
 registering, a compensation and a postcondition (``routes.registration``),
 with no lock around the pair and no transaction across the two
-repositories, so it holds for whoever shares the store.
+repositories. That much, the pairing of a record with its client, holds
+for whoever shares the store. What a runtime client itself still rests on
+within one process (the check against the declared names, the promotion
+marks, a reset and a reconciliation that go by name) is #405's.
 """
 
 import hashlib
@@ -124,23 +127,31 @@ class RegistrationLimitReached(Exception):
     """The server holds as many dynamic registrations as it accepts."""
 
 
-def _is_about(registration: DynamicRegistration, identities: IdentityResolver) -> bool:
-    """The record is about the runtime client that holds its id right now.
+def managed_client(
+    registration: DynamicRegistration, identities: IdentityResolver
+) -> Optional[OAuthClient]:
+    """The runtime client this record is about, by value, or nothing.
 
-    By instance, not by name (#403, #404): a client deleted and created
-    again under the id is another client, and a record issued for the first
-    says nothing about the second. So a record that outlives its client, for
-    whatever reason and for however long, is an orphan that matches nothing,
-    and every rule below is a comparison rather than an order of steps
-    somebody has to keep.
+    The one home of the rule, by instance and not by name (#403, #404): a
+    client deleted and created again under the id is another client, and a
+    record issued for the first says nothing about the second. So a record
+    that outlives its client, for whatever reason and for however long, is
+    an orphan that matches nothing, and everything below is a comparison
+    rather than an order of steps somebody has to keep. What RFC 7592
+    answers with is this client, never whoever holds the id by then.
 
-    Only the runtime store is asked. A promotion or a reload that declares
-    the name retires the runtime client in the same load, and from then on
-    there is no instance to match; until it has, the record is still about
-    the client it was issued for, which is the one being retired.
+    The origin is asked too. A load that declares the id assigns the new
+    configuration before its reconciliation retires the runtime client, and
+    in between the client that answers to the id is the declared one: the
+    registration has ended, even though its instance is still in the store.
     """
+    resolved = identities.resolve_client(registration.client_id)
+    if resolved is None or resolved.origin != "runtime":
+        return None
     entry = identities.store.clients.entry(registration.client_id)
-    return entry is not None and entry.instance_id == registration.client_instance
+    if entry is None or entry.instance_id != registration.client_instance:
+        return None
+    return entry.value
 
 
 def prune_stale_registrations(identities: IdentityResolver) -> int:
@@ -154,7 +165,7 @@ def prune_stale_registrations(identities: IdentityResolver) -> int:
     """
     dropped = 0
     for entry in registrations().entries():
-        if not _is_about(entry.value, identities):
+        if managed_client(entry.value, identities) is None:
             if delete_if(registrations(), entry.name, entry.instance_id):
                 dropped += 1
     if dropped:
@@ -162,36 +173,34 @@ def prune_stale_registrations(identities: IdentityResolver) -> int:
     return dropped
 
 
-def live_registration(
+def live_registration_and_client(
     client_id: str, identities: IdentityResolver
-) -> Optional[DynamicRegistration]:
+) -> Optional[Tuple[DynamicRegistration, OAuthClient]]:
     """The record for a client that is still the runtime client it was
-    issued for, or nothing.
+    issued for, with that client, or nothing.
 
     The one read RFC 7592 goes through, so a promoted, deleted, recreated
     or shadowed client answers as an unknown registration rather than as one
-    whose credential still works.
+    whose credential still works. A record found stale is dropped on the
+    way past, by its own instance.
     """
     entry = registrations().entry(client_id)
     if entry is None:
         return None
-    if not _is_about(entry.value, identities):
+    client = managed_client(entry.value, identities)
+    if client is None:
         delete_if(registrations(), client_id, entry.instance_id)
         return None
-    return entry.value
+    return entry.value, client
 
 
-def managed_client(
-    registration: DynamicRegistration, identities: IdentityResolver
-) -> Optional[OAuthClient]:
-    """The client a live record manages, by value, or nothing if the id has
-    changed hands since the record was read: what RFC 7592 answers with is
-    the instance the credential was issued for, never whoever holds the id
-    by then."""
-    entry = identities.store.clients.entry(registration.client_id)
-    if entry is None or entry.instance_id != registration.client_instance:
-        return None
-    return entry.value
+def live_registration(
+    client_id: str, identities: IdentityResolver
+) -> Optional[DynamicRegistration]:
+    """``live_registration_and_client`` for a caller that needs the record
+    only, such as the ``source: dcr`` label."""
+    found = live_registration_and_client(client_id, identities)
+    return found[0] if found is not None else None
 
 
 def record_registration(
@@ -212,10 +221,16 @@ def record_registration(
 
 def forget_registration_of(client: Entry[OAuthClient]) -> bool:
     """Drop the record issued for that client instance, if there is one."""
+    return forget_registration_for(client.name, client.instance_id)
+
+
+def forget_registration_for(client_id: str, client_instance: str) -> bool:
+    """``forget_registration_of`` for a caller that knows the instance and no
+    longer has the client: it went behind the registration's back."""
     removed = consume(
         registrations(),
-        client.name,
-        lambda entry: entry.value.client_instance == client.instance_id,
+        client_id,
+        lambda entry: entry.value.client_instance == client_instance,
     )
     return removed is not None
 

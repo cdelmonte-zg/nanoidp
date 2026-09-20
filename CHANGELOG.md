@@ -90,11 +90,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   its client once the record is there and refuses, removing what it
   created, if a reset or a delete got in between (`400`, please retry), or
   if a concurrent registration took the last slot (`429`). There is no lock
-  around the pair and no transaction across the two repositories, so this
-  holds for whoever shares the store. It needs a second actor reusing a
+  around the pair and no transaction across the two repositories, so the
+  pairing of a record with its client holds for whoever shares the store;
+  what a runtime client itself still rests on within one process (the check
+  against declared names, the promotion marks, a reset and a reconciliation
+  that go by name) is #405. It needs a second actor reusing a
   server-generated id, so it was unlikely; it was reproduced
-  deterministically for every window. No endpoint changes shape, and no
-  request waits for a configuration load or a promotion because of it.
+  deterministically for every window. No endpoint changes shape.
+  `GET` and `DELETE /register/<id>` never wait for a configuration load or a
+  promotion; `POST /register` waits for one only while it creates its
+  client, as every creation of a runtime client does (#235), so for that
+  moment the store can hold a few more unrecorded clients than the limit,
+  which the refusals then remove.
 
 ## [3.3.0] - 2026-09-19
 

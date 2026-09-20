@@ -232,6 +232,30 @@ class TestPruning:
             monkeypatch.undo()
             assert live_registration(client_id, identities) is not None
 
+    def test_the_sweep_drops_the_record_it_looked_at_and_no_other(self, app, monkeypatch):
+        from nanoidp.services.runtime_repository import MemoryRuntimeRepository
+
+        with app.app_context():
+            identities = get_identities()
+            client_id, _ = _register()
+            identities.delete_runtime_client(client_id)
+            listed = MemoryRuntimeRepository.entries
+            once = []
+
+            def then_registered_again(self):
+                found = listed(self)
+                if self is registrations() and not once:
+                    once.append(True)
+                    registrations().delete(client_id)
+                    _register(client_id)
+                return found
+
+            monkeypatch.setattr(MemoryRuntimeRepository, "entries", then_registered_again)
+
+            assert prune_stale_registrations(identities) == 0
+            monkeypatch.undo()
+            assert live_registration(client_id, identities) is not None
+
     def test_forgetting_a_record_says_whether_there_was_one(self, app):
         with app.app_context():
             client_id, _ = _register()

@@ -34,8 +34,12 @@ from ..config import ConfigManager, ConfigurationRejected, OAuthClient, Settings
 from ..hooks import HookError
 from .audit import get_audit_log
 from .client_metadata import cached_client, cached_entries, looks_like_client_id_url
-from .runtime_identities import MemoryRuntimeIdentityStore, get_runtime_identity_store
-from .runtime_repository import Entry, consume
+from .runtime_identities import (
+    MemoryRuntimeIdentityStore,
+    MemoryRuntimeRepository,
+    get_runtime_identity_store,
+)
+from .runtime_repository import Entry, T, consume
 from .yaml_writer import EntryAlreadyExists, PostWriteError, get_yaml_writer
 
 logger = logging.getLogger(__name__)
@@ -270,7 +274,7 @@ class IdentityResolver:
     # ---- lifecycle (#192) ------------------------------------------------
 
     def delete_runtime_user(self, username: str) -> None:
-        self._delete("user", username)
+        self._delete(self.store.users, "user", username)
 
     def delete_runtime_client(
         self, client_id: str, instance_id: Optional[str] = None
@@ -283,8 +287,7 @@ class IdentityResolver:
         runtime client holds the id goes, which is what an operator deleting
         by name means.
         """
-        removed: Entry[OAuthClient] = self._delete("client", client_id, instance_id)
-        return removed
+        return self._delete(self.store.clients, "client", client_id, instance_id)
 
     def reset_runtime_identities(self) -> Tuple[int, int]:
         """Remove every runtime user and client; returns (users, clients).
@@ -317,13 +320,23 @@ class IdentityResolver:
     def _repository(self, kind: Kind) -> Any:
         return self.store.users if kind == "user" else self.store.clients
 
-    def _delete(self, kind: Kind, name: str, instance_id: Optional[str] = None) -> Any:
+    def _delete(
+        self,
+        repository: MemoryRuntimeRepository[T],
+        kind: Kind,
+        name: str,
+        instance_id: Optional[str] = None,
+    ) -> Entry[T]:
         with _promoting_lock:
+            # The instance first, the promotion after: a caller that names
+            # an instance which is gone is told exactly that, and nothing
+            # about whoever holds the name now, a promotion included.
+            current = repository.entry(name)
+            if current is None or (instance_id is not None and current.instance_id != instance_id):
+                raise RuntimeObjectNotFound(f"no runtime {kind} {name!r}")
             _refuse_if_promoting((kind, name))
             removed = consume(
-                self._repository(kind),
-                name,
-                lambda entry: instance_id is None or entry.instance_id == instance_id,
+                repository, name, lambda entry: entry.instance_id == current.instance_id
             )
             if removed is None:
                 raise RuntimeObjectNotFound(f"no runtime {kind} {name!r}")
@@ -508,11 +521,16 @@ def reconcile_runtime_identities(config: ConfigManager) -> None:
         if declared("client", client.client_id)
     ]
     for kind, name in shadowed:
-        (store.users if kind == "user" else store.clients).delete(name)
+        retired = (store.users if kind == "user" else store.clients).delete(name)
         with _promoting_lock:
             promotion = _promoting.pop((kind, name), None)
         if promotion is not None:
             _audit("runtime_identity_promoted", kind, name, promotion.context)
+            continue
+        if not retired:
+            # Deleted by someone else between the look above and here, and
+            # audited as that. Saying it was removed on reload as well would
+            # give one object two ends.
             continue
         logger.warning(
             "Runtime %s %r removed: the configuration now declares that name", kind, name

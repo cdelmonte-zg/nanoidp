@@ -27,7 +27,8 @@ from ..services.dynamic_registration import (
     RegistrationLimitReached,
     RegistrationRejected,
     delete_client_and_registration,
-    live_registration,
+    forget_registration_for,
+    live_registration_and_client,
     managed_client,
     new_client_id,
     new_client_secret,
@@ -117,16 +118,14 @@ def _authenticated(
     token = _presented_token()
     if token is None:
         return None
-    registration = live_registration(client_id, identities)
-    if registration is None or not token_matches(token, registration):
+    # The record, and the client it was issued for, by instance (#403,
+    # #404): if the id has changed hands this is nothing, not the newcomer.
+    # By value, so a response built from it cannot be changed by whatever
+    # happens to the id afterwards.
+    found = live_registration_and_client(client_id, identities)
+    if found is None or not token_matches(token, found[0]):
         return None
-    # The client the credential was issued for, by instance (#403, #404):
-    # if the id has changed hands since the record was read, this is
-    # nothing, not the newcomer. By value, so a response built from it
-    # cannot be changed by whatever happens to the id afterwards.
-    client = managed_client(registration, identities)
-    if client is None:
-        return None
+    registration, client = found
     return client, registration, token
 
 
@@ -212,8 +211,14 @@ def register() -> ResponseReturnValue:
         except (RegistrationLimitReached, RuntimeObjectExists) as refused:
             # Compensation: the last slot went to a concurrent registration
             # (or a record of that id is there), so the client just created
-            # has no registration and goes, by instance.
-            delete_if(identities.store.clients, client_id, created.instance_id)
+            # has no registration and goes, by instance and the way every
+            # runtime client goes. It has been visible since it was created,
+            # so an operator may already be promoting it: then it is theirs,
+            # and stays. If it is gone, there is nothing to undo.
+            try:
+                identities.delete_runtime_client(client_id, created.instance_id)
+            except (PromotionInProgress, RuntimeObjectNotFound):
+                pass
             if isinstance(refused, RegistrationLimitReached):
                 raise _Refused(429, REGISTRATION_LIMIT_REACHED, _LIMIT_REACHED) from refused
             raise _Refused(400, "invalid_client_metadata", _RETRY, audited=False) from refused
@@ -292,7 +297,9 @@ def delete_registration(client_id: str) -> ResponseReturnValue:
     except RuntimeObjectNotFound:
         # That instance went between the check and the delete. Nothing to
         # manage, and the caller learns no more than it would about any
-        # other unknown registration.
+        # other unknown registration. Its record is an orphan by now, and
+        # goes, so that it does not count against the limit until a sweep.
+        forget_registration_for(client_id, registration.client_instance)
         return _unauthorized()
     _audit("client_registration_deleted", "success", client_id)
     return "", 204

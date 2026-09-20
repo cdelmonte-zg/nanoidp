@@ -90,6 +90,8 @@ class Operator:
         self.reset = reset
         self.register = register
         self.take_the_other_id = False
+        self.and_then = None
+        self.and_then_created = None
         self.leave_alone = set()
         self.registered = None
         self.created = None
@@ -106,6 +108,8 @@ class Operator:
             before = {c["client_id"] for c in client.get("/api/runtime/clients").get_json()["clients"]}
             response = client.post("/register", json={"redirect_uris": [REDIRECT]})
             self.registered = response.status_code
+            if self.and_then is not None:
+                self.and_then()
             if self.take_the_other_id:
                 # The registration under way created a client and has no
                 # record for it yet: the one id here that is nobody's.
@@ -117,6 +121,8 @@ class Operator:
         if self.delete_first:
             client.delete(f"/api/runtime/clients/{self.client_id}")
         self.created = self._create(client)
+        if self.and_then_created is not None:
+            self.and_then_created()
         # What the credential of the first client sees of the second, as
         # early as anyone could ask.
         self.old_credential_read = client.get(
@@ -214,6 +220,11 @@ READS = [
     pytest.param(("client", 2), id="after-the-client-is-read-again"),
     pytest.param(("client", 3), id="after-the-client-is-read-a-third-time"),
 ]
+
+
+# How many times the client is read while a credential is checked: the
+# window of the test that needs to land after the last one.
+LAST_CLIENT_READ = 2
 
 
 def _open_window_at_read(monkeypatch, at, operator):
@@ -415,6 +426,32 @@ class TestRegisterIsOneOperation:
         assert (response.status_code, rival.registered) == (429, 201)
         _assert_the_operators_client_is_untouched(application, rival)
 
+    def test_nor_a_client_an_operator_has_started_promoting(self, tmp_path, monkeypatch):
+        """A client is visible as soon as it is created, so an operator can
+        promote it before its registration is through. The client that gets
+        no record goes the way every runtime client goes, which honours the
+        promotion: removed behind its back, it would end up declared with no
+        promoted event and a 429 for an answer."""
+        application = _application(tmp_path, max_clients=2)
+        first, _ = _register(application)
+        rival = Operator(application, register=True)
+        marked = []
+
+        def and_the_operator_promotes_it(*args, **kwargs):
+            taken = {record.client_id for record in registrations().list()}
+            (unrecorded,) = {c.client_id for c in _runtime_clients().list()} - taken
+            identities_module._promoting[("client", unrecorded)] = identities_module._Promotion({})
+            marked.append(unrecorded)
+
+        rival.and_then = and_the_operator_promotes_it
+        _open_window(monkeypatch, registrations(), "transact", "before", rival)
+
+        response = application.test_client().post("/register", json={"redirect_uris": [REDIRECT]})
+        rival.finish()
+
+        assert (response.status_code, rival.registered) == (429, 201)
+        assert _runtime_clients().get(marked[0]) is not None, "a client being promoted was removed"
+
     def test_a_deleted_client_takes_its_record_with_it(self, application):
         """At once, not at the next sweep. An orphan record matches nothing,
         so this is not what keeps a credential from being inherited; it is
@@ -428,6 +465,115 @@ class TestRegisterIsOneOperation:
         deleted = application.test_client().delete(f"/register/{client_id}", headers=_bearer(token))
         assert deleted.status_code == 204
         assert registrations().list() == []
+
+
+class TestAnOrphanCredentialLearnsNothingAboutItsSuccessor:
+    def test_not_even_that_it_is_being_promoted(self, application, monkeypatch):
+        """The id changed hands and the operator is promoting the new client
+        when the old credential asks for a delete. The instance it names is
+        gone, and that is the whole answer: 401, like any unknown
+        registration, not the 409 that belongs to somebody else's client."""
+        client_id, token = _register(application)
+        operator = Operator(application, client_id, token, delete_first=True)
+
+        def promoting():
+            identities_module._promoting[("client", client_id)] = identities_module._Promotion(
+                {}, written=True
+            )
+
+        operator.and_then_created = promoting
+        # After the last look at the client, when the credential has been
+        # accepted and only the delete is left.
+        _open_window(monkeypatch, _runtime_clients(), "entry", "after", operator, nth=LAST_CLIENT_READ)
+
+        deleted = application.test_client().delete(f"/register/{client_id}", headers=_bearer(token))
+        operator.finish()
+
+        assert deleted.status_code == 401
+        _assert_the_operators_client_is_untouched(application, operator)
+
+    def test_and_a_record_found_orphaned_at_the_delete_is_dropped(self, application, monkeypatch):
+        """The client went, behind the registration's back, between the
+        check of the credential and the delete: nothing to manage, 401, and
+        the record does not stay to count against the limit."""
+        client_id, token = _register(application)
+        found = identities_module.IdentityResolver.delete_runtime_client
+
+        def gone_by_then(self, name, instance_id=None):
+            self.store.clients.delete(name)
+            return found(self, name, instance_id)
+
+        monkeypatch.setattr(identities_module.IdentityResolver, "delete_runtime_client", gone_by_then)
+
+        deleted = application.test_client().delete(f"/register/{client_id}", headers=_bearer(token))
+
+        assert deleted.status_code == 401
+        assert registrations().list() == []
+
+
+class TestALoadThatDeclaresTheId:
+    """Between a load that declares a registered client's id and the
+    reconciliation that retires the runtime client, both exist. The client
+    that answers to the id is already the declared one."""
+
+    def _declare(self, application, tmp_path, client_id, during):
+        import nanoidp.app as app_module
+
+        settings = tmp_path / "config" / "settings.yaml"
+        document = yaml.safe_load(settings.read_text())
+        document["oauth"]["clients"].append(
+            {"client_id": client_id, "client_secret": "the-declared-secret", "redirect_uris": [REDIRECT]}
+        )
+        settings.write_text(yaml.safe_dump(document))
+        reconcile = app_module.reconcile_runtime_identities
+        seen = []
+
+        def before_reconciling(config):
+            seen.append(during())
+            return reconcile(config)
+
+        return app_module, before_reconciling, seen
+
+    def test_the_registration_has_already_ended(self, application, tmp_path, monkeypatch):
+        client_id, token = _register(application)
+        app_module, before_reconciling, seen = self._declare(
+            application, tmp_path, client_id,
+            lambda: application.test_client().get(f"/register/{client_id}", headers=_bearer(token)),
+        )
+        monkeypatch.setattr(app_module, "reconcile_runtime_identities", before_reconciling)
+
+        assert application.test_client().post("/api/config/reload").status_code == 200
+
+        assert seen[0].status_code == 401
+
+    def test_a_delete_that_got_in_first_is_the_only_thing_the_audit_says(
+        self, application, tmp_path, monkeypatch
+    ):
+        """The runtime client is deleted after the reconciliation has listed
+        what the load shadows and before it retires it. It finds nothing to
+        retire and must not claim it did."""
+        from nanoidp.services.audit import get_audit_log
+
+        client_id, _ = _register(application)
+        app_module, _, _ = self._declare(application, tmp_path, client_id, lambda: None)
+        listed = MemoryRuntimeRepository.entries
+        once = []
+
+        def then_somebody_deletes_it(self):
+            found = listed(self)
+            if self is _runtime_clients() and not once and any(e.name == client_id for e in found):
+                once.append(True)
+                monkeypatch.setattr(MemoryRuntimeRepository, "entries", listed)
+                assert application.test_client().delete(f"/api/runtime/clients/{client_id}").status_code == 200
+            return found
+
+        monkeypatch.setattr(MemoryRuntimeRepository, "entries", then_somebody_deletes_it)
+
+        assert application.test_client().post("/api/config/reload").status_code == 200
+
+        assert once == [True]
+        assert len(get_audit_log().get_entries(event_type="runtime_identity_deleted")) == 1
+        assert get_audit_log().get_entries(event_type="runtime_identity_removed_on_reload") == []
 
 
 class TestARefusedDeleteHasNoEffect:
@@ -533,12 +679,16 @@ class TestADeleteDuringAPromotion:
 
 class TestAnOpenEndpointDoesNotQueueBehindALoad:
     """A promotion holds loads off while it writes the file, and a reload
-    while it runs its hooks. ``/register`` and ``/register/<id>`` are open:
-    whoever has no credential must be told so without waiting for either,
-    and nothing an open request triggers (an audit entry runs hooks) may
-    run while loads are held off, or anyone could park requests behind
-    every load. When the lifecycle was one critical section on that lock
-    (#408) this took care; it holds by construction now, and stays pinned."""
+    while it runs its hooks. ``/register/<id>`` is open: whoever has no
+    credential for it must be told so without waiting for either. And
+    nothing an open request triggers (an audit entry runs hooks) may run
+    while loads are held off. When the lifecycle was one critical section
+    on that lock (#408) both took care; they hold by construction now, and
+    stay pinned.
+
+    ``POST /register`` is not claimed here: it creates a runtime client,
+    and creating one waits for a load in progress, as it always has
+    (#235), because the name has to be checked against what is declared."""
 
     @pytest.mark.parametrize("verb", ["get", "delete"])
     @pytest.mark.parametrize("headers", [{}, {"Authorization": "Bearer not-the-token"}])
