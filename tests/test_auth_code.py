@@ -338,7 +338,12 @@ class TestAuthorizationCodeExpiration:
 
         # Put the code past its time, through the repository it lives in.
         past = datetime.now(timezone.utc) - timedelta(minutes=1)
-        replace(store._repository, code, lambda stored: dataclasses.replace(stored, expires_at=past))
+        replace(
+            store._repository,
+            code,
+            lambda stored: dataclasses.replace(stored, expires_at=past),
+            expires_at=past.timestamp(),  # the store's copy of the time moves with it
+        )
 
         # Try to consume expired code
         result = store.consume_code(

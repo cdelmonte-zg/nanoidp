@@ -15,6 +15,7 @@ operation that reads and then acts in two visits lets the others in between,
 every time, and one that is a single decision does not.
 """
 
+import dataclasses
 import threading
 import time
 
@@ -58,6 +59,11 @@ def interleaved(monkeypatch):
     # create leaves the object absent between the two.
     repository = runtime_repository.MemoryRuntimeRepository
     monkeypatch.setattr(repository, "delete", giving_way(repository.delete))
+    # And after every decision, once its lock is released: an operation made
+    # of two decisions has no read between them to give way at, and whether
+    # another thread gets in there would be the scheduler's to say. (A
+    # mutant of exactly that shape was killed twice and survived once.)
+    monkeypatch.setattr(repository, "transact", giving_way(repository.transact))
 
 
 def _while_the_store_is_busy(seconds, work):
@@ -389,6 +395,67 @@ class TestAuthorizationCodes:
         code = self._code(store, amr=["pwd"])
 
         assert store.get_code_info(code).amr == ("pwd",)
+
+    def test_a_code_is_written_down_as_plain_json(self):
+        """What the codec writes is JSON as it stands, not something
+        ``json.dumps`` happens to accept and change on the way (a tuple
+        goes in and a list comes out): a backend may keep what it is given
+        without a round trip through text."""
+        import json
+
+        from nanoidp.services.auth_code import AuthorizationCodeCodec
+
+        store = get_auth_code_store()
+        code = self._code(store, amr=("pwd", "otp"), resource=["https://api.example/v1"])
+        written = AuthorizationCodeCodec().dump(store.get_code_info(code))
+
+        assert json.loads(json.dumps(written)) == written
+
+    def test_a_string_is_not_a_list_of_methods(self):
+        """``tuple("pwd")`` is three characters. The choke point that mints
+        the token drops a value that is not a list or a tuple, and says so;
+        a code must hand it what it was given, not something that now
+        passes for a list."""
+        store = get_auth_code_store()
+        code = self._code(store, amr="pwd")
+
+        assert store.consume_code(code, "demo-client", self.REDIRECT).amr == "pwd"
+
+    def test_the_shape_of_a_code_is_the_codes_own_rule(self):
+        """Wherever a code comes from, not only ``create_code``: the methods
+        are a tuple and the resources a list, or what a backend writes down
+        would not read back equal."""
+        from nanoidp.services.auth_code import AuthorizationCode
+
+        made = AuthorizationCode(
+            code="c", client_id="x", redirect_uri=self.REDIRECT, scope="openid", username="alice",
+            amr=["pwd", "otp"], resource=("https://api.example/v1",),
+        )
+
+        assert made.amr == ("pwd", "otp")
+        assert made.resource == ["https://api.example/v1"]
+        assert dataclasses.replace(made, amr=["pwd"]).amr == ("pwd",)
+
+    @pytest.mark.parametrize(
+        ("method", "verifier"),
+        [("S512", "anything"), ("S256", "non-ascii-\u00e9")],
+        ids=["unknown-method", "non-ascii-verifier"],
+    )
+    def test_a_verifier_that_cannot_be_checked_is_a_refusal_not_an_error(self, method, verifier, caplog):
+        """Inside the decision nothing logs and nothing raises: an unknown
+        method used to log from in there, once per run of the decision, and
+        a verifier that is not ASCII raised out of it as a 500."""
+        import logging
+
+        store = get_auth_code_store()
+        code = self._code(store, code_challenge="a-challenge", code_challenge_method=method)
+
+        with caplog.at_level(logging.WARNING, logger="nanoidp.services.auth_code"):
+            refused = store.consume_code(code, "demo-client", self.REDIRECT, code_verifier=verifier)
+
+        assert refused is None
+        assert store.get_code_info(code).used is False
+        assert len(caplog.records) == 1
 
     def test_an_expired_code_is_refused_and_removed(self, monkeypatch):
         from nanoidp.services import auth_code as auth_code_module
