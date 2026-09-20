@@ -18,7 +18,7 @@ from typing import Any, Callable, Dict, Optional
 from flask import Blueprint, current_app, jsonify, request
 from flask.typing import ResponseReturnValue
 
-from ..config import ConfigurationRejected, get_config
+from ..config import ConfigurationRejected, OAuthClient, get_config
 from ..config_documents import (
     DocumentRejected,
     EntryInvalid,
@@ -29,18 +29,18 @@ from ..config_writer import ConflictError, LockUnavailableError
 from ..hooks import HookError
 from ..services.dynamic_registration import (
     delete_client_and_registration,
-    live_registration,
     prune_stale_registrations,
+    registration_of,
 )
 from ..services.identities import (
     DeclaredNameCollision,
-    IdentityResolver,
     PromotionInProgress,
     PromotionOutcome,
     RuntimeObjectNotFound,
     identities_for,
 )
 from ..services.runtime_identities import RuntimeObjectExists
+from ..services.runtime_repository import Entry
 from ..services.yaml_writer import PostWriteError
 from ._audit import audit_event
 from ._auth import management_secret_required_for_api
@@ -132,35 +132,30 @@ def create_client() -> ResponseReturnValue:
                    lambda created: client_summary(created, "runtime"))
 
 
-def _source_of(client_id: str, resolver: IdentityResolver) -> Optional[str]:
-    """``dcr`` when a live registration record manages this client (#190).
+def _source_of(client: Entry[OAuthClient]) -> Optional[str]:
+    """``dcr`` when a registration record was issued for this client (#190).
 
     Read from the record rather than from the shape of the id, which is only
-    a hint for a human reading a log - and through the liveness check, so a
-    record that outlived its client cannot label the next client to hold
-    that name as one somebody registered: the record is compared with the
-    client's instance, not with its name (#404).
+    a hint for a human reading a log, and from the entry that is being
+    shown rather than by its name (#404): the fields and the label are then
+    about one instance, whatever has happened to the id since it was read.
     """
-    return "dcr" if live_registration(client_id, resolver) is not None else None
+    return "dcr" if registration_of(client) is not None else None
 
 
 @runtime_bp.route("/clients")
 def list_clients() -> ResponseReturnValue:
-    resolver = identities_for(get_config())
-    clients = [
-        client_summary(c, "runtime", _source_of(c.client_id, resolver))
-        for c in resolver.store.clients.list()
-    ]
+    entries = identities_for(get_config()).store.clients.entries()
+    clients = [client_summary(entry.value, "runtime", _source_of(entry)) for entry in entries]
     return jsonify({"clients": clients, "count": len(clients)})
 
 
 @runtime_bp.route("/clients/<client_id>")
 def get_client(client_id: str) -> ResponseReturnValue:
-    resolver = identities_for(get_config())
-    client = resolver.store.clients.get(client_id)
-    if client is None:
+    entry = identities_for(get_config()).store.clients.entry(client_id)
+    if entry is None:
         return _error(404, f"no runtime client {client_id!r}", "not_found")
-    return jsonify(client_summary(client, "runtime", _source_of(client_id, resolver)))
+    return jsonify(client_summary(entry.value, "runtime", _source_of(entry)))
 
 
 @runtime_bp.route("/clients/<client_id>", methods=["DELETE"])

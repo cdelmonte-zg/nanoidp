@@ -467,6 +467,85 @@ class TestRegisterIsOneOperation:
         assert registrations().list() == []
 
 
+class TestTheManagementViewDescribesOneInstance:
+    """``/api/runtime/clients`` shows a client and says whether somebody
+    registered it (``source: dcr``). Both have to be about the same
+    instance: the fields of a client an operator created, labelled with the
+    registration of a client that took its id while the answer was being
+    put together, describe a client that never existed."""
+
+    OPERATORS = ["http://localhost:1/operator"]
+
+    def _swap_in(self, application, client_id, registered):
+        """Replace whatever holds ``client_id`` with a new client that is, or
+        is not, dynamically registered under that same id."""
+        from nanoidp.config import OAuthClient
+        from nanoidp.services.dynamic_registration import (
+            new_registration_token,
+            record_registration,
+        )
+        from nanoidp.services.identities import identities_for
+
+        def swap():
+            identities = identities_for(get_config())
+            application.test_client().delete(f"/api/runtime/clients/{client_id}")
+            created = identities.create_runtime_client_entry(
+                OAuthClient(
+                    client_id=client_id,
+                    token_endpoint_auth_method="none",
+                    redirect_uris=[REDIRECT] if registered else self.OPERATORS,
+                )
+            )
+            if registered:
+                record_registration(created, ["authorization_code"], new_registration_token(), 100)
+
+        return swap
+
+    def _read(self, application, client_id, listing):
+        client = application.test_client()
+        if not listing:
+            return client.get(f"/api/runtime/clients/{client_id}").get_json()
+        (found,) = [c for c in client.get("/api/runtime/clients").get_json()["clients"] if c["client_id"] == client_id]
+        return found
+
+    @pytest.mark.parametrize("listing", [False, True], ids=["one", "list"])
+    def test_an_operators_client_is_never_labelled_with_its_successors_registration(
+        self, application, monkeypatch, listing
+    ):
+        client_id = "shared-id"
+        application.test_client().post(
+            "/api/runtime/clients",
+            json={"client_id": client_id, "client_secret": OPERATOR_SECRET, "redirect_uris": self.OPERATORS},
+        )
+        successor = Operator(application)
+        successor._thread = threading.Thread(target=self._swap_in(application, client_id, registered=True))
+        _open_window(monkeypatch, _runtime_clients(), "entries" if listing else "entry", "after", successor)
+
+        shown = self._read(application, client_id, listing)
+        successor.finish()
+
+        assert successor.landed_in_the_window
+        assert shown["redirect_uris"] == self.OPERATORS
+        assert shown.get("source") != "dcr"
+        assert self._read(application, client_id, listing).get("source") == "dcr"
+
+    @pytest.mark.parametrize("listing", [False, True], ids=["one", "list"])
+    def test_nor_an_operators_successor_with_the_registration_it_replaced(
+        self, application, monkeypatch, listing
+    ):
+        client_id, _ = _register(application)
+        successor = Operator(application)
+        successor._thread = threading.Thread(target=self._swap_in(application, client_id, registered=False))
+        _open_window(monkeypatch, _runtime_clients(), "entries" if listing else "entry", "after", successor)
+
+        shown = self._read(application, client_id, listing)
+        successor.finish()
+
+        assert successor.landed_in_the_window
+        assert shown["redirect_uris"] == [REDIRECT]
+        assert self._read(application, client_id, listing).get("source") != "dcr"
+
+
 class TestAnOrphanCredentialLearnsNothingAboutItsSuccessor:
     def test_not_even_that_it_is_being_promoted(self, application, monkeypatch):
         """The id changed hands and the operator is promoting the new client
@@ -661,19 +740,21 @@ class TestADeleteDuringAPromotion:
         assert promoted == 200
 
     def test_the_registration_never_deletes_the_client_it_became(self, application, monkeypatch):
-        """RFC 7592's delete checks a credential first, which is part of the
-        scope, so it answers when the promotion is through: by then the
-        client is declared, the registration has ended, and the answer is
-        the one any unknown registration gets."""
+        """While the operator's promotion of the client is writing the file,
+        the registration's own delete of it is refused, like the runtime
+        API's, and the client ends up declared."""
         client_id, token = _register(application)
 
-        deleted, _, promoted = _while_promoting(
+        deleted, answered_at_once, promoted = _while_promoting(
             application, monkeypatch, client_id,
             lambda client: client.delete(f"/register/{client_id}", headers=_bearer(token)),
         )
 
         assert promoted == 200
-        assert deleted.status_code in (401, 409)
+        # At once, and refused: nothing keeps this delete waiting for the
+        # promotion any more, and the client it names is being promoted.
+        assert answered_at_once
+        assert deleted.status_code == 409
         assert any(c.client_id == client_id for c in get_config().settings.clients)
 
 

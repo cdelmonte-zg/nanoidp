@@ -149,9 +149,28 @@ def managed_client(
     if resolved is None or resolved.origin != "runtime":
         return None
     entry = identities.store.clients.entry(registration.client_id)
-    if entry is None or entry.instance_id != registration.client_instance:
+    if entry is None or not _is_for(registration, entry.instance_id):
         return None
     return entry.value
+
+
+def _is_for(registration: DynamicRegistration, client_instance: str) -> bool:
+    """The comparison itself, spelled once."""
+    return registration.client_instance == client_instance
+
+
+def registration_of(client: Entry[OAuthClient]) -> Optional[DynamicRegistration]:
+    """The record issued for this client instance, if there is one.
+
+    For a caller that already holds the client and describes it, such as
+    the management view's ``source: dcr``: asked by name after the client
+    was read, the answer could be the registration of whoever took the id
+    in the meantime, and the description would be of a client that never
+    existed. From the entry, the fields and the label are about one
+    instance. Read only: nothing is tidied up on the way past.
+    """
+    found = registrations().get(client.name)
+    return found if found is not None and _is_for(found, client.instance_id) else None
 
 
 def prune_stale_registrations(identities: IdentityResolver) -> int:
@@ -194,15 +213,6 @@ def live_registration_and_client(
     return entry.value, client
 
 
-def live_registration(
-    client_id: str, identities: IdentityResolver
-) -> Optional[DynamicRegistration]:
-    """``live_registration_and_client`` for a caller that needs the record
-    only, such as the ``source: dcr`` label."""
-    found = live_registration_and_client(client_id, identities)
-    return found[0] if found is not None else None
-
-
 def record_registration(
     client: Entry[OAuthClient], grant_types: List[str], token: str, limit: int
 ) -> Entry[DynamicRegistration]:
@@ -228,9 +238,7 @@ def forget_registration_for(client_id: str, client_instance: str) -> bool:
     """``forget_registration_of`` for a caller that knows the instance and no
     longer has the client: it went behind the registration's back."""
     removed = consume(
-        registrations(),
-        client_id,
-        lambda entry: entry.value.client_instance == client_instance,
+        registrations(), client_id, lambda entry: _is_for(entry.value, client_instance)
     )
     return removed is not None
 

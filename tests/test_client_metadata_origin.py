@@ -547,10 +547,13 @@ class TestTheDcrInvariantStillHolds:
 
     def test_a_name_that_now_resolves_to_cimd_makes_a_record_stale(self, app):
         from nanoidp.services.dynamic_registration import (
-            live_registration,
+            live_registration_and_client,
             new_registration_token,
             record_registration,
         )
+
+        def live_registration(client_id, identities):
+            return live_registration_and_client(client_id, identities)
 
         with app.app_context():
             identities = get_identities()

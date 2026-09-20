@@ -21,7 +21,7 @@ from nanoidp.config import OAuthClient
 from nanoidp.services.dynamic_registration import (
     CLIENT_ID_PREFIX,
     forget_registration_of,
-    live_registration,
+    live_registration_and_client,
     new_client_id,
     new_registration_token,
     prune_stale_registrations,
@@ -49,6 +49,12 @@ def app(tmp_path):
     application.config["TESTING"] = True
     return application
 
+
+
+def live_registration(client_id, identities):
+    """The record half of what RFC 7592 goes through."""
+    found = live_registration_and_client(client_id, identities)
+    return found[0] if found is not None else None
 
 def _register(client_id="dcr-one", grant_types=("authorization_code",)):
     """A runtime client plus its record, the way POST /register makes them."""
