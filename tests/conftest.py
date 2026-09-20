@@ -16,7 +16,6 @@ import nanoidp.services.auth_code as auth_code_module
 import nanoidp.services.client_metadata_fetch as client_metadata_fetch_module
 import nanoidp.services.crypto as crypto_module
 import nanoidp.services.device_code as device_code_module
-import nanoidp.services.identities as identities_module
 import nanoidp.services.revocation as revocation_module
 import nanoidp.services.runtime_identities as runtime_identities_module
 import nanoidp.services.yaml_writer as yaml_writer_module
@@ -151,7 +150,6 @@ def _reset_process_singletons() -> None:
     device_code_module._device_code_store = None
     revocation_module._revocation_store = None
     runtime_identities_module._runtime_identity_store = None
-    identities_module._promoting.clear()
     # The metadata fetch budget is process state like the stores above: a
     # sliding window of thirty a minute, shared by every caller, so without
     # this a file that fetches often would spend what the next one needs
@@ -348,3 +346,16 @@ def recording_arguments():
     """The ``RecordingArguments`` class, as a fixture so the parity suites
     need no cross-module import."""
     return RecordingArguments
+
+
+def claim_for_promotion(kind, name, state="written"):
+    """Put a runtime object in the state a promotion leaves it in: held,
+    ``writing`` while its entry is being written, ``written`` once the entry
+    reached the file and the reload after it failed (#405). For a test that
+    needs the state without running a promotion to get there."""
+    from nanoidp.services.identities import promotion_hold
+    from nanoidp.services.runtime_identities import get_runtime_identity_store
+
+    store = get_runtime_identity_store()
+    repository = store.users if kind == "user" else store.clients
+    return repository.transact(lambda view: view.hold(name, promotion_hold({"source": "test"}, state)))

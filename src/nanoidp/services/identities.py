@@ -26,7 +26,6 @@ edit forms and the MCP server work on the declared configuration only.
 """
 
 import logging
-import threading
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Literal, Optional, Set, Tuple
 
@@ -39,7 +38,7 @@ from .runtime_identities import (
     MemoryRuntimeRepository,
     get_runtime_identity_store,
 )
-from .runtime_repository import Entry, T, consume
+from .runtime_repository import Entry, RepositoryTransaction, T, consume
 from .yaml_writer import EntryAlreadyExists, PostWriteError, get_yaml_writer
 
 logger = logging.getLogger(__name__)
@@ -79,20 +78,35 @@ class PromotionInProgress(ValueError):
 
 Kind = Literal["user", "client"]
 
-@dataclass
-class _Promotion:
-    """A runtime object being promoted (#192). ``written`` turns true when its
-    entry reached the file but the reload after it failed; any later
-    successful load resolves it (reconcile_runtime_identities)."""
+# ---- the claim of a promotion (#192, #405) ------------------------------------
+#
+# A runtime object being promoted carries a hold, the store's own notion of a
+# claim by an operation in progress (#404). It used to be a mark in a dict of
+# this module, which only this process could see: another process sharing the
+# store deleted the object in the middle of its promotion, or retired it on a
+# reload and, knowing of no promotion, recorded an ordinary removal, so that
+# the promotion was never recorded at all. On the entry, the claim is seen by
+# whoever reads the entry, and travels with it to whoever retires it.
+#
+# The store keeps the hold and compares it; what it means is said here and
+# nowhere else. ``writing``: the entry is being written into the file.
+# ``written``: it reached the file and the reload after it failed, so a later
+# successful load has to say how it ended.
 
-    context: Dict[str, Any]
-    written: bool = False
+_WRITING = "writing"
+_WRITTEN = "written"
 
 
-# Composition state, not repository state: the store holds only users and
-# clients (#235).
-_promoting: Dict[Tuple[Kind, str], _Promotion] = {}
-_promoting_lock = threading.Lock()
+def promotion_hold(context: Dict[str, Any], state: str = _WRITING) -> Dict[str, Any]:
+    """The payload of a promotion's hold. ``context`` is the promoting
+    request's, for the audit entry of whoever retires the object."""
+    return {"promotion": {"state": state, "context": dict(context)}}
+
+
+def _promotion_of(entry: Entry[Any]) -> Optional[Dict[str, Any]]:
+    """The promotion this entry is claimed by, if it is."""
+    claim = entry.hold.payload.get("promotion") if entry.hold is not None else None
+    return claim if isinstance(claim, dict) else None
 
 
 @dataclass(frozen=True)
@@ -298,16 +312,7 @@ class IdentityResolver:
         to being declared, and the next successful load resolves it.
         """
         with self.config.holding_loads():
-            with _promoting_lock:
-                marked = set(_promoting)
-            return self._reset("user", marked), self._reset("client", marked)
-
-    def _reset(self, kind: Kind, marked: set) -> int:
-        repository = self._repository(kind)
-        if not any(k == kind for k, _ in marked):
-            return int(repository.delete_all())
-        names = [_name_of(kind, obj) for obj in repository.list()]
-        return sum(1 for name in names if (kind, name) not in marked and repository.delete(name))
+            return _delete_unheld(self.store.users), _delete_unheld(self.store.clients)
 
     def promote_runtime_user(self, username: str, context: Dict[str, Any]) -> PromotionOutcome:
         return self._promote("user", username, lambda user: get_yaml_writer().save_user(user, is_new=True), context)
@@ -327,82 +332,81 @@ class IdentityResolver:
         name: str,
         instance_id: Optional[str] = None,
     ) -> Entry[T]:
-        with _promoting_lock:
+        def decide(view: RepositoryTransaction[T]) -> Entry[T]:
             # The instance first, the promotion after: a caller that names
             # an instance which is gone is told exactly that, and nothing
             # about whoever holds the name now, a promotion included.
-            current = repository.entry(name)
+            current = view.entry(name)
             if current is None or (instance_id is not None and current.instance_id != instance_id):
                 raise RuntimeObjectNotFound(f"no runtime {kind} {name!r}")
-            _refuse_if_promoting((kind, name))
-            removed = consume(
-                repository, name, lambda entry: entry.instance_id == current.instance_id
-            )
-            if removed is None:
-                raise RuntimeObjectNotFound(f"no runtime {kind} {name!r}")
-            return removed
+            _refuse_if_held(current, kind)
+            view.delete(name)
+            return current
+
+        return repository.transact(decide)
 
     def _promote(
         self, kind: Kind, name: str, write: Callable[[Any], Any], context: Dict[str, Any]
     ) -> PromotionOutcome:
-        """Promotion order (#192): mark, write the entry, let the writer's
-        reload retire the marked object as promoted.
+        """Promotion order (#192, #405): claim, write the entry, let a reload
+        retire the claimed object as promoted.
 
-        The whole promotion runs with loads held off (holding_loads): the
-        only reload that can see its mark in the writing state is the one
-        its own write triggers, so a declaration of the same name by someone
-        else either lands first (the write finds the name: 409) or waits.
+        The claim is a hold on the object's entry in the store, so every
+        process sharing the store sees it. Within this process the whole
+        promotion also runs with loads held off (holding_loads), so a
+        declaration of the same name by someone else here either lands first
+        (the write finds the name: 409) or waits.
 
-        1. The object is marked; while marked, a delete or a second promotion
-           answers PromotionInProgress.
-        2. The per-entry writer adds it as a new entry. When the file is not
-           replaced (the name is already in the file, a revision conflict, an
-           I/O error), the mark is cleared, the object stays and the error
-           propagates; no audit event.
+        1. The object is claimed; while it is, a delete, a reset or a second
+           promotion, from any process, answers PromotionInProgress or
+           leaves it alone.
+        2. The per-entry writer adds the claimed value as a new entry. When
+           the file is not replaced (the name is already in the file, a
+           revision conflict, an I/O error), the claim is released, the
+           object stays and the error propagates; no audit event.
         3. Once the file is replaced, the writer reloads; the reconciliation
-           removes the marked object and records the one ``promoted`` event,
-           with no collision warning.
+           of whichever process loads the new file first retires the claimed
+           object and records the one ``promoted`` event, with this
+           request's context, and no collision warning.
         4. A strict on_config_saved hook failing after the write and the
            reload does not undo the promotion (PromotionOutcome.mirror_error).
            A failure after the file was replaced (the configuration is
            rejected, a strict plugin does not load, or anything else the
-           writer reports as a PostWriteError) leaves the object marked as
-           written; the
-           next successful load retires it as promoted, or, if the entry is
-           no longer declared by then, abandons the promotion with a warning.
+           writer reports as a PostWriteError) turns the claim to written;
+           the next successful load retires the object as promoted, or, if
+           the entry is no longer declared by then, abandons the promotion
+           with a warning and releases the claim.
         """
-        key = (kind, name)
-        # Checked before waiting for loads, so a second promotion of the same
-        # object answers at once instead of queuing behind the first; and
-        # again under the lock, for one that started in between.
-        with _promoting_lock:
-            _refuse_if_promoting(key)
+        repository = self._repository(kind)
+        # Looked at before waiting for loads, so a second promotion of the
+        # same object answers at once instead of queuing behind the first.
+        # Not the check that counts: the claim below is.
+        seen = repository.entry(name)
+        if seen is not None:
+            _refuse_if_held(seen, kind)
         with self.config.holding_loads():
-            with _promoting_lock:
-                _refuse_if_promoting(key)
-                obj = self._repository(kind).get(name)
-                if obj is None:
-                    raise RuntimeObjectNotFound(f"no runtime {kind} {name!r}")
-                _promoting[key] = _Promotion(context)
+            claimed = _claim(repository, kind, name, context)
             try:
-                write(obj)
+                # The value that was claimed, not whatever goes by the name
+                # by now: the promotion is of one snapshot.
+                write(claimed.value)
             except HookError as exc:
                 if exc.kind == "on_config_saved":
-                    _discard_promotion(key)
+                    _release(repository, claimed)
                     return PromotionOutcome(mirror_error=exc.message)
-                _mark_written(key)  # the reload after the write failed
+                _mark_written(repository, claimed, context)  # the reload after the write failed
                 raise
             except (ConfigurationRejected, PostWriteError):
                 # The entry reached the file; only what follows it failed.
-                _mark_written(key)
+                _mark_written(repository, claimed, context)
                 raise
             except EntryAlreadyExists as exc:
-                _discard_promotion(key)
+                _release(repository, claimed)
                 raise DeclaredNameCollision(f"{kind} {name!r} is already declared") from exc
             except Exception:
-                _discard_promotion(key)
+                _release(repository, claimed)
                 raise
-            _discard_promotion(key)  # already retired by the reconciliation
+            _release(repository, claimed)  # nothing to do once the reconciliation has retired it
             return PromotionOutcome()
 
     # ---- authentication -------------------------------------------------
@@ -498,9 +502,12 @@ def reconcile_runtime_identities(config: ConfigManager) -> None:
       a collision: a warning and a ``runtime_identity_removed_on_reload``
       event.
     - A promotion left in the written state by a failed reload resolves too:
-      promoted if its name is declared now (even when the object is already
-      gone), abandoned with a warning if it is not, so no mark outlives a
-      successful load.
+      promoted if its name is declared now, abandoned with a warning if it
+      is not, so no claim outlives a successful load.
+
+    What is recorded is decided by the entry each step takes out or
+    releases, so with several processes on one store every outcome is
+    recorded once, by whoever won it (#405).
 
     Runs inside the load, once the new configuration is assigned; with the
     resolver reading the store before the declared state, a lookup spanning
@@ -513,68 +520,127 @@ def reconcile_runtime_identities(config: ConfigManager) -> None:
     def declared(kind: Kind, name: str) -> bool:
         return config.get_user(name) is not None if kind == "user" else name in declared_ids
 
-    shadowed: List[Tuple[Kind, str]] = [
-        ("user", user.username) for user in store.users.list() if declared("user", user.username)
-    ] + [
-        ("client", client.client_id)
-        for client in store.clients.list()
-        if declared("client", client.client_id)
+    repositories: List[Tuple[Kind, MemoryRuntimeRepository[Any]]] = [
+        ("user", store.users),
+        ("client", store.clients),
     ]
-    for kind, name in shadowed:
-        retired = (store.users if kind == "user" else store.clients).delete(name)
-        with _promoting_lock:
-            promotion = _promoting.pop((kind, name), None)
-        if promotion is not None:
-            _audit("runtime_identity_promoted", kind, name, promotion.context)
-            continue
-        if not retired:
-            # Deleted by someone else between the look above and here, and
-            # audited as that. Saying it was removed on reload as well would
-            # give one object two ends.
-            continue
-        logger.warning(
-            "Runtime %s %r removed: the configuration now declares that name", kind, name
-        )
-        _audit("runtime_identity_removed_on_reload", kind, name, {"endpoint": "reload", "method": "internal"})
-
-    with _promoting_lock:
-        pending = [(key, p) for key, p in _promoting.items() if p.written]
-        for key, _ in pending:
-            del _promoting[key]
-    for (pending_kind, pending_name), promotion in pending:
-        if declared(pending_kind, pending_name):
-            _audit("runtime_identity_promoted", pending_kind, pending_name, promotion.context)
-        else:
-            logger.warning(
-                "Promotion of runtime %s %r abandoned: the reloaded configuration does not "
-                "declare it; the runtime object stays",
-                pending_kind,
-                pending_name,
-            )
-            _audit("runtime_identity_promotion_abandoned", pending_kind, pending_name, promotion.context)
+    for kind, repository in repositories:
+        for seen in repository.entries():
+            if declared(kind, seen.name):
+                _retire(repository, kind, seen.name)
+            else:
+                _abandon_if_written(repository, kind, seen)
 
 
-def _name_of(kind: str, obj: Any) -> str:
-    return str(obj.username if kind == "user" else obj.client_id)
+def _retire(repository: MemoryRuntimeRepository[Any], kind: Kind, name: str) -> None:
+    """Remove the runtime object the configuration now declares, and say
+    what that was.
+
+    By name: "declared wins" is a rule about the name, whatever instance
+    goes by it. What is said is decided by the entry this call took out, not
+    by one seen earlier, in a listing or by another process: whoever wins
+    the removal holds the claim that was on it, so a promotion is recorded
+    once, as a promotion, with its own context, whichever process reloads
+    first; and whoever loses it says nothing, because the winner did.
+
+    A claim still ``writing`` counts: if a configuration that declares the
+    name could be loaded, the file is written, and there is no waiting for
+    the promoting process to say so.
+    """
+    retired = consume(repository, name)
+    if retired is None:
+        return
+    promotion = _promotion_of(retired)
+    if promotion is not None:
+        _audit("runtime_identity_promoted", kind, name, promotion["context"])
+        return
+    logger.warning("Runtime %s %r removed: the configuration now declares that name", kind, name)
+    _audit("runtime_identity_removed_on_reload", kind, name, {"endpoint": "reload", "method": "internal"})
 
 
-def _refuse_if_promoting(key: Tuple[Kind, str]) -> None:
-    """Caller holds ``_promoting_lock``."""
-    if key in _promoting:
-        kind, name = key
-        raise PromotionInProgress(f"runtime {kind} {name!r} is being promoted")
+def _abandon_if_written(repository: MemoryRuntimeRepository[Any], kind: Kind, seen: Entry[Any]) -> None:
+    """A promotion that wrote its entry, lost its reload, and whose name a
+    successful load does not declare after all: the claim is released and
+    the object stays. One decision, so that one caller gets the claim and
+    records it; ``writing`` is left alone, its promotion being in the middle
+    of its write."""
+    if seen.hold is None:
+        return
+    hold_id = seen.hold.hold_id
+
+    def decide(view: RepositoryTransaction[Any]) -> Optional[Dict[str, Any]]:
+        current = view.entry(seen.name)
+        if current is None or current.hold is None or current.hold.hold_id != hold_id:
+            return None
+        promotion = _promotion_of(current)
+        if promotion is None or promotion["state"] != _WRITTEN:
+            return None
+        view.release_hold(seen.name, hold_id)
+        return promotion
+
+    abandoned = repository.transact(decide)
+    if abandoned is None:
+        return
+    logger.warning(
+        "Promotion of runtime %s %r abandoned: the reloaded configuration does not "
+        "declare it; the runtime object stays",
+        kind,
+        seen.name,
+    )
+    _audit("runtime_identity_promotion_abandoned", kind, seen.name, abandoned["context"])
 
 
-def _discard_promotion(key: Tuple[Kind, str]) -> None:
-    with _promoting_lock:
-        _promoting.pop(key, None)
+def _refuse_if_held(entry: Entry[Any], kind: str) -> None:
+    # Promotions are the only operation that holds a runtime object.
+    if entry.hold is not None:
+        raise PromotionInProgress(f"runtime {kind} {entry.name!r} is being promoted")
 
 
-def _mark_written(key: Tuple[Kind, str]) -> None:
-    with _promoting_lock:
-        promotion = _promoting.get(key)
-        if promotion is not None:
-            promotion.written = True
+def _claim(
+    repository: MemoryRuntimeRepository[T], kind: Kind, name: str, context: Dict[str, Any]
+) -> Entry[T]:
+    """Hold the object for a promotion and return the entry that is held:
+    its instance, its hold, and the value the promotion is of."""
+
+    def decide(view: RepositoryTransaction[T]) -> Entry[T]:
+        current = view.entry(name)
+        if current is None:
+            raise RuntimeObjectNotFound(f"no runtime {kind} {name!r}")
+        _refuse_if_held(current, kind)
+        held = view.hold(name, promotion_hold(context))
+        return Entry(current.name, current.value, current.instance_id, held)
+
+    return repository.transact(decide)
+
+
+def _release(repository: MemoryRuntimeRepository[T], claimed: Entry[T]) -> None:
+    """Give the claim up. By its own id, so never somebody else's; nothing
+    to do when the object has been retired with it."""
+    if claimed.hold is not None:
+        hold_id = claimed.hold.hold_id
+        repository.transact(lambda view: view.release_hold(claimed.name, hold_id))
+
+
+def _mark_written(
+    repository: MemoryRuntimeRepository[T], claimed: Entry[T], context: Dict[str, Any]
+) -> None:
+    if claimed.hold is not None:
+        hold_id = claimed.hold.hold_id
+        payload = promotion_hold(context, _WRITTEN)
+        repository.transact(lambda view: view.update_hold(claimed.name, hold_id, payload))
+
+
+def _delete_unheld(repository: MemoryRuntimeRepository[T]) -> int:
+    """Remove every object nobody holds, as one step, and say how many."""
+
+    def decide(view: RepositoryTransaction[T]) -> int:
+        removed = 0
+        for entry in view.entries():
+            if entry.hold is None and view.delete(entry.name):
+                removed += 1
+        return removed
+
+    return repository.transact(decide)
 
 
 def _audit(event_type: str, kind: str, name: str, context: Dict[str, Any]) -> None:

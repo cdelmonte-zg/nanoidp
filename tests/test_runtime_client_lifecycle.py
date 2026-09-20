@@ -37,6 +37,7 @@ from nanoidp.services.runtime_identities import (
     MemoryRuntimeRepository,
     get_runtime_identity_store,
 )
+from tests.conftest import claim_for_promotion  # noqa: E402
 
 _REPO = Path(__file__).resolve().parent.parent
 REDIRECT = "http://localhost:9000/cb"
@@ -440,7 +441,7 @@ class TestRegisterIsOneOperation:
         def and_the_operator_promotes_it(*args, **kwargs):
             taken = {record.client_id for record in registrations().list()}
             (unrecorded,) = {c.client_id for c in _runtime_clients().list()} - taken
-            identities_module._promoting[("client", unrecorded)] = identities_module._Promotion({})
+            claim_for_promotion("client", unrecorded, "writing")
             marked.append(unrecorded)
 
         rival.and_then = and_the_operator_promotes_it
@@ -556,9 +557,7 @@ class TestAnOrphanCredentialLearnsNothingAboutItsSuccessor:
         operator = Operator(application, client_id, token, delete_first=True)
 
         def promoting():
-            identities_module._promoting[("client", client_id)] = identities_module._Promotion(
-                {}, written=True
-            )
+            claim_for_promotion("client", client_id)
 
         operator.and_then_created = promoting
         # After the last look at the client, when the credential has been
@@ -667,9 +666,7 @@ class TestARefusedDeleteHasNoEffect:
         client = application.test_client()
         # A promotion whose entry reached the file and whose reload failed:
         # the state in which the mark outlives the promotion request.
-        identities_module._promoting[("client", client_id)] = identities_module._Promotion(
-            {}, written=True
-        )
+        claim_for_promotion("client", client_id)
 
         if surface == "runtime":
             refused = client.delete(f"/api/runtime/clients/{client_id}")
