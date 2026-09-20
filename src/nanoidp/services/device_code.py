@@ -27,7 +27,7 @@ import dataclasses
 import logging
 import secrets
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Callable, Optional, Sequence, Tuple, Union
 
@@ -38,6 +38,7 @@ from .runtime_repository import (
     RuntimeObjectExists,
     consume,
     create_within,
+    delete_expired,
     delete_if,
 )
 
@@ -71,6 +72,13 @@ class DeviceCodeStoreFull(Exception):
     """Raised by create() when MAX_PENDING_DEVICE_CODES pending entries exist."""
 
 
+class DeviceCodeStoreBusy(DeviceCodeStoreFull):
+    """create() could not make a pair right now: every attempt lost its
+    device code, its user code or its grant to somebody else. The same thing
+    to the caller as a full store, "not now, come back", and for the same
+    answer (a 503 with Retry-After), so it is one."""
+
+
 @dataclass
 class DeviceCodeGrant:
     """State of one device authorization (RFC 8628 §3.2)."""
@@ -90,9 +98,10 @@ class DeviceCodeGrant:
     amr: Optional[Sequence[str]] = None
     # RFC 8707 resource indicators requested at /device_authorization (#187).
     resource: Optional[list] = None
-    # The key the grant is kept under. Last, with a default, so that the
-    # fields above keep their positions.
-    device_code: str = ""
+    # The key the grant is kept under. Keyword only, so that the fields
+    # above keep their positions, and with no default: a grant kept under
+    # the empty name would be found by whoever polls for nothing.
+    device_code: str = field(kw_only=True)
 
     def __post_init__(self) -> None:
         # The shape of a grant, for one made anywhere (#404): the methods
@@ -159,6 +168,9 @@ _INDEX = _IndexCodec()
 # How many pairs create() will try before giving up. One is enough unless a
 # user code collides, which eight characters of thirty-one make rare.
 _PAIR_ATTEMPTS = 5
+# How many times poll() looks again at a grant that changed between being
+# seen authorized and being claimed. A matter of its own, not of the above.
+_POLL_ATTEMPTS = 5
 
 
 class DevicePollOutcome(Enum):
@@ -217,39 +229,58 @@ class DeviceCodeStore:
         pair is tried; it used to take the older mapping over in silence. A
         grant that is gone by the look back takes its index entry with it,
         and no half-made pair is handed out.
+
+        A grant that is about to be withdrawn counts towards the cap for as
+        long as it is there, so a store one short of full can refuse a
+        creation while another is withdrawing its grant. That is the price
+        of a saga with a compensation, it takes a user-code clash at the cap
+        to see it, and what it costs is one early "come back".
         """
         for _ in range(_PAIR_ATTEMPTS):
             device_code = secrets.token_urlsafe(32)
             user_code = "".join(secrets.choice(_USER_CODE_CHARS) for _ in range(8))
-            expires_at = time.time() + expires_in
-            grant = create_within(
-                self._grants,
-                DeviceCodeGrant(
-                    device_code=device_code,
-                    user_code=user_code,
-                    client_id=client_id,
-                    scope=scope,
+            # One reading of the clock for the pair: the two cleanups below
+            # are two decisions, and at two moments, one on each side of a
+            # grant's time, the user code would go and the grant stay.
+            now = time.time()
+            expires_at = now + expires_in
+            try:
+                grant = create_within(
+                    self._grants,
+                    DeviceCodeGrant(
+                        device_code=device_code,
+                        user_code=user_code,
+                        client_id=client_id,
+                        scope=scope,
+                        expires_at=expires_at,
+                        interval=interval,
+                        resource=resource,
+                    ),
+                    MAX_PENDING_DEVICE_CODES,
                     expires_at=expires_at,
-                    interval=interval,
-                    resource=resource,
-                ),
-                MAX_PENDING_DEVICE_CODES,
-                expires_at=expires_at,
-                full=DeviceCodeStoreFull(
-                    f"{MAX_PENDING_DEVICE_CODES} device authorizations already pending"
-                ),
-            )
-            indexed = self._index_for(grant, expires_at)
+                    full=DeviceCodeStoreFull(
+                        f"{MAX_PENDING_DEVICE_CODES} device authorizations already pending"
+                    ),
+                    now=now,
+                )
+            except RuntimeObjectExists:
+                continue  # the device code is taken: another pair, as for a user code
+            except DeviceCodeStoreFull:
+                # No pair is made, and the user codes past their time go all
+                # the same: their cleanup does not wait for a store with room.
+                delete_expired(self._index, now)
+                raise
+            indexed = self._index_for(grant, expires_at, now)
             if indexed is None:
                 delete_if(self._grants, device_code, grant.instance_id)
                 continue
             if self._is_still(grant):
                 return device_code, user_code
             delete_if(self._index, user_code, indexed.instance_id)
-        raise RuntimeError("could not create a device authorization")
+        raise DeviceCodeStoreBusy("could not make a device authorization, please retry")
 
     def _index_for(
-        self, grant: Entry[DeviceCodeGrant], expires_at: float
+        self, grant: Entry[DeviceCodeGrant], expires_at: float, now: float
     ) -> Optional[Entry[UserCodeIndex]]:
         """The index entry for that grant, or None when its user code is
         taken. One decision, which drops the entries past their time first:
@@ -257,7 +288,7 @@ class DeviceCodeStore:
         entry = UserCodeIndex(grant.value.user_code, grant.name, grant.instance_id)
 
         def decide(view: RepositoryTransaction[UserCodeIndex]) -> Optional[Entry[UserCodeIndex]]:
-            view.delete_expired(time.time())
+            view.delete_expired(now)
             try:
                 return view.create(entry, expires_at=expires_at)
             except RuntimeObjectExists:
@@ -297,8 +328,13 @@ class DeviceCodeStore:
         grant changed in between, it is classified again instead of its
         successor being consumed. A user who cannot be found costs nothing:
         the grant stays as it was.
+
+        The user is whoever ``get_user`` found at that moment. Nothing here
+        ever excluded that user being deleted a moment later: the lock this
+        store used to have was its own, not the users', and the token is
+        minted from the same snapshot after poll() has returned.
         """
-        for _ in range(_PAIR_ATTEMPTS):
+        for _ in range(_POLL_ATTEMPTS):
             classified = self._grants.transact(
                 lambda view: self._classify(view, device_code, client_id)
             )
@@ -311,7 +347,10 @@ class DeviceCodeStore:
             claimed = self._claim(classified)
             if claimed is not None:
                 return DevicePollOutcome.AUTHORIZED, user, claimed
-        return DevicePollOutcome.NOT_FOUND, None, None
+        # Seen authorized every time and lost every time to a change under
+        # it. "Not found" would be false, and final: a device stops polling
+        # on invalid_grant. "Pending" is neither, and the next poll decides.
+        return DevicePollOutcome.PENDING, None, None
 
     def _claim(self, seen: Entry[DeviceCodeGrant]) -> Optional[DeviceCodeGrant]:
         """Take the grant that was seen authorized, once: that instance,
@@ -356,7 +395,8 @@ class DeviceCodeStore:
         if grant.client_id != client_id:
             return DevicePollOutcome.WRONG_CLIENT
         if grant.is_past_its_time():
-            view.replace(device_code, dataclasses.replace(grant, status="expired"))
+            if grant.status != "expired":  # marked once, not rewritten by every poll
+                view.replace(device_code, dataclasses.replace(grant, status="expired"))
             return DevicePollOutcome.EXPIRED
         if grant.status == "pending":
             return DevicePollOutcome.PENDING

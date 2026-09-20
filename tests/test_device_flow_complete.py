@@ -32,6 +32,7 @@ def _put_past_its_time(device_code):
     )
     assert replaced is not None
 
+
 class TestDeviceFlowHappyPath:
     """Tests for the complete Device Flow happy path."""
 
@@ -407,3 +408,27 @@ class TestDeviceCodeStoreCapacity:
         assert "error" not in body  # not a fake OAuth token error
         assert "message" in body
         assert resp.headers.get("Retry-After")
+
+    def test_endpoint_says_come_back_when_no_pair_can_be_made(self, client, auth_header, monkeypatch):
+        """Every user code the endpoint can think of is taken. That is not a
+        full store and not a server error: the same plain 503, saying what
+        it is, and the audit trail does not call it capacity."""
+        from nanoidp.services import device_code as dc
+        from nanoidp.services.audit import get_audit_log
+
+        monkeypatch.setattr(dc.secrets, "choice", lambda alphabet: "A")
+        assert client.post("/device_authorization", headers=auth_header).status_code == 200
+
+        resp = client.post("/device_authorization", headers=auth_header)
+
+        assert resp.status_code == 503
+        assert resp.headers.get("Retry-After")
+        body = json.loads(resp.data)
+        assert "error" not in body
+        assert "Too many" not in body["message"]
+        failed = [
+            entry
+            for entry in get_audit_log().get_entries(limit=50)
+            if entry["event_type"] == "device_authorization_request" and entry["status"] == "failed"
+        ]
+        assert [entry["details"]["reason"] for entry in failed] == ["could not allocate a device code"]

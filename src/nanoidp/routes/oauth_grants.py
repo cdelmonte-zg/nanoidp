@@ -761,9 +761,10 @@ def _grant_device_code(ctx: _GrantContext) -> GrantResult:
             400,
         )
 
-    # The store runs the whole lookup-check-claim sequence under its lock so
-    # two concurrent polls can't both claim the same authorized code
-    # (one-time use, issue #43).
+    # The store classifies the grant, has the user looked up here, outside
+    # any decision of its repository (#363), and then claims that grant
+    # once, so two concurrent polls can't both claim the same authorized
+    # code (one-time use, issue #43).
     outcome, user, grant = get_device_code_store().poll(
         device_code, ctx.client_id, ctx.identities.get_user
     )

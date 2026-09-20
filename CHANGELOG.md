@@ -82,7 +82,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   long as it is there. One deliberate correction: **a user code that is
   already taken is refused and another pair is made**, where the second
   grant silently took the code over and left the first device's user
-  approving somebody else's device. Measured with ten thousand pending:
+  approving somebody else's device. When no pair can be made after a few
+  attempts, `/device_authorization` answers the same plain 503 with
+  `Retry-After` as for a full store (`DeviceCodeStoreBusy`, a
+  `DeviceCodeStoreFull`), and says so in the message and the audit entry.
+  Measured with ten thousand pending:
   creating one takes 0.81 ms (0.17 ms before: two repositories and their
   cleanups instead of one dictionary), a poll 4 us.
 - **Authorization codes live in the runtime store** (#363, second of five

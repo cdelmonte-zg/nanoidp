@@ -606,8 +606,8 @@ class TestDeviceCodes:
         indexed = type(store)._index_for
         vanished = []
 
-        def then_the_grant_goes(self, grant, expires_at):
-            made = indexed(self, grant, expires_at)
+        def then_the_grant_goes(self, grant, expires_at, now):
+            made = indexed(self, grant, expires_at, now)
             if not vanished:
                 vanished.append(grant.value.user_code)
                 self._grants.delete(grant.name)
@@ -660,6 +660,32 @@ class TestDeviceCodes:
         assert store.poll(device_code, "demo-client", _alice)[0] is DevicePollOutcome.EXPIRED
         assert store.pending_status(user_code) is DeviceVerifyOutcome.ALREADY_USED
 
+    def test_an_expired_grant_is_marked_once_not_by_every_poll(self, monkeypatch):
+        """A device that goes on polling an expired grant reads it; it does
+        not write it again each time."""
+        from nanoidp.services import device_code as device_code_module
+        from nanoidp.services.device_code import DeviceCodeGrant
+
+        store = get_device_code_store()
+        device_code, _ = store.create("demo-client", "openid", expires_in=-1)
+        rewritten = []
+        real = device_code_module.dataclasses.replace
+
+        def counted(obj, **changes):
+            if isinstance(obj, DeviceCodeGrant) and "status" in changes:  # not the codec's copies
+                rewritten.append(changes)
+            return real(obj, **changes)
+
+        monkeypatch.setattr(device_code_module.dataclasses, "replace", counted)
+        assert store.poll(device_code, "demo-client", _alice)[0] is DevicePollOutcome.EXPIRED
+        marked = len(rewritten)
+        assert marked >= 1
+
+        for _ in range(3):
+            assert store.poll(device_code, "demo-client", _alice)[0] is DevicePollOutcome.EXPIRED
+
+        assert len(rewritten) == marked
+
     def test_a_user_who_is_gone_does_not_cost_the_grant(self):
         store = get_device_code_store()
         device_code, _ = self._authorized(store)
@@ -667,12 +693,10 @@ class TestDeviceCodes:
         assert store.poll(device_code, "demo-client", lambda name: None)[0] is DevicePollOutcome.USER_NOT_FOUND
         assert store.poll(device_code, "demo-client", _alice)[0] is DevicePollOutcome.AUTHORIZED
 
-    def test_a_grant_past_its_time_says_expired_for_as_long_as_it_is_there(self, monkeypatch):
+    def test_a_grant_past_its_time_says_expired_for_as_long_as_it_is_there(self):
         """RFC 8628 has an error of its own for it. The store is told when
         the grant becomes removable, and until a cleanup takes it the grant
         answers for itself, to the device and to the user alike."""
-        from nanoidp.services import device_code as device_code_module
-
         store = get_device_code_store()
         device_code, user_code = store.create("demo-client", "openid", expires_in=-1)
 
@@ -689,7 +713,6 @@ class TestDeviceCodes:
         assert store.poll(device_code, "demo-client", _alice)[0] is DevicePollOutcome.NOT_FOUND
         assert store.pending_status(user_code) is DeviceVerifyOutcome.INVALID_CODE
         assert [entry.user_code for entry in store._index.list()] == [fresh]
-        del device_code_module
 
     def test_a_user_code_that_is_taken_is_not_given_out_again(self, monkeypatch):
         """It used to be: the second grant silently took the user code over,
@@ -712,6 +735,89 @@ class TestDeviceCodes:
         assert store.verify(first_user, "approve", _alice())[0] is DeviceVerifyOutcome.AUTHORIZED
         assert store.poll(first_device, "demo-client", _alice)[0] is DevicePollOutcome.AUTHORIZED
         assert store.poll(second_device, "demo-client", _alice)[0] is DevicePollOutcome.PENDING
+
+    def test_a_device_code_that_is_taken_is_another_pair_not_an_error(self, monkeypatch):
+        """Either name of the pair can be taken. A device code is 256 bits
+        and will not be; the point is that the retry covers both, so that
+        what reaches the route is never a bare error and a 500."""
+        from nanoidp.services import device_code as device_code_module
+
+        store = get_device_code_store()
+        first_device, _ = store.create("demo-client", "openid")
+        wanted = iter([first_device])
+        real = device_code_module.secrets.token_urlsafe
+        monkeypatch.setattr(device_code_module.secrets, "token_urlsafe", lambda n: next(wanted, None) or real(n))
+
+        second_device, second_user = store.create("demo-client", "openid")
+
+        assert second_device != first_device
+        assert store.pending_status(second_user) is None
+        assert len(store._grants.list()) == len(store._index.list()) == 2
+
+    def test_when_no_pair_can_be_made_the_caller_is_told_to_come_back(self, monkeypatch):
+        """Not RuntimeError: the route knows one way to say "not now", a 503
+        with Retry-After, and this is one more reason for it."""
+        from nanoidp.services import device_code as device_code_module
+
+        monkeypatch.setattr(device_code_module.secrets, "choice", lambda alphabet: "A")
+        store = get_device_code_store()
+        store.create("demo-client", "openid")
+
+        with pytest.raises(DeviceCodeStoreFull):
+            store.create("demo-client", "openid")
+
+        assert len(store._grants.list()) == 1, "the grants that got no user code were left behind"
+
+    def test_the_two_cleanups_are_of_one_moment(self, monkeypatch):
+        """The grants and their user codes are cleaned in two decisions. At
+        two readings of the clock, one straddling a grant's time, the user
+        code would go and the grant stay: the user told "invalid code" and
+        the device "expired" about the same authorization."""
+        from nanoidp.services import device_code as device_code_module
+
+        store = get_device_code_store()
+        device_code, user_code = store.create("demo-client", "openid", expires_in=100)
+        boundary = store._grants.entry(device_code).expires_at
+        # The first reading is before the grant's time, every later one after.
+        readings = iter([boundary - 1])
+        monkeypatch.setattr(device_code_module.time, "time", lambda: next(readings, boundary + 1))
+
+        store.create("demo-client", "openid", expires_in=100)
+        monkeypatch.undo()
+
+        assert store._grants.get(device_code) is not None
+        assert store._index.get(user_code) is not None
+
+    def test_a_full_store_still_drops_the_user_codes_past_their_time(self, monkeypatch):
+        from nanoidp.services import device_code as device_code_module
+
+        monkeypatch.setattr(device_code_module, "MAX_PENDING_DEVICE_CODES", 1)
+        store = get_device_code_store()
+        store.create("demo-client", "openid")
+        runtime_repository.replace(
+            store._index, store._index.list()[0].user_code, lambda entry: entry, expires_at=1.0
+        )
+
+        with pytest.raises(DeviceCodeStoreFull):
+            store.create("demo-client", "openid")
+
+        assert store._index.list() == []
+
+    def test_a_grant_is_kept_under_its_device_code_and_nothing_else(self):
+        from nanoidp.services.device_code import DeviceCodeGrant
+
+        with pytest.raises(TypeError):
+            DeviceCodeGrant("UC", "demo-client", "openid", 1.0, 5)
+
+    def test_a_poll_that_keeps_losing_is_told_to_come_back(self, monkeypatch):
+        """The grant is there and authorized, and every claim loses to a
+        change under it. "Invalid device code" would be false, and final: a
+        device stops polling on invalid_grant. "Pending" is neither."""
+        store = get_device_code_store()
+        device_code, _ = self._authorized(store)
+        monkeypatch.setattr(type(store), "_claim", lambda self, seen: None)
+
+        assert store.poll(device_code, "demo-client", _alice)[0] is DevicePollOutcome.PENDING
 
     def test_a_user_code_whose_grant_is_gone_opens_nothing(self, monkeypatch):
         """Not even a grant made later under the same device code: the
