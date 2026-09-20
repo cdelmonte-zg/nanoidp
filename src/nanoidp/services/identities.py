@@ -27,15 +27,19 @@ edit forms and the MCP server work on the declared configuration only.
 
 import logging
 import threading
-from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Iterator, List, Literal, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Literal, Optional, Set, Tuple
 
 from ..config import ConfigManager, ConfigurationRejected, OAuthClient, Settings, User, get_config
 from ..hooks import HookError
 from .audit import get_audit_log
 from .client_metadata import cached_client, cached_entries, looks_like_client_id_url
-from .runtime_identities import MemoryRuntimeIdentityStore, get_runtime_identity_store
+from .runtime_identities import (
+    MemoryRuntimeIdentityStore,
+    MemoryRuntimeRepository,
+    get_runtime_identity_store,
+)
+from .runtime_repository import Entry, T, consume
 from .yaml_writer import EntryAlreadyExists, PostWriteError, get_yaml_writer
 
 logger = logging.getLogger(__name__)
@@ -251,67 +255,39 @@ class IdentityResolver:
             if entry.client.client_id not in taken
         ]
 
-    @contextmanager
-    def runtime_client_lifecycle(self) -> Iterator[None]:
-        """One operation on the lifecycle of runtime clients at a time (#403).
-
-        For an operation that is several visits to the store and must look
-        like one to every other: deleting a client together with what was
-        kept about it, resetting, registering a client and its record, and
-        checking a registration credential together with the read or the
-        delete it authorises. Without it, a client created under the same id
-        between two of those visits is taken for the one the operation
-        started with. Creating a runtime client enters it too, which is what
-        makes the others whole.
-
-        Process-local, and for now the lock that holds loads off: a client
-        creation needed that one already (see create_runtime_user), and the
-        sweep after a load runs inside it, so one lock keeps both promises
-        and there is no order between two to get wrong. Reentrant. The
-        state it guards is the process's and the lock is this manager's,
-        which is the same thing because a process has one manager (#230).
-        Several processes on one store need this guarantee from the store
-        itself (#404, #405).
-
-        The cost is that everything entering it waits for a load or a
-        promotion in progress, so an open endpoint decides what it can
-        without it first, and nothing that runs hooks belongs inside.
-        """
-        with self.config.holding_loads():
-            yield
-
     def create_runtime_client(self, client: OAuthClient) -> OAuthClient:
-        # See create_runtime_user for the declared check; the scope also
-        # makes the creation one step of the client lifecycle.
-        with self.runtime_client_lifecycle():
+        return self.create_runtime_client_entry(client).value
+
+    def create_runtime_client_entry(self, client: OAuthClient) -> Entry[OAuthClient]:
+        """``create_runtime_client``, returning the entry stored: how a
+        caller that keeps a record about the client (#190) learns which
+        instance it is about, so that a client created under the same id
+        later is not taken for this one (#403, #404)."""
+        # See create_runtime_user.
+        with self.config.holding_loads():
             if _find_client(self.config.settings, client.client_id) is not None:
                 raise DeclaredNameCollision(
                     f"client {client.client_id!r} is declared in settings.yaml"
                 )
-            return self.store.clients.create(client)
+            return self.store.clients.create_entry(client)
 
     # ---- lifecycle (#192) ------------------------------------------------
 
-    def refuse_while_promoting(self, kind: Kind, name: str) -> None:
-        """Raise PromotionInProgress if that runtime object is marked.
-
-        For a caller about to wait for the lifecycle scope, which a
-        promotion holds for as long as it writes the file: asked first, a
-        delete of the object being promoted answers at once, as it did
-        before there was a scope to wait for (#192). It changes nothing, so
-        it needs no scope; the delete checks again once inside. A promotion
-        that has the scope and has not set its mark yet is not seen here:
-        that delete waits and answers for what it then finds, which is the
-        truth, only later.
-        """
-        with _promoting_lock:
-            _refuse_if_promoting((kind, name))
-
     def delete_runtime_user(self, username: str) -> None:
-        self._delete("user", username)
+        self._delete(self.store.users, "user", username)
 
-    def delete_runtime_client(self, client_id: str) -> None:
-        self._delete("client", client_id)
+    def delete_runtime_client(
+        self, client_id: str, instance_id: Optional[str] = None
+    ) -> Entry[OAuthClient]:
+        """Remove the runtime client and return the entry removed.
+
+        ``instance_id`` names the instance that is meant: a client created
+        under the same id after that one went is a different client, and is
+        answered as not found rather than deleted (#403). Left out, whatever
+        runtime client holds the id goes, which is what an operator deleting
+        by name means.
+        """
+        return self._delete(self.store.clients, "client", client_id, instance_id)
 
     def reset_runtime_identities(self) -> Tuple[int, int]:
         """Remove every runtime user and client; returns (users, clients).
@@ -344,11 +320,27 @@ class IdentityResolver:
     def _repository(self, kind: Kind) -> Any:
         return self.store.users if kind == "user" else self.store.clients
 
-    def _delete(self, kind: Kind, name: str) -> None:
+    def _delete(
+        self,
+        repository: MemoryRuntimeRepository[T],
+        kind: Kind,
+        name: str,
+        instance_id: Optional[str] = None,
+    ) -> Entry[T]:
         with _promoting_lock:
-            _refuse_if_promoting((kind, name))
-            if not self._repository(kind).delete(name):
+            # The instance first, the promotion after: a caller that names
+            # an instance which is gone is told exactly that, and nothing
+            # about whoever holds the name now, a promotion included.
+            current = repository.entry(name)
+            if current is None or (instance_id is not None and current.instance_id != instance_id):
                 raise RuntimeObjectNotFound(f"no runtime {kind} {name!r}")
+            _refuse_if_promoting((kind, name))
+            removed = consume(
+                repository, name, lambda entry: entry.instance_id == current.instance_id
+            )
+            if removed is None:
+                raise RuntimeObjectNotFound(f"no runtime {kind} {name!r}")
+            return removed
 
     def _promote(
         self, kind: Kind, name: str, write: Callable[[Any], Any], context: Dict[str, Any]
@@ -529,11 +521,16 @@ def reconcile_runtime_identities(config: ConfigManager) -> None:
         if declared("client", client.client_id)
     ]
     for kind, name in shadowed:
-        (store.users if kind == "user" else store.clients).delete(name)
+        retired = (store.users if kind == "user" else store.clients).delete(name)
         with _promoting_lock:
             promotion = _promoting.pop((kind, name), None)
         if promotion is not None:
             _audit("runtime_identity_promoted", kind, name, promotion.context)
+            continue
+        if not retired:
+            # Deleted by someone else between the look above and here, and
+            # audited as that. Saying it was removed on reload as well would
+            # give one object two ends.
             continue
         logger.warning(
             "Runtime %s %r removed: the configuration now declares that name", kind, name

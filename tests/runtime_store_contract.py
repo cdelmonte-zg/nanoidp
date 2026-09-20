@@ -34,6 +34,7 @@ def client(client_id: str, secret: str = "runtime-secret") -> OAuthClient:
 def registration(client_id: str) -> DynamicRegistration:
     return DynamicRegistration(
         client_id=client_id,
+        client_instance="0" * 32,
         registration_token_hash="0" * 64,
         client_id_issued_at=0,
         grant_types=["authorization_code"],
