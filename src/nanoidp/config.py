@@ -7,6 +7,7 @@ Uses Pydantic for validation and schema enforcement.
 import logging
 import os
 import threading
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, Optional
@@ -351,6 +352,10 @@ class ConfigManager:
         the reload.
         """
         staged: Dict[str, Any] = {}
+        # Taken before the files are read, so it is never later than what
+        # was read: whatever happened to the directory after this moment,
+        # this configuration cannot speak about (#405).
+        staged["observed_at"] = time.time()
         observed = self._store.read_snapshot(("settings.yaml", "users.yaml"))
         settings_observed = observed["settings.yaml"]
         users_observed = observed["users.yaml"]
@@ -457,6 +462,7 @@ class ConfigManager:
         # Every successful write path refreshes these via reload_local().
         self.users_revision = staged["users_revision"]
         self.settings_revision = staged["settings_revision"]
+        self.observed_at: float = staged["observed_at"]
 
     def _configure_hooks_from(self, hooks: HooksSection, plugins: Dict[str, Dict[str, Any]]) -> None:
         """Replace the settings.yaml-sourced hooks/plugins with the file's

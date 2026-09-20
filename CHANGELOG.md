@@ -68,6 +68,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`record_registration(entry, ...)`) and dropped with
   `forget_registration_of(entry)`.
 
+- **A promotion's outcome is kept with the object, not in the process that
+  started it** (#405, last of the four steps of #404). Promoting a runtime
+  object is a small saga: claim it, write its entry, reload, retire it and
+  record that it was promoted. The claim was a mark in a dictionary of one
+  process, so with two processes on one runtime store the other one
+  deleted the object in the middle of its promotion, or retired it on a
+  reload and, knowing of no promotion, recorded an ordinary removal: the
+  promotion answered `200` and `runtime_identity_promoted` was never
+  recorded. The claim is now a hold on the object's entry in the store.
+  A delete, a reset and a second promotion see it from any process; the
+  promotion writes the value it claimed; whoever retires the object
+  records the one `runtime_identity_promoted`, with the promoting request's
+  context; a claim whose entry is still being written is its writer's to
+  resolve, so another process that loads the file first leaves the object
+  alone (nothing in a declaration says who made it, and a name declared by
+  somebody else while the object is claimed makes the promotion answer
+  `409`, as before, with the object left where it was); a
+  promotion given up after a failed reload is recorded by whoever released
+  its claim, and never by a process that read the files before the entry
+  was written. "One winner records it" is a guarantee against concurrency,
+  not against a crash between taking the object out and writing the audit
+  entry. A promotion torn down in the middle of its write keeps a claim
+  that says what is known, that the entry was being written, and nothing
+  in the process resolves it: recovering it belongs to the durable store of
+  #354, and with the store in memory it ends with the process. A reset is
+  one step that leaves claimed objects alone. One process behaves as
+  before and every `/api/runtime` response is unchanged. Not claimed: a
+  process whose configuration is stale can still create a runtime object
+  under a name another has just declared, which is the freshness of the
+  declared configuration across processes and belongs to #354.
+
 ### Security
 - **A registration credential no longer reads or deletes a client recreated
   under its id** (#403). A dynamically registered client is two records, the

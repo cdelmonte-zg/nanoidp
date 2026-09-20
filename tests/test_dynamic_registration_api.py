@@ -432,20 +432,16 @@ class TestManagingARegistration:
     def test_a_delete_during_a_promotion_answers_409(self, tmp_path):
         """The operator is writing this client into the declared
         configuration; the same answer /api/runtime gives, not a 500."""
-        from nanoidp.services import identities as identities_module
+        from tests.conftest import claim_for_promotion
 
         application = _app(tmp_path)
         client = application.test_client()
         registered = _register(client).get_json()
-        key = ("client", registered["client_id"])
-        identities_module._promoting[key] = identities_module._Promotion({"source": "test"})
-        try:
-            response = client.delete(
-                f"/register/{registered['client_id']}",
-                headers=_bearer(registered["registration_access_token"]),
-            )
-        finally:
-            identities_module._promoting.pop(key, None)
+        claim_for_promotion("client", registered["client_id"], "writing")
+        response = client.delete(
+            f"/register/{registered['client_id']}",
+            headers=_bearer(registered["registration_access_token"]),
+        )
 
         assert response.status_code == 409
 
