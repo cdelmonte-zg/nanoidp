@@ -33,9 +33,9 @@ from nanoidp.app import create_app
 from nanoidp.config import get_config
 from nanoidp.services import identities as identities_module
 from nanoidp.services.dynamic_registration import registrations
-from nanoidp.services.runtime_identities import (
+from nanoidp.services.runtime_store import (
     MemoryRuntimeRepository,
-    get_runtime_identity_store,
+    get_runtime_store,
 )
 from tests.conftest import claim_for_promotion  # noqa: E402
 
@@ -186,7 +186,7 @@ def _open_window(monkeypatch, repository, method, when, operator, nth=1):
 
 
 def _runtime_clients():
-    return get_runtime_identity_store().clients
+    return get_runtime_store().clients
 
 
 def _assert_the_old_credential_is_dead(application, client_id, token):

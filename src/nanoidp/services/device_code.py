@@ -31,7 +31,6 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Callable, Optional, Sequence, Tuple, Union
 
-from .runtime_identities import MemoryRuntimeRepository, get_runtime_identity_store
 from .runtime_repository import (
     Entry,
     RepositoryTransaction,
@@ -41,6 +40,7 @@ from .runtime_repository import (
     delete_expired,
     delete_if,
 )
+from .runtime_store import MemoryRuntimeRepository, get_runtime_store
 
 if TYPE_CHECKING:
     # From the model's real home (#285): config only re-exports it for
@@ -218,11 +218,11 @@ class DeviceCodeStore:
 
     @property
     def _grants(self) -> MemoryRuntimeRepository[DeviceCodeGrant]:
-        return get_runtime_identity_store().repository("device_grants", _device_code_of, _GRANTS)
+        return get_runtime_store().repository("device_grants", _device_code_of, _GRANTS)
 
     @property
     def _index(self) -> MemoryRuntimeRepository[UserCodeIndex]:
-        return get_runtime_identity_store().repository("device_user_codes", _user_code_of, _INDEX)
+        return get_runtime_store().repository("device_user_codes", _user_code_of, _INDEX)
 
     def create(
         self,

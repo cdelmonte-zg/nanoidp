@@ -39,8 +39,8 @@ from ..services.identities import (
     RuntimeObjectNotFound,
     identities_for,
 )
-from ..services.runtime_identities import RuntimeObjectExists
 from ..services.runtime_repository import Entry
+from ..services.runtime_store import RuntimeObjectExists
 from ..services.yaml_writer import PostWriteError
 from ._audit import audit_event
 from ._auth import management_secret_required_for_api

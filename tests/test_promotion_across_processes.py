@@ -35,8 +35,8 @@ from nanoidp.config import ConfigManager, OAuthClient, get_config
 from nanoidp.services import identities as identities_module
 from nanoidp.services.audit import get_audit_log
 from nanoidp.services.identities import IdentityResolver, PromotionInProgress
-from nanoidp.services.runtime_identities import get_runtime_identity_store
 from nanoidp.services.runtime_repository import MemoryRuntimeRepository, replace
+from nanoidp.services.runtime_store import get_runtime_store
 from nanoidp.services.yaml_writer import get_yaml_writer
 
 _REPO = Path(__file__).resolve().parent.parent
@@ -48,7 +48,7 @@ class OtherProcess:
         self._marks = {}
         with self.acting():
             self.config = ConfigManager(str(config_dir), after_load=app_module._after_load)
-        self.resolver = IdentityResolver(self.config, get_runtime_identity_store())
+        self.resolver = IdentityResolver(self.config, get_runtime_store())
 
     @contextlib.contextmanager
     def acting(self):
@@ -91,7 +91,7 @@ def _once(monkeypatch, method, when, then):
     """Run ``then`` once, right before or right after the first call of
     ``method`` on the runtime clients."""
     original = getattr(MemoryRuntimeRepository, method)
-    clients = get_runtime_identity_store().clients
+    clients = get_runtime_store().clients
     done = []
 
     def placed(self, *args, **kwargs):
@@ -174,7 +174,7 @@ class TestTheOtherProcessSeesTheClaim:
 
         assert promotion["status"] == 200
         assert len(_events("runtime_identity_promoted")) == 1
-        assert get_runtime_identity_store().clients.get("shared") is None
+        assert get_runtime_store().clients.get("shared") is None
 
     def test_two_promotions_that_both_looked_first_are_still_one(self, processes, monkeypatch):
         """Both looked, neither saw a claim, and one claims in between. The
@@ -206,7 +206,7 @@ class TestTheOtherProcessSeesTheClaim:
         with _a_promotion_stopped_at_its_write(application, monkeypatch) as promotion:
             with other.acting():
                 other.config.reload()
-            assert get_runtime_identity_store().clients.entry("shared").hold is not None
+            assert get_runtime_store().clients.entry("shared").hold is not None
             assert _events("runtime_identity_promotion_abandoned") == []
 
         assert promotion["status"] == 200
@@ -216,14 +216,14 @@ class TestTheOtherProcessSeesTheClaim:
     def test_its_reset_leaves_what_is_being_promoted(self, processes, monkeypatch):
         """P3."""
         application, other, _ = processes
-        get_runtime_identity_store().clients.create(
+        get_runtime_store().clients.create(
             OAuthClient(client_id="bystander", token_endpoint_auth_method="none")
         )
 
         with _a_promotion_stopped_at_its_write(application, monkeypatch) as promotion:
             with other.acting():
                 users, clients = other.resolver.reset_runtime_identities()
-            assert get_runtime_identity_store().clients.get("shared") is not None
+            assert get_runtime_store().clients.get("shared") is not None
 
         assert clients == 1, "the bystander goes, the claimed client stays"
         assert promotion["status"] == 200
@@ -254,7 +254,7 @@ class TestWhoeverRetiresItSaysItWasPromoted:
                 _in_its_own_thread(other, other.config.reload)
                 # It saw the name declared and a claim still being written,
                 # and cannot know the declaration is that claim's: left.
-                assert get_runtime_identity_store().clients.entry("shared") is not None
+                assert get_runtime_store().clients.entry("shared") is not None
             return reload_local()
 
         monkeypatch.setattr(first, "reload_local", the_other_one_first)
@@ -265,7 +265,7 @@ class TestWhoeverRetiresItSaysItWasPromoted:
         (promoted,) = _events("runtime_identity_promoted")
         assert promoted["endpoint"] == PROMOTE
         assert _events("runtime_identity_removed_on_reload") == []
-        assert get_runtime_identity_store().clients.get("shared") is None
+        assert get_runtime_store().clients.get("shared") is None
 
     @pytest.mark.parametrize("declared", ["another-value", "the-very-value-that-was-claimed"])
     def test_a_declaration_that_is_somebody_elses_is_not_this_promotion(self, processes, monkeypatch, declared):
@@ -293,12 +293,12 @@ class TestWhoeverRetiresItSaysItWasPromoted:
             document["oauth"]["clients"].append(entry)
             settings.write_text(yaml.safe_dump(document))
             _in_its_own_thread(other, other.config.reload)
-            assert get_runtime_identity_store().clients.entry("shared").hold is not None
+            assert get_runtime_store().clients.entry("shared").hold is not None
 
         assert promotion["status"] == 409
         assert _events("runtime_identity_promoted") == []
         assert _events("runtime_identity_removed_on_reload") == []
-        kept = get_runtime_identity_store().clients.entry("shared")
+        kept = get_runtime_store().clients.entry("shared")
         assert kept is not None and kept.hold is None
 
         assert application.test_client().post("/api/config/reload").status_code == 200
@@ -358,7 +358,7 @@ class TestAPromotionWritesWhatItClaimed:
 
         def changed_right_after_the_claim():
             replace(
-                get_runtime_identity_store().clients,
+                get_runtime_store().clients,
                 "shared",
                 lambda client: client.model_copy(update={"redirect_uris": ["http://localhost:1/changed-later"]}),
             )
@@ -402,7 +402,7 @@ class TestWhatAClaimDoesNotSay:
             raise SystemExit("the worker is going away")
 
         monkeypatch.setattr(writer, "save_client", torn_down)
-        resolver = IdentityResolver(get_config(), get_runtime_identity_store())
+        resolver = IdentityResolver(get_config(), get_runtime_store())
         with pytest.raises(SystemExit):
             resolver.promote_runtime_client("shared", {"endpoint": PROMOTE})
         monkeypatch.undo()
@@ -417,7 +417,7 @@ class TestWhatAClaimDoesNotSay:
 
         assert _events("runtime_identity_promoted") == []
         assert _events("runtime_identity_promotion_abandoned") == []
-        held = get_runtime_identity_store().clients.entry("shared")
+        held = get_runtime_store().clients.entry("shared")
         assert held is not None and held.hold.payload["promotion"]["state"] == "writing"
         assert application.test_client().delete("/api/runtime/clients/shared").status_code == 409
 
@@ -426,7 +426,7 @@ class TestWhatAClaimDoesNotSay:
         goes, and the load that retires it must not fail after having
         removed it."""
         application, _, config_dir = processes
-        get_runtime_identity_store().clients.transact(lambda view: view.hold("shared", {"promotion": {}}))
+        get_runtime_store().clients.transact(lambda view: view.hold("shared", {"promotion": {}}))
         settings = config_dir / "settings.yaml"
         document = yaml.safe_load(settings.read_text())
         document["oauth"]["clients"].append(
@@ -436,7 +436,7 @@ class TestWhatAClaimDoesNotSay:
 
         assert application.test_client().post("/api/config/reload").status_code == 200
 
-        assert get_runtime_identity_store().clients.get("shared") is None
+        assert get_runtime_store().clients.get("shared") is None
         assert len(_events("runtime_identity_removed_on_reload")) == 1
         assert _events("runtime_identity_promoted") == []
 
@@ -470,7 +470,7 @@ class TestAnAbandonedPromotionIsSaidOnce:
 
         assert placed == [True]
         assert len(_events("runtime_identity_promotion_abandoned")) == 1
-        assert get_runtime_identity_store().clients.entry("shared").hold is None
+        assert get_runtime_store().clients.entry("shared").hold is None
 
     def test_not_by_a_process_that_read_the_files_before_the_entry_was_written(self, processes, monkeypatch):
         """The other process read the files, then the promotion wrote its
@@ -500,7 +500,7 @@ class TestAnAbandonedPromotionIsSaidOnce:
 
         assert late == [True]
         assert _events("runtime_identity_promotion_abandoned") == []
-        assert get_runtime_identity_store().clients.entry("shared").hold is not None
+        assert get_runtime_store().clients.entry("shared").hold is not None
 
         assert application.test_client().post("/api/config/reload").status_code == 200
         assert len(_events("runtime_identity_promoted")) == 1
@@ -524,5 +524,5 @@ class TestAnAbandonedPromotionIsSaidOnce:
 
         assert len(_events("runtime_identity_promotion_abandoned")) == 1
         assert _events("runtime_identity_promoted") == []
-        assert get_runtime_identity_store().clients.get("shared") is not None
+        assert get_runtime_store().clients.get("shared") is not None
         assert application.test_client().delete("/api/runtime/clients/shared").status_code == 200

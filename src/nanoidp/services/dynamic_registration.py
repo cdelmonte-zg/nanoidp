@@ -40,12 +40,12 @@ from ..config import OAuthClient
 from ..security import verify_secret
 from .identities import IdentityResolver
 from .redirect_uri import redirect_uri_rejection_reason
-from .runtime_identities import (
+from .runtime_repository import Entry, consume, create_within, delete_if
+from .runtime_store import (
     MemoryRuntimeRepository,
     PydanticCodec,
-    get_runtime_identity_store,
+    get_runtime_store,
 )
-from .runtime_repository import Entry, consume, create_within, delete_if
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +102,7 @@ def token_matches(token: str, registration: DynamicRegistration) -> bool:
 
 def registrations() -> MemoryRuntimeRepository[DynamicRegistration]:
     """The repository the runtime store keeps for this module."""
-    return get_runtime_identity_store().repository(
+    return get_runtime_store().repository(
         "dynamic_registrations",
         lambda registration: registration.client_id,
         PydanticCodec(DynamicRegistration),

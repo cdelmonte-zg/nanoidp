@@ -30,13 +30,13 @@ from typing import List, Literal, Mapping, Optional, Sequence
 
 from pydantic import BaseModel
 
-from .runtime_identities import (
-    MemoryRuntimeRepository,
-    PydanticCodec,
-    get_runtime_identity_store,
-)
 from .runtime_repository import consume as consume_entry
 from .runtime_repository import create_within
+from .runtime_store import (
+    MemoryRuntimeRepository,
+    PydanticCodec,
+    get_runtime_store,
+)
 
 # A code screen is a continuation of the login that just happened, not a
 # page to come back to.
@@ -104,7 +104,7 @@ class PendingSecondFactorStore:
     def _repository(self) -> MemoryRuntimeRepository[PendingSecondFactor]:
         # Looked up on every use, like the authorization transactions: the
         # runtime store owns the state, whatever replaces it.
-        return get_runtime_identity_store().repository(
+        return get_runtime_store().repository(
             "pending_second_factors", lambda record: record.id, PydanticCodec(PendingSecondFactor)
         )
 

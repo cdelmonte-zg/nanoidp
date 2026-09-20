@@ -26,10 +26,10 @@ from nanoidp.services.identities import (
     ResolvedUser,
     get_identities,
 )
-from nanoidp.services.runtime_identities import (
+from nanoidp.services.runtime_store import (
     PydanticCodec,
     RuntimeObjectExists,
-    get_runtime_identity_store,
+    get_runtime_store,
 )
 from tests.runtime_store_contract import REPOSITORIES, STORE_FACTORIES, registration
 from tests.runtime_store_contract import client as _client
@@ -197,7 +197,7 @@ class TestResolverRules:
         identities.create_runtime_user(_user("ci-alice"))
 
         resolved = identities.resolve_user("ci-alice")
-        assert resolved == ResolvedUser(get_runtime_identity_store().users.get("ci-alice"), "runtime")
+        assert resolved == ResolvedUser(get_runtime_store().users.get("ci-alice"), "runtime")
         assert identities.resolve_user("admin").origin == "declared"
         assert identities.resolve_user("nobody") is None
 
@@ -208,14 +208,14 @@ class TestResolverRules:
             identities.create_runtime_user(_user("admin"))
         with pytest.raises(DeclaredNameCollision):
             identities.create_runtime_client(_client("demo-client"))
-        assert get_runtime_identity_store().users.list() == []
-        assert get_runtime_identity_store().clients.list() == []
+        assert get_runtime_store().users.list() == []
+        assert get_runtime_store().clients.list() == []
 
     def test_the_declared_object_wins_when_both_exist(self, app_client):
         # Only possible between a reload that declares the name and the
         # reconciliation that follows it; the store accepts it directly.
-        get_runtime_identity_store().users.create(_user("admin", password="runtime-pw"))
-        get_runtime_identity_store().clients.create(_client("demo-client", secret="runtime"))
+        get_runtime_store().users.create(_user("admin", password="runtime-pw"))
+        get_runtime_store().clients.create(_client("demo-client", secret="runtime"))
         identities = get_identities()
 
         assert identities.resolve_user("admin").origin == "declared"
@@ -227,7 +227,7 @@ class TestResolverRules:
         identities = get_identities()
         identities.create_runtime_user(_user("ci-alice"))
         identities.create_runtime_client(_client("ci-app"))
-        get_runtime_identity_store().users.create(_user("admin"))
+        get_runtime_store().users.create(_user("admin"))
 
         users = identities.list_users()
         assert [u.user.username for u in users if u.origin == "runtime"] == ["ci-alice"]
@@ -378,7 +378,7 @@ def _runtime_client(client_id: str, **fields) -> OAuthClient:
 def _replace_runtime_client(client_id: str, **policy) -> None:
     """Change a runtime client's policy the way #192 can: the repository is
     by value, so a change is a delete and a create of the replacement."""
-    store = get_runtime_identity_store()
+    store = get_runtime_store()
     current = store.clients.get(client_id)
     assert store.clients.delete(client_id)
     get_identities().create_runtime_client(
@@ -766,7 +766,7 @@ class TestReloadReconciliation:
         with caplog.at_level(logging.WARNING, logger="nanoidp.services.identities"):
             assert client.post("/api/config/reload").status_code == 200
 
-        store = get_runtime_identity_store()
+        store = get_runtime_store()
         assert store.users.get("ci-alice") is None
         assert store.clients.get("ci-app") is None
         assert store.users.get("ci-bob") is not None
@@ -810,7 +810,7 @@ class TestReloadReconciliation:
             thread.join()
         monkeypatch.setattr(manager, "get_user", real_get_user)
 
-        assert get_runtime_identity_store().users.get("ci-bob") is None
+        assert get_runtime_store().users.get("ci-bob") is None
         assert get_identities().resolve_user("ci-bob").origin == "declared"
 
     def test_a_lookup_spanning_a_reload_that_declares_the_name_finds_one_of_the_two(
@@ -839,7 +839,7 @@ class TestReloadReconciliation:
 
         assert reloaded
         assert resolved is not None
-        assert get_runtime_identity_store().users.get("ci-alice") is None
+        assert get_runtime_store().users.get("ci-alice") is None
 
     def test_a_listing_spanning_a_reload_that_declares_the_name_shows_one_of_the_two(
         self, app_client, monkeypatch
@@ -847,7 +847,7 @@ class TestReloadReconciliation:
         _, config_dir = app_client
         manager = get_config()
         get_identities().create_runtime_user(_user("ci-alice"))
-        repository = get_runtime_identity_store().users
+        repository = get_runtime_store().users
         real_list = repository.list
         reloaded = []
 

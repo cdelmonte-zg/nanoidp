@@ -13,7 +13,7 @@ import pytest
 
 from nanoidp.config import OAuthClient, User
 from nanoidp.services.dynamic_registration import DynamicRegistration
-from nanoidp.services.runtime_identities import MemoryRuntimeIdentityStore, PydanticCodec
+from nanoidp.services.runtime_store import MemoryRuntimeStore, PydanticCodec
 
 REDIRECT = "http://localhost:3000/callback"
 
@@ -67,7 +67,7 @@ def grant(code: str) -> Grant:
     return Grant(code, datetime.datetime(2030, 1, 1, tzinfo=datetime.timezone.utc), ["openid"])
 
 
-STORE_FACTORIES = [pytest.param(MemoryRuntimeIdentityStore, id="memory")]
+STORE_FACTORIES = [pytest.param(MemoryRuntimeStore, id="memory")]
 # Each entry: how to reach the repository on a store, how to make an object,
 # its name, and a list field to mutate in place. The third one is a record
 # type the store does not know (#190): it is lent the same machinery through

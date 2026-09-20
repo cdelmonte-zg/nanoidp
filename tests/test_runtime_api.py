@@ -17,7 +17,7 @@ from nanoidp.app import create_app
 from nanoidp.config import get_config
 from nanoidp.services import get_audit_log
 from nanoidp.services.identities import get_identities
-from nanoidp.services.runtime_identities import get_runtime_identity_store
+from nanoidp.services.runtime_store import get_runtime_store
 
 _REPO = Path(__file__).resolve().parent.parent
 REDIRECT = "http://localhost:3000/callback"
@@ -557,7 +557,7 @@ class TestManagementSecretGate:
         created = client.post("/api/runtime/users", json=ALICE, headers={"X-Management-Secret": "gate-secret"})
         assert created.status_code == 201
         assert client.post("/api/runtime/users/ci-alice/promote").status_code == 401
-        assert get_runtime_identity_store().users.get("ci-alice") is not None
+        assert get_runtime_store().users.get("ci-alice") is not None
 
 
 def test_the_network_binding_warning_names_the_runtime_api(idp, caplog, monkeypatch):

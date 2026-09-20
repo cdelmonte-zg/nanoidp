@@ -35,16 +35,16 @@ from .runtime_repository import (
 # ``runtime_repository`` (#404); they are named here because this is where
 # callers have always found them.
 __all__ = [
-    "MemoryRuntimeIdentityStore",
+    "MemoryRuntimeStore",
     "MemoryRuntimeRepository",
     "PydanticCodec",
     "RuntimeObjectExists",
     "RuntimeRepository",
-    "get_runtime_identity_store",
+    "get_runtime_store",
 ]
 
 
-class MemoryRuntimeIdentityStore:
+class MemoryRuntimeStore:
     """Runtime users and clients in process memory, behind one lock."""
 
     def __init__(self) -> None:
@@ -81,15 +81,15 @@ class MemoryRuntimeIdentityStore:
             return cast(MemoryRuntimeRepository[T], existing)
 
 
-_runtime_identity_store: Optional[MemoryRuntimeIdentityStore] = None
-_runtime_identity_store_lock = threading.Lock()
+_runtime_store: Optional[MemoryRuntimeStore] = None
+_runtime_store_lock = threading.Lock()
 
 
-def get_runtime_identity_store() -> MemoryRuntimeIdentityStore:
+def get_runtime_store() -> MemoryRuntimeStore:
     """The runtime identity store of this process (thread-safe lazy init)."""
-    global _runtime_identity_store
-    if _runtime_identity_store is None:
-        with _runtime_identity_store_lock:
-            if _runtime_identity_store is None:
-                _runtime_identity_store = MemoryRuntimeIdentityStore()
-    return _runtime_identity_store
+    global _runtime_store
+    if _runtime_store is None:
+        with _runtime_store_lock:
+            if _runtime_store is None:
+                _runtime_store = MemoryRuntimeStore()
+    return _runtime_store

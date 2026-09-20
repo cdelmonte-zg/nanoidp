@@ -15,7 +15,7 @@ import nanoidp.config as config_module
 import nanoidp.services.audit as audit_module
 import nanoidp.services.client_metadata_fetch as client_metadata_fetch_module
 import nanoidp.services.crypto as crypto_module
-import nanoidp.services.runtime_identities as runtime_identities_module
+import nanoidp.services.runtime_store as runtime_store_module
 import nanoidp.services.yaml_writer as yaml_writer_module
 from nanoidp.app import create_app
 from nanoidp.config import OAuthClient, User
@@ -144,7 +144,7 @@ def _reset_process_singletons() -> None:
     config_module._config = None
     yaml_writer_module._yaml_writer = None
     audit_module._audit_log = None
-    runtime_identities_module._runtime_identity_store = None
+    runtime_store_module._runtime_store = None
     # The metadata fetch budget is process state like the stores above: a
     # sliding window of thirty a minute, shared by every caller, so without
     # this a file that fetches often would spend what the next one needs
@@ -349,9 +349,9 @@ def claim_for_promotion(kind, name, state="written"):
     reached the file and the reload after it failed (#405). For a test that
     needs the state without running a promotion to get there."""
     from nanoidp.services.identities import promotion_hold
-    from nanoidp.services.runtime_identities import get_runtime_identity_store
+    from nanoidp.services.runtime_store import get_runtime_store
 
-    store = get_runtime_identity_store()
+    store = get_runtime_store()
     repository = store.users if kind == "user" else store.clients
     payload = promotion_hold({"source": "test"}, state)
     if state == "written":

@@ -24,16 +24,16 @@ from pydantic import BaseModel, model_validator
 from ..config_documents import EntryInvalid, parse_client_entry
 from ..models import OAuthClient
 from .redirect_uri import redirect_uri_rejection_reason
-from .runtime_identities import (
-    MemoryRuntimeRepository,
-    PydanticCodec,
-    get_runtime_identity_store,
-)
 from .runtime_repository import (
     RepositoryTransaction,
     delete_where,
     replace,
     transact_refusing,
+)
+from .runtime_store import (
+    MemoryRuntimeRepository,
+    PydanticCodec,
+    get_runtime_store,
 )
 
 logger = logging.getLogger(__name__)
@@ -311,7 +311,7 @@ def cache() -> MemoryRuntimeRepository[CachedClient]:
     Process memory, like every other runtime repository: two nanoidp
     processes do not share it, and a durable backend is #354's.
     """
-    return get_runtime_identity_store().repository(
+    return get_runtime_store().repository(
         "cimd_documents", lambda cached: cached.client.client_id, PydanticCodec(CachedClient)
     )
 
