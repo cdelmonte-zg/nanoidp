@@ -535,7 +535,9 @@ def reconcile_runtime_identities(config: ConfigManager) -> None:
       event.
     - A promotion left in the written state by a failed reload resolves too:
       promoted if its name is declared now, abandoned with a warning if it
-      is not, so no claim outlives a successful load.
+      is not, so a written claim does not outlive a successful load that
+      is new enough to tell. A claim still writing can, on purpose: it is
+      its writer's to resolve (see ``_retire``).
 
     What is recorded is decided by the entry each step takes out or
     releases, so with several processes on one store one winner records
