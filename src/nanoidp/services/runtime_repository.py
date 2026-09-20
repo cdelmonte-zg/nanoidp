@@ -370,8 +370,9 @@ def delete_if(
 
 def delete_where(repository: RuntimeRepository[T], condemned: Callable[[T], bool]) -> int:
     """Remove every object ``condemned`` names, as one step, and say how
-    many. A scan, so for collections with a small cap: how expired objects
-    leave a large one is not settled here (see the module docstring)."""
+    many. A scan of the values, so for a decision that has to look at them
+    in a collection with a small cap. What is merely past its time leaves
+    through ``delete_expired``, which reads no value."""
 
     def decide(view: RepositoryTransaction[T]) -> int:
         dropped = 0
