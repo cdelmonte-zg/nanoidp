@@ -45,7 +45,6 @@ from .runtime_repository import (
     Entry,
     RepositoryTransaction,
     create_within,
-    delete_where,
 )
 from .runtime_repository import consume as consume_entry
 
@@ -192,7 +191,9 @@ class AuthorizationTransactionStore:
             self._repository,
             transaction,
             MAX_PENDING_TRANSACTIONS,
-            is_expired=lambda stored: not stored.is_live(),
+            # The store is told when the record becomes removable; whether
+            # it is still live stays this module's to say (is_live).
+            expires_at=transaction.expires_at,
             full=TransactionStoreFull(
                 f"{MAX_PENDING_TRANSACTIONS} authorization requests already pending"
             ),
@@ -300,9 +301,6 @@ class AuthorizationTransactionStore:
 
         taken = consume_entry(self._repository, transaction_id, this_one)
         return taken.value if taken is not None else None
-
-    def prune_expired(self) -> int:
-        return delete_where(self._repository, lambda stored: not stored.is_live())
 
     def delete_all(self) -> int:
         return self._repository.delete_all()
