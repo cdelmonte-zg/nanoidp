@@ -5,6 +5,7 @@ Pytest configuration and shared fixtures for NanoIDP tests.
 import base64
 import os
 import shutil
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -358,4 +359,7 @@ def claim_for_promotion(kind, name, state="written"):
 
     store = get_runtime_identity_store()
     repository = store.users if kind == "user" else store.clients
-    return repository.transact(lambda view: view.hold(name, promotion_hold({"source": "test"}, state)))
+    payload = promotion_hold({"source": "test"}, state)
+    if state == "written":
+        payload["promotion"]["written_at"] = time.time()
+    return repository.transact(lambda view: view.hold(name, payload))

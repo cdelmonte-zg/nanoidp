@@ -80,8 +80,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   A delete, a reset and a second promotion see it from any process; the
   promotion writes the value it claimed; whoever retires the object
   records the one `runtime_identity_promoted`, with the promoting request's
-  context, whichever process reloads first; a promotion given up after a
-  failed reload is recorded once, by whoever released its claim. A reset is
+  context, whichever process reloads first, and only if the declaration it
+  loads is the promotion's own (a name declared by somebody else while the
+  object is claimed is a collision, and the promotion answers `409`); a
+  promotion given up after a failed reload is recorded once, by whoever
+  released its claim, and never by a process that read the files before the
+  entry was written; one torn down in the middle of its write is left for
+  the next load to settle instead of staying claimed for ever. A reset is
   one step that leaves claimed objects alone. One process behaves as
   before and every `/api/runtime` response is unchanged. Not claimed: a
   process whose configuration is stale can still create a runtime object

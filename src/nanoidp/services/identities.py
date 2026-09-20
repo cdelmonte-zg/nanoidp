@@ -26,6 +26,8 @@ edit forms and the MCP server work on the declared configuration only.
 """
 
 import logging
+import threading
+import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Literal, Optional, Set, Tuple
 
@@ -104,9 +106,24 @@ def promotion_hold(context: Dict[str, Any], state: str = _WRITING) -> Dict[str, 
 
 
 def _promotion_of(entry: Entry[Any]) -> Optional[Dict[str, Any]]:
-    """The promotion this entry is claimed by, if it is."""
+    """The promotion this entry is claimed by, if it is one this module
+    understands: a state it knows and a context. Anything else, whoever put
+    it there, is not a promotion, and nothing below has to doubt the shape
+    of what this returns."""
     claim = entry.hold.payload.get("promotion") if entry.hold is not None else None
-    return claim if isinstance(claim, dict) else None
+    if not isinstance(claim, dict) or claim.get("state") not in (_WRITING, _WRITTEN):
+        return None
+    if claim["state"] == _WRITTEN and not isinstance(claim.get("written_at"), (int, float)):
+        return None  # written, and no saying when: not one of ours
+    context = claim.get("context")
+    return {**claim, "context": context if isinstance(context, dict) else {}}
+
+
+# The hold this thread is writing the entry of, if it is in the middle of a
+# promotion. Not promotion state to be shared: only the thread that holds
+# the claim knows that a declaration it is about to load is its own, and
+# only it needs to.
+_writing_here = threading.local()
 
 
 @dataclass(frozen=True)
@@ -306,10 +323,12 @@ class IdentityResolver:
     def reset_runtime_identities(self) -> Tuple[int, int]:
         """Remove every runtime user and client; returns (users, clients).
 
-        Never touches the declared configuration. Waits for a promotion in
-        progress, and keeps an object whose promotion wrote its entry but
-        is still waiting for a successful reload: that object is on its way
-        to being declared, and the next successful load resolves it.
+        Never touches the declared configuration, and leaves alone every
+        object a promotion holds, whether its entry is being written or is
+        waiting for a successful load to say how it ended: that object is on
+        its way to being declared. A promotion of this process is waited
+        for, since it holds loads off; one of another process sharing the
+        store is not, and its object is simply not counted (#405).
         """
         with self.config.holding_loads():
             return _delete_unheld(self.store.users), _delete_unheld(self.store.clients)
@@ -386,6 +405,7 @@ class IdentityResolver:
             _refuse_if_held(seen, kind)
         with self.config.holding_loads():
             claimed = _claim(repository, kind, name, context)
+            _writing_here.hold_id = claimed.hold.hold_id if claimed.hold is not None else None
             try:
                 # The value that was claimed, not whatever goes by the name
                 # by now: the promotion is of one snapshot.
@@ -394,11 +414,11 @@ class IdentityResolver:
                 if exc.kind == "on_config_saved":
                     _release(repository, claimed)
                     return PromotionOutcome(mirror_error=exc.message)
-                _mark_written(repository, claimed, context)  # the reload after the write failed
+                _mark_written(repository, claimed)  # the reload after the write failed
                 raise
             except (ConfigurationRejected, PostWriteError):
                 # The entry reached the file; only what follows it failed.
-                _mark_written(repository, claimed, context)
+                _mark_written(repository, claimed)
                 raise
             except EntryAlreadyExists as exc:
                 _release(repository, claimed)
@@ -406,6 +426,15 @@ class IdentityResolver:
             except Exception:
                 _release(repository, claimed)
                 raise
+            except BaseException:
+                # Torn down in the middle (the worker is going away): whether
+                # the entry reached the file is not known. ``writing`` is a
+                # claim nothing resolves, so it would be refused for ever;
+                # ``written`` means "a load that can tell says how it ended".
+                _mark_written(repository, claimed)
+                raise
+            finally:
+                _writing_here.hold_id = None
             _release(repository, claimed)  # nothing to do once the reconciliation has retired it
             return PromotionOutcome()
 
@@ -524,15 +553,22 @@ def reconcile_runtime_identities(config: ConfigManager) -> None:
         ("user", store.users),
         ("client", store.clients),
     ]
+    def declared_value(kind: Kind, name: str) -> Any:
+        if kind == "user":
+            return config.get_user(name)
+        return next((client for client in config.settings.clients if client.client_id == name), None)
+
     for kind, repository in repositories:
         for seen in repository.entries():
             if declared(kind, seen.name):
-                _retire(repository, kind, seen.name)
+                _retire(repository, kind, seen.name, declared_value(kind, seen.name))
             else:
-                _abandon_if_written(repository, kind, seen)
+                _abandon_if_written(repository, kind, seen, config.observed_at)
 
 
-def _retire(repository: MemoryRuntimeRepository[Any], kind: Kind, name: str) -> None:
+def _retire(
+    repository: MemoryRuntimeRepository[Any], kind: Kind, name: str, declared_value: Any
+) -> None:
     """Remove the runtime object the configuration now declares, and say
     what that was.
 
@@ -543,27 +579,45 @@ def _retire(repository: MemoryRuntimeRepository[Any], kind: Kind, name: str) -> 
     once, as a promotion, with its own context, whichever process reloads
     first; and whoever loses it says nothing, because the winner did.
 
-    A claim still ``writing`` counts: if a configuration that declares the
-    name could be loaded, the file is written, and there is no waiting for
-    the promoting process to say so.
+    A ``written`` claim under a declared name is a promotion: its entry
+    reached the file. A claim still ``writing`` is one only if the
+    declaration is its own, and a name can be declared by somebody else
+    while an object is claimed (a hand edit, another process). It is its own
+    when this thread is the one writing it, or when what is declared is the
+    value that was claimed, which is how another process that loads the
+    file first can tell, with no waiting for the promoting one to say so.
+    Otherwise the declared name has won as it always does, the object is
+    removed, and the promotion answers for itself: it finds the name taken.
     """
     retired = consume(repository, name)
     if retired is None:
         return
     promotion = _promotion_of(retired)
-    if promotion is not None:
+    if promotion is not None and (
+        promotion["state"] == _WRITTEN
+        or (retired.hold is not None and retired.hold.hold_id == getattr(_writing_here, "hold_id", None))
+        or declared_value == retired.value
+    ):
         _audit("runtime_identity_promoted", kind, name, promotion["context"])
         return
     logger.warning("Runtime %s %r removed: the configuration now declares that name", kind, name)
     _audit("runtime_identity_removed_on_reload", kind, name, {"endpoint": "reload", "method": "internal"})
 
 
-def _abandon_if_written(repository: MemoryRuntimeRepository[Any], kind: Kind, seen: Entry[Any]) -> None:
+def _abandon_if_written(
+    repository: MemoryRuntimeRepository[Any], kind: Kind, seen: Entry[Any], observed_at: float
+) -> None:
     """A promotion that wrote its entry, lost its reload, and whose name a
     successful load does not declare after all: the claim is released and
     the object stays. One decision, so that one caller gets the claim and
     records it; ``writing`` is left alone, its promotion being in the middle
-    of its write."""
+    of its write.
+
+    "Does not declare" is only worth something from a configuration read
+    after the entry was written. A process that read the files first and
+    reconciles afterwards is looking at a directory older than the entry,
+    and leaves the claim to a load that can tell.
+    """
     if seen.hold is None:
         return
     hold_id = seen.hold.hold_id
@@ -574,6 +628,8 @@ def _abandon_if_written(repository: MemoryRuntimeRepository[Any], kind: Kind, se
             return None
         promotion = _promotion_of(current)
         if promotion is None or promotion["state"] != _WRITTEN:
+            return None
+        if observed_at <= promotion["written_at"]:
             return None
         view.release_hold(seen.name, hold_id)
         return promotion
@@ -621,13 +677,17 @@ def _release(repository: MemoryRuntimeRepository[T], claimed: Entry[T]) -> None:
         repository.transact(lambda view: view.release_hold(claimed.name, hold_id))
 
 
-def _mark_written(
-    repository: MemoryRuntimeRepository[T], claimed: Entry[T], context: Dict[str, Any]
-) -> None:
-    if claimed.hold is not None:
-        hold_id = claimed.hold.hold_id
-        payload = promotion_hold(context, _WRITTEN)
-        repository.transact(lambda view: view.update_hold(claimed.name, hold_id, payload))
+def _mark_written(repository: MemoryRuntimeRepository[T], claimed: Entry[T]) -> None:
+    """Turn the claim to ``written``, from what the claim itself carries:
+    the context is the one given when it was made, and there is no second
+    source for it. ``written_at`` is taken after the write, so a
+    configuration read later than that has seen the entry if it is there."""
+    promotion = _promotion_of(claimed)
+    if claimed.hold is None or promotion is None:
+        return
+    hold_id = claimed.hold.hold_id
+    payload = {"promotion": {**promotion, "state": _WRITTEN, "written_at": time.time()}}
+    repository.transact(lambda view: view.update_hold(claimed.name, hold_id, payload))
 
 
 def _delete_unheld(repository: MemoryRuntimeRepository[T]) -> int:

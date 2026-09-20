@@ -109,6 +109,22 @@ def _once(monkeypatch, method, when, then):
     return done
 
 
+def _in_its_own_thread(other, action):
+    failures = []
+
+    def run():
+        try:
+            with other.acting():
+                action()
+        except BaseException as failure:  # noqa: BLE001 - reported below
+            failures.append(failure)
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    thread.join()
+    assert failures == []
+
+
 def _events(kind):
     return [entry for entry in get_audit_log().get_entries(limit=200) if entry["event_type"] == kind]
 
@@ -229,8 +245,10 @@ class TestWhoeverRetiresItSaysItWasPromoted:
         def the_other_one_first():
             if not once:
                 once.append(True)
-                with other.acting():
-                    other.config.reload()
+                # In a thread of its own, as another process is: the thread
+                # that is writing the entry knows the declaration is its
+                # own, and nobody else can know it that way.
+                _in_its_own_thread(other, other.config.reload)
             return reload_local()
 
         monkeypatch.setattr(first, "reload_local", the_other_one_first)
@@ -242,6 +260,53 @@ class TestWhoeverRetiresItSaysItWasPromoted:
         assert promoted["endpoint"] == PROMOTE
         assert _events("runtime_identity_removed_on_reload") == []
         assert get_runtime_identity_store().clients.get("shared") is None
+
+    def test_a_declaration_that_is_somebody_elses_is_not_this_promotion(self, processes, monkeypatch):
+        """The object is claimed and its entry not yet written when somebody
+        declares another client under the name, and the other process loads
+        that. The runtime object goes, because a declared name wins; but it
+        was not promoted, and the promotion says so itself a moment later
+        (409: the name is declared). An audit saying it was promoted would
+        contradict the answer and cover the loss of what was claimed."""
+        application, other, config_dir = processes
+        settings = config_dir / "settings.yaml"
+
+        with _a_promotion_stopped_at_its_write(application, monkeypatch) as promotion:
+            document = yaml.safe_load(settings.read_text())
+            document["oauth"]["clients"].append(
+                {"client_id": "shared", "client_secret": "declared-by-hand", "redirect_uris": ["http://localhost:1/x"]}
+            )
+            settings.write_text(yaml.safe_dump(document))
+            with other.acting():
+                other.config.reload()
+
+        assert promotion["status"] == 409
+        assert _events("runtime_identity_promoted") == []
+        assert len(_events("runtime_identity_removed_on_reload")) == 1
+
+    def test_an_entry_that_reached_the_file_is_a_promotion_whatever_it_says_now(self, processes):
+        """The reload after the write failed, and the operator who repairs
+        the file also edits the entry. It is loaded by whoever loads it, and
+        it no longer equals what was claimed. It was written all the same:
+        that is what ``written`` records, and it needs no second opinion."""
+        application, other, config_dir = processes
+        settings = config_dir / "settings.yaml"
+        good = settings.read_text()
+        document = yaml.safe_load(good)
+        document["hooks"] = {"strict": True}
+        document["plugins"] = {"no-such-plugin": {}}
+        settings.write_text(yaml.safe_dump(document))
+        assert application.test_client().post(PROMOTE).status_code == 500
+        repaired = _with_the_entry_kept(settings, good)
+        next(c for c in repaired["oauth"]["clients"] if c["client_id"] == "shared")["redirect_uris"] = [
+            "http://localhost:1/edited-by-hand"
+        ]
+        settings.write_text(yaml.safe_dump(repaired))
+
+        _in_its_own_thread(other, other.config.reload)
+
+        assert len(_events("runtime_identity_promoted")) == 1
+        assert _events("runtime_identity_removed_on_reload") == []
 
     def test_a_namesake_with_no_claim_is_removed_not_promoted(self, processes):
         """The rule about the name still holds: a runtime object under a
@@ -288,6 +353,56 @@ class TestAPromotionWritesWhatItClaimed:
         assert len(_events("runtime_identity_promoted")) == 1
 
 
+def _with_the_entry_kept(settings, good):
+    """The repaired settings: ``good`` plus whatever the promotion wrote."""
+    written = yaml.safe_load(settings.read_text())["oauth"]["clients"]
+    repaired = yaml.safe_load(good)
+    repaired["oauth"]["clients"] = written
+    return repaired
+
+
+class TestAClaimNeverOutlivesWhatCanResolveIt:
+    def test_a_promotion_cut_short_is_left_for_a_load_to_settle(self, processes, monkeypatch):
+        """Not an error the promotion can classify: the request is torn
+        down in the middle of the write, and whether the entry reached the
+        file is not known. A claim left ``writing`` would be refused for
+        ever, since nothing resolves one; ``written`` is exactly "look at
+        the declared configuration and say how it ended"."""
+        application, _, _ = processes
+        writer = get_yaml_writer()
+
+        def torn_down(client, **kwargs):
+            raise SystemExit("the worker is going away")
+
+        monkeypatch.setattr(writer, "save_client", torn_down)
+        resolver = IdentityResolver(get_config(), get_runtime_identity_store())
+        with pytest.raises(SystemExit):
+            resolver.promote_runtime_client("shared", {"endpoint": PROMOTE})
+
+        assert application.test_client().post("/api/config/reload").status_code == 200
+        assert len(_events("runtime_identity_promotion_abandoned")) == 1
+        assert application.test_client().delete("/api/runtime/clients/shared").status_code == 200
+
+    def test_a_hold_this_module_does_not_understand_is_not_a_promotion(self, processes):
+        """Whatever put it there. The object under a declared name still
+        goes, and the load that retires it must not fail after having
+        removed it."""
+        application, _, config_dir = processes
+        get_runtime_identity_store().clients.transact(lambda view: view.hold("shared", {"promotion": {}}))
+        settings = config_dir / "settings.yaml"
+        document = yaml.safe_load(settings.read_text())
+        document["oauth"]["clients"].append(
+            {"client_id": "shared", "client_secret": "declared-by-hand", "redirect_uris": ["http://localhost:1/x"]}
+        )
+        settings.write_text(yaml.safe_dump(document))
+
+        assert application.test_client().post("/api/config/reload").status_code == 200
+
+        assert get_runtime_identity_store().clients.get("shared") is None
+        assert len(_events("runtime_identity_removed_on_reload")) == 1
+        assert _events("runtime_identity_promoted") == []
+
+
 class TestAnAbandonedPromotionIsSaidOnce:
     def _written_then_reverted(self, application, config_dir):
         """A promotion whose entry reached the file and whose reload failed,
@@ -318,6 +433,40 @@ class TestAnAbandonedPromotionIsSaidOnce:
         assert placed == [True]
         assert len(_events("runtime_identity_promotion_abandoned")) == 1
         assert get_runtime_identity_store().clients.entry("shared").hold is None
+
+    def test_not_by_a_process_that_read_the_files_before_the_entry_was_written(self, processes, monkeypatch):
+        """The other process read the files, then the promotion wrote its
+        entry and lost its reload. What the other process loaded cannot say
+        whether the entry is declared: it is older than the entry. It leaves
+        the claim alone, and the next load that can tell says promoted."""
+        application, other, config_dir = processes
+        settings = config_dir / "settings.yaml"
+        good = settings.read_text()
+        after_load = other.config._after_load
+        late = []
+
+        def the_promotion_lands_first(config):
+            if not late:
+                late.append(True)
+                document = yaml.safe_load(good)
+                document["hooks"] = {"strict": True}
+                document["plugins"] = {"no-such-plugin": {}}
+                settings.write_text(yaml.safe_dump(document))
+                assert application.test_client().post(PROMOTE).status_code == 500
+                settings.write_text(yaml.safe_dump(_with_the_entry_kept(settings, good)))
+            return after_load(config)
+
+        monkeypatch.setattr(other.config, "_after_load", the_promotion_lands_first)
+        with other.acting():
+            other.config.reload()
+
+        assert late == [True]
+        assert _events("runtime_identity_promotion_abandoned") == []
+        assert get_runtime_identity_store().clients.entry("shared").hold is not None
+
+        assert application.test_client().post("/api/config/reload").status_code == 200
+        assert len(_events("runtime_identity_promoted")) == 1
+        assert _events("runtime_identity_promotion_abandoned") == []
 
     @pytest.mark.parametrize("first_to_load", ["this", "other"])
     def test_whichever_process_loads_first(self, processes, first_to_load):
