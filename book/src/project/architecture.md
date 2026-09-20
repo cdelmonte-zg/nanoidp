@@ -126,10 +126,12 @@ There are exactly two kinds of state, and they never share a store:
   change - the UI's forms submit it as a hidden field, MCP callers pass
   it to `save_config`. Without a revision a write stays unconditional
   (last write wins), stated as such.
-- **Runtime state** lives in memory, behind one boundary
+- **Runtime state** lives in memory. What the protocols and the
+  management surfaces keep is behind one boundary
   (`services/runtime_store.py`): authorization codes, device codes,
   revocation and rotation families, the audit log, runtime users and
-  clients. Flask sessions are the other piece of runtime state. It is lost on restart by design; an
+  clients. Outside it, and process-local on purpose: Flask sessions, the
+  rate limiter's counters and the CIMD fetch budget. It is lost on restart by design; an
   instance is disposable (see [Vision](vision.md)). If you are about
   to persist runtime state to disk, stop and re-read the
   database-persistence non-goal.

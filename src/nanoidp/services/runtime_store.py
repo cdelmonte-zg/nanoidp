@@ -100,7 +100,7 @@ _runtime_store_lock = threading.Lock()
 
 
 def get_runtime_store() -> MemoryRuntimeStore:
-    """The runtime identity store of this process (thread-safe lazy init)."""
+    """The runtime store of this process (thread-safe lazy init)."""
     global _runtime_store
     if _runtime_store is None:
         with _runtime_store_lock:

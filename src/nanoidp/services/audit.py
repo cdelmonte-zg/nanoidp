@@ -118,11 +118,15 @@ class AuditLog:
         # on_audit_event (#185): after the entry is recorded. The registry
         # never lets a hook failure out of run_audit_event; the guard here
         # covers the config singleton itself being unavailable.
-        # A hook gets an event of its own: what it does with it does not
-        # reach what is kept. No copy when nobody listens (the default).
-        if loaded is not None and loaded.hooks.has_hook("on_audit_event"):
+        # The hooks get an event of their own: what they do with it reaches
+        # neither what is kept nor the caller's details. (Among themselves
+        # they share it, as they always have: that is the registry's
+        # dispatch.) No copy when nobody listens, the default; and asking
+        # who listens touches the plugins, so it is inside the guard.
+        if loaded is not None:
             try:
-                loaded.hooks.run_audit_event(_COPY(entry).to_dict())
+                if loaded.hooks.has_hook("on_audit_event"):
+                    loaded.hooks.run_audit_event(_COPY(entry).to_dict())
             except Exception:
                 logger.debug("audit hooks unavailable", exc_info=True)
 

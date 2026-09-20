@@ -142,7 +142,7 @@ def _find_client(settings: Settings, client_id: str) -> Optional[OAuthClient]:
 
 
 class IdentityResolver:
-    """Declared configuration composed with the runtime identity store."""
+    """Declared configuration composed with the runtime store's identities."""
 
     def __init__(self, config: ConfigManager, store: MemoryRuntimeStore) -> None:
         self.config = config
@@ -516,7 +516,7 @@ class IdentityResolver:
 
 def identities_for(config: ConfigManager) -> IdentityResolver:
     """The effective identities over ``config`` (the process's one manager,
-    #230) and the runtime identity store."""
+    #230) and the runtime store."""
     return IdentityResolver(config, get_runtime_store())
 
 

@@ -84,7 +84,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   **a negative `limit` is none at all**, where `-1` was a slice that dropped
   the last event (and means "no limit" to SQLite); **audit state is by
   value**, where the `details` a caller passed, the ones kept, the ones a
-  reader got and the ones an `on_audit_event` hook received were one dict.
+  reader got and the ones the `on_audit_event` hooks received were one dict
+  (the hooks of one event still share theirs among themselves, as before).
+  `AuditLog` no longer takes `max_entries` nor has that attribute: the
+  bound is the backend's (`audit_store.MAX_AUDIT_ENTRIES`), and every
+  `AuditLog()` is a view of the one audit, not a log of its own.
   With it, `services/runtime_identities.py` becomes
   `services/runtime_store.py`, `MemoryRuntimeIdentityStore`
   `MemoryRuntimeStore` and `get_runtime_identity_store()`

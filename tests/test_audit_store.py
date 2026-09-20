@@ -144,6 +144,28 @@ class TestTheFacade:
         # Nor the caller's: the event a hook gets is nobody else's.
         assert details == {"k": ["v"]}
 
+    def test_a_plugin_that_cannot_even_be_asked_does_not_fail_the_event(self, tmp_path):
+        """Asking who listens touches the plugins. One that raises there is
+        one more hook that is unavailable: the event is kept, and logging it
+        raises nothing."""
+
+        class Unaskable:
+            hook_api_version = HOOK_API_VERSION
+
+            def __getattr__(self, name):
+                if name == "on_audit_event":
+                    raise RuntimeError("cannot even be asked")
+                raise AttributeError(name)
+
+        (tmp_path / "settings.yaml").write_text("{}")
+        (tmp_path / "users.yaml").write_text("users: {}")
+        config = init_config(str(tmp_path))
+        config.hooks.register_plugin_object("unaskable", Unaskable(), SOURCE_SETTINGS)
+
+        _log("e")
+
+        assert _names(get_audit_log().get_entries(event_type="e")) == ["e"]
+
     def test_the_counters_outlive_the_events_they_counted(self, monkeypatch):
         from nanoidp.services import audit_store
 
@@ -321,13 +343,50 @@ class TestTheStore:
 
     def test_entries_are_kept_and_given_by_value(self):
         store = self._store()
-        entry = self._entry(details={"k": ["v"]})
+        entry = self._entry(details={"k": ["v"], "deep": [{"a": ["x"]}]})
         store.append(entry, [])
         entry.details["k"].append("later")
+        entry.details["deep"][0]["a"].append("later")
         entry.event_type = "changed"
-        store.entries(1)[0].details["k"].append("tampered")
+        read = store.entries(1)[0]
+        read.details["k"].append("tampered")
+        read.details["deep"][0]["a"].append("tampered")
 
-        assert store.entries(1)[0] == self._entry(details={"k": ["v"]})
+        assert store.entries(1)[0] == self._entry(details={"k": ["v"], "deep": [{"a": ["x"]}]})
+
+    def test_by_value_holds_for_what_json_cannot_hold_too(self, monkeypatch):
+        """Outside the stress mode nothing looks at what the details hold.
+        Whatever it is, it is copied: by value is the store's promise, and
+        whether it can be written down is the codec's question."""
+        from nanoidp.services.audit_store import MemoryAuditStore
+
+        monkeypatch.setattr(MemoryAuditStore, "verify_codecs", False)
+        store = self._store()
+        scopes, nested = {"openid"}, ({"k": ["v"]},)
+        store.append(self._entry(details={"scopes": scopes, "nested": nested}), [])
+        scopes.add("later")
+        nested[0]["k"].append("later")
+        store.entries(1)[0].details["scopes"].add("tampered")
+
+        assert store.entries(1)[0].details == {"scopes": {"openid"}, "nested": ({"k": ["v"]},)}
+
+    def test_a_reader_does_not_hold_the_lock_while_it_looks(self):
+        """Every request appends. A read takes the lock for a snapshot and
+        filters outside it."""
+        store = self._store()
+        held = []
+
+        class Watching(str):
+            def __ne__(self, other):
+                held.append(store._lock.locked())
+                return str.__ne__(self, other)
+
+        for _ in range(3):
+            store.append(self._entry(Watching("e")), [])
+
+        assert len(store.entries(10, event_type="e")) == 3
+        assert held == [False, False, False]
+        assert store.client_ids() == []
 
     def test_an_entry_that_does_not_survive_its_codec_is_refused_in_the_stress_mode(self):
         store = self._store()

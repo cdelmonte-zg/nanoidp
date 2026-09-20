@@ -12,15 +12,19 @@ What the contract says, for every backend:
 
 - **The event and its counters are one step.** A reader never finds an event
   that has not been counted.
-- **The order is the order of the appends**, by a sequence the backend
-  assigns, not the order of the timestamps: events of one timestamp, and a
-  clock that steps back, read newest append first like everything else. The
-  sequence is the backend's, not a field of the event.
+- **The order is the order of the appends**, not the order of the
+  timestamps: events of one timestamp, and a clock that steps back, read
+  newest append first like everything else. What keeps that order is the
+  backend's business and not a field of the event: here the deque is the
+  sequence, and a backend with rows assigns a number in the transaction of
+  the append (#354).
 - **The bound belongs to the backend.** Past it the oldest event goes, and no
   counter goes with it.
 - **The backend knows no counter by name.** Which ones an event increments is
   the service's rule; the store keeps the ones that were ever incremented.
-- **By value**: what is appended is copied in, what is read is copied out.
+- **By value**: what is appended is copied in, what is read is copied out,
+  whatever the details hold. Whether they hold only what can be written down
+  is a separate question, and the codec's (``verify_codecs``).
 - **Not from inside a repository decision**, reads included (#404): a decision
   depends on its view and on what it captured, may be run again, and has no
   effect outside the view.
@@ -32,12 +36,13 @@ in-memory backend has a lock of its own and does not wait for a decision (or
 for a repository's sweep, #417).
 """
 
+import copy
 import json
 import threading
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Deque, Dict, List, Optional, Protocol, Sequence, Tuple
+from typing import Any, Deque, Dict, List, Optional, Protocol, Sequence
 
 from .runtime_repository import refuse_inside_a_decision
 
@@ -76,15 +81,24 @@ class AuditEntry:
         }
 
 
+_ATOMS = (str, int, float, bool, type(None))
+
+
 def _plain_copy(value: Any) -> Any:
-    """A copy of what JSON can hold, without the cost of ``copy.deepcopy``
-    on every request. Anything else is kept as it is: whether it may be
-    there at all is the codec's to say, not the copy's."""
-    if isinstance(value, dict):
+    """A copy of the details. What JSON can hold, which is all the details
+    ever held (#363's census), is copied by hand, without the cost of
+    ``copy.deepcopy`` on every request; anything else (a set, a tuple with a
+    dict in it, a subclass) is still copied, by ``deepcopy``: by value holds
+    for whatever is there, and whether it may be there is the codec's to
+    say, not the copy's."""
+    kind = type(value)
+    if kind in _ATOMS:
+        return value
+    if kind is dict:
         return {key: _plain_copy(item) for key, item in value.items()}
-    if isinstance(value, list):
+    if kind is list:
         return [_plain_copy(item) for item in value]
-    return value
+    return copy.deepcopy(value)
 
 
 class AuditEntryCodec:
@@ -155,10 +169,10 @@ class MemoryAuditStore:
     def __init__(self, max_entries: Optional[int] = None) -> None:
         self._lock = threading.Lock()
         self._codec = AuditEntryCodec()
-        self._events: Deque[Tuple[int, AuditEntry]] = deque(
+        # In the order of the appends, newest last: the deque is the sequence.
+        self._events: Deque[AuditEntry] = deque(
             maxlen=MAX_AUDIT_ENTRIES if max_entries is None else max_entries
         )
-        self._sequence = 0
         self._counters: Dict[str, int] = {}
 
     def _stored(self, entry: AuditEntry) -> AuditEntry:
@@ -182,8 +196,7 @@ class MemoryAuditStore:
         names = list(increments)
         stored = self._stored(entry)
         with self._lock:
-            self._sequence += 1
-            self._events.append((self._sequence, stored))
+            self._events.append(stored)
             for name in names:
                 self._counters[name] = self._counters.get(name, 0) + 1
 
@@ -197,27 +210,30 @@ class MemoryAuditStore:
         refuse_inside_a_decision()
         if isinstance(limit, bool) or not isinstance(limit, int) or limit < 0:
             raise ValueError(f"a limit is a whole number, not below zero, not {limit!r}")
-        found: List[AuditEntry] = []
+        # The lock is held for the snapshot and nothing else: every request
+        # appends, and must not wait for a reader's filters. An event that
+        # is kept is never changed, only dropped, so what was there stays
+        # what it was while it is looked through and copied.
         with self._lock:
-            # The deque is in the order of the sequence: newest last.
-            for _, stored in reversed(self._events):
-                if len(found) == limit:
-                    break
-                if event_type is not None and stored.event_type != event_type:
-                    continue
-                if username is not None and stored.username != username:
-                    continue
-                if client_id is not None and stored.client_id != client_id:
-                    continue
-                found.append(stored)
-        # Copied once the lock is let go: an event that is kept is never
-        # changed, only dropped, so what was found stays what it was.
-        return [self._codec.copy(stored) for stored in found]
+            kept = list(self._events)
+        found: List[AuditEntry] = []
+        for stored in reversed(kept):
+            if len(found) == limit:
+                break
+            if event_type is not None and stored.event_type != event_type:
+                continue
+            if username is not None and stored.username != username:
+                continue
+            if client_id is not None and stored.client_id != client_id:
+                continue
+            found.append(self._codec.copy(stored))
+        return found
 
     def client_ids(self) -> List[str]:
         refuse_inside_a_decision()
         with self._lock:
-            return sorted({stored.client_id for _, stored in self._events if stored.client_id})
+            kept = list(self._events)
+        return sorted({stored.client_id for stored in kept if stored.client_id})
 
     def counters(self) -> Dict[str, int]:
         refuse_inside_a_decision()
