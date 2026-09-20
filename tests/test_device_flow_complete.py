@@ -15,6 +15,23 @@ import time
 import pytest
 
 
+def _put_past_its_time(device_code):
+    """Move a grant's expiry into the past, through the repository it lives
+    in (#363): the grant's own time, which is what it is judged by. The
+    store's copy of it is left alone, so no cleanup takes the grant before
+    the test has asked it anything."""
+    import dataclasses
+
+    from nanoidp.services.device_code import get_device_code_store
+    from nanoidp.services.runtime_repository import replace
+
+    replaced = replace(
+        get_device_code_store()._grants,
+        device_code,
+        lambda grant: dataclasses.replace(grant, expires_at=time.time() - 100),
+    )
+    assert replaced is not None
+
 class TestDeviceFlowHappyPath:
     """Tests for the complete Device Flow happy path."""
 
@@ -127,11 +144,7 @@ class TestDeviceFlowExpiration:
         data = json.loads(response.data)
         device_code = data['device_code']
 
-        # Directly modify the device code's expiration time
-        from nanoidp.services.device_code import get_device_code_store
-        grant = get_device_code_store()._codes.get(device_code)
-        if grant:
-            grant.expires_at = time.time() - 100  # Already expired
+        _put_past_its_time(device_code)
 
         response = client.post('/token', data={
             'grant_type': 'urn:ietf:params:oauth:grant-type:device_code',
@@ -149,11 +162,7 @@ class TestDeviceFlowExpiration:
         user_code = data['user_code']
         device_code = data['device_code']
 
-        # Directly modify the device code's expiration time
-        from nanoidp.services.device_code import get_device_code_store
-        grant = get_device_code_store()._codes.get(device_code)
-        if grant:
-            grant.expires_at = time.time() - 100  # Already expired
+        _put_past_its_time(device_code)
 
         response = client.post('/device', data={
             'user_code': user_code,

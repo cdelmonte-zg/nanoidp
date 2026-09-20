@@ -15,7 +15,6 @@ import nanoidp.config as config_module
 import nanoidp.services.audit as audit_module
 import nanoidp.services.client_metadata_fetch as client_metadata_fetch_module
 import nanoidp.services.crypto as crypto_module
-import nanoidp.services.device_code as device_code_module
 import nanoidp.services.revocation as revocation_module
 import nanoidp.services.runtime_identities as runtime_identities_module
 import nanoidp.services.yaml_writer as yaml_writer_module
@@ -146,7 +145,6 @@ def _reset_process_singletons() -> None:
     config_module._config = None
     yaml_writer_module._yaml_writer = None
     audit_module._audit_log = None
-    device_code_module._device_code_store = None
     revocation_module._revocation_store = None
     runtime_identities_module._runtime_identity_store = None
     # The metadata fetch budget is process state like the stores above: a
