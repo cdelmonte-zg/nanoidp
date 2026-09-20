@@ -585,6 +585,50 @@ class TestDeviceCodes:
         assert outcome is DevicePollOutcome.AUTHORIZED
         assert (user.username, grant.username) == ("bob", "bob")
 
+    def test_a_missing_user_is_said_of_the_grant_that_is_there(self, monkeypatch):
+        """The user of the grant that was seen cannot be found, and by then
+        the device code names another grant, still pending. "User not found"
+        is about a grant that is no longer there (the token endpoint makes a
+        500 of it): the poll looks again, as it does when the user is found
+        and the claim loses."""
+        from nanoidp.services import device_code as device_code_module
+
+        store = get_device_code_store()
+        device_code, _ = self._authorized(store, "alice")
+        asked = []
+
+        def get_user(name):
+            asked.append(name)
+            store._grants.delete(device_code)
+            monkeypatch.setattr(device_code_module.secrets, "token_urlsafe", lambda n: device_code)
+            assert store.create("demo-client", "openid")[0] == device_code
+            return None
+
+        assert store.poll(device_code, "demo-client", get_user)[0] is DevicePollOutcome.PENDING
+        assert asked == ["alice"]
+
+    def test_a_missing_user_is_not_said_of_a_grant_that_is_gone(self):
+        store = get_device_code_store()
+        device_code, _ = self._authorized(store, "alice")
+
+        def get_user(name):
+            store._grants.delete(device_code)
+            return None
+
+        assert store.poll(device_code, "demo-client", get_user)[0] is DevicePollOutcome.NOT_FOUND
+
+    def test_a_missing_user_is_not_said_of_a_grant_that_ran_out(self):
+        store = get_device_code_store()
+        device_code, _ = self._authorized(store, "alice")
+
+        def get_user(name):
+            runtime_repository.replace(
+                store._grants, device_code, lambda grant: dataclasses.replace(grant, expires_at=1.0)
+            )
+            return None
+
+        assert store.poll(device_code, "demo-client", get_user)[0] is DevicePollOutcome.EXPIRED
+
     def test_a_grant_that_ran_out_under_the_poll_is_not_claimed(self):
         store = get_device_code_store()
         device_code, _ = self._authorized(store)

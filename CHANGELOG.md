@@ -86,6 +86,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   attempts, `/device_authorization` answers the same plain 503 with
   `Retry-After` as for a full store (`DeviceCodeStoreBusy`, a
   `DeviceCodeStoreFull`), and says so in the message and the audit entry.
+  `DeviceCodeGrant`, which `nanoidp.services` exports, now takes the
+  `device_code` it is kept under, as a required keyword; nothing outside the
+  store constructs one.
   Measured with ten thousand pending:
   creating one takes 0.81 ms (0.17 ms before: two repositories and their
   cleanups instead of one dictionary), a poll 4 us.

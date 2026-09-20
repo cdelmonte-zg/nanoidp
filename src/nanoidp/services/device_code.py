@@ -169,7 +169,8 @@ _INDEX = _IndexCodec()
 # user code collides, which eight characters of thirty-one make rare.
 _PAIR_ATTEMPTS = 5
 # How many times poll() looks again at a grant that changed between being
-# seen authorized and being claimed. A matter of its own, not of the above.
+# seen authorized and being answered for (claimed, or said to have no user).
+# A matter of its own, not of the above.
 _POLL_ATTEMPTS = 5
 
 
@@ -196,6 +197,19 @@ class DeviceVerifyOutcome(Enum):
     MISSING_CREDENTIALS = "missing_credentials"
     INVALID_CREDENTIALS = "invalid_credentials"
     AUTHORIZED = "authorized"
+
+
+def _is_the_one_seen(current: Entry[DeviceCodeGrant], seen: Entry[DeviceCodeGrant]) -> bool:
+    """The grant a poll saw authorized, still: that instance, still
+    authorized, for that user, still in time. One rule for everything a poll
+    concludes after looking the user up, outside any decision: the claim, and
+    the answer that the user cannot be found."""
+    return (
+        current.instance_id == seen.instance_id
+        and current.value.status == "authorized"
+        and current.value.username == seen.value.username
+        and not current.value.is_past_its_time()
+    )
 
 
 class DeviceCodeStore:
@@ -327,7 +341,10 @@ class DeviceCodeStore:
         cannot also claim it, since the consume takes it once; and if the
         grant changed in between, it is classified again instead of its
         successor being consumed. A user who cannot be found costs nothing:
-        the grant stays as it was.
+        the grant stays as it was. That answer too is given of the grant
+        that is there: if the one that was seen is no longer it (gone, run
+        out, another under the same device code), the poll looks again, by
+        the same rule the claim goes by (``_is_the_one_seen``).
 
         The user is whoever ``get_user`` found at that moment. Nothing here
         ever excluded that user being deleted a moment later: the lock this
@@ -343,12 +360,14 @@ class DeviceCodeStore:
             username = classified.value.username
             user = get_user(username) if username else None
             if not user:
-                return DevicePollOutcome.USER_NOT_FOUND, None, None
+                if self._is_still_the_one_seen(classified):
+                    return DevicePollOutcome.USER_NOT_FOUND, None, None
+                continue  # said of a grant that is no longer there: look again
             claimed = self._claim(classified)
             if claimed is not None:
                 return DevicePollOutcome.AUTHORIZED, user, claimed
-        # Seen authorized every time and lost every time to a change under
-        # it. "Not found" would be false, and final: a device stops polling
+        # Seen authorized every time and changed every time before it could
+        # be answered for. "Not found" would be false, and final: a device stops polling
         # on invalid_grant. "Pending" is neither, and the next poll decides.
         return DevicePollOutcome.PENDING, None, None
 
@@ -363,16 +382,7 @@ class DeviceCodeStore:
         that status only by running out. The status and the user are asked
         anyway, so that a transition added later (a grant withdrawn, say)
         cannot make this claim something it was not authorized for."""
-
-        def still_that_one(current: Entry[DeviceCodeGrant]) -> bool:
-            return (
-                current.instance_id == seen.instance_id
-                and current.value.status == "authorized"
-                and current.value.username == seen.value.username
-                and not current.value.is_past_its_time()
-            )
-
-        claimed = consume(self._grants, seen.name, still_that_one)
+        claimed = consume(self._grants, seen.name, lambda current: _is_the_one_seen(current, seen))
         if claimed is None:
             return None
         consume(
@@ -381,6 +391,12 @@ class DeviceCodeStore:
             lambda indexed: indexed.value.grant_instance_id == seen.instance_id,
         )
         return claimed.value
+
+    def _is_still_the_one_seen(self, seen: Entry[DeviceCodeGrant]) -> bool:
+        """Whether what was concluded outside the decision, from the grant
+        that was seen, is still about the grant under that device code."""
+        current = self._grants.entry(seen.name)
+        return current is not None and _is_the_one_seen(current, seen)
 
     @staticmethod
     def _classify(
