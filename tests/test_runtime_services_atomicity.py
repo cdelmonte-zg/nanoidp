@@ -904,6 +904,201 @@ class TestDeviceCodes:
 
 
 @pytest.mark.usefixtures("interleaved")
+class TestRevocations:
+    """#363, step 4: revoked token ids and rotation families are markers in
+    one repository of the runtime store, under typed names, so that the
+    refresh grant's check-and-claim stays one decision. A marker says
+    nothing but that it is there; how long it is remembered is the
+    envelope's ``expires_at``, and "for ever" is None."""
+
+    @staticmethod
+    def _store():
+        from nanoidp.services.revocation import RevocationStore
+
+        return RevocationStore()
+
+    @staticmethod
+    def _kept():
+        """name -> expires_at, of everything the store remembers."""
+        return {entry.name: entry.expires_at for entry in TestRevocations._store()._markers.entries()}
+
+    def test_two_views_are_one_store(self):
+        self._store().revoke("a")
+
+        assert self._store().is_revoked("a")
+        assert not self._store().is_revoked("b")
+        assert not self._store().is_revoked(None)
+
+    def test_a_token_and_a_family_of_the_same_name_are_two_things(self):
+        store = self._store()
+        store.revoke("same")
+
+        assert store.check_and_claim_refresh("other", "same", rotate=True) is False
+        assert set(self._kept()) == {"jti:same", "jti:other"}
+
+    def test_a_refresh_token_is_claimed_once(self, interleaved):
+        store = self._store()
+        answers = []
+        threads = [
+            threading.Thread(
+                target=lambda: answers.append(store.check_and_claim_refresh("r1", "f1", rotate=True))
+            )
+            for _ in range(8)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        assert sorted(answers) == [False] + [True] * 7
+        assert store.check_and_claim_refresh("r2", "f1", rotate=True) is True
+
+    def test_reuse_takes_the_family_with_it_and_only_with_rotation(self):
+        store = self._store()
+        assert store.check_and_claim_refresh("r1", "f1", rotate=True) is False
+        assert store.check_and_claim_refresh("r1", "f1", rotate=True) is True
+        assert store.check_and_claim_refresh("descendant", "f1", rotate=True) is True
+        assert set(self._kept()) == {"jti:r1", "family:f1"}
+
+        store.revoke("s1")
+        assert store.check_and_claim_refresh("s1", "f2", rotate=False) is True
+        assert store.check_and_claim_refresh("sibling", "f2", rotate=False) is False
+        assert "family:f2" not in self._kept() and "jti:sibling" not in self._kept()
+
+    def test_a_token_with_no_id_or_no_family_claims_nothing(self):
+        store = self._store()
+
+        store.revoke("None")  # a token that has no id is not the token called "None"
+        assert not store.is_revoked(None)
+        assert store.check_and_claim_refresh(None, None, rotate=True) is False
+        store.clear()
+        assert store.check_and_claim_refresh(None, None, rotate=True) is False
+        assert store.check_and_claim_refresh("r1", None, rotate=True) is False
+        assert store.check_and_claim_refresh("r1", "", rotate=True) is True
+        assert set(self._kept()) == {"jti:r1"}
+
+    def test_the_three_states_of_how_long(self):
+        store = self._store()
+        now = time.time()
+        store.revoke("default")
+        store.revoke("never", expires_at=None)
+        store.revoke("exactly", expires_at=now + 30 * 24 * 3600)
+        store.revoke("gone-already", expires_at=now - 500)
+        kept = self._kept()
+
+        assert kept["jti:default"] == pytest.approx(now + 8 * 24 * 3600, abs=5)
+        assert kept["jti:never"] is None
+        assert kept["jti:exactly"] == now + 30 * 24 * 3600
+        assert kept["jti:gone-already"] == pytest.approx(now + 60, abs=5)
+
+    @pytest.mark.parametrize("garbage", ["soon", [], float("nan"), float("inf"), 10**400, True])
+    def test_an_expiry_that_is_no_time_is_remembered_for_ever(self, garbage):
+        """Towards never forgetting a revocation, not towards a 500."""
+        store = self._store()
+
+        store.revoke("odd", expires_at=garbage)
+        assert store.check_and_claim_refresh("odd-refresh", "f", rotate=True, expires_at=garbage) is False
+
+        assert self._kept() == {"jti:odd": None, "jti:odd-refresh": None}
+
+    def test_a_number_written_as_text_is_the_number(self):
+        self._store().revoke("text", expires_at="4102444800")
+
+        assert self._kept() == {"jti:text": 4102444800.0}
+
+    def test_revoking_again_never_shortens(self):
+        store = self._store()
+        far = time.time() + 30 * 24 * 3600
+        store.revoke("a", expires_at=far)
+        store.revoke("a")
+        store.revoke("b", expires_at=None)
+        store.revoke("b", expires_at=far)
+        store.revoke("c", expires_at=far)
+        store.revoke("c", expires_at=None)
+        store.revoke("d")
+        store.revoke("d", expires_at=far)
+
+        assert self._kept() == {"jti:a": far, "jti:b": None, "jti:c": None, "jti:d": far}
+
+    def test_revoking_again_is_the_same_marker(self):
+        store = self._store()
+        store.revoke("a")
+        first = store._markers.entry("jti:a").instance_id
+        store.revoke("a", expires_at=None)
+
+        assert store._markers.entry("jti:a").instance_id == first
+
+    def test_a_family_is_remembered_as_long_as_its_descendants_can_live(self):
+        store = self._store()
+        now = time.time()
+        store.check_and_claim_refresh("r1", "bounded", rotate=True, expires_at=now + 100)
+        store.check_and_claim_refresh("r1", "bounded", rotate=True, expires_at=now + 100)
+        store.check_and_claim_refresh("r2", "undying", rotate=True, expires_at=None)
+        store.check_and_claim_refresh("r2", "undying", rotate=True, expires_at=None)
+        kept = self._kept()
+
+        assert kept["family:bounded"] == pytest.approx(now + 8 * 24 * 3600, abs=5)
+        assert kept["family:undying"] is None
+        assert (kept["jti:r1"], kept["jti:r2"]) == (now + 100, None)
+
+    def test_a_family_already_revoked_is_not_marked_again(self):
+        store = self._store()
+        store.check_and_claim_refresh("r1", "f", rotate=True, expires_at=None)
+        store.check_and_claim_refresh("r1", "f", rotate=True, expires_at=None)
+        store.check_and_claim_refresh("r1", "f", rotate=True)
+
+        assert self._kept()["family:f"] is None
+
+    def test_what_is_past_its_time_goes_on_the_next_write_and_not_on_a_read(self, monkeypatch):
+        from nanoidp.services import revocation
+
+        store = self._store()
+        store.revoke("short", expires_at=time.time() + 100)
+        store.revoke("never", expires_at=None)
+        store.check_and_claim_refresh("r", "f", rotate=True, expires_at=time.time() + 100)
+        later = time.time() + 1000
+        monkeypatch.setattr(revocation.time, "time", lambda: later)
+
+        assert store.is_revoked("short")
+        assert set(self._kept()) == {"jti:short", "jti:never", "jti:r"}
+
+        assert store.check_and_claim_refresh("r", "f", rotate=False) is False
+        assert set(self._kept()) == {"jti:never"}
+        store.revoke("short-2", expires_at=later + 100)
+        monkeypatch.setattr(revocation.time, "time", lambda: later + 1000)
+        store.revoke("new")
+        assert set(self._kept()) == {"jti:never", "jti:new"}
+
+    def test_clear_forgets_everything(self):
+        store = self._store()
+        store.revoke("a", expires_at=None)
+        store.check_and_claim_refresh("r", "f", rotate=True)
+        store.check_and_claim_refresh("r", "f", rotate=True)
+
+        store.clear()
+
+        assert self._kept() == {}
+        assert not store.is_revoked("a")
+
+    def test_the_decisions_wait_for_the_store_and_judge_time_then(self, monkeypatch):
+        """A revocation that had to wait for the store is remembered from
+        when it was made, not from when it was asked for."""
+        store = self._store()
+
+        _while_the_store_is_busy(0.3, lambda: store.revoke("waited", expires_at=time.time() - 500))
+        made = time.time()
+
+        # A minute from when it was made. Counted from when it was asked
+        # for, it would be 0.3 s short of that.
+        assert self._kept()["jti:waited"] >= made + 59.9
+
+        _while_the_store_is_busy(
+            0.3,
+            lambda: store.check_and_claim_refresh("claimed", "f", rotate=True, expires_at=time.time() - 500),
+        )
+        assert self._kept()["jti:claimed"] >= time.time() + 59.9 - 0.05
+
+
 class TestPendingSecondFactors:
     @pytest.mark.parametrize("operation", ["consume", "discard"])
     def test_a_record_is_taken_once(self, operation):

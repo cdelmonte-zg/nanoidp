@@ -68,6 +68,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`record_registration(entry, ...)`) and dropped with
   `forget_registration_of(entry)`.
 
+- **Revocations live in the runtime store** (#363, fourth of five steps).
+  `RevocationStore` kept two dictionaries and a lock; it is now a view, with
+  no state, over ONE repository the runtime store lends, so that with a
+  backend several processes share (#354) a token revoked in one is revoked
+  in all. Token ids and rotation families are markers under typed names,
+  `jti:<id>` and `family:<id>`, because the refresh grant's check-and-claim
+  reads and writes both and has to stay one decision. A marker says nothing
+  but that it is there: how long it is remembered is its entry's
+  `expires_at`, and the indefinite retention that was `float("inf")` is
+  `None` there, which a backend can write down. Revoking again still never
+  shortens, and keeps the same marker (`set_expires_at`). `is_revoked()` is
+  one read and does no cleanup, so a marker past its time and not yet swept
+  still answers, as before. One correction, for inputs no verified token
+  can carry today: **an expiry that is no time is remembered for ever** - a
+  NaN was remembered until the next sweep, a number too large for a float
+  raised out of `/revoke`, a bool was read as a number. Measured with ten
+  thousand markers: `is_revoked()` 1 to 3 us (0.08 us as a lock-free
+  dictionary lookup: it now takes the store's lock, which every lent
+  repository shares), a revocation or a refresh claim 0.44 ms (0.16 ms:
+  the sweep was linear before and is still, plus the copy of the index).
 - **Device codes live in the runtime store** (#363, third of five steps).
   `DeviceCodeStore` kept two dictionaries and a lock; it is now a view over
   two repositories the runtime store lends: the grants, by device code, and
