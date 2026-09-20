@@ -23,6 +23,12 @@ def store():
     return RevocationStore()
 
 
+def _remembered_until(store, token_id):
+    """The store is a view over the runtime store (#363): how long a token id
+    is remembered is its entry's ``expires_at``."""
+    return store._markers.entry(f"jti:{token_id}").expires_at
+
+
 def _advance(monkeypatch, seconds):
     real_now = time.time()
     monkeypatch.setattr(revocation.time, "time", lambda: real_now + seconds)
@@ -68,10 +74,7 @@ class TestEntryExpiry:
             assert resp.status_code in (200, 302)
             store = get_revocation_store()
             assert store.is_revoked("forged-jti")
-            assert (
-                store._revoked_tokens["forged-jti"]
-                <= time.time() + _DEFAULT_RETENTION_SECONDS + 1
-            )
+            assert _remembered_until(store, "forged-jti") <= time.time() + _DEFAULT_RETENTION_SECONDS + 1
         finally:
             get_revocation_store().clear()
 
@@ -192,5 +195,5 @@ class TestReviewRound2TrustedNoExp:
         the store normalizes at the boundary so retention math never
         compares mixed types."""
         store.revoke("jti-strexp", expires_at="4102444800")
-        assert isinstance(store._revoked_tokens["jti-strexp"], float)
-        assert store._revoked_tokens["jti-strexp"] == 4102444800.0
+        assert isinstance(_remembered_until(store, "jti-strexp"), float)
+        assert _remembered_until(store, "jti-strexp") == 4102444800.0

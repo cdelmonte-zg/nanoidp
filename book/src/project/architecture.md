@@ -83,7 +83,7 @@ single-purpose:
 | `services/runtime_identities.py` | The runtime identity store: users and clients created while the IdP runs, in memory, two repositories behind one lock, and the repositories it lends to services that own a record type of their own. Holds nothing else |
 | `services/auth_code.py` | Authorization codes (PKCE data rides on the code): a view, with no state of its own, over a repository the runtime store lends. Redeeming a code is one decision of that repository's |
 | `services/device_code.py` | Device authorization state (RFC 8628): a view, with no state of its own, over two repositories the runtime store lends, the grants by device code and an index from the user's code that names the grant's instance. Every transition is one decision on the grant; a poll resolves the user outside it |
-| `services/revocation.py` | In-memory revocation and refresh-rotation family state |
+| `services/revocation.py` | Revoked token ids and refresh-rotation families: a view, with no state of its own, over ONE repository the runtime store lends. Both are markers under typed names (`jti:<id>`, `family:<id>`), because the refresh grant's check-and-claim reads and writes both and has to stay one decision; how long a marker is remembered is its entry's `expires_at`, and `None` there is for ever |
 | `services/crypto.py` | Key management: generation, rotation, JWKS, external key import |
 | `services/discovery.py` | Single source of the OIDC discovery document (HTTP and MCP both render this; metadata never lies) |
 | `services/redirect_uri.py` | Redirect-URI registration matching, including RFC 8252 native-app rules |
