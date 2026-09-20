@@ -80,7 +80,8 @@ single-purpose:
 | `services/identities.py` | The effective identities: declared users and clients composed with runtime ones. Every login, grant and client check resolves users and clients here (`identities_for(config)`), with the rules in one place: declared first, no runtime object under a declared name, declared wins on reload. The observation surfaces (`/api/users`, the persona picker, the UI lists) show declared and runtime objects with their origin; the edit forms and MCP work on the declared configuration. The lifecycle rules (promotion order, reconciliation with its audit) live here too. A promotion's claim is a hold on the object's entry in the store, not state of this process, so a delete, a reset or a reload in another process sharing the store sees it, and whoever retires the object records the promotion. A runtime client is created and deleted by instance (`create_runtime_client_entry`, `delete_runtime_client(id, instance_id)`), which is what lets a record kept about one, such as a dynamic registration, stay about that one and never about a later client of the same id |
 | `routes/runtime.py` | `/api/runtime`: create, read, delete, reset and promote runtime users and clients, mapped onto the resolver's rules; no update (the store is by value). Same management gate as `/api` |
 | `services/runtime_repository.py` | The contract all runtime state is kept behind, and its in-memory backend: objects of any type whose codec (copy, write down, read back) the owning service declares, by name and by value, each in an entry with an `instance_id` the store generates and never reuses, an optional hold and an optional time at which it becomes removable (so that a cleanup and a count never read a value), and `transact(decide)`, which runs one decision against a view of one repository so that its changes appear together or not at all. `replace`, `consume`, `delete_if`, `delete_where`, `delete_expired` and `create_within` are written once on top of it, the last two on what the store knows about its entries, with no value read. The OAuth semantics stay in the services that write the decisions; a durable backend (#354) implements `transact` and inherits the rest |
-| `services/runtime_store.py` | The runtime identity store: users and clients created while the IdP runs, in memory, two repositories behind one lock, and the repositories it lends to services that own a record type of their own. Holds nothing else |
+| `services/runtime_store.py` | The runtime store, the one owner of the state of a running IdP that is not declared in YAML: runtime users and clients, the repositories it lends to services that own a record type of their own (authorization codes, device grants, revocations, registrations, the CIMD cache), and the audit. Two concurrency domains: the repository state shares one lock, the audit has its own |
+| `services/audit_store.py` | The audit's own contract behind that boundary (`AuditStore`), its event and the in-memory backend: a bounded sequence in the order of the appends, the event and its counters kept as one step, by value, and never reached from inside a repository decision |
 | `services/auth_code.py` | Authorization codes (PKCE data rides on the code): a view, with no state of its own, over a repository the runtime store lends. Redeeming a code is one decision of that repository's |
 | `services/device_code.py` | Device authorization state (RFC 8628): a view, with no state of its own, over two repositories the runtime store lends, the grants by device code and an index from the user's code that names the grant's instance. Every transition is one decision on the grant; a poll resolves the user outside it |
 | `services/revocation.py` | Revoked token ids and refresh-rotation families: a view, with no state of its own, over ONE repository the runtime store lends. Both are markers under typed names (`jti:<id>`, `family:<id>`), because the refresh grant's check-and-claim reads and writes both and has to stay one decision; how long a marker is remembered is its entry's `expires_at`, and `None` there is for ever |
@@ -89,7 +90,7 @@ single-purpose:
 | `services/redirect_uri.py` | Redirect-URI registration matching, including RFC 8252 native-app rules |
 | `services/saml_verification.py` | Signed-AuthnRequest verification |
 | `services/saml_assertion.py` | The parts of a SAML Response every builder spells the same way: the envelope, the `Issuer` pair, the `Status` element and the assertion's head. Deliberately not the `Conditions`: the validity window differs by surface and is declared in the SAML reference instead (#317) |
-| `services/audit.py` | The audit log (in-memory ring, export) |
+| `services/audit.py` | The audit log: a facade, with no state of its own, over the runtime store's `AuditStore`. Which counters an event increments, the shape of the statistics, and what follows an append, outside any lock: the Python log line and the `on_audit_event` hooks |
 | `services/yaml_writer.py` | Writes the YAML files back for the UI's per-field saves. Not the only write path: `ConfigManager.save()` persists whole documents through `serialization.atomic_write_yaml` too - both build their entries in `serialization.py`, but the read-modify-write itself has two owners today (a known debt, tracked for a single write pipeline with conflict detection) |
 
 The config layer and the pure bottom:
@@ -125,10 +126,10 @@ There are exactly two kinds of state, and they never share a store:
   change - the UI's forms submit it as a hidden field, MCP callers pass
   it to `save_config`. Without a revision a write stays unconditional
   (last write wins), stated as such.
-- **Runtime state** lives in memory inside `services/`: authorization
-  codes, device codes, revocation and rotation families, the audit
-  log, runtime users and clients (`services/runtime_store.py`), and
-  Flask sessions. It is lost on restart by design; an
+- **Runtime state** lives in memory, behind one boundary
+  (`services/runtime_store.py`): authorization codes, device codes,
+  revocation and rotation families, the audit log, runtime users and
+  clients. Flask sessions are the other piece of runtime state. It is lost on restart by design; an
   instance is disposable (see [Vision](vision.md)). If you are about
   to persist runtime state to disk, stop and re-read the
   database-persistence non-goal.
