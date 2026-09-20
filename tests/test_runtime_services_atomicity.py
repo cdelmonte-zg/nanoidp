@@ -1001,6 +1001,33 @@ class TestRevocations:
 
         assert self._kept() == {"jti:odd": None, "jti:odd-refresh": None}
 
+    @pytest.mark.parametrize("not_an_id", [5, 5.0, True, ["x"], {"a": 1}, b"x"])
+    def test_what_is_not_text_is_not_an_id(self, not_an_id):
+        """/logout hands over the jti of a hint it did not verify. A name is
+        made by formatting, which would take anything: 5 would revoke the
+        token "5". It is refused, and nothing is kept."""
+        store = self._store()
+
+        with pytest.raises(TypeError):
+            store.revoke(not_an_id)
+        with pytest.raises(TypeError):
+            store.check_and_claim_refresh(not_an_id, "f", rotate=True)
+        with pytest.raises(TypeError):
+            store.check_and_claim_refresh("r", not_an_id, rotate=True)
+
+        assert not store.is_revoked(not_an_id)
+        assert self._kept() == {}
+
+    def test_a_logout_hint_whose_id_is_not_text_revokes_nothing(self, client):
+        import jwt as pyjwt
+
+        hint = pyjwt.encode({"jti": 5, "sub": "x"}, "attacker-key", algorithm="HS256")
+
+        assert client.get("/logout", query_string={"id_token_hint": hint}).status_code in (200, 302)
+
+        assert self._kept() == {}
+        assert not self._store().is_revoked("5")
+
     def test_a_number_written_as_text_is_the_number(self):
         self._store().revoke("text", expires_at="4102444800")
 
@@ -1082,21 +1109,32 @@ class TestRevocations:
 
     def test_the_decisions_wait_for_the_store_and_judge_time_then(self, monkeypatch):
         """A revocation that had to wait for the store is remembered from
-        when it was made, not from when it was asked for."""
+        when it was made, not from when it was asked for. No real waiting
+        and no margins: the clock is the test's, and getting the store takes
+        a thousand seconds of it."""
+        from nanoidp.services import revocation
+
+        clock = [5_000_000.0]
+        monkeypatch.setattr(revocation.time, "time", lambda: clock[0])
+        repository = runtime_repository.MemoryRuntimeRepository
+        transact = repository.transact
+
+        def after_a_long_wait(self, decide):
+            clock[0] += 1000
+            return transact(self, decide)
+
+        monkeypatch.setattr(repository, "transact", after_a_long_wait)
         store = self._store()
 
-        _while_the_store_is_busy(0.3, lambda: store.revoke("waited", expires_at=time.time() - 500))
-        made = time.time()
+        store.revoke("waited", expires_at=1.0)
+        assert self._kept()["jti:waited"] == 5_001_000.0 + 60
 
-        # A minute from when it was made. Counted from when it was asked
-        # for, it would be 0.3 s short of that.
-        assert self._kept()["jti:waited"] >= made + 59.9
-
-        _while_the_store_is_busy(
-            0.3,
-            lambda: store.check_and_claim_refresh("claimed", "f", rotate=True, expires_at=time.time() - 500),
-        )
-        assert self._kept()["jti:claimed"] >= time.time() + 59.9 - 0.05
+        store.check_and_claim_refresh("claimed", "f", rotate=True, expires_at=1.0)
+        assert self._kept()["jti:claimed"] == 5_002_000.0 + 60
+        # Reuse, of a token remembered long enough to still be there.
+        store.check_and_claim_refresh("lasting", "f", rotate=True, expires_at=9_000_000.0)
+        store.check_and_claim_refresh("lasting", "f", rotate=True, expires_at=9_000_000.0)
+        assert self._kept()["family:f"] == 5_004_000.0 + 8 * 24 * 3600
 
 
 class TestPendingSecondFactors:

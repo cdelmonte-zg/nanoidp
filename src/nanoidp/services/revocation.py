@@ -36,13 +36,12 @@ never shortens retention.
 """
 
 import dataclasses
-import math
 import time
 from dataclasses import dataclass
 from typing import Any, Optional, Union
 
 from .runtime_identities import MemoryRuntimeRepository, get_runtime_identity_store
-from .runtime_repository import RepositoryTransaction
+from .runtime_repository import RepositoryTransaction, checked_time
 
 # The retention when the caller cannot supply a TRUSTED exp: covers the
 # 7-day refresh JWT (services/token.py mints refresh tokens with a fixed
@@ -97,11 +96,21 @@ _CODEC = _MarkerCodec()
 
 
 def _token(token_id: str) -> str:
-    return f"jti:{token_id}"
+    return f"jti:{_text(token_id)}"
 
 
 def _family(family: str) -> str:
-    return f"family:{family}"
+    return f"family:{_text(family)}"
+
+
+def _text(identifier: str) -> str:
+    """An id is text. A name is made by formatting, which would take
+    anything: 5 would become the token "5", and a list its repr. /logout
+    hands over the jti of a hint it did not verify, so this is where what
+    is not an id stops (there, as an invalid hint like any other)."""
+    if not isinstance(identifier, str):
+        raise TypeError(f"a token id or a family is text, not {type(identifier).__name__}")
+    return identifier
 
 
 class RevocationStore:
@@ -143,17 +152,18 @@ class RevocationStore:
         back a value it merely coerced for its own check); a trusted exp
         that is no time - one that does not coerce, a NaN, an infinity, a
         number too large for a float, a bool - fails SAFE, toward indefinite
-        retention, never toward forgetting a revocation."""
+        retention, never toward forgetting a revocation. What a time is, is
+        the store's to say (``checked_time``), so that this cannot hand it
+        one it would refuse."""
         if isinstance(expires_at, _Unset):
             return now + _DEFAULT_RETENTION_SECONDS
         if expires_at is None or isinstance(expires_at, bool):
             return None
         try:
-            numeric = float(expires_at)
+            numeric = checked_time(float(expires_at))
         except (TypeError, ValueError, OverflowError):
             return None
-        if not math.isfinite(numeric):
-            return None
+        assert numeric is not None
         return max(numeric, now + 60)
 
     @staticmethod
@@ -197,7 +207,7 @@ class RevocationStore:
         A marker past its time and not yet swept still answers, as it always
         has; it can only concern an expired token, which every verification
         path already rejects on ``exp``."""
-        return token_id is not None and self._markers.entry(_token(token_id)) is not None
+        return isinstance(token_id, str) and self._markers.entry(_token(token_id)) is not None
 
     def check_and_claim_refresh(
         self,
