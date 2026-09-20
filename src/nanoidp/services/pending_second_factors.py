@@ -36,7 +36,7 @@ from .runtime_identities import (
     get_runtime_identity_store,
 )
 from .runtime_repository import consume as consume_entry
-from .runtime_repository import create_within, delete_where
+from .runtime_repository import create_within, delete_expired
 
 # A code screen is a continuation of the login that just happened, not a
 # page to come back to.
@@ -133,7 +133,7 @@ class PendingSecondFactorStore:
             self._repository,
             record,
             MAX_PENDING_SECOND_FACTORS,
-            is_expired=lambda stored: not stored.is_live(),
+            expires_at=record.expires_at,
             full=PendingSecondFactorStoreFull(
                 f"{MAX_PENDING_SECOND_FACTORS} logins already waiting for a code"
             ),
@@ -192,7 +192,7 @@ class PendingSecondFactorStore:
         return taken.value if taken is not None else None
 
     def prune_expired(self) -> int:
-        return delete_where(self._repository, lambda stored: not stored.is_live())
+        return delete_expired(self._repository)
 
 
 def get_pending_second_factor_store() -> PendingSecondFactorStore:

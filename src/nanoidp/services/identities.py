@@ -25,6 +25,7 @@ picker, the UI lists) show the effective identities with their origin. The
 edit forms and the MCP server work on the declared configuration only.
 """
 
+import dataclasses
 import logging
 import threading
 import time
@@ -676,7 +677,7 @@ def _claim(
             raise RuntimeObjectNotFound(f"no runtime {kind} {name!r}")
         _refuse_if_held(current, kind)
         held = view.hold(name, promotion_hold(context))
-        return Entry(current.name, current.value, current.instance_id, held)
+        return dataclasses.replace(current, hold=held)
 
     return repository.transact(decide)
 

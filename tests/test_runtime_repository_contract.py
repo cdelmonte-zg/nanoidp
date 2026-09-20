@@ -24,8 +24,10 @@ from nanoidp.services.runtime_repository import (
     RuntimeObjectExists,
     RuntimeObjectMissing,
     TransactionClosed,
+    _MemoryTransaction,
     consume,
     create_within,
+    delete_expired,
     delete_if,
     delete_where,
     replace,
@@ -307,6 +309,100 @@ class TestTransact:
             repo.transact(lambda view: repo.list())
 
         assert repo.create(make("alice")) is not None
+
+
+class TestExpiry:
+    """An entry may say when it becomes removable (#363). That is all the
+    expiry means: a cleanup may take it from then on. It is not hidden, and
+    whether it is still good is its owner's to say, since an owner may have
+    to answer "expired" for something that is past its time and still there
+    (RFC 8628's ``expired_token``)."""
+
+    def test_an_entry_says_when_it_becomes_removable_or_never(self, kit):
+        repo, make, _, _field = kit
+
+        kept = repo.create_entry(make("kept"))
+        passing = repo.create_entry(make("passing"), expires_at=100.0)
+
+        assert kept.expires_at is None
+        assert passing.expires_at == 100.0
+        assert repo.entry("passing") == passing
+        repo.create(make("plain"), expires_at=5.0)
+        assert repo.entry("plain").expires_at == 5.0
+
+    def test_an_entry_past_its_time_is_still_there(self, kit):
+        repo, make, name_of, _ = kit
+        repo.create(make("old"), expires_at=1.0)
+
+        assert name_of(repo.get("old")) == "old"
+        assert [name_of(obj) for obj in repo.list()] == ["old"]
+        assert repo.transact(lambda view: view.entry("old")) is not None
+        assert repo.transact(lambda view: view.count()) == 1
+
+    def test_a_cleanup_takes_what_is_past_its_time_and_nothing_else(self, kit):
+        repo, make, name_of, _ = kit
+        repo.create(make("never"))
+        repo.create(make("past"), expires_at=10.0)
+        repo.create(make("just-now"), expires_at=20.0)
+        repo.create(make("later"), expires_at=30.0)
+
+        assert repo.transact(lambda view: view.delete_expired(20.0)) == 2
+        assert [name_of(obj) for obj in repo.list()] == ["never", "later"]
+        assert repo.transact(lambda view: view.delete_expired(20.0)) == 0
+        assert delete_expired(repo, now=1e12) == 1
+        assert [name_of(obj) for obj in repo.list()] == ["never"]
+
+    def test_a_cleanup_copies_nothing(self, store):
+        """It reads what the store knows about the entries and never the
+        values: that is the whole difference between a fraction of a
+        millisecond and tens of them on ten thousand device codes."""
+        copies = []
+
+        class Counting(PydanticCodec):
+            def copy(self, value):
+                copies.append(value)
+                return super().copy(value)
+
+        repo = store.repository("counted", lambda u: u.username, Counting(User))
+        for index in range(20):
+            repo.create(user(f"u{index}"), expires_at=float(index))
+        copies.clear()
+
+        assert repo.transact(lambda view: (view.delete_expired(9.0), view.count())) == (10, 10)
+        assert copies == []
+
+    def test_the_time_is_changed_without_changing_the_entry(self, kit):
+        repo, make, _, _field = kit
+        before = repo.create_entry(make("alice"), expires_at=10.0)
+        hold = repo.transact(lambda view: view.hold("alice", {"why": "test"}))
+
+        later = repo.transact(lambda view: view.set_expires_at("alice", 99.0))
+        never = repo.transact(lambda view: view.set_expires_at("alice", None))
+
+        assert (later.expires_at, never.expires_at) == (99.0, None)
+        assert repo.entry("alice") == never
+        assert (never.instance_id, never.hold) == (before.instance_id, hold)
+        with pytest.raises(RuntimeObjectMissing):
+            repo.transact(lambda view: view.set_expires_at("missing", 1.0))
+
+    def test_a_replace_and_a_hold_keep_the_time(self, kit):
+        repo, make, _, _field = kit
+        repo.create(make("alice"), expires_at=10.0)
+
+        replace(repo, "alice", lambda value: value)
+        hold = repo.transact(lambda view: view.hold("alice", {}))
+        repo.transact(lambda view: view.update_hold("alice", hold.hold_id, {"n": 1}))
+        repo.transact(lambda view: view.release_hold("alice", hold.hold_id))
+
+        assert repo.entry("alice").expires_at == 10.0
+
+    def test_a_time_that_is_not_a_number_is_refused(self, kit):
+        repo, make, _, _field = kit
+
+        for bad in ("soon", float("inf"), float("nan"), True):
+            with pytest.raises(ValueError):
+                repo.create(make("alice"), expires_at=bad)
+        assert repo.list() == []
 
 
 class TestCodecs:
@@ -654,22 +750,24 @@ class TestCreateWithin:
         assert created == repo.entry("b")
         assert [name_of(obj) for obj in repo.list()] == ["a", "b"]
 
-    def test_expired_objects_make_room_first(self, kit):
+    def test_what_is_past_its_time_makes_room_first(self, kit):
         repo, make, name_of, _ = kit
-        create_within(repo, make("stale"), limit=2)
-        create_within(repo, make("live"), limit=2)
+        create_within(repo, make("stale"), limit=2, expires_at=1.0)
+        create_within(repo, make("live"), limit=2, expires_at=1e12)
 
-        create_within(repo, make("new"), limit=2, is_expired=lambda value: name_of(value) == "stale")
+        created = create_within(repo, make("new"), limit=2, expires_at=1e12)
 
+        assert created.expires_at == 1e12
         assert [name_of(obj) for obj in repo.list()] == ["live", "new"]
 
     def test_a_refusal_still_drops_what_expired(self, kit):
         repo, make, name_of, _ = kit
-        for name in ("stale", "live-1", "live-2"):
+        repo.create(make("stale"), expires_at=1.0)
+        for name in ("live-1", "live-2"):
             repo.create(make(name))
 
         with pytest.raises(RepositoryFull):
-            create_within(repo, make("new"), limit=2, is_expired=lambda value: name_of(value) == "stale")
+            create_within(repo, make("new"), limit=2)
 
         assert [name_of(obj) for obj in repo.list()] == ["live-1", "live-2"]
 
@@ -678,12 +776,12 @@ class TestCreateWithin:
         """The same answer for the same request whether or not there was
         room, and what expired goes all the same."""
         repo, make, name_of, _ = kit
-        repo.create(make("stale"))
+        repo.create(make("stale"), expires_at=1.0)
         repo.create(make("alice"))
         repo.create(make("other"))
 
         with pytest.raises(RuntimeObjectExists):
-            create_within(repo, make("alice"), limit=limit, is_expired=lambda value: name_of(value) == "stale")
+            create_within(repo, make("alice"), limit=limit)
 
         assert [name_of(obj) for obj in repo.list()] == ["alice", "other"]
 
@@ -702,24 +800,25 @@ class TestCreateWithin:
         with pytest.raises(RuntimeObjectExists):
             create_within(repo, make("a"), limit=1, full=TooManyLogins())
 
-    def test_the_limit_holds_under_concurrent_creates(self, kit):
+    def test_the_limit_holds_under_concurrent_creates(self, kit, monkeypatch):
         repo, make, _, _field = kit
         repo.create(make("already-there"))
         accepted = [True]
-        gave_way = threading.local()
+        # The count and the create are one decision. Giving way right after
+        # the count is what lets the others in between, were they not.
+        counted = _MemoryTransaction.count
 
-        def never_expired(value):
-            # Once per decision, however many objects it looks at.
-            if not getattr(gave_way, "done", False):
-                gave_way.done = True
-                _give_way()
-            return False
+        def count_and_give_way(self):
+            found = counted(self)
+            _give_way()
+            return found
+
+        monkeypatch.setattr(_MemoryTransaction, "count", count_and_give_way)
 
         def work(index):
             for attempt in range(5):
-                gave_way.done = False
                 try:
-                    create_within(repo, make(f"c-{index}-{attempt}"), limit=10, is_expired=never_expired)
+                    create_within(repo, make(f"c-{index}-{attempt}"), limit=10)
                     accepted.append(True)
                 except RepositoryFull:
                     pass

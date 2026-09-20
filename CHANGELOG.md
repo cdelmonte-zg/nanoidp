@@ -68,6 +68,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`record_registration(entry, ...)`) and dropped with
   `forget_registration_of(entry)`.
 
+- **A runtime entry can say when it becomes removable** (#363, first of five
+  steps). Bringing authorization codes, device codes, revocations and the
+  audit behind the runtime boundary needs a way through a large collection
+  that does not read its values: measured with ten thousand device codes
+  pending, creating one takes 0.17 ms today and 17.5 ms through the
+  contract as it was, because dropping what expired meant copying every
+  value. `Entry.expires_at` (None for never) is that way: `create(obj,
+  expires_at=...)`, `set_expires_at`, `delete_expired(now)` and `count()`
+  work on what the store knows about its entries and never on the values
+  (0.25 ms for the same create), and `create_within` is rebuilt on them and
+  no longer takes an `is_expired` callback. The expiry means "removable by
+  a cleanup" and nothing else: an entry past its time is still returned
+  until somebody removes it, since an owner may have to answer "expired"
+  for it (RFC 8628's `expired_token`). A replace and a hold keep it.
+  Authorization transactions and pending second factors tell the store
+  when their records become removable; nothing changes in what they do.
 - **A promotion's outcome is kept with the object, not in the process that
   started it** (#405, last of the four steps of #404). Promoting a runtime
   object is a small saga: claim it, write its entry, reload, retire it and
