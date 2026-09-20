@@ -75,9 +75,9 @@ def interleaved(monkeypatch):
 def _while_the_store_is_busy(seconds, work):
     """Run ``work`` so that it has to wait ``seconds`` for the repository: a
     backend that retries on busy can keep a caller waiting that long."""
-    from nanoidp.services.runtime_identities import PydanticCodec, get_runtime_identity_store
+    from nanoidp.services.runtime_store import PydanticCodec, get_runtime_store
 
-    busy = get_runtime_identity_store().repository(
+    busy = get_runtime_store().repository(
         "kept-busy", lambda client: client.client_id, PydanticCodec(OAuthClient)
     )
     holding = threading.Event()
@@ -545,11 +545,11 @@ class TestDeviceCodes:
         """A decision reaches no other repository (#404), and looking a user
         up reaches the runtime users. It used to happen under the store's
         own lock, where nothing minded."""
-        from nanoidp.services.runtime_identities import get_runtime_identity_store
+        from nanoidp.services.runtime_store import get_runtime_store
 
         store = get_device_code_store()
         device_code, _ = self._authorized(store)
-        users = get_runtime_identity_store().users
+        users = get_runtime_store().users
         users.create(_alice())
 
         outcome, user, _ = store.poll(device_code, "demo-client", users.get)

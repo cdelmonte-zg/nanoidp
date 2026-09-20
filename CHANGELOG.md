@@ -68,6 +68,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`record_registration(entry, ...)`) and dropped with
   `forget_registration_of(entry)`.
 
+- **The audit lives in the runtime store, and the store is named for what it
+  holds** (#363, last of five steps). `AuditLog` kept a deque, seven counters
+  and a lock; it is now a facade, with no state, over an `AuditStore` the
+  runtime store owns: a small contract of its own, not a repository (the
+  event and its counters appended as one step, read with filters in the
+  backend, a bound that is the backend's, by value, and no operation of it
+  from inside a repository decision). In memory it has a lock of its own:
+  one runtime boundary is not one mutex, nothing has to be atomic across
+  the audit and a repository, and every request appends to it. The Python
+  log line and the `on_audit_event` hooks still follow the append, outside
+  any lock. Three deliberate corrections: **the audit reads in the order
+  events were recorded**, where it sorted by timestamp, so that events of
+  one timestamp came oldest first and a clock stepping back reordered them;
+  **a negative `limit` is none at all**, where `-1` was a slice that dropped
+  the last event (and means "no limit" to SQLite); **audit state is by
+  value**, where the `details` a caller passed, the ones kept, the ones a
+  reader got and the ones the `on_audit_event` hooks received were one dict
+  (the hooks of one event still share theirs among themselves, as before).
+  `AuditLog` no longer takes `max_entries` nor has that attribute: the
+  bound is the backend's (`audit_store.MAX_AUDIT_ENTRIES`), and every
+  `AuditLog()` is a view of the one audit, not a log of its own.
+  With it, `services/runtime_identities.py` becomes
+  `services/runtime_store.py`, `MemoryRuntimeIdentityStore`
+  `MemoryRuntimeStore` and `get_runtime_identity_store()`
+  `get_runtime_store()`, with no alias: none was exported by
+  `nanoidp.services`. `DELETE /api/runtime` still leaves the audit alone.
 - **Revocations live in the runtime store** (#363, fourth of five steps).
   `RevocationStore` kept two dictionaries and a lock; it is now a view, with
   no state, over ONE repository the runtime store lends, so that with a

@@ -142,11 +142,11 @@ class TestStore:
         assert store.find_unique_for_binding("browser-b").outcome is LookupOutcome.NONE
 
     def test_a_runtime_store_reset_takes_the_transactions_with_it(self):
-        from nanoidp.services import runtime_identities
+        from nanoidp.services import runtime_store
 
         store = get_authorization_transaction_store()
         transaction = _create(store)
-        runtime_identities._runtime_identity_store = None
+        runtime_store._runtime_store = None
 
         assert get_authorization_transaction_store().get_bound(transaction.id, "browser-a") is None
 

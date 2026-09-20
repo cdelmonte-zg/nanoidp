@@ -36,12 +36,12 @@ from ..config import ConfigManager, ConfigurationRejected, OAuthClient, Settings
 from ..hooks import HookError
 from .audit import get_audit_log
 from .client_metadata import cached_client, cached_entries, looks_like_client_id_url
-from .runtime_identities import (
-    MemoryRuntimeIdentityStore,
-    MemoryRuntimeRepository,
-    get_runtime_identity_store,
-)
 from .runtime_repository import Entry, RepositoryTransaction, T
+from .runtime_store import (
+    MemoryRuntimeRepository,
+    MemoryRuntimeStore,
+    get_runtime_store,
+)
 from .yaml_writer import EntryAlreadyExists, PostWriteError, get_yaml_writer
 
 logger = logging.getLogger(__name__)
@@ -142,9 +142,9 @@ def _find_client(settings: Settings, client_id: str) -> Optional[OAuthClient]:
 
 
 class IdentityResolver:
-    """Declared configuration composed with the runtime identity store."""
+    """Declared configuration composed with the runtime store's identities."""
 
-    def __init__(self, config: ConfigManager, store: MemoryRuntimeIdentityStore) -> None:
+    def __init__(self, config: ConfigManager, store: MemoryRuntimeStore) -> None:
         self.config = config
         self.store = store
 
@@ -516,8 +516,8 @@ class IdentityResolver:
 
 def identities_for(config: ConfigManager) -> IdentityResolver:
     """The effective identities over ``config`` (the process's one manager,
-    #230) and the runtime identity store."""
-    return IdentityResolver(config, get_runtime_identity_store())
+    #230) and the runtime store."""
+    return IdentityResolver(config, get_runtime_store())
 
 
 def get_identities() -> IdentityResolver:
@@ -552,7 +552,7 @@ def reconcile_runtime_identities(config: ConfigManager) -> None:
     the reload resolves the runtime object or the declared one, never
     neither. Must not raise (AfterLoad).
     """
-    store = get_runtime_identity_store()
+    store = get_runtime_store()
     declared_ids = {client.client_id for client in config.settings.clients}
 
     def declared(kind: Kind, name: str) -> bool:

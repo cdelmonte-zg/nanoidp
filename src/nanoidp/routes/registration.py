@@ -47,8 +47,8 @@ from ..services.identities import (
     RuntimeObjectNotFound,
     identities_for,
 )
-from ..services.runtime_identities import RuntimeObjectExists
 from ..services.runtime_repository import delete_if
+from ..services.runtime_store import RuntimeObjectExists
 from ._audit import audit_event
 from ._auth import no_store
 from ._issuer import effective_issuer

@@ -1,65 +1,67 @@
 """
 Audit logging service for tracking IDP operations.
+
+``AuditLog`` is a facade with no state (#363): the events and their counters
+are the runtime store's, in its ``AuditStore``, so that with a backend several
+processes share (#354) they are one audit, which the MCP tools already assume.
+What stays here is what is about the domain and not about keeping things:
+which counters an event increments, the shape of the statistics, and what
+happens after an event is recorded, outside any lock of the store's - the
+Python log line and the ``on_audit_event`` hooks.
 """
 
 import logging
-from collections import deque
-from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from threading import Lock
 from typing import Any, Dict, List, Optional
 
 from ..config import get_config_if_loaded
+from .audit_store import AuditEntry, AuditEntryCodec, AuditStore
+from .runtime_store import get_runtime_store
+
+__all__ = ["AuditEntry", "AuditLog", "get_audit_log"]
 
 logger = logging.getLogger(__name__)
 
+# The statistics as they read before the first event. The store keeps only the
+# counters that were ever incremented and knows none of them by name.
+_NO_STATS = {
+    "total_requests": 0,
+    "token_requests": 0,
+    "saml_sso_requests": 0,
+    "saml_attribute_queries": 0,
+    "login_attempts": 0,
+    "successful_logins": 0,
+    "failed_logins": 0,
+}
 
-@dataclass
-class AuditEntry:
-    """Represents a single audit log entry."""
-    timestamp: datetime
-    event_type: str
-    username: Optional[str]
-    client_id: Optional[str]
-    ip_address: str
-    user_agent: str
-    endpoint: str
-    method: str
-    status: str
-    details: Dict[str, Any] = field(default_factory=dict)
+_COPY = AuditEntryCodec().copy
 
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary for JSON serialization."""
-        return {
-            "timestamp": self.timestamp.isoformat(),
-            "event_type": self.event_type,
-            "username": self.username,
-            "client_id": self.client_id,
-            "ip_address": self.ip_address,
-            "user_agent": self.user_agent,
-            "endpoint": self.endpoint,
-            "method": self.method,
-            "status": self.status,
-            "details": self.details,
-        }
+
+def _increments(event_type: str, status: str) -> List[str]:
+    """Which counters an event adds one to."""
+    names = ["total_requests"]
+    if event_type == "token_request":
+        names.append("token_requests")
+    elif event_type == "saml_request":
+        names.append("saml_sso_requests")
+    elif event_type == "saml_attribute_query":
+        names.append("saml_attribute_queries")
+    elif event_type == "login":
+        names.append("login_attempts")
+        names.append("successful_logins" if status == "success" else "failed_logins")
+    return names
 
 
 class AuditLog:
-    """In-memory audit log with size limit."""
+    """The audit of this process: a view, with no state, over the runtime
+    store's ``AuditStore``. The bound on how many events are kept is the
+    backend's (``audit_store.MAX_AUDIT_ENTRIES`` in memory)."""
 
-    def __init__(self, max_entries: int = 1000) -> None:
-        self.max_entries = max_entries
-        self._entries: deque = deque(maxlen=max_entries)
-        self._lock = Lock()
-        self._stats = {
-            "total_requests": 0,
-            "token_requests": 0,
-            "saml_sso_requests": 0,
-            "saml_attribute_queries": 0,
-            "login_attempts": 0,
-            "successful_logins": 0,
-            "failed_logins": 0,
-        }
+    @property
+    def _store(self) -> AuditStore:
+        # Looked up on every use: the runtime store owns the state, whatever
+        # replaces it (a reset, #354's durable backend).
+        return get_runtime_store().audit
 
     def log(
         self,
@@ -87,9 +89,9 @@ class AuditLog:
             details=details or {},
         )
 
-        with self._lock:
-            self._entries.append(entry)
-            self._update_stats(event_type, status)
+        # The event and its counters, one step of the store's. Copied in, so
+        # what the caller does with ``details`` afterwards is its own.
+        self._store.append(entry, _increments(event_type, status))
 
         # Verbose logging controlled by settings. No cycle (#285: config
         # never imports services; the old comment claimed one). What DOES
@@ -116,28 +118,17 @@ class AuditLog:
         # on_audit_event (#185): after the entry is recorded. The registry
         # never lets a hook failure out of run_audit_event; the guard here
         # covers the config singleton itself being unavailable.
+        # The hooks get an event of their own: what they do with it reaches
+        # neither what is kept nor the caller's details. (Among themselves
+        # they share it, as they always have: that is the registry's
+        # dispatch.) No copy when nobody listens, the default; and asking
+        # who listens touches the plugins, so it is inside the guard.
         if loaded is not None:
             try:
-                loaded.hooks.run_audit_event(entry.to_dict())
+                if loaded.hooks.has_hook("on_audit_event"):
+                    loaded.hooks.run_audit_event(_COPY(entry).to_dict())
             except Exception:
                 logger.debug("audit hooks unavailable", exc_info=True)
-
-    def _update_stats(self, event_type: str, status: str) -> None:
-        """Update statistics counters."""
-        self._stats["total_requests"] += 1
-
-        if event_type == "token_request":
-            self._stats["token_requests"] += 1
-        elif event_type == "saml_request":
-            self._stats["saml_sso_requests"] += 1
-        elif event_type == "saml_attribute_query":
-            self._stats["saml_attribute_queries"] += 1
-        elif event_type == "login":
-            self._stats["login_attempts"] += 1
-            if status == "success":
-                self._stats["successful_logins"] += 1
-            else:
-                self._stats["failed_logins"] += 1
 
     def get_entries(
         self,
@@ -146,62 +137,34 @@ class AuditLog:
         username: Optional[str] = None,
         client_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        """Get recent audit entries."""
-        with self._lock:
-            entries = list(self._entries)
-
-        # Filter
-        if event_type:
-            entries = [e for e in entries if e.event_type == event_type]
-        if username:
-            entries = [e for e in entries if e.username == username]
-        if client_id:
-            entries = [e for e in entries if e.client_id == client_id]
-
-        # Return most recent first
-        entries = sorted(entries, key=lambda e: e.timestamp, reverse=True)
-
-        return [e.to_dict() for e in entries[:limit]]
+        """Recent audit entries, newest first: by the order they were
+        recorded in, not by their timestamps, so events of one timestamp and
+        a clock that stepped back read like everything else. A filter that
+        is empty is no filter; a limit below zero is none at all (it was a
+        slice, and "-1" meant all but the last)."""
+        found = self._store.entries(
+            max(0, limit),
+            event_type=event_type or None,
+            username=username or None,
+            client_id=client_id or None,
+        )
+        # Copies already, the reader's own.
+        return [entry.to_dict() for entry in found]
 
     def get_unique_client_ids(self) -> List[str]:
         """Get list of unique client_ids from audit log."""
-        with self._lock:
-            client_ids = set()
-            for entry in self._entries:
-                if entry.client_id:
-                    client_ids.add(entry.client_id)
-        return sorted(client_ids)
+        return self._store.client_ids()
 
     def get_stats(self) -> Dict[str, Any]:
         """Get audit statistics."""
-        with self._lock:
-            return dict(self._stats)
+        return {**_NO_STATS, **self._store.counters()}
 
     def clear(self) -> None:
         """Clear the audit log."""
-        with self._lock:
-            self._entries.clear()
-            self._stats = {
-                "total_requests": 0,
-                "token_requests": 0,
-                "saml_sso_requests": 0,
-                "saml_attribute_queries": 0,
-                "login_attempts": 0,
-                "successful_logins": 0,
-                "failed_logins": 0,
-            }
-
-
-# Global audit log instance
-_audit_log: Optional[AuditLog] = None
-_audit_log_lock = Lock()
+        self._store.clear()
 
 
 def get_audit_log() -> AuditLog:
-    """Get or create the global audit log (thread-safe lazy init, #43)."""
-    global _audit_log
-    if _audit_log is None:
-        with _audit_log_lock:
-            if _audit_log is None:
-                _audit_log = AuditLog()
-    return _audit_log
+    """The audit of this process: a view over the runtime store, which is
+    where the state is (#363)."""
+    return AuditLog()
