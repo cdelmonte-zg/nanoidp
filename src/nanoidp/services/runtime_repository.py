@@ -19,7 +19,9 @@ else, so the guarantee belongs here.
   Neither is a field of the object: identity is execution state.
 - ``transact(decide)`` runs one decision against a view of the repository.
   Everything the decision did becomes visible at once, or, if it raises, not
-  at all. The OAuth semantics stay in the services, which write the
+  at all. A decision has no effect outside its view; it may read the clock,
+  because expiry is judged at the moment the decision is made, not when its
+  caller started waiting. The OAuth semantics stay in the services, which write the
   decision; SQL, when there is some, stays in the backend, which runs it.
 - ``replace``, ``consume``, ``delete_if``, ``delete_where`` and
   ``create_within`` are the
@@ -35,7 +37,7 @@ How expired objects leave a large or unbounded collection is not settled
 here. ``entries()`` on the view is a scan, right for a collection with a
 small cap and wrong for revocations in a durable store; #363 and #354 decide
 that path, and until then no backend is promised that ``transact`` and the
-four plain operations are all it will ever be asked for.
+plain create, get, list and delete are all it will ever be asked for.
 """
 
 import json
@@ -363,7 +365,9 @@ def create_within(
         if view.entry(name) is not None:
             return RuntimeObjectExists(f"runtime object {name!r} already exists")
         if live >= limit:
-            return full or RepositoryFull(f"the repository already holds {limit} objects")
+            if full is not None:
+                return full
+            return RepositoryFull(f"the repository already holds {limit} objects")
         return view.create(obj)
 
     return transact_refusing(repository, decide)

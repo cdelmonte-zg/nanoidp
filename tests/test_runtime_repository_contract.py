@@ -691,7 +691,10 @@ class TestCreateWithin:
         repo, make, _, _field = kit
 
         class TooManyLogins(Exception):
-            pass
+            """Whatever the caller's exception thinks of its own truth."""
+
+            def __bool__(self):
+                return False
 
         create_within(repo, make("a"), limit=1)
         with pytest.raises(TooManyLogins):
