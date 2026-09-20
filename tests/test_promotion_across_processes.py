@@ -382,14 +382,20 @@ def _with_the_entry_kept(settings, good):
     return repaired
 
 
-class TestAClaimNeverOutlivesWhatCanResolveIt:
-    def test_a_promotion_cut_short_is_left_for_a_load_to_settle(self, processes, monkeypatch):
-        """Not an error the promotion can classify: the request is torn
-        down in the middle of the write, and whether the entry reached the
-        file is not known. A claim left ``writing`` would be refused for
-        ever, since nothing resolves one; ``written`` is exactly "look at
-        the declared configuration and say how it ended"."""
-        application, _, _ = processes
+class TestWhatAClaimDoesNotSay:
+    def test_a_promotion_cut_short_has_written_nothing_that_anyone_knows_of(self, processes, monkeypatch):
+        """The request is torn down inside the writer, here before anything
+        was written. ``written`` means "the entry reached the file", and
+        nobody knows that, so the claim stays as it was: ``writing``. When
+        somebody then declares the name, the load that sees it must not
+        call that a promotion, which it would if the uncertainty had been
+        recorded as the very state that denies it.
+
+        The price is a claim nothing in this process resolves: the object
+        is refused until the process goes, which takes the claim with it.
+        With a store that outlives the process that is the recovery #354
+        owes, and it looks at the declared configuration first."""
+        application, _, config_dir = processes
         writer = get_yaml_writer()
 
         def torn_down(client, **kwargs):
@@ -399,10 +405,21 @@ class TestAClaimNeverOutlivesWhatCanResolveIt:
         resolver = IdentityResolver(get_config(), get_runtime_identity_store())
         with pytest.raises(SystemExit):
             resolver.promote_runtime_client("shared", {"endpoint": PROMOTE})
+        monkeypatch.undo()
 
+        settings = config_dir / "settings.yaml"
+        document = yaml.safe_load(settings.read_text())
+        document["oauth"]["clients"].append(
+            {"client_id": "shared", "client_secret": "declared-by-hand", "redirect_uris": ["http://localhost:1/x"]}
+        )
+        settings.write_text(yaml.safe_dump(document))
         assert application.test_client().post("/api/config/reload").status_code == 200
-        assert len(_events("runtime_identity_promotion_abandoned")) == 1
-        assert application.test_client().delete("/api/runtime/clients/shared").status_code == 200
+
+        assert _events("runtime_identity_promoted") == []
+        assert _events("runtime_identity_promotion_abandoned") == []
+        held = get_runtime_identity_store().clients.entry("shared")
+        assert held is not None and held.hold.payload["promotion"]["state"] == "writing"
+        assert application.test_client().delete("/api/runtime/clients/shared").status_code == 409
 
     def test_a_hold_this_module_does_not_understand_is_not_a_promotion(self, processes):
         """Whatever put it there. The object under a declared name still

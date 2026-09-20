@@ -85,10 +85,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   alone (nothing in a declaration says who made it, and a name declared by
   somebody else while the object is claimed makes the promotion answer
   `409`, as before, with the object left where it was); a
-  promotion given up after a failed reload is recorded once, by whoever
-  released its claim, and never by a process that read the files before the
-  entry was written; one torn down in the middle of its write is left for
-  the next load to settle instead of staying claimed for ever. A reset is
+  promotion given up after a failed reload is recorded by whoever released
+  its claim, and never by a process that read the files before the entry
+  was written. "One winner records it" is a guarantee against concurrency,
+  not against a crash between taking the object out and writing the audit
+  entry. A promotion torn down in the middle of its write keeps a claim
+  that says what is known, that the entry was being written, and nothing
+  in the process resolves it: recovering it belongs to the durable store of
+  #354, and with the store in memory it ends with the process. A reset is
   one step that leaves claimed objects alone. One process behaves as
   before and every `/api/runtime` response is unchanged. Not claimed: a
   process whose configuration is stale can still create a runtime object

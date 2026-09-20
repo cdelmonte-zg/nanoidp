@@ -427,14 +427,16 @@ class IdentityResolver:
             except Exception:
                 _release(repository, claimed)
                 raise
-            except BaseException:
-                # Torn down in the middle (the worker is going away): whether
-                # the entry reached the file is not known. ``writing`` is a
-                # claim nothing resolves, so it would be refused for ever;
-                # ``written`` means "a load that can tell says how it ended".
-                _mark_written(repository, claimed)
-                raise
             finally:
+                # A BaseException (the worker is going away) is deliberately
+                # not handled above. Whether the entry reached the file is
+                # then not known, and ``written`` means that it did: marking
+                # it so would have a later declaration by somebody else
+                # recorded as this promotion. The claim stays ``writing``,
+                # which says exactly what is known. Nothing in this process
+                # resolves it; the process going takes it along, and with a
+                # store that outlives the process it is the recovery #354
+                # owes, which looks at the declared configuration first.
                 _writing_here.hold_id = None
             _release(repository, claimed)  # nothing to do once the reconciliation has retired it
             return PromotionOutcome()
@@ -536,8 +538,11 @@ def reconcile_runtime_identities(config: ConfigManager) -> None:
       is not, so no claim outlives a successful load.
 
     What is recorded is decided by the entry each step takes out or
-    releases, so with several processes on one store every outcome is
-    recorded once, by whoever won it (#405).
+    releases, so with several processes on one store one winner records
+    each outcome (#405). That is a guarantee against concurrency, not
+    against a crash: a process that dies after taking an object out and
+    before its audit entry is written records nothing, and only a durable
+    audit could close that gap.
 
     Runs inside the load, once the new configuration is assigned; with the
     resolver reading the store before the declared state, a lookup spanning
