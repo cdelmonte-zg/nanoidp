@@ -138,9 +138,8 @@ def _source_of(client_id: str, resolver: IdentityResolver) -> Optional[str]:
     Read from the record rather than from the shape of the id, which is only
     a hint for a human reading a log - and through the liveness check, so a
     record that outlived its client cannot label the next client to hold
-    that name as one somebody registered. Outside the lifecycle scope on
-    purpose (#403): this is an open read and only a label, so it does not
-    wait for loads, and the label can be stale for this one response.
+    that name as one somebody registered: the record is compared with the
+    client's instance, not with its name (#404).
     """
     return "dcr" if live_registration(client_id, resolver) is not None else None
 
@@ -167,14 +166,10 @@ def get_client(client_id: str) -> ResponseReturnValue:
 @runtime_bp.route("/clients/<client_id>", methods=["DELETE"])
 def delete_client(client_id: str) -> ResponseReturnValue:
     resolver = identities_for(get_config())
-
-    def delete(name: str) -> None:
-        # Before the scope, which a promotion of this client would keep
-        # the delete waiting on: the 409 is for now, not for later (#192).
-        resolver.refuse_while_promoting("client", name)
-        delete_client_and_registration(name, resolver)
-
-    return _delete("client", client_id, delete)
+    # With the record issued for it, if it was registered (#190, #403).
+    return _delete(
+        "client", client_id, lambda name: delete_client_and_registration(name, resolver)
+    )
 
 
 @runtime_bp.route("/clients/<client_id>/promote", methods=["POST"])
@@ -193,13 +188,11 @@ def reset() -> ResponseReturnValue:
     """Remove every runtime user and client. Never touches the declared
     configuration."""
     resolver = identities_for(get_config())
-    with resolver.runtime_client_lifecycle():
-        users_deleted, clients_deleted = resolver.reset_runtime_identities()
-        # Same reason as in delete_client: a record must not outlive its client
-        # and be inherited by the next one to hold that id (#190). Inside
-        # the scope, or a client created between the reset and the sweep
-        # keeps the record alive through it (#403).
-        prune_stale_registrations(resolver)
+    users_deleted, clients_deleted = resolver.reset_runtime_identities()
+    # Tidiness, and the capacity count: the records of the clients that just
+    # went match nothing any more (#404), including a client created under
+    # one of those ids before this line runs.
+    prune_stale_registrations(resolver)
     audit_event(
         "runtime_identities_reset",
         "success",

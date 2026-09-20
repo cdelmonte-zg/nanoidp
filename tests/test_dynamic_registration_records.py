@@ -20,7 +20,7 @@ from nanoidp.app import create_app
 from nanoidp.config import OAuthClient
 from nanoidp.services.dynamic_registration import (
     CLIENT_ID_PREFIX,
-    forget_registration,
+    forget_registration_of,
     live_registration,
     new_client_id,
     new_registration_token,
@@ -53,7 +53,7 @@ def app(tmp_path):
 def _register(client_id="dcr-one", grant_types=("authorization_code",)):
     """A runtime client plus its record, the way POST /register makes them."""
     identities = get_identities()
-    identities.create_runtime_client(
+    created = identities.create_runtime_client_entry(
         OAuthClient(
             client_id=client_id,
             token_endpoint_auth_method="none",
@@ -61,7 +61,7 @@ def _register(client_id="dcr-one", grant_types=("authorization_code",)):
         )
     )
     token = new_registration_token()
-    record_registration(client_id, list(grant_types), token)
+    record_registration(created, list(grant_types), token, limit=100)
     return client_id, token
 
 
@@ -205,9 +205,37 @@ class TestPruning:
             assert prune_stale_registrations(identities) == 0
             assert len(registrations().list()) == 1
 
+    def test_a_stale_record_is_dropped_but_not_the_one_that_replaced_it(self, app, monkeypatch):
+        """The cleanup on the way past a stale record goes by the record's
+        own instance: a registration made under the same id between the
+        look and the drop is a different record, and stays."""
+        from nanoidp.services.runtime_repository import MemoryRuntimeRepository
+
+        with app.app_context():
+            identities = get_identities()
+            client_id, _ = _register()
+            identities.delete_runtime_client(client_id)
+            looked = MemoryRuntimeRepository.entry
+            once = []
+
+            def then_registered_again(self, name):
+                found = looked(self, name)
+                if self is registrations() and not once:
+                    once.append(True)
+                    registrations().delete(client_id)
+                    _register(client_id)
+                return found
+
+            monkeypatch.setattr(MemoryRuntimeRepository, "entry", then_registered_again)
+
+            assert live_registration(client_id, identities) is None
+            monkeypatch.undo()
+            assert live_registration(client_id, identities) is not None
+
     def test_forgetting_a_record_says_whether_there_was_one(self, app):
         with app.app_context():
             client_id, _ = _register()
+            client = get_identities().store.clients.entry(client_id)
 
-            assert forget_registration(client_id) is True
-            assert forget_registration(client_id) is False
+            assert forget_registration_of(client) is True
+            assert forget_registration_of(client) is False

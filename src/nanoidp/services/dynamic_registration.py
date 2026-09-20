@@ -14,15 +14,15 @@ drops the record if it is not, and ``prune_stale_registrations`` does the
 same sweep for the records nobody asks about. ``source: dcr`` on a client is
 therefore derived from a live record, never from the shape of its id.
 
-Those checks are by name, so they hold only while no other client can take
-the name between two visits to the store. Every operation that changes a
-client or its record, or that acts on a credential, therefore runs inside
-``IdentityResolver.runtime_client_lifecycle`` (#403):
-``delete_client_and_registration`` here, the registration and the RFC 7592
-operations in ``routes.registration``, the reset in ``routes.runtime``. A
-read outside it is not authoritative: it may say 401 a moment early, which
-is safe, and ``routes.runtime`` labels a client ``source: dcr`` from one,
-which can be stale for the length of a response and gives nothing away.
+Those checks are by instance, not by name (#403, #404). A record carries the
+``instance_id`` the store gave its client, and a client created under the
+same id later is another instance, so a record that outlives its client is
+an orphan that matches nothing: it authenticates nothing, it labels nothing
+``source: dcr``, and removing it is tidiness. What touches both the client
+and the record is built from that identity, a conditional delete and, for
+registering, a compensation and a postcondition (``routes.registration``),
+with no lock around the pair and no transaction across the two
+repositories, so it holds for whoever shares the store.
 """
 
 import hashlib
@@ -42,6 +42,7 @@ from .runtime_identities import (
     PydanticCodec,
     get_runtime_identity_store,
 )
+from .runtime_repository import Entry, consume, create_within, delete_if
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +62,10 @@ class DynamicRegistration(BaseModel):
     """
 
     client_id: str
+    # The instance of the runtime client this record was issued for (#404):
+    # the store's identity for it, not a field of the client. A record is
+    # about that instance and no other that later goes by the same id.
+    client_instance: str
     # sha256 of the value handed out once at registration. A random token of
     # this size needs no password KDF; what a hash buys is that the store
     # cannot hand the credential to anything that reads it.
@@ -115,35 +120,42 @@ def new_client_id(identities: IdentityResolver) -> str:
     raise RuntimeError("could not generate an unused client_id")
 
 
-def _client_is_gone(client_id: str, identities: IdentityResolver) -> bool:
-    """The registration outlived the runtime client it managed.
+class RegistrationLimitReached(Exception):
+    """The server holds as many dynamic registrations as it accepts."""
 
-    By name, which is all a record has: this cannot tell the client it was
-    issued for from a later one created under the same name. What keeps a
-    record from being inherited is that it never survives its client - every
-    surface that removes one drops the record with it, in the same lifecycle
-    scope, so no client is created in between (#403), and the sweep after a
-    configuration load catches promotion, which is the case nothing else
-    would. Code embedding nanoidp that calls
-    ``IdentityResolver.delete_runtime_client`` directly, and creates another
-    client of that name before the next load, is the one path that would.
+
+def _is_about(registration: DynamicRegistration, identities: IdentityResolver) -> bool:
+    """The record is about the runtime client that holds its id right now.
+
+    By instance, not by name (#403, #404): a client deleted and created
+    again under the id is another client, and a record issued for the first
+    says nothing about the second. So a record that outlives its client, for
+    whatever reason and for however long, is an orphan that matches nothing,
+    and every rule below is a comparison rather than an order of steps
+    somebody has to keep.
+
+    Only the runtime store is asked. A promotion or a reload that declares
+    the name retires the runtime client in the same load, and from then on
+    there is no instance to match; until it has, the record is still about
+    the client it was issued for, which is the one being retired.
     """
-    resolved = identities.resolve_client(client_id)
-    return resolved is None or resolved.origin != "runtime"
+    entry = identities.store.clients.entry(registration.client_id)
+    return entry is not None and entry.instance_id == registration.client_instance
 
 
 def prune_stale_registrations(identities: IdentityResolver) -> int:
     """Drop the records whose runtime client is gone, and say how many.
 
-    Without this, a record left behind by a promotion or a reset would sit
-    in the repository until someone happened to ask for its registration
-    URI, and would keep counting against the capacity limit. Called before
-    the capacity check, so the limit counts live registrations.
+    Housekeeping, not protection: an orphan record authenticates nothing.
+    Without this it would sit in the repository until someone happened to
+    ask for its registration URI, and would keep counting against the
+    capacity limit. Each one goes by its own instance, so a record created
+    under the same id since this one was read is left alone.
     """
     dropped = 0
-    for registration in registrations().list():
-        if _client_is_gone(registration.client_id, identities):
-            if registrations().delete(registration.client_id):
+    for entry in registrations().entries():
+        if not _is_about(entry.value, identities):
+            if delete_if(registrations(), entry.name, entry.instance_id):
                 dropped += 1
     if dropped:
         logger.debug("Dropped %d dynamic registration(s) whose client is gone", dropped)
@@ -153,52 +165,76 @@ def prune_stale_registrations(identities: IdentityResolver) -> int:
 def live_registration(
     client_id: str, identities: IdentityResolver
 ) -> Optional[DynamicRegistration]:
-    """The record for a client that is still a runtime client, or nothing.
+    """The record for a client that is still the runtime client it was
+    issued for, or nothing.
 
-    The one read RFC 7592 goes through, so a promoted, deleted or shadowed
-    client answers as an unknown registration rather than as one whose
-    credential still works.
+    The one read RFC 7592 goes through, so a promoted, deleted, recreated
+    or shadowed client answers as an unknown registration rather than as one
+    whose credential still works.
     """
-    registration = registrations().get(client_id)
-    if registration is None:
+    entry = registrations().entry(client_id)
+    if entry is None:
         return None
-    if _client_is_gone(client_id, identities):
-        registrations().delete(client_id)
+    if not _is_about(entry.value, identities):
+        delete_if(registrations(), client_id, entry.instance_id)
         return None
-    return registration
+    return entry.value
+
+
+def managed_client(
+    registration: DynamicRegistration, identities: IdentityResolver
+) -> Optional[OAuthClient]:
+    """The client a live record manages, by value, or nothing if the id has
+    changed hands since the record was read: what RFC 7592 answers with is
+    the instance the credential was issued for, never whoever holds the id
+    by then."""
+    entry = identities.store.clients.entry(registration.client_id)
+    if entry is None or entry.instance_id != registration.client_instance:
+        return None
+    return entry.value
 
 
 def record_registration(
-    client_id: str, grant_types: List[str], token: str
-) -> DynamicRegistration:
-    """Keep the record for a client that has just been created."""
+    client: Entry[OAuthClient], grant_types: List[str], token: str, limit: int
+) -> Entry[DynamicRegistration]:
+    """Keep the record for the client instance that has just been created.
+    Raises RegistrationLimitReached: the limit is the only bound an open
+    endpoint has, so the count and the create are one step."""
     registration = DynamicRegistration(
-        client_id=client_id,
+        client_id=client.name,
+        client_instance=client.instance_id,
         registration_token_hash=token_hash(token),
         client_id_issued_at=int(time.time()),
         grant_types=list(grant_types),
     )
-    return registrations().create(registration)
+    return create_within(registrations(), registration, limit, full=RegistrationLimitReached())
 
 
-def forget_registration(client_id: str) -> bool:
-    return registrations().delete(client_id)
+def forget_registration_of(client: Entry[OAuthClient]) -> bool:
+    """Drop the record issued for that client instance, if there is one."""
+    removed = consume(
+        registrations(),
+        client.name,
+        lambda entry: entry.value.client_instance == client.instance_id,
+    )
+    return removed is not None
 
 
-def delete_client_and_registration(client_id: str, identities: IdentityResolver) -> None:
-    """Remove a runtime client together with its record, as one operation.
+def delete_client_and_registration(
+    client_id: str, identities: IdentityResolver, client_instance: Optional[str] = None
+) -> None:
+    """Remove a runtime client, and the record issued for it if any.
 
     The one way a surface deletes a runtime client (#403), registered or
-    not. The record goes with the client rather than waiting for the next
-    sweep (#190): a client created again under the same id would otherwise
-    inherit it, and the credential handed to whoever registered the first
-    one would read and delete the second. After the client and not before,
-    so a delete the resolver refuses (``PromotionInProgress``,
-    ``RuntimeObjectNotFound``) has changed nothing; both propagate.
+    not. ``client_instance`` is the instance that is meant, for a caller
+    that holds a credential for one (RFC 7592): the client that took the id
+    since is not that one and stays. After the client and not before, so a
+    delete the resolver refuses (``PromotionInProgress``,
+    ``RuntimeObjectNotFound``) has changed nothing; both propagate. The
+    record goes for tidiness: once its client is gone it matches nothing.
     """
-    with identities.runtime_client_lifecycle():
-        identities.delete_runtime_client(client_id)
-        forget_registration(client_id)
+    removed = identities.delete_runtime_client(client_id, client_instance)
+    forget_registration_of(removed)
 
 
 class RegistrationRejected(ValueError):

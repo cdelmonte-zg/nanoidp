@@ -56,6 +56,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the suite now runs every decision twice, which is how an effect outside
   a decision's view would show before a backend that retries.
 
+- **Dynamic registration rests on instance identity, not on a lock** (#404,
+  third of four steps). The first fix for #403 made every operation on a
+  client and its registration record one critical section of the process.
+  That section is gone: see the Security entry for what replaced it. For
+  code that embeds nanoidp, `IdentityResolver.runtime_client_lifecycle()`
+  is removed, `create_runtime_client_entry()` returns the stored entry with
+  its `instance_id`, `delete_runtime_client()` takes the instance that is
+  meant and returns the entry removed, and in
+  `services.dynamic_registration` a record is made from the client's entry
+  (`record_registration(entry, ...)`) and dropped with
+  `forget_registration_of(entry)`.
+
 ### Security
 - **A registration credential no longer reads or deletes a client recreated
   under its id** (#403). A dynamically registered client is two records, the
@@ -70,19 +82,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   check of a credential and the read or the delete it authorised. In each
   case `GET /register/<id>` with the first client's token answered with the
   second client's `client_secret`, or `DELETE /register/<id>` removed it.
-  Each of these operations, and the creation of a runtime client, is now one
-  step of a single runtime-client lifecycle. It needs a second actor reusing
-  a server-generated id, so it is unlikely; it was reproduced
-  deterministically for every window. The guarantee is that of one process:
-  several processes sharing a runtime store are the subject of #404 and
-  #405. No endpoint changes shape. What the single scope costs: it is the
-  lock a configuration load and a promotion hold, so these operations wait
-  for one in progress. `DELETE /api/runtime/clients/<id>` of the client
-  being promoted still answers `409` at once. `DELETE /register/<id>` of
-  that client, with a valid credential, now waits and answers for what it
-  then finds: `401` when the promotion went through (the registration has
-  ended), `204` when it failed before writing, `409` when it wrote its entry
-  and the reload failed. A caller without the credential never waits.
+  The record now carries the identity the runtime store gave its client
+  (#404), which no later client of that id has, so a record about a client
+  that is gone matches nothing: every check is a comparison of instances
+  rather than an order of steps somebody has to keep, the RFC 7592 delete
+  removes that instance and no other, and `POST /register` looks back at
+  its client once the record is there and refuses, removing what it
+  created, if a reset or a delete got in between (`400`, please retry), or
+  if a concurrent registration took the last slot (`429`). There is no lock
+  around the pair and no transaction across the two repositories, so this
+  holds for whoever shares the store. It needs a second actor reusing a
+  server-generated id, so it was unlikely; it was reproduced
+  deterministically for every window. No endpoint changes shape, and no
+  request waits for a configuration load or a promotion because of it.
 
 ## [3.3.0] - 2026-09-19
 

@@ -554,11 +554,11 @@ class TestTheDcrInvariantStillHolds:
 
         with app.app_context():
             identities = get_identities()
-            identities.create_runtime_client(
+            created = identities.create_runtime_client_entry(
                 OAuthClient(client_id=URL, token_endpoint_auth_method="none",
                             redirect_uris=[REDIRECT])
             )
-            record_registration(URL, ["authorization_code"], new_registration_token())
+            record_registration(created, ["authorization_code"], new_registration_token(), limit=100)
             assert live_registration(URL, identities) is not None
 
             identities.delete_runtime_client(URL)

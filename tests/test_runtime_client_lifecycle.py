@@ -14,10 +14,12 @@ atomic store operations, and these tests are meant to pass unchanged across
 that move. So each one only says where the concurrent request lands, lets it
 run for as long as the implementation allows, and then checks the outcome.
 
-The concurrent request runs in its own thread: the critical section is
-reentrant, so a request nested in the same thread would walk straight in.
-The window is placed at the repository, the one seam every implementation of
-the lifecycle has to go through.
+The concurrent request runs in its own thread, as a concurrent request is.
+The window is placed at the repository's two lowest operations, which every
+implementation of the lifecycle goes through whatever it is built from:
+``entry``/``entries`` for a read and ``transact`` for a change. (Placed at
+``get`` or ``delete``, the windows stopped opening when the lifecycle moved
+onto ``consume`` and ``create_within``, and the tests went quiet.)
 """
 
 import shutil
@@ -47,6 +49,10 @@ WINDOW_SECONDS = 0.5
 
 @pytest.fixture
 def application(tmp_path):
+    return _application(tmp_path)
+
+
+def _application(tmp_path, max_clients=100):
     config_dir = tmp_path / "config"
     config_dir.mkdir(parents=True)
     for name in ("settings.yaml", "users.yaml"):
@@ -54,7 +60,7 @@ def application(tmp_path):
     settings = config_dir / "settings.yaml"
     document = yaml.safe_load(settings.read_text())
     document["jwt"]["keys_dir"] = str(tmp_path / "keys")
-    document["oauth"]["dynamic_registration"] = {"enabled": True, "max_clients": 100}
+    document["oauth"]["dynamic_registration"] = {"enabled": True, "max_clients": max_clients}
     settings.write_text(yaml.safe_dump(document))
     app = create_app(str(config_dir))
     app.config["TESTING"] = True
@@ -74,12 +80,18 @@ class Operator:
     """Someone else using the instance at the same time: takes the id of a
     dynamically registered client for a runtime client of their own."""
 
-    def __init__(self, application, client_id=None, token=None, delete_first=False, reset=False):
+    def __init__(
+        self, application, client_id=None, token=None, delete_first=False, reset=False, register=False
+    ):
         self.application = application
         self.client_id = client_id
         self.token = token
         self.delete_first = delete_first
         self.reset = reset
+        self.register = register
+        self.take_the_other_id = False
+        self.leave_alone = set()
+        self.registered = None
         self.created = None
         self.old_credential_read = None
         self.arrived = False
@@ -89,6 +101,18 @@ class Operator:
         client = self.application.test_client()
         if self.reset:
             client.delete("/api/runtime")
+            return
+        if self.register:
+            before = {c["client_id"] for c in client.get("/api/runtime/clients").get_json()["clients"]}
+            response = client.post("/register", json={"redirect_uris": [REDIRECT]})
+            self.registered = response.status_code
+            if self.take_the_other_id:
+                # The registration under way created a client and has no
+                # record for it yet: the one id here that is nobody's.
+                mine = response.get_json()["client_id"]
+                (self.client_id,) = before - self.leave_alone - {mine}
+                client.delete(f"/api/runtime/clients/{self.client_id}")
+                self.created = self._create(client)
             return
         if self.delete_first:
             client.delete(f"/api/runtime/clients/{self.client_id}")
@@ -117,10 +141,18 @@ class Operator:
         self.arrived = True
         self._thread.start()
         self._thread.join(WINDOW_SECONDS)
+        # Whether it got through while the window was open, or is being
+        # kept waiting by an implementation that serialises the two.
+        self.landed_in_the_window = not self._thread.is_alive()
 
-    def finish(self):
+    def finish(self, may_not_arrive=False):
+        """``may_not_arrive`` is for a window placed at a later read of the
+        record, which an implementation need not make. A window that never
+        opens is otherwise a test that checked nothing, and says so."""
         if not self.arrived:
-            pytest.skip("this implementation does not read the record that many times")
+            if may_not_arrive:
+                pytest.skip("this implementation does not read the record that many times")
+            pytest.fail("the window never opened: the test placed it where nothing goes through")
         self._thread.join()
 
 
@@ -171,10 +203,23 @@ def _assert_never_read(operator):
     assert OPERATOR_SECRET not in read.get_data(as_text=True)
 
 
-# The credential's record may be read more than once on the way to an answer
-# (today: once to turn away a caller with no credential without waiting, once
-# for the answer that counts). The swap must be harmless after each of them.
-RECORD_READS = [1, 2]
+# On the way to an answer the credential's record and the client it is about
+# are each read, possibly more than once. The swap must be harmless after
+# every one of those reads, whichever an implementation makes: a window at a
+# read it does not make is skipped, one at a first read must open.
+READS = [
+    pytest.param(("record", 1), id="after-the-record-is-read"),
+    pytest.param(("record", 2), id="after-the-record-is-read-again"),
+    pytest.param(("client", 1), id="after-the-client-is-read"),
+    pytest.param(("client", 2), id="after-the-client-is-read-again"),
+    pytest.param(("client", 3), id="after-the-client-is-read-a-third-time"),
+]
+
+
+def _open_window_at_read(monkeypatch, at, operator):
+    which, nth = at
+    repository = registrations() if which == "record" else _runtime_clients()
+    _open_window(monkeypatch, repository, "entry", "after", operator, nth)
 
 
 class TestAnOldCredentialNeverReadsARecreatedClient:
@@ -182,7 +227,7 @@ class TestAnOldCredentialNeverReadsARecreatedClient:
         """W1: the client is gone and its record not yet."""
         client_id, token = _register(application)
         operator = Operator(application, client_id, token)
-        _open_window(monkeypatch, _runtime_clients(), "delete", "after", operator)
+        _open_window(monkeypatch, _runtime_clients(), "transact", "after", operator)
 
         deleted = application.test_client().delete(f"/api/runtime/clients/{client_id}")
         operator.finish()
@@ -196,7 +241,7 @@ class TestAnOldCredentialNeverReadsARecreatedClient:
         """W2: the same window, opened by RFC 7592's delete."""
         client_id, token = _register(application)
         operator = Operator(application, client_id, token)
-        _open_window(monkeypatch, _runtime_clients(), "delete", "after", operator)
+        _open_window(monkeypatch, _runtime_clients(), "transact", "after", operator)
 
         deleted = application.test_client().delete(f"/register/{client_id}", headers=_bearer(token))
         operator.finish()
@@ -206,16 +251,16 @@ class TestAnOldCredentialNeverReadsARecreatedClient:
         _assert_the_operators_client_is_untouched(application, operator)
         _assert_the_old_credential_is_dead(application, client_id, token)
 
-    @pytest.mark.parametrize("nth", RECORD_READS)
-    def test_while_it_is_being_authenticated(self, application, monkeypatch, nth):
+    @pytest.mark.parametrize("at", READS)
+    def test_while_it_is_being_authenticated(self, application, monkeypatch, at):
         """W7: the credential was checked against the first client; what is
         read next must be that client, not whoever holds the id by then."""
         client_id, token = _register(application)
         operator = Operator(application, client_id, token, delete_first=True)
-        _open_window(monkeypatch, registrations(), "get", "after", operator, nth)
+        _open_window_at_read(monkeypatch, at, operator)
 
         read = application.test_client().get(f"/register/{client_id}", headers=_bearer(token))
-        operator.finish()
+        operator.finish(may_not_arrive=at[1] > 1)
 
         assert OPERATOR_SECRET not in read.get_data(as_text=True)
         if read.status_code == 200:
@@ -256,18 +301,18 @@ class TestAnOldCredentialNeverReadsARecreatedClient:
 
 
 class TestAnOldCredentialNeverDeletesARecreatedClient:
-    @pytest.mark.parametrize("nth", RECORD_READS)
-    def test_while_it_is_being_authenticated(self, application, monkeypatch, nth):
+    @pytest.mark.parametrize("at", READS)
+    def test_while_it_is_being_authenticated(self, application, monkeypatch, at):
         """W6: authenticated as the first client, the delete must not land
         on the second."""
         client_id, token = _register(application)
         operator = Operator(application, client_id, token, delete_first=True)
         # Right after the credential's record is read, as for the read above:
         # any later and the resolver's own lock already holds the window shut.
-        _open_window(monkeypatch, registrations(), "get", "after", operator, nth)
+        _open_window_at_read(monkeypatch, at, operator)
 
         deleted = application.test_client().delete(f"/register/{client_id}", headers=_bearer(token))
-        operator.finish()
+        operator.finish(may_not_arrive=at[1] > 1)
 
         assert deleted.status_code in (204, 401)
         _assert_never_read(operator)
@@ -281,7 +326,7 @@ class TestAnOldCredentialNeverDeletesARecreatedClient:
         operator = Operator(application, client_id, token)
         # At the sweep's first visit, not right after the clients go: the
         # reset itself holds creations off until it returns.
-        _open_window(monkeypatch, registrations(), "list", "before", operator)
+        _open_window(monkeypatch, registrations(), "entries", "before", operator)
 
         reset = application.test_client().delete("/api/runtime")
         operator.finish()
@@ -294,28 +339,95 @@ class TestAnOldCredentialNeverDeletesARecreatedClient:
 
 
 class TestRegisterIsOneOperation:
-    def test_a_reset_in_the_middle_leaves_no_registration_behind(self, application, monkeypatch):
-        """W5: the client exists and its record does not yet. A reset landing
-        there must not leave a record for a client that is gone, waiting for
-        the next client of that id."""
+    @pytest.mark.parametrize("when", ["before", "after"])
+    def test_a_reset_in_the_middle_leaves_no_registration_behind(self, application, monkeypatch, when):
+        """W5: the client exists and its record does not yet ("before"), or
+        both do and the registration has not yet looked back at its client
+        ("after"). A reset landing there must not leave a record for a
+        client that is gone, waiting for the next client of that id, and
+        must not be answered with a registration of a client that never
+        existed together with its record.
+
+        Which answer is right depends on whether the reset got in. An
+        implementation that keeps it waiting registers first: 201, and the
+        reset simply came next. One that lets it in has, by the time it
+        answers, no client to announce, and refuses."""
         operator = Operator(application, reset=True)
-        # At the record's creation, not right after the client's: creating a
-        # client holds a reset off until it returns.
-        _open_window(monkeypatch, registrations(), "create", "before", operator)
+        _open_window(monkeypatch, registrations(), "transact", when, operator)
 
         response = application.test_client().post("/register", json={"redirect_uris": [REDIRECT]})
         operator.finish()
 
-        assert response.status_code == 201
-        registered = response.get_json()
-        client_id, token = registered["client_id"], registered["registration_access_token"]
-        # Nobody asks for the registration in between, so no lazy check
-        # gets the chance to tidy up before the id is reused.
-        operator.create_later(client_id)
+        assert response.status_code == (400 if operator.landed_in_the_window else 201)
+        if response.status_code == 201:
+            registered = response.get_json()
+            client_id, token = registered["client_id"], registered["registration_access_token"]
+            # Nobody asks for the registration in between, so no lazy check
+            # gets the chance to tidy up before the id is reused.
+            operator.create_later(client_id)
+            _assert_the_operators_client_is_untouched(application, operator)
+            _assert_the_old_credential_is_dead(application, client_id, token)
+            _assert_the_operators_client_is_untouched(application, operator)
+        else:
+            assert response.status_code == 400
+            assert "registration_access_token" not in response.get_data(as_text=True)
+            assert registrations().list() == [], "a record was left for a client that is gone"
+            assert _runtime_clients().list() == []
 
-        _assert_the_operators_client_is_untouched(application, operator)
-        _assert_the_old_credential_is_dead(application, client_id, token)
-        _assert_the_operators_client_is_untouched(application, operator)
+    def test_a_registration_that_loses_the_last_slot_leaves_no_client_behind(self, tmp_path, monkeypatch):
+        """The client is created before its record, because the record is
+        about that instance. When a concurrent registration takes the last
+        slot in between, the client that got no record goes again: the
+        limit bounds the clients an open endpoint creates, not only the
+        records."""
+        application = _application(tmp_path, max_clients=2)
+        _register(application)
+        rival = Operator(application, register=True)
+        # Once the client is there and before its record is: not right after
+        # the client's creation, which holds loads off, and with them the
+        # rival's own client, for as long as the window is open.
+        _open_window(monkeypatch, registrations(), "transact", "before", rival)
+
+        response = application.test_client().post("/register", json={"redirect_uris": [REDIRECT]})
+        rival.finish()
+
+        assert rival.landed_in_the_window
+        assert (response.status_code, rival.registered) == (429, 201)
+        assert len(registrations().list()) == 2
+        assert sorted(client.client_id for client in _runtime_clients().list()) == sorted(
+            record.client_id for record in registrations().list()
+        )
+
+
+    def test_nor_does_it_take_away_a_client_that_took_its_id(self, tmp_path, monkeypatch):
+        """The client that gets no record goes by instance. If the id has
+        changed hands by then, what holds it is somebody else's client."""
+        application = _application(tmp_path, max_clients=2)
+        first, _ = _register(application)
+        rival = Operator(application, register=True)
+        rival.take_the_other_id, rival.leave_alone = True, {first}
+        _open_window(monkeypatch, registrations(), "transact", "before", rival)
+
+        response = application.test_client().post("/register", json={"redirect_uris": [REDIRECT]})
+        rival.finish()
+
+        assert rival.landed_in_the_window
+        assert (response.status_code, rival.registered) == (429, 201)
+        _assert_the_operators_client_is_untouched(application, rival)
+
+    def test_a_deleted_client_takes_its_record_with_it(self, application):
+        """At once, not at the next sweep. An orphan record matches nothing,
+        so this is not what keeps a credential from being inherited; it is
+        what keeps the repository saying what is so."""
+        client_id, token = _register(application)
+
+        assert application.test_client().delete(f"/api/runtime/clients/{client_id}").status_code == 200
+        assert registrations().list() == []
+
+        client_id, token = _register(application)
+        deleted = application.test_client().delete(f"/register/{client_id}", headers=_bearer(token))
+        assert deleted.status_code == 204
+        assert registrations().list() == []
 
 
 class TestARefusedDeleteHasNoEffect:
@@ -343,30 +455,6 @@ class TestARefusedDeleteHasNoEffect:
         read = client.get(f"/register/{client_id}", headers=_bearer(token))
         assert read.status_code == 200
         assert read.get_json()["client_id"] == client_id
-
-
-    def test_nor_does_one_refused_only_once_inside_the_scope(self, application, monkeypatch):
-        """The runtime API asks about a promotion before it waits for the
-        scope, so the refusal that matters for the order is the second one:
-        a promotion that started right after the first check, wrote its
-        entry and failed its reload leaves the mark behind, and the delete
-        finds it once inside."""
-        client_id, token = _register(application)
-        client = application.test_client()
-        asked_first = identities_module.IdentityResolver.refuse_while_promoting
-
-        def then_a_promotion_fails_its_reload(self, kind, name):
-            asked_first(self, kind, name)
-            identities_module._promoting[(kind, name)] = identities_module._Promotion({}, written=True)
-
-        monkeypatch.setattr(
-            identities_module.IdentityResolver, "refuse_while_promoting", then_a_promotion_fails_its_reload
-        )
-
-        refused = client.delete(f"/api/runtime/clients/{client_id}")
-
-        assert refused.status_code == 409
-        assert client.get(f"/register/{client_id}", headers=_bearer(token)).status_code == 200
 
 
 def _while_promoting(application, monkeypatch, client_id, delete):
@@ -443,11 +531,14 @@ class TestADeleteDuringAPromotion:
         assert any(c.client_id == client_id for c in get_config().settings.clients)
 
 
-class TestAnOpenEndpointDoesNotQueueBehindTheScope:
-    """The scope is, for now, the lock a promotion holds while it writes the
-    file and a reload holds while it runs its hooks. ``/register/<id>`` is
-    open: whoever has no credential for it must be told so without waiting,
-    or anyone could park requests behind every load."""
+class TestAnOpenEndpointDoesNotQueueBehindALoad:
+    """A promotion holds loads off while it writes the file, and a reload
+    while it runs its hooks. ``/register`` and ``/register/<id>`` are open:
+    whoever has no credential must be told so without waiting for either,
+    and nothing an open request triggers (an audit entry runs hooks) may
+    run while loads are held off, or anyone could park requests behind
+    every load. When the lifecycle was one critical section on that lock
+    (#408) this took care; it holds by construction now, and stays pinned."""
 
     @pytest.mark.parametrize("verb", ["get", "delete"])
     @pytest.mark.parametrize("headers", [{}, {"Authorization": "Bearer not-the-token"}])
@@ -465,10 +556,10 @@ class TestAnOpenEndpointDoesNotQueueBehindTheScope:
         assert refused.status_code == 401
         assert promoted == 200
 
-    def test_a_refused_registration_is_audited_outside_the_scope(self, tmp_path, monkeypatch):
-        """An audit entry runs the on_audit_event hooks. Inside the scope a
-        slow one would hold off every load and every other client
-        operation, for a request anyone can send."""
+    def test_a_refused_registration_is_audited_with_loads_free(self, tmp_path, monkeypatch):
+        """An audit entry runs the on_audit_event hooks. With loads held
+        off a slow one would stall every reload and every client creation,
+        for a request anyone can send."""
         from nanoidp.routes import registration as registration_routes
 
         config_dir = tmp_path / "config"
@@ -491,12 +582,9 @@ class TestAnOpenEndpointDoesNotQueueBehindTheScope:
                 free = []
 
                 def another_operation():
-                    with get_identities().runtime_client_lifecycle():
+                    with get_config().holding_loads():
                         free.append(True)
 
-                from nanoidp.services.identities import identities_for
-
-                get_identities = lambda: identities_for(get_config())  # noqa: E731
                 thread = threading.Thread(target=another_operation)
                 thread.start()
                 thread.join(WINDOW_SECONDS)
@@ -521,7 +609,7 @@ class TestAReloadIsAlreadySafe:
         finds out here."""
         client_id, token = _register(application)
         operator = Operator(application, client_id, token)
-        _open_window(monkeypatch, _runtime_clients(), "delete", "after", operator)
+        _open_window(monkeypatch, _runtime_clients(), "transact", "after", operator)
 
         promoted = application.test_client().post(f"/api/runtime/clients/{client_id}/promote")
         operator.finish()
