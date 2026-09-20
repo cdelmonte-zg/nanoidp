@@ -233,10 +233,13 @@ class TestTheOtherProcessSeesTheClaim:
 
 class TestWhoeverRetiresItSaysItWasPromoted:
     def test_when_the_other_process_reloads_first(self, processes, monkeypatch):
-        """P2. The first process writes the file; the other loads it before
-        the first one's own reload, retires the runtime object and has to be
-        able to say why: once, as a promotion, with the promoting request's
-        context, and not as something a reload happened to remove."""
+        """P2. The first process writes the file, and the other loads it
+        before the first one's own reload. It used to retire the runtime
+        object there and, knowing of no promotion, record a removal, so that
+        nothing was ever recorded as promoted. It now sees a claim whose
+        entry is being written, which is the writer's to resolve, and the
+        writer's own reload retires it: once, as a promotion, with the
+        promoting request's context."""
         application, other, _ = processes
         first = get_config()
         reload_local = first.reload_local
@@ -249,6 +252,9 @@ class TestWhoeverRetiresItSaysItWasPromoted:
                 # that is writing the entry knows the declaration is its
                 # own, and nobody else can know it that way.
                 _in_its_own_thread(other, other.config.reload)
+                # It saw the name declared and a claim still being written,
+                # and cannot know the declaration is that claim's: left.
+                assert get_runtime_identity_store().clients.entry("shared") is not None
             return reload_local()
 
         monkeypatch.setattr(first, "reload_local", the_other_one_first)
@@ -261,26 +267,41 @@ class TestWhoeverRetiresItSaysItWasPromoted:
         assert _events("runtime_identity_removed_on_reload") == []
         assert get_runtime_identity_store().clients.get("shared") is None
 
-    def test_a_declaration_that_is_somebody_elses_is_not_this_promotion(self, processes, monkeypatch):
+    @pytest.mark.parametrize("declared", ["another-value", "the-very-value-that-was-claimed"])
+    def test_a_declaration_that_is_somebody_elses_is_not_this_promotion(self, processes, monkeypatch, declared):
         """The object is claimed and its entry not yet written when somebody
-        declares another client under the name, and the other process loads
-        that. The runtime object goes, because a declared name wins; but it
-        was not promoted, and the promotion says so itself a moment later
-        (409: the name is declared). An audit saying it was promoted would
-        contradict the answer and cover the loss of what was claimed."""
+        declares a client under the name, and the other process loads that.
+        Nothing about what was declared proves who declared it, not even its
+        being equal to what was claimed: the writer refuses a name that is
+        taken whatever is under it. So a claim whose entry is still being
+        written is its writer's to resolve, and the other process leaves it
+        alone. The promotion then finds the name taken and answers 409, as
+        it always has, with the object left where it was and free again; the
+        next load that declares the name removes it, as the collision it is."""
         application, other, config_dir = processes
         settings = config_dir / "settings.yaml"
+        entry = {"client_id": "shared", "client_secret": "declared-by-hand", "redirect_uris": ["http://localhost:1/x"]}
+        if declared == "the-very-value-that-was-claimed":
+            entry = {
+                "client_id": "shared",
+                "client_secret": "the-first-process-made-this",
+                "redirect_uris": ["http://localhost:1/as-claimed"],
+            }
 
         with _a_promotion_stopped_at_its_write(application, monkeypatch) as promotion:
             document = yaml.safe_load(settings.read_text())
-            document["oauth"]["clients"].append(
-                {"client_id": "shared", "client_secret": "declared-by-hand", "redirect_uris": ["http://localhost:1/x"]}
-            )
+            document["oauth"]["clients"].append(entry)
             settings.write_text(yaml.safe_dump(document))
-            with other.acting():
-                other.config.reload()
+            _in_its_own_thread(other, other.config.reload)
+            assert get_runtime_identity_store().clients.entry("shared").hold is not None
 
         assert promotion["status"] == 409
+        assert _events("runtime_identity_promoted") == []
+        assert _events("runtime_identity_removed_on_reload") == []
+        kept = get_runtime_identity_store().clients.entry("shared")
+        assert kept is not None and kept.hold is None
+
+        assert application.test_client().post("/api/config/reload").status_code == 200
         assert _events("runtime_identity_promoted") == []
         assert len(_events("runtime_identity_removed_on_reload")) == 1
 

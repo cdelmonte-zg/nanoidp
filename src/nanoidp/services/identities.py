@@ -40,7 +40,7 @@ from .runtime_identities import (
     MemoryRuntimeRepository,
     get_runtime_identity_store,
 )
-from .runtime_repository import Entry, RepositoryTransaction, T, consume
+from .runtime_repository import Entry, RepositoryTransaction, T
 from .yaml_writer import EntryAlreadyExists, PostWriteError, get_yaml_writer
 
 logger = logging.getLogger(__name__)
@@ -120,9 +120,10 @@ def _promotion_of(entry: Entry[Any]) -> Optional[Dict[str, Any]]:
 
 
 # The hold this thread is writing the entry of, if it is in the middle of a
-# promotion. Not promotion state to be shared: only the thread that holds
-# the claim knows that a declaration it is about to load is its own, and
-# only it needs to.
+# promotion. Not promotion state to be shared: it is the one causal proof
+# there is that a declaration about to be loaded is this promotion's own,
+# since the load runs inside the write that made it, and only the writer
+# has it.
 _writing_here = threading.local()
 
 
@@ -553,22 +554,15 @@ def reconcile_runtime_identities(config: ConfigManager) -> None:
         ("user", store.users),
         ("client", store.clients),
     ]
-    def declared_value(kind: Kind, name: str) -> Any:
-        if kind == "user":
-            return config.get_user(name)
-        return next((client for client in config.settings.clients if client.client_id == name), None)
-
     for kind, repository in repositories:
         for seen in repository.entries():
             if declared(kind, seen.name):
-                _retire(repository, kind, seen.name, declared_value(kind, seen.name))
+                _retire(repository, kind, seen.name)
             else:
                 _abandon_if_written(repository, kind, seen, config.observed_at)
 
 
-def _retire(
-    repository: MemoryRuntimeRepository[Any], kind: Kind, name: str, declared_value: Any
-) -> None:
+def _retire(repository: MemoryRuntimeRepository[Any], kind: Kind, name: str) -> None:
     """Remove the runtime object the configuration now declares, and say
     what that was.
 
@@ -576,28 +570,39 @@ def _retire(
     goes by it. What is said is decided by the entry this call took out, not
     by one seen earlier, in a listing or by another process: whoever wins
     the removal holds the claim that was on it, so a promotion is recorded
-    once, as a promotion, with its own context, whichever process reloads
-    first; and whoever loses it says nothing, because the winner did.
+    once, as a promotion, with its own context; and whoever loses it says
+    nothing, because the winner did.
 
-    A ``written`` claim under a declared name is a promotion: its entry
-    reached the file. A claim still ``writing`` is one only if the
-    declaration is its own, and a name can be declared by somebody else
-    while an object is claimed (a hand edit, another process). It is its own
-    when this thread is the one writing it, or when what is declared is the
-    value that was claimed, which is how another process that loads the
-    file first can tell, with no waiting for the promoting one to say so.
-    Otherwise the declared name has won as it always does, the object is
-    removed, and the promotion answers for itself: it finds the name taken.
+    A ``written`` claim under a declared name is a promotion, for whoever
+    retires it: its entry reached the file. A claim still ``writing`` is its
+    writer's to resolve and nobody else's. A name can be declared by
+    somebody else while an object is claimed (a hand edit, another
+    process), and nothing in what was declared says who declared it, not
+    even its being equal to what was claimed: the writer refuses a name
+    that is taken whatever is under it, and that promotion answers 409. So
+    only the thread writing the entry treats the declaration as its own;
+    any other leaves the object where it is. It stays under a declared name
+    for a while, which resolves to the declared one; the writer's own
+    reload retires it, or its refusal frees it for the next load to remove.
     """
-    retired = consume(repository, name)
+    mine = getattr(_writing_here, "hold_id", None)
+
+    def decide(view: RepositoryTransaction[Any]) -> Optional[Entry[Any]]:
+        current = view.entry(name)
+        if current is None:
+            return None
+        promotion = _promotion_of(current)
+        if promotion is not None and promotion["state"] == _WRITING:
+            if current.hold is None or current.hold.hold_id != mine:
+                return None
+        view.delete(name)
+        return current
+
+    retired = repository.transact(decide)
     if retired is None:
         return
     promotion = _promotion_of(retired)
-    if promotion is not None and (
-        promotion["state"] == _WRITTEN
-        or (retired.hold is not None and retired.hold.hold_id == getattr(_writing_here, "hold_id", None))
-        or declared_value == retired.value
-    ):
+    if promotion is not None:
         _audit("runtime_identity_promoted", kind, name, promotion["context"])
         return
     logger.warning("Runtime %s %r removed: the configuration now declares that name", kind, name)
