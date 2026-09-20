@@ -15,6 +15,24 @@ import time
 import pytest
 
 
+def _put_past_its_time(device_code):
+    """Move a grant's expiry into the past, through the repository it lives
+    in (#363): the grant's own time, which is what it is judged by. The
+    store's copy of it is left alone, so no cleanup takes the grant before
+    the test has asked it anything."""
+    import dataclasses
+
+    from nanoidp.services.device_code import get_device_code_store
+    from nanoidp.services.runtime_repository import replace
+
+    replaced = replace(
+        get_device_code_store()._grants,
+        device_code,
+        lambda grant: dataclasses.replace(grant, expires_at=time.time() - 100),
+    )
+    assert replaced is not None
+
+
 class TestDeviceFlowHappyPath:
     """Tests for the complete Device Flow happy path."""
 
@@ -127,11 +145,7 @@ class TestDeviceFlowExpiration:
         data = json.loads(response.data)
         device_code = data['device_code']
 
-        # Directly modify the device code's expiration time
-        from nanoidp.services.device_code import get_device_code_store
-        grant = get_device_code_store()._codes.get(device_code)
-        if grant:
-            grant.expires_at = time.time() - 100  # Already expired
+        _put_past_its_time(device_code)
 
         response = client.post('/token', data={
             'grant_type': 'urn:ietf:params:oauth:grant-type:device_code',
@@ -149,11 +163,7 @@ class TestDeviceFlowExpiration:
         user_code = data['user_code']
         device_code = data['device_code']
 
-        # Directly modify the device code's expiration time
-        from nanoidp.services.device_code import get_device_code_store
-        grant = get_device_code_store()._codes.get(device_code)
-        if grant:
-            grant.expires_at = time.time() - 100  # Already expired
+        _put_past_its_time(device_code)
 
         response = client.post('/device', data={
             'user_code': user_code,
@@ -398,3 +408,27 @@ class TestDeviceCodeStoreCapacity:
         assert "error" not in body  # not a fake OAuth token error
         assert "message" in body
         assert resp.headers.get("Retry-After")
+
+    def test_endpoint_says_come_back_when_no_pair_can_be_made(self, client, auth_header, monkeypatch):
+        """Every user code the endpoint can think of is taken. That is not a
+        full store and not a server error: the same plain 503, saying what
+        it is, and the audit trail does not call it capacity."""
+        from nanoidp.services import device_code as dc
+        from nanoidp.services.audit import get_audit_log
+
+        monkeypatch.setattr(dc.secrets, "choice", lambda alphabet: "A")
+        assert client.post("/device_authorization", headers=auth_header).status_code == 200
+
+        resp = client.post("/device_authorization", headers=auth_header)
+
+        assert resp.status_code == 503
+        assert resp.headers.get("Retry-After")
+        body = json.loads(resp.data)
+        assert "error" not in body
+        assert "Too many" not in body["message"]
+        failed = [
+            entry
+            for entry in get_audit_log().get_entries(limit=50)
+            if entry["event_type"] == "device_authorization_request" and entry["status"] == "failed"
+        ]
+        assert [entry["details"]["reason"] for entry in failed] == ["could not allocate a device code"]

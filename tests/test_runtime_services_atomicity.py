@@ -33,6 +33,12 @@ from nanoidp.services.authorization_transactions import (
     TransactionStoreFull,
     get_authorization_transaction_store,
 )
+from nanoidp.services.device_code import (
+    DeviceCodeStoreFull,
+    DevicePollOutcome,
+    DeviceVerifyOutcome,
+    get_device_code_store,
+)
 from nanoidp.services.pending_second_factors import (
     PendingSecondFactorStoreFull,
     get_pending_second_factor_store,
@@ -486,6 +492,415 @@ class TestAuthorizationCodes:
         code = self._code(get_auth_code_store())
 
         assert get_auth_code_store().get_code_info(code) is not None
+
+
+def _alice(name="alice"):
+    from nanoidp.config import User
+
+    return User(username=name, password="pw")
+
+
+@pytest.mark.usefixtures("interleaved")
+class TestDeviceCodes:
+    """#363 step 3. Two keys for one grant (the device's code and the user's
+    code), and a poll that needs the user: a grant repository, an index
+    repository that names the grant's instance, and no lock around the two."""
+
+    def _authorized(self, store, username="alice"):
+        device_code, user_code = store.create("demo-client", "openid")
+        outcome, _ = store.verify(user_code, "approve", _alice(username), amr=["pwd"])
+        assert outcome is DeviceVerifyOutcome.AUTHORIZED
+        return device_code, user_code
+
+    def test_an_authorized_grant_is_claimed_once(self):
+        store = get_device_code_store()
+        device_code, _ = self._authorized(store)
+        claimed = []
+
+        def work(index):
+            outcome, user, grant = store.poll(device_code, "demo-client", _alice)
+            if outcome is DevicePollOutcome.AUTHORIZED:
+                claimed.append((user.username, grant.username, grant.amr))
+
+        _race(work)
+
+        assert claimed == [("alice", "alice", ("pwd",))]
+        assert store.poll(device_code, "demo-client", _alice)[0] is DevicePollOutcome.NOT_FOUND
+        assert store._index.list() == [], "the user code outlived the grant it was for"
+
+    def test_a_pending_code_is_authorized_once(self):
+        store = get_device_code_store()
+        _, user_code = store.create("demo-client", "openid")
+        outcomes = []
+
+        def work(index):
+            outcomes.append(store.verify(user_code, "approve", _alice(), amr=("pwd",))[0])
+
+        _race(work)
+
+        assert outcomes.count(DeviceVerifyOutcome.AUTHORIZED) == 1
+        assert outcomes.count(DeviceVerifyOutcome.ALREADY_USED) == THREADS - 1
+
+    def test_the_user_is_looked_up_outside_the_decision(self):
+        """A decision reaches no other repository (#404), and looking a user
+        up reaches the runtime users. It used to happen under the store's
+        own lock, where nothing minded."""
+        from nanoidp.services.runtime_identities import get_runtime_identity_store
+
+        store = get_device_code_store()
+        device_code, _ = self._authorized(store)
+        users = get_runtime_identity_store().users
+        users.create(_alice())
+
+        outcome, user, _ = store.poll(device_code, "demo-client", users.get)
+
+        assert outcome is DevicePollOutcome.AUTHORIZED
+        assert user.username == "alice"
+
+    def test_a_grant_that_changed_under_the_poll_is_looked_at_again(self, monkeypatch):
+        """Between seeing the grant authorized and claiming it the user is
+        looked up, outside any decision. If by then the device code names
+        another grant, authorized for somebody else, the poll must not
+        claim that one as if it were the one it saw: it is answered for the
+        grant that is there, with the user that grant names."""
+        from nanoidp.services import device_code as device_code_module
+
+        store = get_device_code_store()
+        device_code, _ = self._authorized(store, "alice")
+        swapped = []
+
+        def get_user(name):
+            if not swapped:
+                swapped.append(name)
+                store._grants.delete(device_code)
+                monkeypatch.setattr(device_code_module.secrets, "token_urlsafe", lambda n: device_code)
+                successor, user_code = store.create("demo-client", "openid")
+                assert successor == device_code
+                assert store.verify(user_code, "approve", _alice("bob"))[0] is DeviceVerifyOutcome.AUTHORIZED
+            return _alice(name)
+
+        outcome, user, grant = store.poll(device_code, "demo-client", get_user)
+
+        assert swapped == ["alice"]
+        assert outcome is DevicePollOutcome.AUTHORIZED
+        assert (user.username, grant.username) == ("bob", "bob")
+
+    def test_a_missing_user_is_said_of_the_grant_that_is_there(self, monkeypatch):
+        """The user of the grant that was seen cannot be found, and by then
+        the device code names another grant, still pending. "User not found"
+        is about a grant that is no longer there (the token endpoint makes a
+        500 of it): the poll looks again, as it does when the user is found
+        and the claim loses."""
+        from nanoidp.services import device_code as device_code_module
+
+        store = get_device_code_store()
+        device_code, _ = self._authorized(store, "alice")
+        asked = []
+
+        def get_user(name):
+            asked.append(name)
+            store._grants.delete(device_code)
+            monkeypatch.setattr(device_code_module.secrets, "token_urlsafe", lambda n: device_code)
+            assert store.create("demo-client", "openid")[0] == device_code
+            return None
+
+        assert store.poll(device_code, "demo-client", get_user)[0] is DevicePollOutcome.PENDING
+        assert asked == ["alice"]
+
+    def test_a_missing_user_is_not_said_of_a_grant_that_is_gone(self):
+        store = get_device_code_store()
+        device_code, _ = self._authorized(store, "alice")
+
+        def get_user(name):
+            store._grants.delete(device_code)
+            return None
+
+        assert store.poll(device_code, "demo-client", get_user)[0] is DevicePollOutcome.NOT_FOUND
+
+    def test_a_missing_user_is_not_said_of_a_grant_that_ran_out(self):
+        store = get_device_code_store()
+        device_code, _ = self._authorized(store, "alice")
+
+        def get_user(name):
+            runtime_repository.replace(
+                store._grants, device_code, lambda grant: dataclasses.replace(grant, expires_at=1.0)
+            )
+            return None
+
+        assert store.poll(device_code, "demo-client", get_user)[0] is DevicePollOutcome.EXPIRED
+
+    def test_a_grant_that_ran_out_under_the_poll_is_not_claimed(self):
+        store = get_device_code_store()
+        device_code, _ = self._authorized(store)
+
+        def get_user(name):
+            runtime_repository.replace(
+                store._grants, device_code, lambda grant: dataclasses.replace(grant, expires_at=time.time() - 1)
+            )
+            return _alice(name)
+
+        assert store.poll(device_code, "demo-client", get_user)[0] is DevicePollOutcome.EXPIRED
+
+    def test_a_pair_whose_grant_vanished_is_not_handed_out(self, monkeypatch):
+        """The grant is there, its index entry is there, and before create
+        looks back the grant is gone (a reset, another process). What comes
+        back is a pair that exists, and the index entry of the one that does
+        not went with it."""
+        store = get_device_code_store()
+        indexed = type(store)._index_for
+        vanished = []
+
+        def then_the_grant_goes(self, grant, expires_at, now):
+            made = indexed(self, grant, expires_at, now)
+            if not vanished:
+                vanished.append(grant.value.user_code)
+                self._grants.delete(grant.name)
+            return made
+
+        monkeypatch.setattr(type(store), "_index_for", then_the_grant_goes)
+
+        device_code, user_code = store.create("demo-client", "openid")
+
+        assert user_code != vanished[0]
+        assert store.pending_status(user_code) is None
+        assert [entry.user_code for entry in store._index.list()] == [user_code]
+        assert [grant.device_code for grant in store._grants.list()] == [device_code]
+
+    def test_a_user_code_checked_a_moment_ago_does_not_approve_a_successor(self, monkeypatch):
+        """The user code was looked up and found its grant; before the
+        decision the device code came to name another grant. The decision is
+        on the instance the index named, so the successor is left alone."""
+        from nanoidp.services import device_code as device_code_module
+
+        store = get_device_code_store()
+        device_code, old_user_code = store.create("demo-client", "openid")
+        looked_up = type(store)._grant_for
+        successors = []
+
+        def then_the_device_code_changes_hands(self, user_code):
+            found = looked_up(self, user_code)
+            if not successors and user_code == old_user_code:
+                self._grants.delete(device_code)
+                monkeypatch.setattr(device_code_module.secrets, "token_urlsafe", lambda n: device_code)
+                successors.append(self.create("demo-client", "openid")[1])
+            return found
+
+        monkeypatch.setattr(type(store), "_grant_for", then_the_device_code_changes_hands)
+
+        assert store.verify(old_user_code, "approve", _alice())[0] is DeviceVerifyOutcome.INVALID_CODE
+        assert store.pending_status(successors[0]) is None
+
+    def test_an_approval_needs_a_user(self):
+        store = get_device_code_store()
+        _, user_code = store.create("demo-client", "openid")
+
+        assert store.verify(user_code, "approve", None) == (DeviceVerifyOutcome.INVALID_CREDENTIALS, None)
+        assert store.pending_status(user_code) is None
+
+    def test_a_poll_marks_what_it_found_expired(self):
+        store = get_device_code_store()
+        device_code, user_code = store.create("demo-client", "openid", expires_in=-1)
+
+        assert store.poll(device_code, "demo-client", _alice)[0] is DevicePollOutcome.EXPIRED
+        assert store.pending_status(user_code) is DeviceVerifyOutcome.ALREADY_USED
+
+    def test_an_expired_grant_is_marked_once_not_by_every_poll(self, monkeypatch):
+        """A device that goes on polling an expired grant reads it; it does
+        not write it again each time."""
+        from nanoidp.services import device_code as device_code_module
+        from nanoidp.services.device_code import DeviceCodeGrant
+
+        store = get_device_code_store()
+        device_code, _ = store.create("demo-client", "openid", expires_in=-1)
+        rewritten = []
+        real = device_code_module.dataclasses.replace
+
+        def counted(obj, **changes):
+            if isinstance(obj, DeviceCodeGrant) and "status" in changes:  # not the codec's copies
+                rewritten.append(changes)
+            return real(obj, **changes)
+
+        monkeypatch.setattr(device_code_module.dataclasses, "replace", counted)
+        assert store.poll(device_code, "demo-client", _alice)[0] is DevicePollOutcome.EXPIRED
+        marked = len(rewritten)
+        assert marked >= 1
+
+        for _ in range(3):
+            assert store.poll(device_code, "demo-client", _alice)[0] is DevicePollOutcome.EXPIRED
+
+        assert len(rewritten) == marked
+
+    def test_a_user_who_is_gone_does_not_cost_the_grant(self):
+        store = get_device_code_store()
+        device_code, _ = self._authorized(store)
+
+        assert store.poll(device_code, "demo-client", lambda name: None)[0] is DevicePollOutcome.USER_NOT_FOUND
+        assert store.poll(device_code, "demo-client", _alice)[0] is DevicePollOutcome.AUTHORIZED
+
+    def test_a_grant_past_its_time_says_expired_for_as_long_as_it_is_there(self):
+        """RFC 8628 has an error of its own for it. The store is told when
+        the grant becomes removable, and until a cleanup takes it the grant
+        answers for itself, to the device and to the user alike."""
+        store = get_device_code_store()
+        device_code, user_code = store.create("demo-client", "openid", expires_in=-1)
+
+        assert store.pending_status(user_code) is DeviceVerifyOutcome.EXPIRED
+        assert store.verify(user_code, "approve", _alice())[0] is DeviceVerifyOutcome.EXPIRED
+        assert store.poll(device_code, "demo-client", _alice)[0] is DevicePollOutcome.EXPIRED
+        assert store.poll(device_code, "another-client", _alice)[0] is DevicePollOutcome.WRONG_CLIENT
+        # Once somebody has found it expired it is marked so, and from then
+        # on the user's side calls it used, as it calls everything that is
+        # no longer pending: the status is looked at before the time.
+        assert store.pending_status(user_code) is DeviceVerifyOutcome.ALREADY_USED
+
+        _, fresh = store.create("demo-client", "openid")  # the cleanup on the way in
+        assert store.poll(device_code, "demo-client", _alice)[0] is DevicePollOutcome.NOT_FOUND
+        assert store.pending_status(user_code) is DeviceVerifyOutcome.INVALID_CODE
+        assert [entry.user_code for entry in store._index.list()] == [fresh]
+
+    def test_a_user_code_that_is_taken_is_not_given_out_again(self, monkeypatch):
+        """It used to be: the second grant silently took the user code over,
+        and the first device's user was left approving somebody else's
+        device. Eight characters of thirty-one make that unlikely, not
+        impossible, and with several processes on one store it has to be a
+        refusal the store makes."""
+        from nanoidp.services import device_code as device_code_module
+
+        store = get_device_code_store()
+        wanted = iter("AAAAAAAA" + "AAAAAAAA" + "BBBBBBBB")
+        real_choice = device_code_module.secrets.choice
+        monkeypatch.setattr(device_code_module.secrets, "choice", lambda alphabet: next(wanted, None) or real_choice(alphabet))
+
+        first_device, first_user = store.create("demo-client", "openid")
+        second_device, second_user = store.create("demo-client", "openid")
+
+        assert (first_user, second_user) == ("AAAAAAAA", "BBBBBBBB")
+        assert len(store._grants.list()) == 2, "the grant whose user code was taken was left behind"
+        assert store.verify(first_user, "approve", _alice())[0] is DeviceVerifyOutcome.AUTHORIZED
+        assert store.poll(first_device, "demo-client", _alice)[0] is DevicePollOutcome.AUTHORIZED
+        assert store.poll(second_device, "demo-client", _alice)[0] is DevicePollOutcome.PENDING
+
+    def test_a_device_code_that_is_taken_is_another_pair_not_an_error(self, monkeypatch):
+        """Either name of the pair can be taken. A device code is 256 bits
+        and will not be; the point is that the retry covers both, so that
+        what reaches the route is never a bare error and a 500."""
+        from nanoidp.services import device_code as device_code_module
+
+        store = get_device_code_store()
+        first_device, _ = store.create("demo-client", "openid")
+        wanted = iter([first_device])
+        real = device_code_module.secrets.token_urlsafe
+        monkeypatch.setattr(device_code_module.secrets, "token_urlsafe", lambda n: next(wanted, None) or real(n))
+
+        second_device, second_user = store.create("demo-client", "openid")
+
+        assert second_device != first_device
+        assert store.pending_status(second_user) is None
+        assert len(store._grants.list()) == len(store._index.list()) == 2
+
+    def test_when_no_pair_can_be_made_the_caller_is_told_to_come_back(self, monkeypatch):
+        """Not RuntimeError: the route knows one way to say "not now", a 503
+        with Retry-After, and this is one more reason for it."""
+        from nanoidp.services import device_code as device_code_module
+
+        monkeypatch.setattr(device_code_module.secrets, "choice", lambda alphabet: "A")
+        store = get_device_code_store()
+        store.create("demo-client", "openid")
+
+        with pytest.raises(DeviceCodeStoreFull):
+            store.create("demo-client", "openid")
+
+        assert len(store._grants.list()) == 1, "the grants that got no user code were left behind"
+
+    def test_the_two_cleanups_are_of_one_moment(self, monkeypatch):
+        """The grants and their user codes are cleaned in two decisions. At
+        two readings of the clock, one straddling a grant's time, the user
+        code would go and the grant stay: the user told "invalid code" and
+        the device "expired" about the same authorization."""
+        from nanoidp.services import device_code as device_code_module
+
+        store = get_device_code_store()
+        device_code, user_code = store.create("demo-client", "openid", expires_in=100)
+        boundary = store._grants.entry(device_code).expires_at
+        # The first reading is before the grant's time, every later one after.
+        readings = iter([boundary - 1])
+        monkeypatch.setattr(device_code_module.time, "time", lambda: next(readings, boundary + 1))
+
+        store.create("demo-client", "openid", expires_in=100)
+        monkeypatch.undo()
+
+        assert store._grants.get(device_code) is not None
+        assert store._index.get(user_code) is not None
+
+    def test_a_full_store_still_drops_the_user_codes_past_their_time(self, monkeypatch):
+        from nanoidp.services import device_code as device_code_module
+
+        monkeypatch.setattr(device_code_module, "MAX_PENDING_DEVICE_CODES", 1)
+        store = get_device_code_store()
+        store.create("demo-client", "openid")
+        runtime_repository.replace(
+            store._index, store._index.list()[0].user_code, lambda entry: entry, expires_at=1.0
+        )
+
+        with pytest.raises(DeviceCodeStoreFull):
+            store.create("demo-client", "openid")
+
+        assert store._index.list() == []
+
+    def test_a_grant_is_kept_under_its_device_code_and_nothing_else(self):
+        from nanoidp.services.device_code import DeviceCodeGrant
+
+        with pytest.raises(TypeError):
+            DeviceCodeGrant("UC", "demo-client", "openid", 1.0, 5)
+
+    def test_a_poll_that_keeps_losing_is_told_to_come_back(self, monkeypatch):
+        """The grant is there and authorized, and every claim loses to a
+        change under it. "Invalid device code" would be false, and final: a
+        device stops polling on invalid_grant. "Pending" is neither."""
+        store = get_device_code_store()
+        device_code, _ = self._authorized(store)
+        monkeypatch.setattr(type(store), "_claim", lambda self, seen: None)
+
+        assert store.poll(device_code, "demo-client", _alice)[0] is DevicePollOutcome.PENDING
+
+    def test_a_user_code_whose_grant_is_gone_opens_nothing(self, monkeypatch):
+        """Not even a grant made later under the same device code: the
+        index names the instance it was made for."""
+        from nanoidp.services import device_code as device_code_module
+
+        store = get_device_code_store()
+        device_code, old_user_code = store.create("demo-client", "openid")
+        store._grants.delete(device_code)
+
+        assert store.pending_status(old_user_code) is DeviceVerifyOutcome.INVALID_CODE
+        monkeypatch.setattr(device_code_module.secrets, "token_urlsafe", lambda n: device_code)
+        successor, new_user_code = store.create("demo-client", "openid")
+        assert successor == device_code
+
+        assert store.verify(old_user_code, "approve", _alice())[0] is DeviceVerifyOutcome.INVALID_CODE
+        assert store.pending_status(new_user_code) is None
+
+    def test_the_cap_holds_and_leaves_no_half_made_pair(self, monkeypatch):
+        from nanoidp.services import device_code as device_code_module
+
+        monkeypatch.setattr(device_code_module, "MAX_PENDING_DEVICE_CODES", CAP)
+        store = get_device_code_store()
+        made = []
+
+        def work(index):
+            for _ in range(3):
+                try:
+                    made.append(store.create("demo-client", "openid"))
+                except DeviceCodeStoreFull:
+                    pass
+
+        _race(work)
+
+        assert len(made) == CAP
+        assert len(store._grants.list()) == CAP
+        assert sorted(entry.device_code for entry in store._index.list()) == sorted(d for d, _ in made)
+        for _, user_code in made:
+            assert store.pending_status(user_code) is None
 
 
 @pytest.mark.usefixtures("interleaved")

@@ -68,6 +68,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`record_registration(entry, ...)`) and dropped with
   `forget_registration_of(entry)`.
 
+- **Device codes live in the runtime store** (#363, third of five steps).
+  `DeviceCodeStore` kept two dictionaries and a lock; it is now a view over
+  two repositories the runtime store lends: the grants, by device code, and
+  an index from the user's code to the grant, which names the grant's
+  instance. There is no lock around the two and no transaction across them:
+  an index entry whose grant is gone, or whose device code has since been
+  given to another grant, opens nothing. Every transition is one decision on
+  the grant. A poll resolves the user outside the decision (a decision
+  reaches no other repository) and then claims that instance, if it is still
+  authorized for that user and in time; a user who cannot be found still
+  costs nothing. A grant past its time still answers `expired_token` for as
+  long as it is there. One deliberate correction: **a user code that is
+  already taken is refused and another pair is made**, where the second
+  grant silently took the code over and left the first device's user
+  approving somebody else's device. When no pair can be made after a few
+  attempts, `/device_authorization` answers the same plain 503 with
+  `Retry-After` as for a full store (`DeviceCodeStoreBusy`, a
+  `DeviceCodeStoreFull`), and says so in the message and the audit entry.
+  `DeviceCodeGrant`, which `nanoidp.services` exports, now takes the
+  `device_code` it is kept under, as a required keyword; nothing outside the
+  store constructs one.
+  Measured with ten thousand pending:
+  creating one takes 0.81 ms (0.17 ms before: two repositories and their
+  cleanups instead of one dictionary), a poll 4 us.
 - **Authorization codes live in the runtime store** (#363, second of five
   steps). `AuthCodeStore` kept a dictionary and a lock of its own; it is now
   a view, with no state, over a repository the runtime store lends, so that

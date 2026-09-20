@@ -57,6 +57,7 @@ from ..services.client_metadata_fetch import FetchRefused
 from ..services.device_code import (
     DEVICE_CODE_EXPIRES_IN,
     DEVICE_POLL_INTERVAL,
+    DeviceCodeStoreBusy,
     DeviceCodeStoreFull,
 )
 from ..services.discovery import issuer_qualifies_for_iss_parameter
@@ -2322,8 +2323,8 @@ def device_authorization() -> ResponseReturnValue:
         # duplicate entry in the token aud.
         validated_resources = resource_result.granted or None
 
-    # Create the device authorization; the store prunes stale entries and
-    # keeps the user-code index internally (#84, previously module globals).
+    # Create the device authorization; the store drops stale entries and
+    # keeps the user-code index, in the runtime store (#84, #363).
     # A hard cap bounds the in-memory store, which matters now that a public
     # client can create entries with its client_id alone (#255): at capacity,
     # refuse new authorizations rather than grow without bound or evict a live
@@ -2338,15 +2339,23 @@ def device_authorization() -> ResponseReturnValue:
         device_code, user_code = get_device_code_store().create(
             client_id, scope, resource=validated_resources
         )
-    except DeviceCodeStoreFull:
+    except DeviceCodeStoreFull as not_now:
+        # At capacity, or (DeviceCodeStoreBusy) no pair could be made right
+        # now: the same "come back" either way.
+        if isinstance(not_now, DeviceCodeStoreBusy):
+            reason = "could not allocate a device code"
+            message = "Could not create a device authorization right now; retry later"
+        else:
+            reason = "device code store at capacity"
+            message = "Too many pending device authorizations; retry later"
         audit_event(
             "device_authorization_request",
             "failed",
             endpoint="/device_authorization",
             client_id=client_id,
-            details={"reason": "device code store at capacity"},
+            details={"reason": reason},
         )
-        response = jsonify({"message": "Too many pending device authorizations; retry later"})
+        response = jsonify({"message": message})
         response.status_code = 503
         response.headers["Retry-After"] = str(DEVICE_POLL_INTERVAL)
         return response
