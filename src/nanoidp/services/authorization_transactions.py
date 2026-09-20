@@ -45,7 +45,6 @@ from .runtime_repository import (
     Entry,
     RepositoryTransaction,
     create_within,
-    delete_expired,
 )
 from .runtime_repository import consume as consume_entry
 
@@ -302,9 +301,6 @@ class AuthorizationTransactionStore:
 
         taken = consume_entry(self._repository, transaction_id, this_one)
         return taken.value if taken is not None else None
-
-    def prune_expired(self) -> int:
-        return delete_expired(self._repository)
 
     def delete_all(self) -> int:
         return self._repository.delete_all()

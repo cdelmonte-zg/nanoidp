@@ -81,7 +81,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   no longer takes an `is_expired` callback. The expiry means "removable by
   a cleanup" and nothing else: an entry past its time is still returned
   until somebody removes it, since an owner may have to answer "expired"
-  for it (RFC 8628's `expired_token`). A replace and a hold keep it.
+  for it (RFC 8628's `expired_token`). A cleanup takes what is strictly
+  past its time, so that it never removes an entry its owner still calls
+  good wherever that owner draws the line, and leaves what an operation in
+  progress holds. A replace and a hold keep the time; a replace can move it
+  in the same step, for an owner that keeps a time in its value too.
   Authorization transactions and pending second factors tell the store
   when their records become removable; nothing changes in what they do.
 - **A promotion's outcome is kept with the object, not in the process that

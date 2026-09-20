@@ -218,9 +218,21 @@ class RepositoryTransaction(Protocol[T]):
         it. Raises RuntimeObjectMissing."""
 
     def delete_expired(self, now: float) -> int:
-        """Remove every entry whose time is up (``expires_at <= now``) and
-        say how many. Reads no value, so it is cheap on a large collection,
-        which a scan of ``entries()`` is not."""
+        """Remove every entry strictly past its time (``expires_at < now``)
+        that nobody holds, and say how many.
+
+        Strictly: owners draw the line differently (live while ``now <
+        expires_at`` for one, expired only when ``now > expires_at`` for
+        another), and an entry removed while its owner still calls it good
+        would turn a valid code into an unknown one, so the store errs on
+        the side of keeping. Not a held one: a hold is the claim of an
+        operation in progress, and like ``delete_if`` a cleanup does not
+        take an entry from under it.
+
+        Reads no value. In this backend that is one pass over what the
+        store knows about its entries, the same order as the sweeps it
+        replaces and a small fraction of their cost once values have to be
+        copied; a backend with an index on the time does better."""
 
     def delete(self, name: str) -> bool:
         """Remove the entry with that name; False when there was none."""
@@ -279,16 +291,35 @@ class RuntimeRepository(Protocol[T]):
 # ---- decisions most callers need ---------------------------------------------
 
 
+class _Keep:
+    """The default of ``replace(expires_at=...)``: leave the time alone.
+    Not None, which is a time: never."""
+
+
+_KEEP = _Keep()
+
+
 def replace(
-    repository: RuntimeRepository[T], name: str, change: Callable[[T], T]
+    repository: RuntimeRepository[T],
+    name: str,
+    change: Callable[[T], T],
+    expires_at: Union[Optional[float], _Keep] = _KEEP,
 ) -> Optional[Entry[T]]:
     """Apply ``change`` to the current value, as one step: no reader finds
     the object absent in between, and concurrent changes each start from
-    what the one before left. None when there is no such object."""
+    what the one before left. None when there is no such object.
+
+    ``expires_at`` moves the entry's time in the same step. An owner that
+    keeps a time in its value as well has two of them, and a replace keeps
+    the store's: when the change extends the value's, the store's has to
+    follow, or a cleanup takes an entry its owner has just extended."""
 
     def decide(view: RepositoryTransaction[T]) -> Optional[Entry[T]]:
         current = view.entry(name)
-        return view.replace(name, change(current.value)) if current is not None else None
+        if current is None:
+            return None
+        replaced = view.replace(name, change(current.value))
+        return replaced if isinstance(expires_at, _Keep) else view.set_expires_at(name, expires_at)
 
     return repository.transact(decide)
 
@@ -380,6 +411,7 @@ def create_within(
     limit: int,
     expires_at: Optional[float] = None,
     full: Optional[Exception] = None,
+    now: Optional[float] = None,
 ) -> Entry[T]:
     """Store ``obj`` unless the repository already holds ``limit`` entries,
     after removing the ones whose time is up. Raises RuntimeObjectExists for
@@ -390,11 +422,13 @@ def create_within(
     store knows about its entries, so the cap may be large (#363: ten
     thousand device codes cost a fraction of a millisecond, where scanning
     their values cost tens). What expired is dropped whatever the answer
-    (see ``transact_refusing``).
+    (see ``transact_refusing``). ``now`` is the moment to clean up to, for
+    an owner that judges liveness by a clock of its own and wants the store
+    to agree with it; left out, the clock is read inside the decision.
     """
 
     def decide(view: RepositoryTransaction[T]) -> Union[Entry[T], Exception]:
-        view.delete_expired(time.time())
+        view.delete_expired(time.time() if now is None else now)
         name = view.name_of(obj)
         if view.entry(name) is not None:
             return RuntimeObjectExists(f"runtime object {name!r} already exists")
@@ -438,15 +472,23 @@ def _payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     return dict(copied)
 
 
-def _expiry(expires_at: Optional[float]) -> Optional[float]:
-    """A time a backend can keep and compare, or None: a real, finite
-    number. Not a bool, which is a number only by accident, and not an
-    infinity, which "never" is spelled None for."""
-    if expires_at is None:
+def checked_time(moment: Any, or_none: bool = False) -> Optional[float]:
+    """A time a backend can keep and compare: a real, finite number. Not a
+    bool, which is a number only by accident; not an infinity, which
+    "never" is spelled None for, and None is accepted only where
+    ``or_none`` says so. Part of the contract, so that every backend
+    refuses the same things: ValueError."""
+    if moment is None and or_none:
         return None
-    if isinstance(expires_at, bool) or not isinstance(expires_at, (int, float)) or not math.isfinite(expires_at):
-        raise ValueError(f"expires_at must be a finite number or None, not {expires_at!r}")
-    return float(expires_at)
+    if isinstance(moment, bool) or not isinstance(moment, (int, float)):
+        raise ValueError(f"a time must be a finite number, not {moment!r}")
+    try:
+        finite = math.isfinite(moment)
+    except OverflowError:
+        finite = False
+    if not finite:
+        raise ValueError(f"a time must be a finite number, not {moment!r}")
+    return float(moment)
 
 
 def _out(entry: Entry[T], codec: Codec[T]) -> Entry[T]:
@@ -523,23 +565,25 @@ class _MemoryTransaction(Generic[T]):
             raise RuntimeObjectExists(f"runtime object {name!r} already exists")
         # By value, both ways: neither the caller's instance nor the one
         # returned is the stored one, as with a backend that serializes.
-        stored = Entry(name, self._stored(obj), uuid.uuid4().hex, None, _expiry(expires_at))
+        stored = Entry(name, self._stored(obj), uuid.uuid4().hex, None, checked_time(expires_at, or_none=True))
         self._writable[name] = stored
         return _out(stored, self._codec)
 
     def set_expires_at(self, name: str, expires_at: Optional[float]) -> Entry[T]:
         self._open()
-        stored = dataclasses.replace(self._require(name), expires_at=_expiry(expires_at))
+        stored = dataclasses.replace(self._require(name), expires_at=checked_time(expires_at, or_none=True))
         self._writable[name] = stored
         return _out(stored, self._codec)
 
     def delete_expired(self, now: float) -> int:
         self._open()
+        moment = checked_time(now)
+        assert moment is not None
         # The envelopes only: no value is read, let alone copied.
         expired = [
             name
             for name, stored in self._current.items()
-            if stored.expires_at is not None and stored.expires_at <= now
+            if stored.expires_at is not None and stored.expires_at < moment and stored.hold is None
         ]
         for name in expired:
             del self._writable[name]
