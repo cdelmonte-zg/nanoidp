@@ -25,6 +25,7 @@ from nanoidp.services import authorization_transactions as transactions_module
 from nanoidp.services import client_metadata as cimd
 from nanoidp.services import pending_second_factors as second_factors_module
 from nanoidp.services import runtime_repository
+from nanoidp.services.auth_code import get_auth_code_store
 from nanoidp.services.authorization_transactions import (
     AuthorizationParameters,
     TransactionState,
@@ -288,6 +289,136 @@ class TestAuthorizationTransactions:
 
         assert len(accepted) == CAP
         assert len(store._repository.list()) == CAP
+
+
+@pytest.mark.usefixtures("interleaved")
+class TestAuthorizationCodes:
+    """#363 step 2. The code store made its operations whole with a lock of
+    its own; they are decisions of the repository's now."""
+
+    REDIRECT = "http://localhost:3000/callback"
+
+    def _code(self, store, **extra):
+        return store.create_code(client_id="demo-client", redirect_uri=self.REDIRECT, username="alice", **extra)
+
+    def test_a_code_is_redeemed_once(self):
+        store = get_auth_code_store()
+        code = self._code(store)
+        redeemed = []
+
+        def work(index):
+            if store.consume_code(code, "demo-client", self.REDIRECT) is not None:
+                redeemed.append(index)
+
+        _race(work)
+
+        assert len(redeemed) == 1
+
+    def test_a_second_redemption_takes_the_code_away(self):
+        store = get_auth_code_store()
+        code = self._code(store)
+
+        assert store.consume_code(code, "demo-client", self.REDIRECT).used is True
+        assert store.get_code_info(code).used is True
+        assert store.consume_code(code, "demo-client", self.REDIRECT) is None
+        assert store.get_code_info(code) is None
+
+    def test_a_used_code_goes_whoever_presents_it_again(self):
+        """Used is looked at before anything about the request: a second
+        presentation is the sign that a code leaked, and it is taken away
+        even when the one presenting it is not the client it was for."""
+        store = get_auth_code_store()
+        code = self._code(store)
+        store.consume_code(code, "demo-client", self.REDIRECT)
+
+        assert store.consume_code(code, "another-client", self.REDIRECT) is None
+        assert store.get_code_info(code) is None
+
+    @pytest.mark.parametrize(
+        "wrong",
+        [
+            {"client_id": "another-client"},
+            {"redirect_uri": "http://localhost:3000/elsewhere"},
+            {"code_verifier": "not-the-verifier"},
+            {"code_verifier": None},
+        ],
+        ids=["client", "redirect", "pkce", "no-verifier"],
+    )
+    def test_a_mismatch_does_not_burn_the_code(self, wrong):
+        store = get_auth_code_store()
+        code = self._code(store, code_challenge="the-verifier", code_challenge_method="plain")
+        attempt = {"client_id": "demo-client", "redirect_uri": self.REDIRECT, "code_verifier": "the-verifier"}
+
+        assert store.consume_code(code, **{**attempt, **wrong}) is None
+        assert store.get_code_info(code).used is False
+        assert store.consume_code(code, **attempt) is not None
+
+    def test_what_is_read_is_a_copy(self):
+        """get_code_info handed out the stored object itself. It is a read,
+        and reads of a runtime repository are by value."""
+        store = get_auth_code_store()
+        code = self._code(store, resource=["https://api.example/v1"], claims={"id_token": ["email"]})
+
+        looked = store.get_code_info(code)
+        looked.used = True
+        looked.resource.append("https://evil.example")
+        looked.claims["id_token"].append("phone")
+
+        again = store.get_code_info(code)
+        assert again.used is False
+        assert again.resource == ["https://api.example/v1"]
+        assert again.claims == {"id_token": ["email"]}
+
+    def test_how_the_login_authenticated_comes_back_as_it_went_in(self):
+        """A tuple, and datetimes: what JSON has no type for must survive
+        being written down, which the suite's codec check enforces on every
+        code any test creates."""
+        store = get_auth_code_store()
+        code = self._code(store, amr=("pwd", "otp"))
+
+        redeemed = store.consume_code(code, "demo-client", self.REDIRECT)
+
+        assert redeemed.amr == ("pwd", "otp")
+        assert redeemed.expires_at > redeemed.created_at
+        assert redeemed.expires_at.tzinfo is not None
+
+    def test_a_list_of_methods_is_kept_as_the_tuple_it_means(self):
+        """Callers pass either. Kept as one thing, so that what is written
+        down reads back equal to what was stored, whichever it was."""
+        store = get_auth_code_store()
+        code = self._code(store, amr=["pwd"])
+
+        assert store.get_code_info(code).amr == ("pwd",)
+
+    def test_an_expired_code_is_refused_and_removed(self, monkeypatch):
+        from nanoidp.services import auth_code as auth_code_module
+
+        monkeypatch.setattr(auth_code_module, "CODE_LIFETIME_SECONDS", -1)
+        store = get_auth_code_store()
+        code = self._code(store)
+
+        assert store.consume_code(code, "demo-client", self.REDIRECT) is None
+        assert store.get_code_info(code) is None
+
+    def test_creating_a_code_drops_the_ones_past_their_time(self, monkeypatch):
+        from nanoidp.services import auth_code as auth_code_module
+
+        store = get_auth_code_store()
+        monkeypatch.setattr(auth_code_module, "CODE_LIFETIME_SECONDS", -1)
+        stale = self._code(store)
+        monkeypatch.undo()
+
+        fresh = self._code(store)
+
+        assert store.get_code_info(stale) is None
+        assert store.get_code_info(fresh) is not None
+
+    def test_two_views_are_one_store(self):
+        """There is no store object to be the same one: the state is the
+        runtime store's, and every view of it sees the same codes."""
+        code = self._code(get_auth_code_store())
+
+        assert get_auth_code_store().get_code_info(code) is not None
 
 
 @pytest.mark.usefixtures("interleaved")

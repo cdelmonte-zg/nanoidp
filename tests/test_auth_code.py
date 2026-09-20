@@ -4,6 +4,7 @@ Tests PKCE verification, code creation, and code consumption.
 """
 
 import base64
+import dataclasses
 import hashlib
 import secrets
 from datetime import datetime, timedelta, timezone
@@ -12,6 +13,7 @@ from nanoidp.services.auth_code import (
     AuthCodeStore,
     get_auth_code_store,
 )
+from nanoidp.services.runtime_repository import replace
 
 
 class TestPKCEVerification:
@@ -334,9 +336,9 @@ class TestAuthorizationCodeExpiration:
             username="test-user",
         )
 
-        # Manually expire the code
-        auth_code = store._codes[code]
-        auth_code.expires_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+        # Put the code past its time, through the repository it lives in.
+        past = datetime.now(timezone.utc) - timedelta(minutes=1)
+        replace(store._repository, code, lambda stored: dataclasses.replace(stored, expires_at=past))
 
         # Try to consume expired code
         result = store.consume_code(
@@ -355,8 +357,12 @@ class TestGlobalAuthCodeStore:
         store = get_auth_code_store()
         assert isinstance(store, AuthCodeStore)
 
-    def test_get_auth_code_store_singleton(self):
-        """Test that get_auth_code_store returns the same instance."""
-        store1 = get_auth_code_store()
-        store2 = get_auth_code_store()
-        assert store1 is store2
+    def test_get_auth_code_store_is_one_store(self):
+        """The codes are the runtime store's (#363): the object returned is a
+        view with no state of its own, so what matters is not that it is the
+        same object but that every view sees the same codes."""
+        code = get_auth_code_store().create_code(
+            client_id="test-client", redirect_uri="http://localhost/callback", username="test-user"
+        )
+
+        assert get_auth_code_store().get_code_info(code) is not None
