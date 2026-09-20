@@ -27,7 +27,9 @@ from nanoidp.services.runtime_repository import (
     consume,
     create_within,
     delete_if,
+    delete_where,
     replace,
+    transact_refusing,
 )
 from tests.runtime_store_contract import REPOSITORIES, STORE_FACTORIES, user
 
@@ -70,8 +72,7 @@ def decisions_run(request, monkeypatch):
     pass with a decision that is not safe to repeat. So the whole contract
     runs a second time with each decision run twice, the first against a
     view that is then thrown away."""
-    if request.param == "twice":
-        monkeypatch.setattr(MemoryRuntimeRepository, "run_decisions_twice", True)
+    monkeypatch.setattr(MemoryRuntimeRepository, "run_decisions_twice", request.param == "twice")
 
 
 @pytest.fixture(params=STORE_FACTORIES)
@@ -373,6 +374,29 @@ class TestCodecs:
         assert len(copies) >= 2
 
 
+class TestTransactRefusing:
+    def test_a_refusal_is_raised_with_its_changes_in(self, kit):
+        """The difference from raising inside, which takes them back."""
+        repo, make, name_of, _ = kit
+        repo.create(make("stale"))
+
+        def decide(view):
+            view.delete("stale")
+            return LookupError("no room after tidying up")
+
+        with pytest.raises(LookupError, match="no room"):
+            transact_refusing(repo, decide)
+
+        assert repo.list() == []
+
+    def test_anything_else_is_the_result(self, kit):
+        repo, make, _, _field = kit
+
+        created = transact_refusing(repo, lambda view: view.create(make("alice")))
+
+        assert created == repo.entry("alice")
+
+
 class TestHolds:
     def test_a_hold_is_a_claim_with_its_own_identity(self, kit):
         repo, make, _, _field = kit
@@ -589,6 +613,35 @@ class TestDeleteIf:
         assert repo.entry("alice") == created
 
 
+class TestDeleteWhere:
+    def test_the_condemned_go_and_the_rest_stay_in_order(self, kit):
+        repo, make, name_of, _ = kit
+        for name in ("a", "stale-1", "b", "stale-2"):
+            repo.create(make(name))
+
+        assert delete_where(repo, lambda value: name_of(value).startswith("stale")) == 2
+        assert [name_of(obj) for obj in repo.list()] == ["a", "b"]
+        assert delete_where(repo, lambda value: False) == 0
+
+    def test_an_object_condemned_by_several_is_counted_once(self, kit):
+        repo, make, _, _field = kit
+        for index in range(20):
+            repo.create(make(f"stale-{index}"))
+        counts = []
+
+        def condemned(value):
+            _give_way()
+            return True
+
+        def work(index):
+            counts.append(delete_where(repo, condemned))
+
+        _race(work)
+
+        assert sum(counts) == 20
+        assert repo.list() == []
+
+
 class TestCreateWithin:
     def test_the_limit_refuses_the_one_too_many(self, kit):
         repo, make, name_of, _ = kit
@@ -633,6 +686,21 @@ class TestCreateWithin:
             create_within(repo, make("alice"), limit=limit, is_expired=lambda value: name_of(value) == "stale")
 
         assert [name_of(obj) for obj in repo.list()] == ["alice", "other"]
+
+    def test_full_is_said_in_the_callers_own_words(self, kit):
+        repo, make, _, _field = kit
+
+        class TooManyLogins(Exception):
+            """Whatever the caller's exception thinks of its own truth."""
+
+            def __bool__(self):
+                return False
+
+        create_within(repo, make("a"), limit=1)
+        with pytest.raises(TooManyLogins):
+            create_within(repo, make("b"), limit=1, full=TooManyLogins())
+        with pytest.raises(RuntimeObjectExists):
+            create_within(repo, make("a"), limit=1, full=TooManyLogins())
 
     def test_the_limit_holds_under_concurrent_creates(self, kit):
         repo, make, _, _field = kit

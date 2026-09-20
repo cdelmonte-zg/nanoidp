@@ -19,9 +19,12 @@ else, so the guarantee belongs here.
   Neither is a field of the object: identity is execution state.
 - ``transact(decide)`` runs one decision against a view of the repository.
   Everything the decision did becomes visible at once, or, if it raises, not
-  at all. The OAuth semantics stay in the services, which write the
+  at all. A decision has no effect outside its view; it may read the clock,
+  because expiry is judged at the moment the decision is made, not when its
+  caller started waiting. The OAuth semantics stay in the services, which write the
   decision; SQL, when there is some, stays in the backend, which runs it.
-- ``replace``, ``consume``, ``delete_if`` and ``create_within`` are the
+- ``replace``, ``consume``, ``delete_if``, ``delete_where`` and
+  ``create_within`` are the
   decisions most callers need, written once on top of ``transact`` so that
   every backend gets them by implementing it.
 
@@ -34,7 +37,7 @@ How expired objects leave a large or unbounded collection is not settled
 here. ``entries()`` on the view is a scan, right for a collection with a
 small cap and wrong for revocations in a durable store; #363 and #354 decide
 that path, and until then no backend is promised that ``transact`` and the
-four plain operations are all it will ever be asked for.
+plain create, get, list and delete are all it will ever be asked for.
 """
 
 import json
@@ -42,7 +45,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Generic, List, Optional, Protocol, Type, TypeVar
+from typing import Any, Callable, Dict, Generic, List, Optional, Protocol, Type, TypeVar, Union
 
 from pydantic import BaseModel
 
@@ -165,6 +168,11 @@ class RepositoryTransaction(Protocol[T]):
     what the view shows and over inputs captured before the call, and
     nothing else: no I/O, no other repository, no service, no hook, no
     audit. It may be run more than once.
+
+    The clock is the exception, and belongs inside: whether a record is
+    still live is a question about the moment the decision is made, and a
+    caller may have waited for the store since it read the time. Reading it
+    has no effect, and a run that comes later only judges later.
     """
 
     def name_of(self, obj: T) -> str:
@@ -300,23 +308,53 @@ def delete_if(
     return repository.transact(decide)
 
 
+def delete_where(repository: RuntimeRepository[T], condemned: Callable[[T], bool]) -> int:
+    """Remove every object ``condemned`` names, as one step, and say how
+    many. A scan, so for collections with a small cap: how expired objects
+    leave a large one is not settled here (see the module docstring)."""
+
+    def decide(view: RepositoryTransaction[T]) -> int:
+        dropped = 0
+        for current in view.entries():
+            if condemned(current.value) and view.delete(current.name):
+                dropped += 1
+        return dropped
+
+    return repository.transact(decide)
+
+
+def transact_refusing(
+    repository: RuntimeRepository[T],
+    decide: Callable[[RepositoryTransaction[T]], Union[R, Exception]],
+) -> R:
+    """``transact`` for a decision that can refuse and still mean what it
+    did: it returns the exception instead of raising it, and the exception
+    is raised here, once its changes are in. Raising inside would take them
+    back, which is right for a failure and wrong for a refusal that comes
+    after some tidying (expired objects dropped, then no room)."""
+    outcome = repository.transact(decide)
+    if isinstance(outcome, Exception):
+        raise outcome
+    return outcome
+
+
 def create_within(
     repository: RuntimeRepository[T],
     obj: T,
     limit: int,
     is_expired: Optional[Callable[[T], bool]] = None,
+    full: Optional[Exception] = None,
 ) -> Entry[T]:
     """Store ``obj`` unless the repository already holds ``limit`` objects,
     after dropping the ones ``is_expired`` names. Raises RuntimeObjectExists
     for a name still taken after that, whether or not there was room, and
-    RepositoryFull otherwise.
+    otherwise ``full``, the caller's own word for it, or RepositoryFull.
 
     Counts by scanning, so for collections with a small cap. What expired is
-    dropped whatever the answer: a refusal is decided inside and raised
-    outside, because raising inside would take the dropping back with it.
+    dropped whatever the answer (see ``transact_refusing``).
     """
 
-    def decide(view: RepositoryTransaction[T]) -> "Entry[T] | Exception":
+    def decide(view: RepositoryTransaction[T]) -> Union[Entry[T], Exception]:
         live = 0
         for current in view.entries():
             if is_expired is not None and is_expired(current.value):
@@ -327,13 +365,12 @@ def create_within(
         if view.entry(name) is not None:
             return RuntimeObjectExists(f"runtime object {name!r} already exists")
         if live >= limit:
+            if full is not None:
+                return full
             return RepositoryFull(f"the repository already holds {limit} objects")
         return view.create(obj)
 
-    outcome = repository.transact(decide)
-    if isinstance(outcome, Exception):
-        raise outcome
-    return outcome
+    return transact_refusing(repository, decide)
 
 
 # ---- the in-memory backend -----------------------------------------------------

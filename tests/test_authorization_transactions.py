@@ -151,46 +151,47 @@ class TestStore:
         assert get_authorization_transaction_store().get_bound(transaction.id, "browser-a") is None
 
 
-class _PausingRepository:
-    """The real repository, with ``create`` held at a gate once armed: a
-    replacement (delete then create) stops exactly between its two visits."""
-
-    def __init__(self, inner):
-        self._inner = inner
-        self.armed = False
-        self.between = threading.Event()
-        self.release = threading.Event()
-
-    def create(self, obj):
-        if self.armed:
-            self.armed = False
-            self.between.set()
-            assert self.release.wait(5)
-        return self._inner.create(obj)
-
-    def __getattr__(self, name):
-        return getattr(self._inner, name)
-
-
 class TestReadsSeeTransitionsWhole:
-    """Readers take the transitions' lock (#346 review): a replacement is a
-    delete and a create, and a read between them would see a live
-    transaction as gone."""
+    """A read during a transition finds the transaction whole: as it was
+    before or as it is after, never half changed.
+
+    Until #404 a transition was a delete and a create, so a read between
+    the two saw a live transaction as gone, and reads took the transitions'
+    lock to wait it out (#346 review). A transition is now one change in
+    place. This test stops one in the middle of its decision and reads; it
+    does not ask whether the read waited, which is this backend's way and
+    need not be another's. It cannot see an absence, because it stops
+    before anything is written: that a transaction in transition is never
+    read as gone is pinned in tests/test_runtime_services_atomicity.py,
+    where a reader runs against transitions that give way."""
+
+    @staticmethod
+    def _is_whole(transaction):
+        verified = transaction.state is TransactionState.PRIMARY_VERIFIED
+        return (
+            (transaction.primary_username == "admin") is verified
+            and (transaction.primary_verified_at is not None) is verified
+            and (transaction.primary_amr == ["pwd"]) is verified
+        )
 
     @pytest.mark.parametrize("read", ["get_bound", "find_unique_for_binding"])
     @pytest.mark.parametrize("transition", ["mark_primary_verified", "reset_login"])
-    def test_a_read_during_a_replacement_waits_for_it(self, monkeypatch, read, transition):
+    def test_a_read_during_a_transition_finds_the_transaction_whole(
+        self, monkeypatch, read, transition
+    ):
         store = get_authorization_transaction_store()
         transaction = _create(store)
         if transition == "reset_login":
             store.mark_primary_verified(transaction.id, "browser-a", username="admin", amr=["pwd"])
-        pausing = _PausingRepository(store._repository)
-        monkeypatch.setattr(
-            transactions_module.AuthorizationTransactionStore,
-            "_repository",
-            property(lambda self: pausing),
-        )
-        pausing.armed = True
+        in_the_middle, release = threading.Event(), threading.Event()
+        changed = transactions_module._changed
+
+        def paused(current, **changes):
+            in_the_middle.set()
+            assert release.wait(5)
+            return changed(current, **changes)
+
+        monkeypatch.setattr(transactions_module, "_changed", paused)
 
         def run_transition():
             if transition == "mark_primary_verified":
@@ -202,7 +203,7 @@ class TestReadsSeeTransitionsWhole:
 
         writer = threading.Thread(target=run_transition)
         writer.start()
-        assert pausing.between.wait(5)
+        assert in_the_middle.wait(5)
 
         seen = []
 
@@ -215,19 +216,19 @@ class TestReadsSeeTransitionsWhole:
         reader = threading.Thread(target=run_read)
         reader.start()
         reader.join(0.2)
-        blocked = reader.is_alive()
-        pausing.release.set()
+        release.set()
         writer.join(5)
         reader.join(5)
 
-        assert blocked, "the read did not wait for the replacement"
         expected = (
             TransactionState.PRIMARY_VERIFIED
             if transition == "mark_primary_verified"
             else TransactionState.PENDING
         )
-        assert seen[0] is not None
-        assert seen[0].state is expected
+        assert seen[0] is not None, "the read found a live transaction gone"
+        assert self._is_whole(seen[0])
+        after = store.get_bound(transaction.id, "browser-a")
+        assert after.state is expected and self._is_whole(after)
 
 
 class TestNoSecretInARecord:

@@ -45,6 +45,12 @@ jobs:
 
       - name: Run tests with coverage
         if: matrix.python-version == '3.12'
+        env:
+          # The second pass over the suite runs every decision of a runtime
+          # repository twice (tests/conftest.py, #404): the first pass is
+          # what production does, this one is what a backend that retries
+          # would do.
+          NANOIDP_TEST_DECISIONS_TWICE: "1"
         run: |
           # Threshold ratchets upward only (#71); 70 at introduction (73%
           # measured), 75 after #72 covered the wizard (78% measured).
