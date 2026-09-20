@@ -68,6 +68,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`record_registration(entry, ...)`) and dropped with
   `forget_registration_of(entry)`.
 
+- **Authorization codes live in the runtime store** (#363, second of five
+  steps). `AuthCodeStore` kept a dictionary and a lock of its own; it is now
+  a view, with no state, over a repository the runtime store lends, so that
+  with a backend several processes share (#354) the codes are seen by all
+  of them. (`DELETE /api/runtime` removes runtime users and clients and
+  leaves outstanding codes, as it always has.) Redeeming a code is one decision with the
+  outcomes it always had: marked used and kept, so that a second
+  presentation is recognised and takes the code away whoever makes it; a
+  request that does not match (another client, another redirect URI, a
+  wrong or missing verifier) refused with the code left for the client it
+  was issued to. Creating a code drops the ones past their time without
+  reading a value. Two deliberate corrections: `get_code_info()` returns a
+  copy where it returned the stored object itself (tests and debugging are
+  its only callers), and a list given as `amr` is kept as a tuple, so that
+  a code written down by a backend reads back equal; a bare string is left
+  as it is, for the token choke point to drop as before. Also fixed on the
+  way: a PKCE verifier that is not ASCII raised out of the redemption as a
+  `500` and is now the `invalid_grant` any wrong verifier gets, and an
+  unknown challenge method is refused without logging from inside the
+  decision.
+  `get_auth_code_store()` returns a view each time; there is no store
+  object left for it to be a singleton of.
 - **A runtime entry can say when it becomes removable** (#363, first of five
   steps). Bringing authorization codes, device codes, revocations and the
   audit behind the runtime boundary needs a way through a large collection

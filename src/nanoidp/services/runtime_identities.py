@@ -7,8 +7,9 @@ explicitly promoted (#192). The store holds ``users`` and ``clients`` as
 named attributes, and lends the same machinery to a service that owns a
 record type of its own through ``repository()`` (#190's dynamic client
 registrations, #196's CIMD cache): same lock, same by-value contract,
-without this module importing that type. Authorization codes, device codes,
-revocations and the audit keep their own stores.
+without this module importing that type. Authorization codes are kept that
+way too (#363); device codes, revocations and the audit still keep their own
+stores, until the steps of #363 that move them.
 
 The store knows nothing about declared configuration. The precedence rule
 (declared first), the collision rule on creation and the reconciliation on

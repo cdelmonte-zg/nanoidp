@@ -4,15 +4,20 @@ Manages authorization codes for OAuth2 Authorization Code Flow.
 """
 
 import base64
+import copy
+import dataclasses
 import hashlib
 import logging
 import secrets
-import threading
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Optional, Sequence
+from enum import Enum
+from typing import Any, Dict, Optional, Sequence, Union
 
 from ..config import get_config_if_loaded
+from .runtime_identities import MemoryRuntimeRepository, get_runtime_identity_store
+from .runtime_repository import RepositoryTransaction
 
 logger = logging.getLogger(__name__)
 
@@ -55,20 +60,97 @@ class AuthorizationCode:
     )
     used: bool = False
 
+    def __post_init__(self) -> None:
+        # The shape of a code, in one place, for a code made anywhere
+        # (create_code, a replace, a codec reading one back): the methods
+        # are a tuple and the resources a list, so that what a backend
+        # writes down reads back equal to what was stored (#404). Only a
+        # list becomes a tuple: a bare string is not a list of methods, and
+        # tuple("pwd") would make it look like one to the choke point that
+        # mints the token, which drops anything else, and says so.
+        if isinstance(self.amr, list):
+            self.amr = tuple(self.amr)
+        if isinstance(self.resource, tuple):
+            self.resource = list(self.resource)
+
+    def removable_at(self) -> float:
+        """When the store may drop this code: its own expiry, which is the
+        one time there is. The store's copy is derived from it here and
+        nowhere else, as a hint for the cleanup; whether a code is still
+        good is judged from the code."""
+        return self.expires_at.timestamp()
+
+
+class AuthorizationCodeCodec:
+    """How a code is copied, written down and read back (#404).
+
+    A dataclass with two things JSON has no type for: datetimes, written as
+    ISO 8601, and ``amr``, a tuple, written as a list and read back as the
+    tuple it was (the code's own ``__post_init__`` sees to that)."""
+
+    def copy(self, value: AuthorizationCode) -> AuthorizationCode:
+        return dataclasses.replace(
+            value,
+            resource=list(value.resource) if value.resource is not None else None,
+            claims=copy.deepcopy(value.claims),
+        )
+
+    def dump(self, value: AuthorizationCode) -> Any:
+        written = dataclasses.asdict(value)
+        written["created_at"] = value.created_at.isoformat()
+        written["expires_at"] = value.expires_at.isoformat()
+        written["amr"] = list(value.amr) if isinstance(value.amr, tuple) else value.amr
+        return written
+
+    def load(self, data: Any) -> AuthorizationCode:
+        read = dict(data)
+        read["created_at"] = datetime.fromisoformat(read["created_at"])
+        read["expires_at"] = datetime.fromisoformat(read["expires_at"])
+        return AuthorizationCode(**read)
+
+
+def _code_of(auth_code: AuthorizationCode) -> str:
+    return auth_code.code
+
+
+# Given to the store once: the repository is created on the first request
+# and keeps the key function and the codec it was created with.
+_CODEC = AuthorizationCodeCodec()
+
+
+class _Refused(Enum):
+    """Why a redemption did not go through: decided inside the decision,
+    logged after it, since a decision may be run again and has no effect
+    outside its view (#404)."""
+
+    NOT_FOUND = "Authorization code not found"
+    EXPIRED = "Authorization code expired"
+    ALREADY_USED = "Authorization code already used"
+    WRONG_CLIENT = "Client ID mismatch for code"
+    WRONG_REDIRECT = "Redirect URI mismatch for code"
+    NO_VERIFIER = "PKCE code_verifier required but not provided for code"
+    BAD_VERIFIER = "PKCE verification failed for code"
+    UNKNOWN_METHOD = "Unknown PKCE method for code"
+
 
 class AuthCodeStore:
-    """
-    In-memory storage for authorization codes.
-    Codes expire after 10 minutes (per RFC 6749).
+    """Authorization codes, kept in the runtime store (#363).
+
+    A view, with no state of its own: the codes live in a repository the
+    runtime store lends, so they are reset with it and, with a backend that
+    several processes share (#354), seen by all of them. (``DELETE
+    /api/runtime`` removes runtime users and clients and leaves them, as it
+    always has.) Each operation that
+    is more than one look is one decision of the repository's. Codes expire
+    after 10 minutes (per RFC 6749); the store is told when, so that
+    creating one drops the ones past their time without reading a value.
     """
 
-    def __init__(self) -> None:
-        self._codes: Dict[str, AuthorizationCode] = {}
-        # Flask serves requests on multiple threads; every access to the shared
-        # dict goes through this lock so consume_code stays atomic and one-time
-        # use can't be defeated by two concurrent redemptions (issue #43).
-        # RLock because create_code calls _cleanup_expired while holding it.
-        self._lock = threading.RLock()
+    @property
+    def _repository(self) -> MemoryRuntimeRepository[AuthorizationCode]:
+        # Looked up on every use: the runtime store owns the state, whatever
+        # replaces it (a reset, #354's durable backend).
+        return get_runtime_identity_store().repository("authorization_codes", _code_of, _CODEC)
 
     def create_code(
         self,
@@ -120,15 +202,14 @@ class AuthCodeStore:
             amr=amr,
         )
 
-        with self._lock:
-            # Clean up expired codes
-            self._cleanup_expired()
-            self._codes[code] = auth_code
+        def decide(view: RepositoryTransaction[AuthorizationCode]) -> None:
+            # No cap, as ever: a code is only created for a login that went
+            # through. What is past its time goes first.
+            view.delete_expired(time.time())
+            view.create(auth_code, expires_at=auth_code.removable_at())
 
-        # Verbose logging controlled by settings. No cycle here (#285: the
-        # old deferred import claimed one; config never imports services) -
-        # but never CONSTRUCT the configuration from a log path, same rule
-        # as audit.py: default to verbose when it is not loaded yet.
+        self._repository.transact(decide)
+
         loaded = get_config_if_loaded()
         verbose = loaded.settings.verbose_logging if loaded is not None else True
 
@@ -149,6 +230,13 @@ class AuthCodeStore:
         """
         Consume (validate and mark as used) an authorization code.
 
+        One decision (#43, #363): two concurrent redemptions cannot both
+        pass. A code is marked used and kept, so that a second redemption
+        is recognised as one and takes the code away; a request that does
+        not match the code (another client, another redirect URI, a wrong
+        or missing verifier) is refused and leaves it as it was, for the
+        client it was issued to.
+
         Args:
             code: The authorization code to consume
             client_id: The client ID (must match the code's client_id)
@@ -158,54 +246,40 @@ class AuthCodeStore:
         Returns:
             The AuthorizationCode if valid, None otherwise
         """
-        # The whole check-then-mark sequence runs under the lock so two
-        # concurrent redemptions of the same code can't both pass the
-        # one-time-use check (issue #43).
-        with self._lock:
-            auth_code = self._codes.get(code)
 
-            if not auth_code:
-                logger.warning(f"Authorization code not found: {code[:8]}...")
-                return None
-
-            # Check if code is expired
+        def decide(
+            view: RepositoryTransaction[AuthorizationCode],
+        ) -> Union[AuthorizationCode, _Refused]:
+            entry = view.entry(code)
+            if entry is None:
+                return _Refused.NOT_FOUND
+            auth_code = entry.value
             if datetime.now(timezone.utc) > auth_code.expires_at:
-                logger.warning(f"Authorization code expired: {code[:8]}...")
-                del self._codes[code]
-                return None
-
-            # Check if code was already used (one-time use per RFC 6749)
+                view.delete(code)
+                return _Refused.EXPIRED
             if auth_code.used:
-                logger.warning(f"Authorization code already used: {code[:8]}...")
-                # Revoke all tokens issued with this code (security measure)
-                del self._codes[code]
-                return None
-
-            # Validate client_id
+                view.delete(code)
+                return _Refused.ALREADY_USED
             if auth_code.client_id != client_id:
-                logger.warning(f"Client ID mismatch for code {code[:8]}...")
-                return None
-
-            # Validate redirect_uri
+                return _Refused.WRONG_CLIENT
             if auth_code.redirect_uri != redirect_uri:
-                logger.warning(f"Redirect URI mismatch for code {code[:8]}...")
-                return None
-
-            # Validate PKCE if code_challenge was provided during authorization
+                return _Refused.WRONG_REDIRECT
             if auth_code.code_challenge:
                 if not code_verifier:
-                    logger.warning(f"PKCE code_verifier required but not provided for code {code[:8]}...")
-                    return None
+                    return _Refused.NO_VERIFIER
+                refusal = _pkce_refusal(
+                    code_verifier, auth_code.code_challenge, auth_code.code_challenge_method
+                )
+                if refusal is not None:
+                    return refusal
+            return view.replace(code, dataclasses.replace(auth_code, used=True)).value
 
-                if not self._verify_pkce(code_verifier, auth_code.code_challenge, auth_code.code_challenge_method):
-                    logger.warning(f"PKCE verification failed for code {code[:8]}...")
-                    return None
-
-            # Mark as used
-            auth_code.used = True
-
-        logger.debug(f"Authorization code consumed for user '{auth_code.username}'")
-        return auth_code
+        outcome = self._repository.transact(decide)
+        if isinstance(outcome, _Refused):
+            logger.warning(f"{outcome.value}: {code[:8]}...")
+            return None
+        logger.debug(f"Authorization code consumed for user '{outcome.username}'")
+        return outcome
 
     def _verify_pkce(self, code_verifier: str, code_challenge: str, method: Optional[str]) -> bool:
         """
@@ -219,43 +293,37 @@ class AuthCodeStore:
         Returns:
             True if verification succeeds, False otherwise
         """
-        if method == "plain" or method is None:
-            return code_verifier == code_challenge
-        elif method == "S256":
-            # S256: BASE64URL(SHA256(code_verifier)) == code_challenge
-            digest = hashlib.sha256(code_verifier.encode("ascii")).digest()
-            computed_challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
-            return computed_challenge == code_challenge
-        else:
+        refusal = _pkce_refusal(code_verifier, code_challenge, method)
+        if refusal is _Refused.UNKNOWN_METHOD:
             logger.warning(f"Unknown PKCE method: {method}")
-            return False
-
-    def _cleanup_expired(self) -> None:
-        """Remove expired authorization codes. Callers must hold ``self._lock``."""
-        with self._lock:
-            now = datetime.now(timezone.utc)
-            expired = [code for code, auth in self._codes.items() if now > auth.expires_at]
-            for code in expired:
-                del self._codes[code]
-        if expired:
-            logger.debug(f"Cleaned up {len(expired)} expired authorization codes")
+        return refusal is None
 
     def get_code_info(self, code: str) -> Optional[AuthorizationCode]:
-        """Get info about a code without consuming it (for debugging)."""
-        with self._lock:
-            return self._codes.get(code)
+        """A copy of the code, without consuming it (for tests and
+        debugging). It used to be the stored object itself; a read of a
+        runtime repository is by value."""
+        return self._repository.get(code)
 
 
-# Global instance
-_auth_code_store: Optional[AuthCodeStore] = None
-_auth_code_store_lock = threading.Lock()
+def _pkce_refusal(code_verifier: str, code_challenge: str, method: Optional[str]) -> Optional[_Refused]:
+    """Why this verifier does not answer this challenge, or None if it does.
+    Pure, for use inside a decision: it neither logs nor raises. A verifier
+    that is not ASCII cannot be the one a challenge was made from (RFC 7636
+    section 4.1 allows unreserved characters only), so it is a wrong
+    verifier and not an error."""
+    if method == "plain" or method is None:
+        return None if code_verifier == code_challenge else _Refused.BAD_VERIFIER
+    if method != "S256":
+        return _Refused.UNKNOWN_METHOD
+    try:
+        digest = hashlib.sha256(code_verifier.encode("ascii")).digest()
+    except UnicodeEncodeError:
+        return _Refused.BAD_VERIFIER
+    computed_challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+    return None if computed_challenge == code_challenge else _Refused.BAD_VERIFIER
 
 
 def get_auth_code_store() -> AuthCodeStore:
-    """Get or create the global authorization code store (thread-safe, #43)."""
-    global _auth_code_store
-    if _auth_code_store is None:
-        with _auth_code_store_lock:
-            if _auth_code_store is None:
-                _auth_code_store = AuthCodeStore()
-    return _auth_code_store
+    """The authorization codes of this process: a view over the runtime
+    store, which is where the state and its one lock are (#363)."""
+    return AuthCodeStore()
