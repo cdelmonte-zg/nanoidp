@@ -806,8 +806,15 @@ def _fresh(service: CryptoService) -> CryptoService:
     try:
         _refresh_started = time.monotonic()
         current = _crypto_service or service
+        if current is not service:
+            # Another service was published since the marker was read: a
+            # request that refreshed first, or a reload of the configuration
+            # (external keys, another keys directory). What was read is
+            # about ``service``'s directory and says nothing about this one,
+            # which the next look checks on its own terms.
+            return current
         if current.kid == published:
-            return current  # another request refreshed first, or this process rotated
+            return current  # this process rotated meanwhile
         failed = _refresh_failed
         if failed is not None and failed[0] == published and time.monotonic() - failed[1] < _REFRESH_RETRY_SECONDS:
             return current

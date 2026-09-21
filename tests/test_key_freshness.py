@@ -433,6 +433,69 @@ class TestAPeerNoticesARotation:
         assert service.kid == own[0] == (keys_dir / "kid.txt").read_text()
         assert crypto_module._crypto_service is service
 
+    @pytest.mark.parametrize("replacement", ["external keys", "generated keys elsewhere"])
+    def test_a_configuration_published_before_the_refresh_begins_is_left_as_it_is(
+        self, published, monkeypatch, tmp_path, replacement
+    ):
+        """The marker was read for the service in hand; before the refresh's
+        lock is had, a reload of the configuration publishes another service.
+        What was read is about the first one's directory and says nothing
+        about the second: the second is returned as it is, and nothing is
+        loaded for it (for external keys, loading the generated bundle that
+        happens to be in the directory would make a service of both)."""
+        keys_dir, service = published
+        CryptoService(keys_dir=str(keys_dir)).rotate_keys()
+        if replacement == "external keys":
+            CryptoService(keys_dir=str(tmp_path / "source"))
+            other = CryptoService(
+                keys_dir=str(keys_dir),
+                external_private_key=str(tmp_path / "source" / "rsa_private.pem"),
+                external_public_key=str(tmp_path / "source" / "rsa_public.pem"),
+            )
+        else:
+            other = CryptoService(keys_dir=str(tmp_path / "elsewhere"))
+        snapshot = other.keys
+        lock = crypto_module._refresh_lock
+
+        class PublishedMeanwhile:
+            def acquire(self, *args, **kwargs):
+                publish_crypto_service(other)
+                return lock.acquire(*args, **kwargs)
+
+            def release(self):
+                lock.release()
+
+        monkeypatch.setattr(crypto_module, "_refresh_lock", PublishedMeanwhile())
+        monkeypatch.setattr(CryptoService, "reloaded", lambda self: pytest.fail(f"loaded for {self.keys_dir}"))
+
+        assert crypto_module._fresh(service) is other
+        assert crypto_module._crypto_service is other
+        assert other.keys is snapshot
+
+    def test_a_service_that_caught_up_before_the_refresh_began_loads_nothing(self, published, monkeypatch):
+        """The marker named another key when it was read, and by the time the
+        refresh's lock is had the service in hand has those keys (this
+        process's own rotation adopts them before it lets the directory go).
+        Nothing to load, and nothing is."""
+        keys_dir, service = published
+        CryptoService(keys_dir=str(keys_dir)).rotate_keys()
+        lock = crypto_module._refresh_lock
+
+        class CaughtUpMeanwhile:
+            def acquire(self, *args, **kwargs):
+                with key_directory.locked(keys_dir):
+                    service._adopt(key_directory.load(keys_dir))
+                return lock.acquire(*args, **kwargs)
+
+            def release(self):
+                lock.release()
+
+        monkeypatch.setattr(crypto_module, "_refresh_lock", CaughtUpMeanwhile())
+        monkeypatch.setattr(CryptoService, "reloaded", lambda self: pytest.fail("loaded what it already has"))
+
+        assert crypto_module._fresh(service) is service
+        assert service.kid == (keys_dir / "kid.txt").read_text()
+
     def test_a_refresh_that_finds_the_service_caught_up_publishes_nothing(self, published):
         keys_dir, service = published
         service.rotate_keys()
