@@ -1,5 +1,8 @@
-"""The runtime store in a SQLite file, for several NanoIDP processes on one
-host (#354, second step).
+"""The runtime store in a pair of SQLite files, for several NanoIDP
+processes on one host (#354, second and third steps): the repositories in
+one, the audit in the other (``runtime.db`` and ``runtime-audit.db``). A file
+has one writer, and the audit must not wait for the repositories, so the two
+are two concurrency domains and nothing is transactional across them.
 
 Not selectable from ``settings.yaml`` yet: the schema names it only once a
 store shared by several processes keeps every invariant it has to (#354,
@@ -70,7 +73,15 @@ from typing import (
 )
 
 from ..config import OAuthClient, User
-from .audit_store import AuditEntry, AuditStore
+from .audit_store import (
+    MAX_AUDIT_ENTRIES,
+    AuditEntry,
+    AuditEntryCodec,
+    AuditStore,
+    checked_increments,
+    checked_limit,
+    outside_the_domain,
+)
 from .runtime_repository import (
     Codec,
     Entry,
@@ -93,7 +104,14 @@ from .runtime_repository import (
     verified,
 )
 
-__all__ = ["RuntimeStoreFileRefused", "SqliteRuntimeRepository", "SqliteRuntimeStore"]
+__all__ = [
+    "RuntimeStoreFileRefused",
+    "RuntimeStoreUnsupported",
+    "SqliteAuditStore",
+    "SqliteRuntimeRepository",
+    "SqliteRuntimeStore",
+    "audit_path_of",
+]
 
 # The schema a file must carry to be adopted, and the one written to a new
 # one. A file of another version is refused: it is disposable, and nothing
@@ -128,6 +146,57 @@ _SCHEMA = (
         WHERE expires_at IS NOT NULL AND hold IS NULL""",
     "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
 )
+
+
+class _Kind:
+    """What a file of the pair is: the marker it carries in ``meta``, its
+    schema, and what it is called in a refusal."""
+
+    def __init__(self, marker: str, schema: Tuple[str, ...], noun: str) -> None:
+        self.marker = marker
+        self.schema = schema
+        self.noun = noun
+
+
+_STORE = _Kind(_MARKER, _SCHEMA, "runtime store")
+_AUDIT = _Kind(
+    "nanoidp-runtime-audit",
+    (
+        # value is the codec's JSON and the one authority; the three columns
+        # are projections for the filters, and nothing reads them back.
+        """CREATE TABLE events (
+            seq        INTEGER PRIMARY KEY,
+            event_type TEXT NOT NULL,
+            username   TEXT,
+            client_id  TEXT,
+            value      TEXT NOT NULL
+        )""",
+        "CREATE TABLE counters (name TEXT PRIMARY KEY, value INTEGER NOT NULL)",
+        "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+    ),
+    "runtime audit",
+)
+
+# The upsert of a counter.
+_OLDEST_SQLITE = (3, 24, 0)
+
+
+class RuntimeStoreUnsupported(RuntimeError):
+    """The SQLite this Python has is older than the store needs. A property
+    of the environment, not of a file: nothing is made or changed."""
+
+
+def _require_upsert() -> None:
+    if sqlite3.sqlite_version_info < _OLDEST_SQLITE:
+        raise RuntimeStoreUnsupported(
+            f"the SQLite runtime store requires SQLite >= 3.24; running {sqlite3.sqlite_version}"
+        )
+
+
+def audit_path_of(path: Path) -> Path:
+    """The audit's file, named after the store's: ``runtime.db`` has its
+    audit in ``runtime-audit.db``. The two are the store."""
+    return path.with_name(f"{path.stem}-audit{path.suffix}")
 
 
 class RuntimeStoreFileRefused(ValueError):
@@ -219,10 +288,11 @@ if hasattr(os, "register_at_fork"):
 class _Database:
     """The file, its schema, and the connections to it."""
 
-    def __init__(self, path: Union[str, Path]) -> None:
+    def __init__(self, path: Union[str, Path], kind: _Kind) -> None:
         self.path = Path(path).expanduser().resolve()
+        self._kind = kind
         if self.path.is_dir():
-            raise RuntimeStoreFileRefused(f"{self.path} is a directory, not a runtime store file")
+            raise RuntimeStoreFileRefused(f"{self.path} is a directory, not a {kind.noun} file")
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._local = threading.local()
         # Every connection open, by the thread it belongs to, for the fork
@@ -275,14 +345,14 @@ class _Database:
                 if not tables:
                     if not created and self.path.stat().st_size > 0:
                         raise RuntimeStoreFileRefused(
-                            f"{self.path} is a SQLite database that is not a NanoIDP runtime store; "
-                            "the runtime store is disposable: choose another file"
+                            f"{self.path} is a SQLite database that is not a NanoIDP {self._kind.noun}; "
+                            f"the {self._kind.noun} is disposable: choose another file"
                         )
-                    for statement in _SCHEMA:
+                    for statement in self._kind.schema:
                         connection.execute(statement)
                     connection.executemany(
                         "INSERT INTO meta (key, value) VALUES (?, ?)",
-                        [("kind", _MARKER), ("schema_version", str(SCHEMA_VERSION))],
+                        [("kind", self._kind.marker), ("schema_version", str(SCHEMA_VERSION))],
                     )
                 else:
                     self._check(connection, tables)
@@ -304,26 +374,26 @@ class _Database:
     def _check(self, connection: sqlite3.Connection, tables: set) -> None:
         if "meta" not in tables:
             raise RuntimeStoreFileRefused(
-                f"{self.path} is a SQLite database that is not a NanoIDP runtime store; "
-                "the runtime store is disposable: choose another file"
+                f"{self.path} is a SQLite database that is not a NanoIDP {self._kind.noun}; "
+                f"the {self._kind.noun} is disposable: choose another file"
             )
         meta = dict(connection.execute("SELECT key, value FROM meta").fetchall())
-        if meta.get("kind") != _MARKER:
+        if meta.get("kind") != self._kind.marker:
             raise RuntimeStoreFileRefused(
-                f"{self.path} is a SQLite database that is not a NanoIDP runtime store; "
-                "the runtime store is disposable: choose another file"
+                f"{self.path} is a SQLite database that is not a NanoIDP {self._kind.noun}; "
+                f"the {self._kind.noun} is disposable: choose another file"
             )
         if meta.get("schema_version") != str(SCHEMA_VERSION):
             raise RuntimeStoreFileRefused(
-                f"{self.path} is a NanoIDP runtime store of schema version {meta.get('schema_version')}, "
-                f"and this NanoIDP uses version {SCHEMA_VERSION}; the runtime store is disposable: "
+                f"{self.path} is a NanoIDP {self._kind.noun} of schema version {meta.get('schema_version')}, "
+                f"and this NanoIDP uses version {SCHEMA_VERSION}; the {self._kind.noun} is disposable: "
                 "delete the file (and its -wal and -shm) or choose another"
             )
 
     def _refused(self, failure: sqlite3.DatabaseError) -> BaseException:
         if isinstance(failure, sqlite3.OperationalError) and _is_busy(failure):
             return _unavailable(failure)
-        return RuntimeStoreFileRefused(f"{self.path} cannot be used as a runtime store: {failure}")
+        return RuntimeStoreFileRefused(f"{self.path} cannot be used as a {self._kind.noun}: {failure}")
 
     def _open(self) -> sqlite3.Connection:
         # Not shared between threads: another thread may only close it, in
@@ -637,18 +707,63 @@ class SqliteRuntimeRepository(RepositorySwitches, Generic[T]):
             view.close()
 
 
-class _ForkAwareAuditStore:
-    """The audit handed to the store, each of its operations an activity of
-    the fork gate: a fork must not find its lock held by a thread the child
-    will not have. The audit itself is left as it is: the fork is this
-    store's concern."""
+class SqliteAuditStore:
+    """The audit in a SQLite file of its own (#354, third step): a file has
+    one writer, and the audit must not wait for the repositories, so it
+    cannot share the store's.
 
-    def __init__(self, delegate: AuditStore) -> None:
-        self._delegate = delegate
+    An append is one transaction: the event, the delete of what is past the
+    bound, and one upsert per counter named. What can be refused is refused
+    before it: the increments, and the event, which is dumped to JSON first;
+    so the file's lock is never held by an event that will not be written.
+    The bound is the audit's, for every process that appends to it. Reads
+    are single statements. Every operation is an activity of the fork gate,
+    and the connections are in the registry the gate closes."""
+
+    def __init__(self, path: Union[str, Path], max_entries: Optional[int] = None) -> None:
+        _require_upsert()
+        self._database = _Database(path, _AUDIT)
+        self._bound = MAX_AUDIT_ENTRIES if max_entries is None else max_entries
+        self._codec = AuditEntryCodec()
+
+    @property
+    def path(self) -> Path:
+        return self._database.path
+
+    def _written(self, entry: AuditEntry) -> str:
+        """The event as the JSON the file keeps. Outside the contract's
+        domain, refused: this backend writes the event down."""
+        if not isinstance(entry, AuditEntry):
+            raise TypeError(f"an audit event is an AuditEntry, not {type(entry).__name__}")
+        outside = outside_the_domain(entry.details)
+        if outside is not None:
+            raise ValueError(
+                f"the audit event does not survive its codec: the details of an event are a JSON object, and {outside}"
+            )
+        text = json.dumps(self._codec.dump(entry), allow_nan=False)
+        if RepositorySwitches.verify_codecs and self._codec.load(json.loads(text)) != entry:
+            raise ValueError("the audit event does not survive its codec: it comes back changed")
+        return text
 
     def append(self, entry: AuditEntry, increments: Sequence[str]) -> None:
-        with _FORK_GATE.activity():
-            self._delegate.append(entry, increments)
+        refuse_inside_a_decision()
+        names = checked_increments(increments)
+        text = self._written(entry)
+        row = (entry.event_type, entry.username, entry.client_id, text)
+
+        def appending(connection: sqlite3.Connection) -> None:
+            seq = connection.execute(
+                "INSERT INTO events (event_type, username, client_id, value) VALUES (?, ?, ?, ?)", row
+            ).lastrowid
+            connection.execute("DELETE FROM events WHERE seq <= ?", (cast(int, seq) - self._bound,))
+            for name in names:
+                connection.execute(
+                    "INSERT INTO counters (name, value) VALUES (?, 1) "
+                    "ON CONFLICT (name) DO UPDATE SET value = value + 1",
+                    (name,),
+                )
+
+        self._write(appending)
 
     def entries(
         self,
@@ -657,30 +772,71 @@ class _ForkAwareAuditStore:
         username: Optional[str] = None,
         client_id: Optional[str] = None,
     ) -> List[AuditEntry]:
-        with _FORK_GATE.activity():
-            return self._delegate.entries(limit, event_type=event_type, username=username, client_id=client_id)
+        refuse_inside_a_decision()
+        checked_limit(limit)
+        conditions, arguments = [], []
+        for column, wanted in (("event_type", event_type), ("username", username), ("client_id", client_id)):
+            if wanted is not None:
+                conditions.append(f"{column} = ?")
+                arguments.append(wanted)
+        where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+        rows = self._read(f"SELECT value FROM events{where} ORDER BY seq DESC LIMIT ?", (*arguments, limit))
+        return [self._codec.load(json.loads(value)) for (value,) in rows]
 
     def client_ids(self) -> List[str]:
-        with _FORK_GATE.activity():
-            return self._delegate.client_ids()
+        refuse_inside_a_decision()
+        rows = self._read(
+            "SELECT DISTINCT client_id FROM events WHERE client_id IS NOT NULL AND client_id != '' ORDER BY client_id"
+        )
+        return [client_id for (client_id,) in rows]
 
     def counters(self) -> Dict[str, int]:
-        with _FORK_GATE.activity():
-            return self._delegate.counters()
+        refuse_inside_a_decision()
+        return dict(self._read("SELECT name, value FROM counters"))
 
     def clear(self) -> None:
+        refuse_inside_a_decision()
+
+        def clearing(connection: sqlite3.Connection) -> None:
+            connection.execute("DELETE FROM events")
+            connection.execute("DELETE FROM counters")
+
+        self._write(clearing)
+
+    def _read(self, sql: str, arguments: Tuple[Any, ...] = ()) -> List[Tuple[Any, ...]]:
         with _FORK_GATE.activity():
-            self._delegate.clear()
+            try:
+                return self._database.connection().execute(sql, arguments).fetchall()
+            except sqlite3.Error as failure:
+                raise _unavailable(failure) from failure
+
+    def _write(self, apply: Callable[[sqlite3.Connection], None]) -> None:
+        with _FORK_GATE.activity():
+            connection = self._database.connection()
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+            except sqlite3.Error as failure:
+                raise _unavailable(failure) from failure
+            try:
+                apply(connection)
+                connection.execute("COMMIT")
+            except BaseException as failure:
+                if connection.in_transaction:
+                    connection.execute("ROLLBACK")
+                if isinstance(failure, sqlite3.Error):
+                    raise _unavailable(failure) from failure
+                raise
 
 
 class SqliteRuntimeStore:
-    """The runtime store in one SQLite file. The audit is handed in: its own
-    SQLite store is the next step (#354), and until then the audit of each
-    process is its own."""
+    """The runtime store in a pair of SQLite files: the repositories in
+    ``path``, the audit in the file named after it (``audit_path_of``)."""
 
-    def __init__(self, path: Union[str, Path], audit: AuditStore) -> None:
-        self._database = _Database(path)
-        self._audit: AuditStore = _ForkAwareAuditStore(audit)
+    def __init__(self, path: Union[str, Path]) -> None:
+        # Before either file is made: the audit's upsert needs it.
+        _require_upsert()
+        self._database = _Database(path, _STORE)
+        self._audit: AuditStore = SqliteAuditStore(audit_path_of(self._database.path))
         self._users: SqliteRuntimeRepository[User] = SqliteRuntimeRepository(
             self._database, "users", lambda user: user.username, PydanticCodec(User)
         )

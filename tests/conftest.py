@@ -95,12 +95,8 @@ def every_stored_value_survives_its_codec(monkeypatch):
     """
     from nanoidp.services.runtime_repository import RepositorySwitches
 
+    # One switch for every store, the audit's included (#354, third step).
     monkeypatch.setattr(RepositorySwitches, "verify_codecs", True)
-    # The audit is a backend of its own and takes part by name: the
-    # repository's flag does not reach it.
-    from nanoidp.services.audit_store import MemoryAuditStore
-
-    monkeypatch.setattr(MemoryAuditStore, "verify_codecs", True)
     # With NANOIDP_TEST_DECISIONS_TWICE set, every decision is run twice,
     # the first time against a view that is thrown away: a backend with
     # real transactions may retry one, and this one never would. What that

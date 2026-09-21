@@ -22,9 +22,16 @@ What the contract says, for every backend:
   counter goes with it.
 - **The backend knows no counter by name.** Which ones an event increments is
   the service's rule; the store keeps the ones that were ever incremented.
-- **By value**: what is appended is copied in, what is read is copied out,
-  whatever the details hold. Whether they hold only what can be written down
-  is a separate question, and the codec's (``verify_codecs``).
+- **The details of an event are a JSON object**: text keys, and values that
+  are text, numbers (finite), booleans, null, lists and objects of the same.
+  That is the domain of the contract, and every call site stays inside it
+  (the suite's ``verify_codecs`` holds them to it). What is outside it is not
+  a capability of an ``AuditStore``: a backend that writes the event down
+  refuses it before any event or counter changes (#354, third step). That the
+  in-memory backend copies a set or a tuple all the same is its own extra
+  behaviour, which no caller may ask of another backend.
+- **By value**, for every event in the domain: what is appended is copied in,
+  what is read is copied out.
 - **Not from inside a repository decision**, reads included (#404): a decision
   depends on its view and on what it captured, may be run again, and has no
   effect outside the view.
@@ -38,13 +45,14 @@ for a repository's sweep, #417).
 
 import copy
 import json
+import math
 import threading
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Deque, Dict, List, Optional, Protocol, Sequence
 
-from .runtime_repository import refuse_inside_a_decision
+from .runtime_repository import RepositorySwitches, refuse_inside_a_decision
 
 # How many events the in-memory backend keeps. Read when a store is made.
 MAX_AUDIT_ENTRIES = 1000
@@ -99,6 +107,52 @@ def _plain_copy(value: Any) -> Any:
     if kind is list:
         return [_plain_copy(item) for item in value]
     return copy.deepcopy(value)
+
+
+def outside_the_domain(details: Any) -> Optional[str]:
+    """What in ``details`` is outside the contract's domain (a JSON object),
+    or None when nothing is. What JSON would change is outside it too, not
+    only what it cannot write: a tuple read back as a list, a key that is a
+    number read back as text, is no longer by value."""
+    if not isinstance(details, dict):
+        return f"the details are a {type(details).__name__}, not a JSON object"
+    return _outside(details, "details")
+
+
+def _outside(value: Any, where: str) -> Optional[str]:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if not isinstance(key, str):
+                return f"{where} has a key that is a {type(key).__name__}, not text"
+            found = _outside(item, f"{where}[{key!r}]")
+            if found is not None:
+                return found
+        return None
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            found = _outside(item, f"{where}[{index}]")
+            if found is not None:
+                return found
+        return None
+    if isinstance(value, float):
+        return None if math.isfinite(value) else f"{where} is {value!r}, which JSON has no number for"
+    if value is None or isinstance(value, (str, int)):
+        return None
+    return f"{where} is a {type(value).__name__}"
+
+
+def checked_increments(increments: Sequence[str]) -> List[str]:
+    """The names of the counters an append adds one to, each as often as it
+    is named."""
+    if isinstance(increments, str) or not all(isinstance(name, str) for name in increments):
+        raise TypeError("the counters to increment are a sequence of names")
+    return list(increments)
+
+
+def checked_limit(limit: int) -> int:
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit < 0:
+        raise ValueError(f"a limit is a whole number, not below zero, not {limit!r}")
+    return limit
 
 
 class AuditEntryCodec:
@@ -159,12 +213,11 @@ class AuditStore(Protocol):
 class MemoryAuditStore:
     """The audit in process memory, behind a lock of its own."""
 
-    # For tests, in the spirit of the repository's flag of the same name:
-    # this backend copies and never writes an event down, so details that
-    # are not JSON would go unnoticed until a backend that serializes. Set,
-    # every event appended is first taken through dump, JSON and load, and
-    # must come back equal.
-    verify_codecs = False
+    # This backend copies and never writes an event down, so details outside
+    # the domain would go unnoticed here. With the switch every store shares
+    # (``RepositorySwitches.verify_codecs``, on in the suite), every event
+    # appended is first taken through dump, JSON and load, and must come back
+    # equal.
 
     def __init__(self, max_entries: Optional[int] = None) -> None:
         self._lock = threading.Lock()
@@ -179,7 +232,7 @@ class MemoryAuditStore:
         """The copy of ``entry`` the store keeps."""
         if not isinstance(entry, AuditEntry):
             raise TypeError(f"an audit event is an AuditEntry, not {type(entry).__name__}")
-        if self.verify_codecs:
+        if RepositorySwitches.verify_codecs:
             try:
                 written = json.dumps(self._codec.dump(entry), allow_nan=False)
                 read_back = self._codec.load(json.loads(written))
@@ -191,9 +244,7 @@ class MemoryAuditStore:
 
     def append(self, entry: AuditEntry, increments: Sequence[str]) -> None:
         refuse_inside_a_decision()
-        if isinstance(increments, str) or not all(isinstance(name, str) for name in increments):
-            raise TypeError("the counters to increment are a sequence of names")
-        names = list(increments)
+        names = checked_increments(increments)
         stored = self._stored(entry)
         with self._lock:
             self._events.append(stored)
@@ -208,8 +259,7 @@ class MemoryAuditStore:
         client_id: Optional[str] = None,
     ) -> List[AuditEntry]:
         refuse_inside_a_decision()
-        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 0:
-            raise ValueError(f"a limit is a whole number, not below zero, not {limit!r}")
+        checked_limit(limit)
         # The lock is held for the snapshot and nothing else: every request
         # appends, and must not wait for a reader's filters. An event that
         # is kept is never changed, only dropped, so what was there stays

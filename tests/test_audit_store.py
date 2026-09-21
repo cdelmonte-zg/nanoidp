@@ -5,7 +5,9 @@ runtime store's, in an ``AuditStore``: a contract of its own, not a
 ``RuntimeRepository``. The first class is about what a caller of the facade
 sees, and most of it fails on the ``AuditLog`` that kept a deque: the order of
 the appends, a negative limit, state that is by value. The second is the
-contract of the store.
+contract of the store, over every backend: in memory, and in a SQLite file
+of its own (#354, third step), whose file, contention and fork are pinned in
+``tests/test_sqlite_runtime_store.py``.
 """
 
 import datetime as dt
@@ -257,14 +259,32 @@ class TestTheFacade:
         assert len(get_audit_log().get_entries(limit=5000)) == 1000
 
 
+def _memory_audit(tmp_path, **kwargs):
+    from nanoidp.services.audit_store import MemoryAuditStore
+
+    return MemoryAuditStore(**kwargs)
+
+
+def _sqlite_audit(tmp_path, **kwargs):
+    from nanoidp.services.sqlite_runtime_store import SqliteAuditStore
+
+    return SqliteAuditStore(tmp_path / f"audit-{len(list(tmp_path.iterdir()))}.db", **kwargs)
+
+
 class TestTheStore:
-    """The contract, on the in-memory backend."""
+    """The contract, on every backend."""
 
-    @staticmethod
-    def _store(**kwargs):
-        from nanoidp.services.audit_store import MemoryAuditStore
+    @pytest.fixture(autouse=True, params=[_memory_audit, _sqlite_audit], ids=["memory", "sqlite"])
+    def _backend(self, request, tmp_path):
+        self.backend = request.param.__name__
+        self._make = lambda **kwargs: request.param(tmp_path, **kwargs)
 
-        return MemoryAuditStore(**kwargs)
+    def _store(self, **kwargs):
+        return self._make(**kwargs)
+
+    def _memory_only(self, why):
+        if self.backend != "_memory_audit":
+            pytest.skip(why)
 
     @staticmethod
     def _entry(name="e", **more):
@@ -292,12 +312,15 @@ class TestTheStore:
             while not stop.is_set():
                 seen.append((len(store.entries(5000)), store.counters().get("n", 0)))
 
-        watching = threading.Thread(target=reader)
+        watching = threading.Thread(target=reader, daemon=True)
         watching.start()
-        for _ in range(300):
-            store.append(self._entry(), ["n"])
-        stop.set()
-        watching.join()
+        try:
+            for _ in range(300):
+                store.append(self._entry(), ["n"])
+        finally:
+            # A failing append must not leave the reader running.
+            stop.set()
+            watching.join(5)
 
         # Read one after the other, so the count may be ahead of the events
         # it was read after, never behind them.
@@ -315,6 +338,58 @@ class TestTheStore:
         store.counters()["a"] = 99  # the reader's own
         assert store.counters() == {"a": 2, "b": 1}
 
+    def test_a_name_given_twice_counts_twice(self):
+        store = self._store()
+        store.append(self._entry(), ["a", "a", "b"])
+
+        assert store.counters() == {"a": 2, "b": 1}
+
+    def test_the_order_is_the_order_of_the_appends_not_of_the_timestamps(self):
+        store = self._store()
+        later, earlier = NOON + dt.timedelta(hours=1), NOON - dt.timedelta(hours=1)
+        store.append(self._entry("first", timestamp=later), [])
+        store.append(self._entry("second", timestamp=earlier), [])
+        store.append(self._entry("third", timestamp=later), [])
+
+        assert [entry.event_type for entry in store.entries(10)] == ["third", "second", "first"]
+        assert [entry.event_type for entry in store.entries(2)] == ["third", "second"]
+        assert store.entries(0) == []
+
+    def test_the_filters_are_all_applied_and_the_limit_counts_what_matches(self):
+        store = self._store()
+        store.append(self._entry("login", username="alice", client_id="a"), [])
+        store.append(self._entry("token", username="bob", client_id="b"), [])
+        store.append(self._entry("token", username="alice", client_id="b"), [])
+        store.append(self._entry("token", username="alice", client_id="a"), [])
+
+        def seen(limit=10, **filters):
+            return [(entry.event_type, entry.username, entry.client_id) for entry in store.entries(limit, **filters)]
+
+        assert seen(event_type="login") == [("login", "alice", "a")]
+        assert seen(username="bob") == [("token", "bob", "b")]
+        assert seen(client_id="a") == [("token", "alice", "a"), ("login", "alice", "a")]
+        assert seen(event_type="token", username="alice", client_id="b") == [("token", "alice", "b")]
+        assert seen(1, username="alice") == [("token", "alice", "a")]
+        assert seen(event_type="nothing") == []
+
+    def test_client_ids_are_the_distinct_ones_kept_sorted(self):
+        # Kept, in the order of the appends: None, "zeta", "", "alpha".
+        store = self._store(max_entries=4)
+        for client_id in ("gone", "alpha", None, "zeta", "", "alpha"):
+            store.append(self._entry(client_id=client_id), [])
+
+        assert store.client_ids() == ["alpha", "zeta"]
+
+    def test_clear_forgets_the_events_and_the_counters(self):
+        store = self._store()
+        store.append(self._entry(), ["n"])
+        store.clear()
+
+        assert (store.entries(10), store.counters(), store.client_ids()) == ([], {}, [])
+        store.append(self._entry("after"), ["n"])
+        assert [entry.event_type for entry in store.entries(10)] == ["after"]
+        assert store.counters() == {"n": 1}
+
     def test_an_append_that_is_refused_counts_nothing(self):
         store = self._store()
 
@@ -327,6 +402,16 @@ class TestTheStore:
 
         assert store.counters() == {}
         assert store.entries(10) == []
+
+    @pytest.fixture
+    def runtime_of_the_backend(self, tmp_path):
+        """The runtime store the facade reaches, of this backend."""
+        if self.backend == "_memory_audit":
+            return
+        from nanoidp.services import runtime_store
+        from nanoidp.services.sqlite_runtime_store import SqliteRuntimeStore
+
+        runtime_store.publish_runtime_store(SqliteRuntimeStore(tmp_path / "runtime.db"), ("sqlite", str(tmp_path)))
 
     @pytest.mark.parametrize("limit", [-1, 1.5, "3", None, True])
     def test_a_limit_is_a_whole_number_not_below_zero(self, limit):
@@ -354,13 +439,16 @@ class TestTheStore:
 
         assert store.entries(1)[0] == self._entry(details={"k": ["v"], "deep": [{"a": ["x"]}]})
 
-    def test_by_value_holds_for_what_json_cannot_hold_too(self, monkeypatch):
-        """Outside the stress mode nothing looks at what the details hold.
-        Whatever it is, it is copied: by value is the store's promise, and
-        whether it can be written down is the codec's question."""
-        from nanoidp.services.audit_store import MemoryAuditStore
+    def test_the_memory_backend_also_copies_what_json_cannot_hold(self, monkeypatch):
+        """Not the contract: the details of an event are a JSON object, and a
+        backend that writes them down refuses anything else. That the
+        in-memory backend, outside the stress mode, copies a set or a tuple
+        all the same is its own extra behaviour, which no caller may ask of
+        another backend."""
+        from nanoidp.services.runtime_repository import RepositorySwitches
 
-        monkeypatch.setattr(MemoryAuditStore, "verify_codecs", False)
+        self._memory_only("the in-memory backend's own behaviour, not the contract")
+        monkeypatch.setattr(RepositorySwitches, "verify_codecs", False)
         store = self._store()
         scopes, nested = {"openid"}, ({"k": ["v"]},)
         store.append(self._entry(details={"scopes": scopes, "nested": nested}), [])
@@ -373,6 +461,7 @@ class TestTheStore:
     def test_a_reader_does_not_hold_the_lock_while_it_looks(self):
         """Every request appends. A read takes the lock for a snapshot and
         filters outside it."""
+        self._memory_only("the lock of the in-memory backend; SQLite reads without one")
         store = self._store()
         held = []
 
@@ -389,8 +478,10 @@ class TestTheStore:
         assert store.client_ids() == []
 
     def test_an_entry_that_does_not_survive_its_codec_is_refused_in_the_stress_mode(self):
+        from nanoidp.services.runtime_repository import RepositorySwitches
+
         store = self._store()
-        assert type(store).verify_codecs, "the suite runs with it on, next to the repository's"
+        assert RepositorySwitches.verify_codecs, "the suite runs with it on, one switch for every store"
 
         unwritable_details = (
             {"when": NOON},
@@ -416,12 +507,14 @@ class TestTheStore:
         assert written["timestamp"] == "2026-01-01T12:00:00+00:00"
         assert AuditEntryCodec().load(written) == entry
 
-    def test_no_operation_from_inside_a_decision(self):
+    def test_no_operation_from_inside_a_decision(self, tmp_path):
         from nanoidp.services.runtime_repository import NestedRepositoryUse
         from nanoidp.services.runtime_store import get_runtime_store
+        from nanoidp.services.sqlite_runtime_store import SqliteRuntimeStore
 
-        store = get_runtime_store().audit
-        clients = get_runtime_store().clients
+        runtime = get_runtime_store() if self.backend == "_memory_audit" else SqliteRuntimeStore(tmp_path / "runtime.db")
+        store = runtime.audit
+        clients = runtime.clients
         operations = {
             "append": lambda: store.append(self._entry(), ["n"]),
             "entries": lambda: store.entries(10),
@@ -435,7 +528,7 @@ class TestTheStore:
                 clients.transact(lambda view, operation=operation: operation())
             assert store.counters() == {}, name
 
-    def test_the_facade_refuses_there_too(self):
+    def test_the_facade_refuses_there_too(self, runtime_of_the_backend):
         from nanoidp.services.runtime_repository import NestedRepositoryUse
         from nanoidp.services.runtime_store import get_runtime_store
 
@@ -444,9 +537,11 @@ class TestTheStore:
 
         assert get_audit_log().get_entries() == []
 
-    def test_the_audit_does_not_wait_for_the_repositories(self):
+    def test_the_audit_does_not_wait_for_the_repositories(self, runtime_of_the_backend):
         """One runtime boundary is not one mutex: an event is appended while
-        a decision holds the repositories' lock."""
+        a decision holds the repositories' lock. With SQLite, the reason the
+        audit is a file of its own: a file has one writer, and an append on
+        the store's file would wait for the decision (#354, third step)."""
         from nanoidp.services.runtime_store import get_runtime_store
 
         deciding, appended = threading.Event(), threading.Event()
