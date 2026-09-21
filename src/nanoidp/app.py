@@ -19,6 +19,7 @@ from .routes import api_bp, oauth_bp, registration_bp, runtime_bp, saml_bp, ui_b
 from .services import activate_services
 from .services.dynamic_registration import prune_stale_registrations
 from .services.identities import identities_for, reconcile_runtime_identities
+from .services.runtime_repository import RuntimeStoreUnavailable
 
 # Global limiter instance (initialized in create_app)
 limiter: Optional[Limiter] = None
@@ -200,6 +201,18 @@ def create_app(
                 "right now. Another process may be writing it. Try again.</p>"
             )
         response.status_code = 503
+        return response
+
+    @app.errorhandler(RuntimeStoreUnavailable)
+    def _runtime_store_unavailable(exc: RuntimeStoreUnavailable) -> Response:
+        """503 with Retry-After for a runtime store held by another process
+        for longer than it waits (#354): contention, which coming back
+        resolves, and not a fault, which a 500 would say. Only contention
+        is this; a store that is broken is an error of its own."""
+        app.logger.warning("Runtime store unavailable: %s", exc)
+        response = jsonify({"error": "runtime_store_unavailable", "error_description": str(exc)})
+        response.status_code = 503
+        response.headers["Retry-After"] = "1"
         return response
 
     app.register_blueprint(oauth_bp)

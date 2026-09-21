@@ -7,13 +7,17 @@ included, by adding its factory to ``STORE_FACTORIES``.
 
 import dataclasses
 import datetime
+import tempfile
+from pathlib import Path
 from typing import Any, List
 
 import pytest
 
 from nanoidp.config import OAuthClient, User
+from nanoidp.services.audit_store import MemoryAuditStore
 from nanoidp.services.dynamic_registration import DynamicRegistration
 from nanoidp.services.runtime_store import MemoryRuntimeStore, PydanticCodec
+from nanoidp.services.sqlite_runtime_store import SqliteRuntimeStore
 
 REDIRECT = "http://localhost:3000/callback"
 
@@ -67,7 +71,12 @@ def grant(code: str) -> Grant:
     return Grant(code, datetime.datetime(2030, 1, 1, tzinfo=datetime.timezone.utc), ["openid"])
 
 
-STORE_FACTORIES = [pytest.param(MemoryRuntimeStore, id="memory")]
+def sqlite_store() -> SqliteRuntimeStore:
+    """A store in a file of its own (#354): the same contract, on disk."""
+    return SqliteRuntimeStore(Path(tempfile.mkdtemp(prefix="nanoidp-contract-")) / "runtime.db", MemoryAuditStore())
+
+
+STORE_FACTORIES = [pytest.param(MemoryRuntimeStore, id="memory"), pytest.param(sqlite_store, id="sqlite")]
 # Each entry: how to reach the repository on a store, how to make an object,
 # its name, and a list field to mutate in place. The third one is a record
 # type the store does not know (#190): it is lent the same machinery through

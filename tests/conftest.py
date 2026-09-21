@@ -93,9 +93,9 @@ def every_stored_value_survives_its_codec(monkeypatch):
     every test until a backend that serializes (#354). On for the whole
     suite, so it is the real objects of every flow that are held to it.
     """
-    from nanoidp.services.runtime_repository import MemoryRuntimeRepository
+    from nanoidp.services.runtime_repository import RepositorySwitches
 
-    monkeypatch.setattr(MemoryRuntimeRepository, "verify_codecs", True)
+    monkeypatch.setattr(RepositorySwitches, "verify_codecs", True)
     # The audit is a backend of its own and takes part by name: the
     # repository's flag does not reach it.
     from nanoidp.services.audit_store import MemoryAuditStore
@@ -111,7 +111,7 @@ def every_stored_value_survives_its_codec(monkeypatch):
     # has to be what most runs test; CI's coverage pass sets it, so every
     # push runs the suite both ways.
     if os.environ.get("NANOIDP_TEST_DECISIONS_TWICE"):
-        monkeypatch.setattr(MemoryRuntimeRepository, "run_decisions_twice", True)
+        monkeypatch.setattr(RepositorySwitches, "run_decisions_twice", True)
 
 
 @pytest.fixture(autouse=True)

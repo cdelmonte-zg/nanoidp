@@ -17,10 +17,10 @@ import pytest
 from nanoidp.config import User
 from nanoidp.services.runtime_repository import (
     EntryHeld,
-    MemoryRuntimeRepository,
     NestedRepositoryUse,
     PydanticCodec,
     RepositoryFull,
+    RepositorySwitches,
     RuntimeObjectExists,
     RuntimeObjectMissing,
     TransactionClosed,
@@ -74,7 +74,7 @@ def decisions_run(request, monkeypatch):
     pass with a decision that is not safe to repeat. So the whole contract
     runs a second time with each decision run twice, the first against a
     view that is then thrown away."""
-    monkeypatch.setattr(MemoryRuntimeRepository, "run_decisions_twice", request.param == "twice")
+    monkeypatch.setattr(RepositorySwitches, "run_decisions_twice", request.param == "twice")
 
 
 @pytest.fixture(params=STORE_FACTORIES)
@@ -291,7 +291,7 @@ class TestTransact:
 
     def test_a_decision_run_twice_leaves_what_one_run_leaves(self, kit, monkeypatch):
         repo, make, name_of, _ = kit
-        monkeypatch.setattr(MemoryRuntimeRepository, "run_decisions_twice", True)
+        monkeypatch.setattr(RepositorySwitches, "run_decisions_twice", True)
         runs = []
 
         def decide(view):
@@ -462,9 +462,11 @@ class TestExpiry:
 class TestCodecs:
     """A repository keeps any type its codec can copy, write down and read
     back, not only pydantic models (the contract parameters include a
-    dataclass with a datetime). This backend never writes anything down, so
-    the promise is checked where it can be: with ``verify_codecs`` on, as it
-    is for this whole suite, a value that does not survive is refused."""
+    dataclass with a datetime). The memory backend never writes anything
+    down, so the promise is checked where it can be: with ``verify_codecs``
+    on, as it is for this whole suite, a value that does not survive is
+    refused. The SQLite backend writes every value down, and the switch adds
+    the check that what comes back is what went in."""
 
     class _Lossy(PydanticCodec):
         def dump(self, value):
@@ -495,27 +497,36 @@ class TestCodecs:
 
     def test_nor_is_one_that_replaces_a_stored_value(self, store, monkeypatch):
         repo = store.repository("checked", lambda u: u.username, self._Lossy(User))
-        monkeypatch.setattr(MemoryRuntimeRepository, "verify_codecs", False)
+        monkeypatch.setattr(RepositorySwitches, "verify_codecs", False)
         repo.create(user("alice"))
-        monkeypatch.setattr(MemoryRuntimeRepository, "verify_codecs", True)
+        monkeypatch.setattr(RepositorySwitches, "verify_codecs", True)
 
+        # A value of the caller's, not the one read back: on a backend that
+        # writes values down, what was read back already is what the codec
+        # made of it.
         with pytest.raises(ValueError, match="does not survive its codec"):
-            replace(repo, "alice", lambda value: value)
+            replace(repo, "alice", lambda value: user("alice"))
 
     def test_the_check_is_for_tests(self, store, monkeypatch):
-        monkeypatch.setattr(MemoryRuntimeRepository, "verify_codecs", False)
+        monkeypatch.setattr(RepositorySwitches, "verify_codecs", False)
         repo = store.repository("unchecked", lambda u: u.username, self._Lossy(User))
 
         assert repo.create(user("alice")).username == "alice"
 
     def test_the_copy_is_the_codecs(self, store):
-        """Not a deep copy the backend chooses for every type."""
+        """Not a deep copy the backend chooses for every type: by value is
+        the codec's, by copying it (memory) or by reading it back (a backend
+        that writes values down)."""
         copies = []
 
         class Counting(PydanticCodec):
             def copy(self, value):
                 copies.append(value)
                 return super().copy(value)
+
+            def load(self, data):
+                copies.append(data)
+                return super().load(data)
 
         repo = store.repository("counted", lambda u: u.username, Counting(User))
         repo.create(user("alice"))
