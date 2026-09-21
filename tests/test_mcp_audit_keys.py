@@ -78,6 +78,26 @@ class TestKeyTools:
         assert before["active_kid"] in after["previous_kids"]
 
 
+    @pytest.mark.asyncio
+    async def test_rotate_keys_says_so_when_the_keys_directory_lock_cannot_be_had(self, app, monkeypatch):
+        """The keys directory is shared between processes (#420). A lock
+        that cannot be had in time is an answer of the tool, not an error
+        out of it, and nothing is rotated."""
+        from nanoidp import config_writer
+        from nanoidp.services import key_directory
+
+        monkeypatch.setattr(config_writer, "_LOCK_TIMEOUT_SECONDS", 0.2)
+        with app.app_context():
+            config = get_config()
+            before = await _execute_tool("get_keys_info", {}, config)
+            with key_directory._thread_lock:
+                result = await _execute_tool("rotate_keys", {}, config)
+            after = await _execute_tool("get_keys_info", {}, config)
+
+        assert result["success"] is False and "keys directory lock" in result["error"]
+        assert after["active_kid"] == before["active_kid"]
+
+
 class TestToolClassification:
     def test_mutating_tools_membership(self):
         assert "clear_audit_log" in MUTATING_TOOLS

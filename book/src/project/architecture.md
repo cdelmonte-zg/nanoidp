@@ -86,6 +86,7 @@ single-purpose:
 | `services/device_code.py` | Device authorization state (RFC 8628): a view, with no state of its own, over two repositories the runtime store lends, the grants by device code and an index from the user's code that names the grant's instance. Every transition is one decision on the grant; a poll resolves the user outside it |
 | `services/revocation.py` | Revoked token ids and refresh-rotation families: a view, with no state of its own, over ONE repository the runtime store lends. Both are markers under typed names (`jti:<id>`, `family:<id>`), because the refresh grant's check-and-claim reads and writes both and has to stay one decision; how long a marker is remembered is its entry's `expires_at`, and `None` there is for ever |
 | `services/crypto.py` | Key management: generation, rotation, JWKS, external key import |
+| `services/key_directory.py` | The generated keys' directory as state several processes share: one lock across processes, a bundle loaded whole as `kid.txt` names it, a cold start with one winner, and a rotation as a small journaled transaction whose commit point is the replacement of `kid.txt` and which the next process to take the lock recovers. Bytes in, bytes out: it knows nothing of JWT or SAML |
 | `services/discovery.py` | Single source of the OIDC discovery document (HTTP and MCP both render this; metadata never lies) |
 | `services/redirect_uri.py` | Redirect-URI registration matching, including RFC 8252 native-app rules |
 | `services/saml_verification.py` | Signed-AuthnRequest verification |

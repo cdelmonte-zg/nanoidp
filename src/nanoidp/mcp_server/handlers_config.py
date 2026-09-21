@@ -311,6 +311,10 @@ def _tool_rotate_keys(arguments: dict[str, Any], config: ConfigManager) -> dict[
     except ExternalKeysNotRotatable:
         # Operator-provided keys (#358): nothing was rotated.
         return {"success": False, "error": EXTERNAL_KEYS_NOT_ROTATABLE}
+    except LockUnavailableError as busy:
+        # The shared keys directory's lock could not be had (#420): nothing
+        # was rotated.
+        return {"success": False, "error": str(busy)}
     get_audit_log().log(
         event_type="key_rotation",
         endpoint="mcp:rotate_keys",

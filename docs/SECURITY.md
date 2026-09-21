@@ -383,6 +383,24 @@ keys/
 └── previous/         # public keys of the previous keys
 ```
 
+The directory may be shared by several NanoIDP processes on one host. Together
+the files are one bundle, and `kid.txt` says which: whoever starts first on an
+empty directory generates it, under a lock file in the directory
+(`.nanoidp-write.lock`), and the others load that bundle. The private key is
+written with mode `0600`. A rotation replaces the files under the same lock
+and `kid.txt` last; if the process dies on the way, a `.rotation/` directory
+is what is left, and the next process that starts or rotates puts the
+directory right from it: the bundle from before the rotation if `kid.txt` had
+not been replaced yet, the new one if it had. Do not edit or remove
+`.rotation/` by hand while a NanoIDP process is running.
+
+A keys directory that a process cannot write (a read-only mount, a volume
+owned by another user) still works for that process: it loads the published
+keys without the lock and cannot rotate them. It cannot settle an interrupted
+rotation either; if it finds one that does not end, it refuses to start and
+says so, and a NanoIDP process that can write the directory settles it by
+starting once.
+
 ### External Keys
 
 You can use your own RSA key pair instead of generated keys:

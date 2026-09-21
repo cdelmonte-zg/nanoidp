@@ -68,6 +68,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`record_registration(entry, ...)`) and dropped with
   `forget_registration_of(entry)`.
 
+- **Generated signing keys are one bundle for every process that shares the
+  keys directory** (#420, first of two parts). Measured before: two
+  processes cold-starting on one empty `jwt.keys_dir` ended with different
+  signing keys, twelve times out of twelve (check, then create, five files
+  one after the other), and a rotation wrote over the same fixed names, so
+  that a process killed after the first file left `kid.txt` saying OLD over
+  a private key that was NEW. Now a lock across processes covers a cold
+  start and a rotation (the advisory file lock the configuration directory
+  already uses, `.nanoidp-write.lock`); a cold start has one winner and the
+  others load its bundle whole; and a rotation is a small journaled
+  transaction in the directory: a complete rollback of the old bundle is
+  written down first, then the live files are replaced, then `kid.txt`,
+  which is the commit point, and only then are the previous keys nothing
+  refers to removed. Whoever next takes the lock recovers from what a dead
+  process left in `.rotation/`: the old bundle before the commit, the new
+  one after it, and again if the recovery itself dies. The key is generated
+  before the lock is taken. A rotation retires the key that is published,
+  not the one the rotating process remembers, so a rotation on top of a
+  peer's orphans nothing. A keys directory this process cannot write (a
+  read-only mount, a volume another user created) still boots, as before:
+  it has nothing it could repair, so it loads what is published, checking
+  that nothing moved meanwhile, and a rotation there is refused (`POST
+  /api/keys/rotate` answers `409`). That holds whether or not the
+  directory already has its lock file: one that is there can be taken
+  through a read-only view, so every mutation first finds out, by writing
+  under the lock, whether it can write at all (a read-only mount answers
+  `EROFS`, which is not a `PermissionError`, and is the same thing). Read
+  without the lock, the journal is looked at before the files as well as
+  after them, so that a recovery that ended meanwhile is noticed, and a
+  rotation that was committed and not tidied up does not keep a read-only
+  process out. A published private key this process cannot read is an
+  error and never "no keys yet", which would have started cold over
+  somebody's bundle. Nothing fails a rotation past its commit: what could
+  not be tidied up is left to whoever next takes the lock. A missing SAML
+  certificate, of generated and of external keys alike, is installed under
+  the lock after looking again, so that processes repairing it together
+  end with one certificate and not one each, and a peer that rotated
+  meanwhile is followed. When
+  the lock cannot be had in time, the endpoint answers `503` with
+  `Retry-After` and the MCP `rotate_keys` tool answers `success: false`,
+  naming the keys directory.
+  The layout and the file names are unchanged; **the private key is now
+  written with mode `0600`** (it followed the umask). Still open, the
+  second part: a running peer does not yet notice
+  another process's rotation, and nanoidp's own endpoints verify against
+  the active key only.
 - **A cleanup of the in-memory runtime repository costs what is due, not what
   is kept** (#417). Since #413 `delete_expired(now)` sits inside the writing
   decision of every service that keeps expiring state, so every write

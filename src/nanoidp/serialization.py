@@ -739,3 +739,32 @@ def atomic_write_text(file_path: Path, text: str) -> None:
         if os.path.exists(temp_path):
             os.unlink(temp_path)
         raise RuntimeError(f"Failed to write {file_path}: {e}") from e
+
+
+def atomic_write_bytes(file_path: Path, data: bytes, mode: int, temp_prefix: str = ".writing-") -> None:
+    """Atomically write exact bytes with a given file mode: the sibling of
+    ``atomic_write_text`` for what is not text (the signing keys, #420).
+
+    Written beside the target, flushed to the disk, given its mode and moved
+    into place with the same patience for a reader on Windows, so a reader
+    finds the file as it was or as it is and never part of it. A write that
+    fails takes its temporary file with it, whatever the failure: what it
+    holds may be a private key. The original error is raised as it is, since
+    callers tell a directory that cannot be written from anything else by
+    its ``errno``. ``temp_prefix`` is how an owner of the directory
+    recognises what a killed writer left behind.
+    """
+    fd, temp_path = tempfile.mkstemp(dir=file_path.parent, prefix=temp_prefix)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(temp_path, mode)
+        _replace_with_retry(temp_path, file_path)
+    except BaseException:
+        try:
+            os.unlink(temp_path)
+        except OSError:
+            pass
+        raise

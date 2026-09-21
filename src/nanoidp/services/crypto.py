@@ -8,11 +8,10 @@ Supports:
 """
 
 import base64
+import dataclasses
 import hashlib
 import json
 import logging
-import os
-import tempfile
 import threading
 import uuid
 from dataclasses import dataclass, field
@@ -34,6 +33,7 @@ from cryptography.hazmat.primitives.serialization import (
 from cryptography.x509.oid import NameOID
 
 from ..config import Settings, get_config
+from . import key_directory
 
 logger = logging.getLogger(__name__)
 
@@ -124,65 +124,81 @@ class CryptoService:
             self._load_external_keys()
             return
 
-        priv_path = self.keys_dir / "rsa_private.pem"
-        pub_path = self.keys_dir / "rsa_public.pem"
-        kid_path = self.keys_dir / "kid.txt"
-        cert_path = self.keys_dir / "idp-cert.pem"
-        keys_meta_path = self.keys_dir / "keys.json"
-
-        new_generated = False
-
-        if not (priv_path.exists() and pub_path.exists() and kid_path.exists()):
+        # Generated keys are state several processes may share (#420): what
+        # is loaded is a whole bundle, the one the marker names, under the
+        # directory's lock. The key itself is generated outside it (it takes
+        # a tenth of a second or more), and only by whoever found nothing.
+        bundle = key_directory.load_published(self.keys_dir)
+        if bundle is None:
             logger.info("Generating new RSA key pair...")
-            private_key = rsa.generate_private_key(
-                public_exponent=65537,
-                key_size=2048,
-            )
-            kid = uuid.uuid4().hex
-
-            with open(priv_path, "wb") as f:
-                f.write(
-                    private_key.private_bytes(
-                        encoding=Encoding.PEM,
-                        format=PrivateFormat.PKCS8,
-                        encryption_algorithm=NoEncryption(),
-                    )
-                )
-
-            public_key = private_key.public_key()
-            with open(pub_path, "wb") as f:
-                f.write(
-                    public_key.public_bytes(
-                        encoding=Encoding.PEM,
-                        format=PublicFormat.SubjectPublicKeyInfo,
-                    )
-                )
-
-            with open(kid_path, "w") as f:
-                f.write(kid)
-
-            new_generated = True
-            logger.info(f"Generated new key pair with KID: {kid}")
-
-        # Load keys
-        with open(priv_path, "rb") as f:
-            self.priv_pem = f.read()
-        with open(pub_path, "rb") as f:
-            self.pub_pem = f.read()
-        with open(kid_path, "r") as f:
-            self.kid = f.read().strip()
-
-        # Load previous keys from metadata
-        self._load_previous_keys(keys_meta_path)
+            candidate = self._new_bundle(previous=())
+            with key_directory.locked(self.keys_dir):
+                # Look again: another process may have won in the meantime,
+                # and then its bundle is the one, whole.
+                bundle = key_directory.load(self.keys_dir)
+                if bundle is None:
+                    key_directory.publish_first(self.keys_dir, candidate)
+                    bundle = candidate
+                    logger.info(f"Generated new key pair with KID: {bundle.kid}")
+        self._adopt(bundle)
 
         # Generate the X.509 certificate if missing, or if it does not belong
         # to the signing key (a certificate left behind by another key would
         # make every SAML signature fail verification against the metadata).
-        if new_generated or not self._certificate_matches(cert_path):
-            self._generate_certificate(cert_path)
+        if not self._certificate_matches(self.cert_pem):
+            self.cert_pem = self._install_certificate(key_directory.CERTIFICATE, self._published_certificate)
 
-        with open(cert_path, "rb") as f:
-            self.cert_pem = f.read()
+    def _published_certificate(self) -> bytes:
+        """The certificate of the bundle that is published, for
+        ``_install_certificate``: called under the lock. If a peer rotated
+        while this service was making a certificate for the key it had
+        loaded, the published bundle is the one to sign with, and it is
+        adopted here, with whatever certificate it has."""
+        published = key_directory.load(self.keys_dir)
+        if published is None:
+            return b""
+        if published.kid != self.kid:
+            logger.info(f"The signing keys were rotated to {published.kid} while this service started: adopting them")
+            self._adopt(published)
+        return published.certificate_pem
+
+    def _adopt(self, bundle: "key_directory.Bundle") -> None:
+        """Sign and verify with ``bundle`` from here on."""
+        self.priv_pem = bundle.private_pem
+        self.pub_pem = bundle.public_pem
+        self.kid = bundle.kid
+        self.cert_pem = bundle.certificate_pem
+        # The retention applies as soon as the service is built, not only at
+        # the next rotation (#358): keys.json lists the newest first. Only the
+        # served list is trimmed: the public-key files of keys dropped here
+        # stay on disk, unserved, and the next rotation rewrites keys.json
+        # with the retained set.
+        self.previous_keys = [
+            KeyInfo(kid=key.kid, pub_pem=key.public_pem, is_active=False, created_at=key.created_at)
+            for key in bundle.previous[: self.max_previous_keys]
+        ]
+        logger.info(f"Loaded {len(self.previous_keys)} previous keys for JWKS")
+
+    def _new_bundle(self, previous: Tuple["key_directory.PreviousKey", ...]) -> "key_directory.Bundle":
+        """A fresh key pair with its certificate, as a bundle nobody has
+        published yet."""
+        private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        private_pem = private_key.private_bytes(
+            encoding=Encoding.PEM,
+            format=PrivateFormat.PKCS8,
+            encryption_algorithm=NoEncryption(),
+        )
+        public_pem = private_key.public_key().public_bytes(
+            encoding=Encoding.PEM,
+            format=PublicFormat.SubjectPublicKeyInfo,
+        )
+        return key_directory.Bundle(
+            kid=uuid.uuid4().hex,
+            private_pem=private_pem,
+            public_pem=public_pem,
+            certificate_pem=self._certificate_for(private_pem, public_pem),
+            previous=previous,
+        )
 
     def _load_external_keys(self) -> None:
         """Load external PEM keys instead of generating new ones."""
@@ -231,71 +247,70 @@ class CryptoService:
         # pin it. Named by the public key's thumbprint, not the kid, which the
         # operator may reuse for another key.
         cert_path = self.keys_dir / f"external-cert-{self._jwk_thumbprint(self.pub_pem)}.pem"
-        if not self._certificate_matches(cert_path):
-            self._generate_certificate(cert_path)
-        with open(cert_path, "rb") as f:
-            self.cert_pem = f.read()
+        self.cert_pem = self._read_certificate(cert_path)
+        if not self._certificate_matches(self.cert_pem):
+            self.cert_pem = self._install_certificate(cert_path.name, lambda: self._read_certificate(cert_path))
 
-    def _load_previous_keys(self, keys_meta_path: Path) -> None:
-        """Load previous keys from metadata file."""
-        if not keys_meta_path.exists():
-            return
-
+    @staticmethod
+    def _read_certificate(cert_path: Path) -> bytes:
         try:
-            with open(keys_meta_path, "r") as f:
-                metadata = json.load(f)
+            return cert_path.read_bytes()
+        except OSError:
+            return b""
 
-            previous_dir = self.keys_dir / "previous"
-            for key_info in metadata.get("previous_keys", []):
-                kid = key_info.get("kid")
-                pub_file = previous_dir / f"{kid}_public.pem"
-                if pub_file.exists():
-                    with open(pub_file, "rb") as f:
-                        pub_pem = f.read()
-                    self.previous_keys.append(KeyInfo(
-                        kid=kid,
-                        pub_pem=pub_pem,
-                        is_active=False,
-                        created_at=key_info.get("created_at", ""),
-                    ))
-            logger.info(f"Loaded {len(self.previous_keys)} previous keys for JWKS")
-        except Exception as e:
-            logger.warning(f"Failed to load previous keys: {e}")
-        # The retention applies as soon as the service is built, not only at
-        # the next rotation (#358): keys.json lists the newest first. Only the
-        # served list is trimmed: the public-key files of keys dropped here
-        # stay on disk, unserved, and the next rotation rewrites keys.json
-        # with the retained set.
-        del self.previous_keys[self.max_previous_keys:]
-
-    def _save_keys_metadata(self) -> None:
-        """Save keys metadata to file."""
-        keys_meta_path = self.keys_dir / "keys.json"
-        metadata = {
-            "active_kid": self.kid,
-            "previous_keys": [
-                {"kid": k.kid, "created_at": k.created_at}
-                for k in self.previous_keys
-            ],
-        }
-        with open(keys_meta_path, "w") as f:
-            json.dump(metadata, f, indent=2)
-
-    def _certificate_matches(self, cert_path: Path) -> bool:
-        """Whether ``cert_path`` holds a certificate for the signing key."""
+    def _install_certificate(self, name: str, published: Callable[[], bytes]) -> bytes:
+        """A certificate for the signing key, under ``name`` in the keys
+        directory: made outside the directory's lock, installed under it
+        after looking again. A peer may have installed one meanwhile, and
+        then that is the one: no marker moves for a certificate, so two
+        processes that each installed their own would never find out. In a
+        directory this process cannot write it keeps its own, unsaved."""
+        certificate = self._certificate_for(self.priv_pem, self.pub_pem)
+        made_for = self.kid
         try:
-            certificate = x509.load_pem_x509_certificate(cert_path.read_bytes())
+            with key_directory.locked(self.keys_dir):
+                theirs = published()
+                if self._certificate_matches(theirs):
+                    return theirs
+                if self.kid != made_for:
+                    # Looking again adopted a bundle a peer had rotated to,
+                    # and its certificate is no good either: the one made
+                    # above is for a key that is no longer the signing key.
+                    certificate = self._certificate_for(self.priv_pem, self.pub_pem)
+                key_directory.replace_certificate(self.keys_dir, certificate, name)
+        except key_directory.LockNamespaceUnavailable:
+            logger.warning(f"{self.keys_dir} is not writable: the SAML certificate was not saved")
+        return certificate
+
+    def _certificate_matches(self, certificate: bytes) -> bool:
+        """Whether ``certificate`` is one for the signing key."""
+        try:
+            loaded = x509.load_pem_x509_certificate(certificate)
             signing = serialization.load_pem_public_key(self.pub_pem)
-            return bool(certificate.public_key().public_numbers() == signing.public_numbers())  # type: ignore[union-attr]
-        except (OSError, ValueError, AttributeError):
+            return bool(loaded.public_key().public_numbers() == signing.public_numbers())  # type: ignore[union-attr]
+        except (ValueError, AttributeError):
             return False
 
-    def _generate_certificate(self, cert_path: Path) -> None:
-        """Generate a self-signed X.509 certificate."""
+    def _as_bundle(self) -> "key_directory.Bundle":
+        """What this service signs and verifies with, as a bundle."""
+        return key_directory.Bundle(
+            kid=self.kid,
+            private_pem=self.priv_pem,
+            public_pem=self.pub_pem,
+            certificate_pem=self.cert_pem,
+            previous=tuple(
+                key_directory.PreviousKey(kid=key.kid, public_pem=key.pub_pem, created_at=key.created_at)
+                for key in self.previous_keys
+            ),
+        )
+
+    @staticmethod
+    def _certificate_for(private_pem: bytes, public_pem: bytes) -> bytes:
+        """A self-signed X.509 certificate for that key pair, as PEM."""
         logger.info("Generating self-signed certificate...")
 
-        private_key = serialization.load_pem_private_key(self.priv_pem, password=None)
-        public_key = serialization.load_pem_public_key(self.pub_pem)
+        private_key = serialization.load_pem_private_key(private_pem, password=None)
+        public_key = serialization.load_pem_public_key(public_pem)
         # The loaders return a union over every supported key algorithm, but
         # nanoidp keys are always RSA - and CertificateBuilder rejects e.g. DH
         # keys, so narrow before use.
@@ -326,15 +341,7 @@ class CryptoService:
             )
             .sign(private_key, hashes.SHA256())
         )
-
-        # Written beside the target and moved into place, so a reader never
-        # sees a partly written certificate.
-        with tempfile.NamedTemporaryFile(dir=cert_path.parent, delete=False) as tmp:
-            tmp.write(cert.public_bytes(Encoding.PEM))
-        os.chmod(tmp.name, 0o644)  # a certificate is public
-        os.replace(tmp.name, cert_path)
-
-        logger.info("Certificate generated successfully")
+        return cert.public_bytes(Encoding.PEM)
 
     def _pem_to_jwk(self, pub_pem: bytes, kid: str) -> Dict[str, Any]:
         """Convert a PEM public key to JWK format."""
@@ -487,84 +494,31 @@ class CryptoService:
         """
         if self.uses_external_keys:
             raise ExternalKeysNotRotatable(EXTERNAL_KEYS_NOT_ROTATABLE)
-        old_kid = self.kid
-
-        # Move current active key to previous (only public key)
-        previous_dir = self.keys_dir / "previous"
-        previous_dir.mkdir(parents=True, exist_ok=True)
-
-        # Save current public key to previous directory
-        prev_pub_file = previous_dir / f"{old_kid}_public.pem"
-        with open(prev_pub_file, "wb") as f:
-            f.write(self.pub_pem)
-
-        # Add to previous keys list
-        self.previous_keys.insert(0, KeyInfo(
-            kid=old_kid,
-            pub_pem=self.pub_pem,
-            is_active=False,
-        ))
-
-        # Prune old keys if exceeding max_previous_keys
-        while len(self.previous_keys) > self.max_previous_keys:
-            removed_key = self.previous_keys.pop()
-            old_pub_file = previous_dir / f"{removed_key.kid}_public.pem"
-            if old_pub_file.exists():
-                old_pub_file.unlink()
-            logger.info(f"Removed old key {removed_key.kid} from rotation")
-
-        # Generate new keys
-        priv_path = self.keys_dir / "rsa_private.pem"
-        pub_path = self.keys_dir / "rsa_public.pem"
-        kid_path = self.keys_dir / "kid.txt"
-        cert_path = self.keys_dir / "idp-cert.pem"
-
+        # The key is generated before the directory is locked: it takes a
+        # tenth of a second or more, and the lock is everybody's (#420).
         logger.info("Generating new RSA key pair for rotation...")
-
-        private_key = rsa.generate_private_key(
-            public_exponent=65537,
-            key_size=2048,
-        )
-        new_kid = uuid.uuid4().hex
-
-        # Write private key
-        with open(priv_path, "wb") as f:
-            f.write(
-                private_key.private_bytes(
-                    encoding=Encoding.PEM,
-                    format=PrivateFormat.PKCS8,
-                    encryption_algorithm=NoEncryption(),
-                )
+        fresh = self._new_bundle(previous=())
+        with key_directory.locked(self.keys_dir):
+            # What is rotated is what is published, which is this service's
+            # own bundle unless another process rotated since it was loaded:
+            # then that one becomes the previous key, as it should.
+            # And when nothing is published any more (the directory was
+            # emptied under a running service), what this service signs with
+            # is what is retired, as it always was: a rotation puts the
+            # directory right instead of failing on it.
+            old = key_directory.load(self.keys_dir) or self._as_bundle()
+            retired = key_directory.PreviousKey(
+                kid=old.kid,
+                public_pem=old.public_pem,
+                created_at=datetime.now(timezone.utc).isoformat(),
             )
-
-        # Write public key
-        public_key = private_key.public_key()
-        with open(pub_path, "wb") as f:
-            f.write(
-                public_key.public_bytes(
-                    encoding=Encoding.PEM,
-                    format=PublicFormat.SubjectPublicKeyInfo,
-                )
-            )
-
-        # Write KID
-        with open(kid_path, "w") as f:
-            f.write(new_kid)
-
-        # Reload keys into memory
-        with open(priv_path, "rb") as f:
-            self.priv_pem = f.read()
-        with open(pub_path, "rb") as f:
-            self.pub_pem = f.read()
-        self.kid = new_kid
-
-        # Generate new certificate
-        self._generate_certificate(cert_path)
-        with open(cert_path, "rb") as f:
-            self.cert_pem = f.read()
-
-        # Save metadata
-        self._save_keys_metadata()
+            new = dataclasses.replace(fresh, previous=((retired,) + old.previous)[: self.max_previous_keys])
+            for dropped in ((retired,) + old.previous)[self.max_previous_keys :]:
+                logger.info(f"Removed old key {dropped.kid} from rotation")
+            key_directory.rotate(self.keys_dir, new)
+        old_kid = old.kid
+        new_kid = new.kid
+        self._adopt(new)
 
         logger.info(f"Key rotation complete: {old_kid} → {new_kid}")
 

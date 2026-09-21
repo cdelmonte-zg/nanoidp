@@ -8,6 +8,7 @@ from flask import Blueprint, jsonify, request
 from flask.typing import ResponseReturnValue
 
 from ..config import ConfigurationRejected, get_config
+from ..config_writer import LockNamespaceUnavailable, LockUnavailableError
 from ..hooks import HookError
 from ..services import (
     EXTERNAL_KEYS_NOT_ROTATABLE,
@@ -272,6 +273,19 @@ def rotate_keys() -> ResponseReturnValue:
         # Operator-provided keys (#358): nothing was rotated. The fixed
         # message, not the exception's text.
         return jsonify({"success": False, "error": EXTERNAL_KEYS_NOT_ROTATABLE}), 409
+    except LockNamespaceUnavailable as not_here:
+        # A keys directory this process cannot write (a read-only mount, a
+        # volume of another user's): it signs with the keys and cannot
+        # rotate them, now or later. Nothing was rotated.
+        return jsonify({"success": False, "error": str(not_here)}), 409
+    except LockUnavailableError as busy:
+        # The keys directory is shared (#420) and its lock could not be had
+        # in time: another process is starting or rotating. Nothing was
+        # rotated, and coming back is what to do.
+        response = jsonify({"success": False, "error": str(busy)})
+        response.status_code = 503
+        response.headers["Retry-After"] = "5"
+        return response
 
     # Log to audit
     audit = get_audit_log()
