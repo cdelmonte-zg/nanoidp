@@ -1018,8 +1018,10 @@ class TestTheAudit:
         for number in range(20):
             audit.append(_event(f"e{number}"), ["n"])
 
-        with pytest.raises(RuntimeStoreFileRefused, match="a bound of 1000"):
+        with pytest.raises(RuntimeStoreFileRefused, match="a bound of 1000") as refused:
             SqliteAuditStore(tmp_path / "audit.db", max_entries=10)
+        # The one way out: nobody gives a bound to the store's own audit.
+        assert "disposable: delete the file (and its -wal and -shm)" in str(refused.value)
         assert len(SqliteAuditStore(tmp_path / "audit.db", max_entries=1000).entries(10**6)) == 20
         assert len(audit.entries(10**6)) == 20
 

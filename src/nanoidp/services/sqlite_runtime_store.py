@@ -396,7 +396,8 @@ class _Database:
             if meta.get(key) != wanted:
                 raise RuntimeStoreFileRefused(
                     f"{self.path} is a NanoIDP {self._kind.noun} made with a {key} of {meta.get(key)}, "
-                    f"and this process was given {wanted}: every process that opens it must be given the same"
+                    f"and this NanoIDP uses {wanted}; the {self._kind.noun} is disposable: "
+                    "delete the file (and its -wal and -shm) or choose another"
                 )
 
     def _refused(self, failure: sqlite3.DatabaseError) -> BaseException:
