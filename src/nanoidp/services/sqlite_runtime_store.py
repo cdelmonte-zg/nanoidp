@@ -288,9 +288,12 @@ if hasattr(os, "register_at_fork"):
 class _Database:
     """The file, its schema, and the connections to it."""
 
-    def __init__(self, path: Union[str, Path], kind: _Kind) -> None:
+    def __init__(self, path: Union[str, Path], kind: _Kind, settled: Optional[Dict[str, str]] = None) -> None:
         self.path = Path(path).expanduser().resolve()
         self._kind = kind
+        # What the file is made with and every opener must share: written in
+        # meta by the one that makes it, and a file made otherwise refused.
+        self._settled = dict(settled or {})
         if self.path.is_dir():
             raise RuntimeStoreFileRefused(f"{self.path} is a directory, not a {kind.noun} file")
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -352,7 +355,7 @@ class _Database:
                         connection.execute(statement)
                     connection.executemany(
                         "INSERT INTO meta (key, value) VALUES (?, ?)",
-                        [("kind", self._kind.marker), ("schema_version", str(SCHEMA_VERSION))],
+                        [("kind", self._kind.marker), ("schema_version", str(SCHEMA_VERSION)), *self._settled.items()],
                     )
                 else:
                     self._check(connection, tables)
@@ -389,6 +392,12 @@ class _Database:
                 f"and this NanoIDP uses version {SCHEMA_VERSION}; the {self._kind.noun} is disposable: "
                 "delete the file (and its -wal and -shm) or choose another"
             )
+        for key, wanted in self._settled.items():
+            if meta.get(key) != wanted:
+                raise RuntimeStoreFileRefused(
+                    f"{self.path} is a NanoIDP {self._kind.noun} made with a {key} of {meta.get(key)}, "
+                    f"and this process was given {wanted}: every process that opens it must be given the same"
+                )
 
     def _refused(self, failure: sqlite3.DatabaseError) -> BaseException:
         if isinstance(failure, sqlite3.OperationalError) and _is_busy(failure):
@@ -724,7 +733,9 @@ class SqliteAuditStore:
         _require_upsert()
         # Before the file is made: a bound that is refused makes nothing.
         self._bound = checked_bound(max_entries)
-        self._database = _Database(path, _AUDIT)
+        # The file's, not this process's: the audit is one for every process
+        # that appends to it, and so is how much of it is kept.
+        self._database = _Database(path, _AUDIT, {"bound": str(self._bound)})
         self._codec = AuditEntryCodec()
 
     @property
@@ -840,8 +851,16 @@ class SqliteRuntimeStore:
     def __init__(self, path: Union[str, Path]) -> None:
         # Before either file is made: the audit's upsert needs it.
         _require_upsert()
-        self._database = _Database(path, _STORE)
-        self._audit: AuditStore = SqliteAuditStore(audit_path_of(self._database.path))
+        store_path = Path(path).expanduser().resolve()
+        audit_path = audit_path_of(store_path)
+        # What exists is opened before what is missing is made, so that a
+        # file that is refused leaves no new one behind.
+        if audit_path.exists():
+            self._audit: AuditStore = SqliteAuditStore(audit_path)
+            self._database = _Database(store_path, _STORE)
+        else:
+            self._database = _Database(store_path, _STORE)
+            self._audit = SqliteAuditStore(audit_path)
         self._users: SqliteRuntimeRepository[User] = SqliteRuntimeRepository(
             self._database, "users", lambda user: user.username, PydanticCodec(User)
         )

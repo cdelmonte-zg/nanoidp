@@ -74,10 +74,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   while a decision holds it waits, and fails past the busy timeout
   (measured). So the store is a pair of files, `runtime.db` and
   `runtime-audit.db` (named after it), each with its own marker, neither
-  usable as the other, both private. An append is one transaction: the
-  event, the delete of what is past the bound (1000, for every process that
-  appends), and one upsert per counter named, a name given twice counting
+  usable as the other, both private; what exists is opened before what is
+  missing is made, so a refusal of either leaves no new file behind. An
+  append is one transaction: the event, the delete of what is past the bound
+  (1000), and one upsert per counter named, a name given twice counting
   twice; the event is checked and dumped before the file is locked. The
+  bound is the file's, written in it when it is made: the audit is one for
+  every process that appends to it, and a process given another bound is
+  refused, instead of cutting the history of the others and reading it cut. The
   audit's contract now says what it always assumed: the details of an event
   are a JSON object. A backend that writes events down refuses anything
   else before any event or counter changes; that the in-memory backend

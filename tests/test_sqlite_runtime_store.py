@@ -1010,6 +1010,42 @@ class TestTheAudit:
         audit.append(_event(details={"kept": "no"}), ["n"])
         assert audit.entries(1)[0].details == {}
 
+    def test_the_bound_is_the_files_and_a_process_with_another_is_refused(self, tmp_path):
+        """The audit is one for every process that opens its file, and so is
+        its bound: one process keeping ten would cut the history of one
+        keeping a thousand, and read it cut."""
+        audit = SqliteAuditStore(tmp_path / "audit.db", max_entries=1000)
+        for number in range(20):
+            audit.append(_event(f"e{number}"), ["n"])
+
+        with pytest.raises(RuntimeStoreFileRefused, match="a bound of 1000"):
+            SqliteAuditStore(tmp_path / "audit.db", max_entries=10)
+        assert len(SqliteAuditStore(tmp_path / "audit.db", max_entries=1000).entries(10**6)) == 20
+        assert len(audit.entries(10**6)) == 20
+
+    @pytest.mark.parametrize(
+        "refused",
+        ["audit is a directory", "audit is somebody else's", "store is somebody else's"],
+    )
+    def test_a_file_that_is_refused_leaves_no_new_file_behind(self, tmp_path, refused):
+        """What exists is opened first and what is missing made after, so a
+        refusal of either file makes neither."""
+        store_path, audit_path = tmp_path / "runtime.db", tmp_path / "runtime-audit.db"
+        if refused == "audit is a directory":
+            audit_path.mkdir()
+        foreign = audit_path if refused == "audit is somebody else's" else store_path
+        if refused != "audit is a directory":
+            connection = sqlite3.connect(foreign)
+            connection.execute("CREATE TABLE theirs (x)")
+            connection.commit()
+            connection.close()
+        before = sorted(path.name for path in tmp_path.iterdir())
+
+        with pytest.raises(RuntimeStoreFileRefused):
+            _store(store_path)
+
+        assert sorted(path.name for path in tmp_path.iterdir()) == before
+
     def test_a_bound_that_is_refused_makes_no_file(self, tmp_path):
         with pytest.raises(ValueError, match="bound"):
             SqliteAuditStore(tmp_path / "audit.db", max_entries=-1)
@@ -1070,11 +1106,13 @@ class TestTheAudit:
         bound kept for all of them, and each process's events in the order
         it appended them."""
         path = str(tmp_path / "runtime.db")
-        _store(path)  # the files exist before the contenders open them
+        # The audit exists, with the bound the contenders are given, before
+        # they open it.
+        SqliteAuditStore(tmp_path / "runtime-audit.db", max_entries=500)
         results = _in_processes(_append_many, [(path, index) for index in range(4)])
 
         assert results == [("ok", 150)] * 4
-        audit = _store(path).audit
+        audit = SqliteAuditStore(tmp_path / "runtime-audit.db", max_entries=500)
         assert audit.counters() == {"n": 600}
         kept = audit.entries(1000)
         assert len(kept) == 500
@@ -1106,9 +1144,9 @@ def _append_many(path, index, barrier, out):
     logging.disable(logging.CRITICAL)
     from nanoidp.services.sqlite_runtime_store import SqliteAuditStore
 
-    audit = SqliteAuditStore(__import__("pathlib").Path(path).with_name("runtime-audit.db"), max_entries=500)
     barrier.wait()
     try:
+        audit = SqliteAuditStore(__import__("pathlib").Path(path).with_name("runtime-audit.db"), max_entries=500)
         for number in range(150):
             audit.append(_event(username=f"p{index}", details={"i": number}), ["n"])
         out.put(("ok", 150))
