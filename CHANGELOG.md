@@ -68,6 +68,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`record_registration(entry, ...)`) and dropped with
   `forget_registration_of(entry)`.
 
+- **A cleanup of the in-memory runtime repository costs what is due, not what
+  is kept** (#417). Since #413 `delete_expired(now)` sits inside the writing
+  decision of every service that keeps expiring state, so every write
+  scanned its whole collection under the store's one lock. The backend now
+  keeps a lazy min-heap of the expiries, `(expires_at, instance_id, name)`:
+  an item is pushed when an entry gets a time and never looked for again,
+  and one that no longer says anything true (the entry gone, the name given
+  to a successor, the time moved) is dropped when it reaches the top. The
+  heap is transactional state like the index: what a decision pushes is
+  staged and applied when it returns, what a cleanup pops is put back when
+  the decision raises or is one that is thrown away. A held entry past its
+  time waits on the heap, and is looked at by each cleanup for as long as
+  it is held. Stale items are bounded: past twice the entries plus 1024,
+  the heap is rebuilt from the entries. No part of the contract. One thing
+  it changes about memory: an item carries its entry's name, so the name of
+  an entry that was deleted or consumed stays in the process until the
+  item's time comes or the heap is rebuilt (for a code that is its own
+  name, the spent code).
+  A first design, a lower bound on the earliest expiry, was built and
+  dropped on measurement: with a fixed lifetime and steady writes one entry
+  comes due before nearly every write, so it scanned nearly every time, and
+  dearer than before (539 -> 627 us per write at ten thousand entries).
+  Measured per write, a cleanup and a create in one decision, over several
+  runs, before -> after: at ten thousand entries with one coming due before
+  every write 460-540 -> 130-150 us, with nothing coming due 385-450 ->
+  40-50 us; at a hundred thousand 6.2-6.4 -> 1.7-1.9 ms and 4.3-4.8 ->
+  0.4-0.5 ms. None of the workloads measured got worse. What is left is the
+  copy of the index on a write, which is still in proportion to what is
+  kept. A revocation or a refresh claim at ten thousand markers 0.44
+  -> 0.055 ms (0.16 ms before #363); creating a device code with ten
+  thousand pending 0.81 -> 0.10 ms (0.17 ms before #363).
 - **The audit lives in the runtime store, and the store is named for what it
   holds** (#363, last of five steps). `AuditLog` kept a deque, seven counters
   and a lock; it is now a facade, with no state, over an `AuditStore` the

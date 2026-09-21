@@ -49,7 +49,20 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Generic, List, Optional, Protocol, Type, TypeVar, Union
+from heapq import heapify, heappop, heappush
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Generic,
+    List,
+    Optional,
+    Protocol,
+    Tuple,
+    Type,
+    TypeVar,
+    Union,
+)
 
 from pydantic import BaseModel
 
@@ -229,10 +242,11 @@ class RepositoryTransaction(Protocol[T]):
         operation in progress, and like ``delete_if`` a cleanup does not
         take an entry from under it.
 
-        Reads no value. In this backend that is one pass over what the
-        store knows about its entries, the same order as the sweeps it
-        replaces and a small fraction of their cost once values have to be
-        copied; a backend with an index on the time does better."""
+        Reads no value. What it costs is no part of this contract, and
+        worth knowing all the same: it sits inside the writing decision of
+        every service that keeps expiring state, so a backend that scans
+        makes every write cost what is kept. The one in memory keeps a heap
+        of the expiries (#417); one with rows has an index on the time."""
 
     def delete(self, name: str) -> bool:
         """Remove the entry with that name; False when there was none."""
@@ -502,11 +516,27 @@ def _out(entry: Entry[T], codec: Codec[T]) -> Entry[T]:
     )
 
 
+# An expiry the in-memory backend knows of: when, of which instance, under
+# which name. See ``MemoryRuntimeRepository._due``.
+_Due = Tuple[float, str, str]
+
+# How far the heap of expiries may outgrow the entries before it is rebuilt:
+# twice their number, plus this, so that a small collection never rebuilds.
+_DUE_SLACK = 1024
+
+
 class _MemoryTransaction(Generic[T]):
     """The view a decision gets. It works on a copy of the repository's index
     made at the first change; the repository adopts that copy when the
     decision returns and drops it when the decision raises. The entries
-    themselves are never changed in place, so the copy is a shallow one."""
+    themselves are never changed in place, so the copy is a shallow one.
+
+    The heap of expiries is transactional state in the same way, by other
+    means (#417). What the decision adds is staged here (``pushed``) and
+    reaches the heap when the decision returns. What a cleanup takes off the
+    heap it takes off the repository's own, under the lock, and writes down
+    (``popped``), so that the repository can put it back when the decision
+    raises or is one that is thrown away."""
 
     def __init__(
         self,
@@ -514,9 +544,13 @@ class _MemoryTransaction(Generic[T]):
         name_of: Callable[[T], str],
         codec: Codec[T],
         stored: Callable[[T], T],
+        due: List[_Due],
     ) -> None:
         self._committed = objects
         self._staged: Optional[Dict[str, Entry[T]]] = None
+        self._due = due
+        self.pushed: List[_Due] = []
+        self.popped: List[_Due] = []
         self._name_of = name_of
         self._codec = codec
         self._stored = stored
@@ -568,27 +602,74 @@ class _MemoryTransaction(Generic[T]):
         # returned is the stored one, as with a backend that serializes.
         stored = Entry(name, self._stored(obj), uuid.uuid4().hex, None, checked_time(expires_at, or_none=True))
         self._writable[name] = stored
+        self._will_expire(stored)
         return _out(stored, self._codec)
 
     def set_expires_at(self, name: str, expires_at: Optional[float]) -> Entry[T]:
         self._open()
         stored = dataclasses.replace(self._require(name), expires_at=checked_time(expires_at, or_none=True))
         self._writable[name] = stored
+        # The item of the time it had stays where it is and no longer says
+        # anything true; it is recognised as such when it reaches the top.
+        self._will_expire(stored)
         return _out(stored, self._codec)
 
+    def _will_expire(self, stored: Entry[T]) -> None:
+        if stored.expires_at is not None:
+            self.pushed.append((stored.expires_at, stored.instance_id, stored.name))
+
     def delete_expired(self, now: float) -> int:
+        """In proportion to what is due, not to what is kept (#417): this
+        sits inside the writing decision of every service that keeps
+        expiring state, under the store's one lock. No value is read, let
+        alone copied, and an entry that is not due is not looked at. (What
+        is due and held is, each time, for as long as it is held.)"""
         self._open()
         moment = checked_time(now)
         assert moment is not None
-        # The envelopes only: no value is read, let alone copied.
-        expired = [
-            name
-            for name, stored in self._current.items()
-            if stored.expires_at is not None and stored.expires_at < moment and stored.hold is None
-        ]
-        for name in expired:
-            del self._writable[name]
-        return len(expired)
+        candidates: List[_Due] = []
+        # Due is strictly past its time (#413), so the loop stops at the
+        # first item that is not. Written down before it is taken off: an
+        # interrupt between the two then leaves an item twice, which is a
+        # stale one more, and not an entry with no item, which no cleanup
+        # would ever find again.
+        while self._due and self._due[0][0] < moment:
+            self.popped.append(self._due[0])
+            candidates.append(heappop(self._due))
+        # And what this very decision added, which is not on the heap yet.
+        if self.pushed:
+            staged, self.pushed = self.pushed, []
+            for item in staged:
+                (candidates if item[0] < moment else self.pushed).append(item)
+        removed = 0
+        held: List[_Due] = []
+        for item in candidates:
+            if self._settle(item, held):
+                removed += 1
+        # A held item goes back on the heap, and like everything this
+        # decision puts there it is staged: on the heap at once it would be
+        # there twice if the decision raised and its pops were put back (and
+        # taken off while the loop above was still running, it would be on
+        # top again and the loop would never get past it).
+        self.pushed.extend(held)
+        return removed
+
+    def _settle(self, item: _Due, held: List[_Due]) -> bool:
+        """What becomes of one item that is due: whether its entry was
+        removed. Nothing is ever looked for in the middle of the heap: an
+        item that no longer says anything true is recognised here, when its
+        turn comes, and one whose entry is held is handed to ``held``."""
+        when, instance_id, name = item
+        stored = self._current.get(name)
+        if stored is None or stored.instance_id != instance_id:
+            return False  # stale: gone, or the name was given to a successor
+        if stored.expires_at != when:
+            return False  # stale: its time was moved, and that move pushed an item of its own
+        if stored.hold is not None:
+            held.append(item)  # past its time and not removable: it waits on the heap
+            return False
+        del self._writable[name]
+        return True
 
     def replace(self, name: str, obj: T) -> Entry[T]:
         self._open()
@@ -668,6 +749,19 @@ class MemoryRuntimeRepository(Generic[T]):
         self._name_of: Callable[[T], str] = name_of
         self._codec: Codec[T] = codec
         self._objects: Dict[str, Entry[T]] = {}
+        # A min-heap of the expiries there are, so that a cleanup costs what
+        # is due and not what is kept (#417). Lazy: an item is pushed when
+        # an entry gets a time and never looked for again, so some items say
+        # nothing true any more (the entry is gone, was recreated, or had
+        # its time moved) and are dropped when they reach the top. Part of
+        # no contract: a backend with rows has an index on the time.
+        #
+        # An item carries the entry's name, so the name of an entry that was
+        # deleted or consumed stays in this process's memory until the
+        # item's time comes or the heap is rebuilt, where before it went
+        # with the entry. For a code that is its own name that is the code,
+        # already spent; nothing reads the heap but the cleanup.
+        self._due: List[_Due] = []
 
     def _stored(self, obj: T) -> T:
         """The copy of ``obj`` the repository keeps."""
@@ -713,29 +807,60 @@ class MemoryRuntimeRepository(Generic[T]):
         with self._lock:
             count = len(self._objects)
             self._objects = {}
+            self._due = []
             return count
 
     def transact(self, decide: Callable[[RepositoryTransaction[T]], R]) -> R:
         refuse_inside_a_decision()
         with self._lock:
             if self.run_decisions_twice:
-                self._decide(decide)
+                _, thrown_away = self._decide(decide)
+                self._put_back(thrown_away)
             result, view = self._decide(decide)
-            # Reached only when the decision returned: adopted in one
-            # assignment, so a reader sees all of it or none.
+            # Reached only when the decision returned. The items first: an
+            # interrupt between the two then leaves items for entries that
+            # are not there, which are stale ones, and not entries with no
+            # item. The index is adopted in one assignment, so a reader sees
+            # all of it or none.
+            for item in view.pushed:
+                heappush(self._due, item)
             self._objects = view.result()
+            self._compact_when_mostly_stale()
             return result
+
+    def _put_back(self, view: "_MemoryTransaction[T]") -> None:
+        """A decision that did not happen took nothing off the heap."""
+        for item in view.popped:
+            heappush(self._due, item)
+
+    def _compact_when_mostly_stale(self) -> None:
+        """Keep the heap within sight of the entries. Items that say nothing
+        true go when they reach the top, which for a time far away is far
+        away: a time moved again and again, or entries deleted long before
+        they are due, would otherwise trade the scan for memory. Rare, one
+        pass, and the result is the heap as if it had just been built."""
+        if len(self._due) <= 2 * len(self._objects) + _DUE_SLACK:
+            return
+        self._due = [
+            (stored.expires_at, stored.instance_id, name)
+            for name, stored in self._objects.items()
+            if stored.expires_at is not None
+        ]
+        heapify(self._due)
 
     def _decide(
         self, decide: Callable[[RepositoryTransaction[T]], R]
     ) -> "tuple[R, _MemoryTransaction[T]]":
         """Run the decision against a fresh view. Caller holds the lock."""
         view: _MemoryTransaction[T] = _MemoryTransaction(
-            self._objects, self._name_of, self._codec, self._stored
+            self._objects, self._name_of, self._codec, self._stored, self._due
         )
         _deciding.active = True
         try:
             return decide(view), view
+        except BaseException:
+            self._put_back(view)
+            raise
         finally:
             _deciding.active = False
             # Whether it returned or raised, the view is done: kept by the
