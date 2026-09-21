@@ -745,6 +745,118 @@ class TestAFork:
         assert kept[0] is kept[1]
         kept[0].execute("SELECT 1")
 
+    @_FORK
+    @pytest.mark.filterwarnings("ignore::DeprecationWarning")
+    def test_an_audit_append_in_progress_is_waited_for(self, tmp_path):
+        """The audit is the store's too: a fork must not find its lock held
+        by a thread the child will not have, or the child's first append
+        waits for ever."""
+        import datetime as dt
+
+        from nanoidp.services.audit_store import AuditEntry
+
+        def entry():
+            return AuditEntry(
+                timestamp=dt.datetime(2026, 9, 21, tzinfo=dt.timezone.utc),
+                event_type="login",
+                username="alice",
+                client_id=None,
+                ip_address="127.0.0.1",
+                user_agent="test",
+                endpoint="/login",
+                method="POST",
+                status="success",
+            )
+
+        audit = MemoryAuditStore()
+        store = SqliteRuntimeStore(tmp_path / "runtime.db", audit)
+        lock = audit._lock
+        inside, release = threading.Event(), threading.Event()
+
+        class Holding:
+            """The audit's own lock, held until released."""
+
+            def __enter__(self):
+                lock.acquire()
+                inside.set()
+                release.wait(_BOUND)
+                return self
+
+            def __exit__(self, *failure):
+                lock.release()
+
+        audit._lock = Holding()
+        writer = _thread(store.audit.append, entry(), ["logins"])
+        assert inside.wait(_BOUND)
+        audit._lock = lock
+        forked = threading.Event()
+
+        def fork_hook():
+            sqlite_module._FORK_GATE.before_fork()
+            forked.set()
+
+        hook = _thread(fork_hook)
+        try:
+            assert not forked.wait(0.3)
+            release.set()
+            writer.join(_BOUND)
+            assert forked.wait(_BOUND)
+            assert not lock.locked()
+        finally:
+            hook.join(_BOUND)
+            sqlite_module._FORK_GATE.after_in_parent()
+
+        def child():
+            store.audit.append(entry(), ["logins"])
+            assert store.audit.counters() == {"logins": 2}
+            assert len(store.audit.entries(10)) == 2
+
+        assert _forked(child) == 0
+
+    @pytest.mark.parametrize(
+        "operation",
+        [
+            lambda audit: audit.append(None, []),
+            lambda audit: audit.entries(10),
+            lambda audit: audit.client_ids(),
+            lambda audit: audit.counters(),
+            lambda audit: audit.clear(),
+        ],
+        ids=["append", "entries", "client_ids", "counters", "clear"],
+    )
+    def test_every_operation_of_the_audit_is_waited_for(self, tmp_path, operation):
+        inside, release = threading.Event(), threading.Event()
+
+        class Blocking:
+            """An audit whose every operation waits to be released."""
+
+            def __getattr__(self, name):
+                def operation(*args, **kwargs):
+                    inside.set()
+                    release.wait(_BOUND)
+                    return [] if name in ("entries", "client_ids") else ({} if name == "counters" else None)
+
+                return operation
+
+        store = SqliteRuntimeStore(tmp_path / "runtime.db", Blocking())
+        caller = _thread(operation, store.audit)
+        assert inside.wait(_BOUND)
+        forked = threading.Event()
+
+        def fork_hook():
+            sqlite_module._FORK_GATE.before_fork()
+            forked.set()
+
+        hook = _thread(fork_hook)
+        try:
+            assert not forked.wait(0.3)
+            release.set()
+            caller.join(_BOUND)
+            assert forked.wait(_BOUND)
+        finally:
+            hook.join(_BOUND)
+            sqlite_module._FORK_GATE.after_in_parent()
+
     def test_a_close_that_fails_does_not_stop_the_hook(self, tmp_path):
         store = _store(tmp_path / "runtime.db")
         store.users.list()
@@ -795,6 +907,52 @@ class TestAFork:
         finally:
             hook.join(_BOUND)
             sqlite_module._FORK_GATE.after_in_parent()
+
+
+class TestTheAudit:
+    def test_the_audit_handed_in_is_what_the_store_answers_with(self, tmp_path):
+        """The store keeps the audit it is given (its own SQLite audit is the
+        next step), behind the fork gate but with nothing else changed."""
+        import datetime as dt
+
+        from nanoidp.services.audit_store import AuditEntry
+
+        def entry(event_type, username, client_id):
+            return AuditEntry(
+                timestamp=dt.datetime(2026, 9, 21, tzinfo=dt.timezone.utc),
+                event_type=event_type,
+                username=username,
+                client_id=client_id,
+                ip_address="127.0.0.1",
+                user_agent="test",
+                endpoint="/token",
+                method="POST",
+                status="success",
+            )
+
+        audit = MemoryAuditStore()
+        store = SqliteRuntimeStore(tmp_path / "runtime.db", audit)
+        store.audit.append(entry("login", "alice", "a"), ["logins"])
+        store.audit.append(entry("token", "bob", "b"), ["tokens"])
+        store.audit.append(entry("token", "alice", "b"), ["tokens"])
+
+        def users(**filters):
+            return [(found.event_type, found.username) for found in store.audit.entries(10, **filters)]
+
+        assert users() == [("token", "alice"), ("token", "bob"), ("login", "alice")]
+        assert users(event_type="login") == [("login", "alice")]
+        assert users(username="bob") == [("token", "bob")]
+        assert users(client_id="a") == [("login", "alice")]
+        assert users(event_type="token", username="alice", client_id="b") == [("token", "alice")]
+        assert store.audit.entries(1)[0].username == "alice"
+        assert store.audit.client_ids() == ["a", "b"]
+        assert store.audit.counters() == {"logins": 1, "tokens": 2}
+        assert audit.counters() == {"logins": 1, "tokens": 2}
+
+        store.audit.clear()
+
+        assert (store.audit.entries(10), store.audit.counters(), audit.counters()) == ([], {}, {})
+
 
 def _open_and_create(path, name, barrier, out):
     import logging

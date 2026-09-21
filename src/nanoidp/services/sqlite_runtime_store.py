@@ -36,8 +36,8 @@ closes every connection of the process; parent and child each open their own
 afterwards. This holds for a fork made through Python (``os.fork()``, and the
 pre-fork servers built on it, such as gunicorn ``--preload``); a fork made
 from C without Python's at-fork calls skips the hook. A fork must not be made
-from inside a decision, or from inside any operation of a store: the hook
-would wait for the thread that is forking.
+from inside a decision, or from inside any operation of a store, its audit
+included: the hook would wait for the thread that is forking.
 
 The file is the process's secret and NanoIDP's own: created ``0600`` (and so
 are ``-wal`` and ``-shm``, which SQLite makes with the database's mode, and
@@ -55,10 +55,22 @@ import uuid
 import weakref
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Callable, Dict, Generic, Iterator, List, Optional, Tuple, Union, cast
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Generic,
+    Iterator,
+    List,
+    Optional,
+    Sequence,
+    Tuple,
+    Union,
+    cast,
+)
 
 from ..config import OAuthClient, User
-from .audit_store import AuditStore
+from .audit_store import AuditEntry, AuditStore
 from .runtime_repository import (
     Codec,
     Entry,
@@ -625,6 +637,42 @@ class SqliteRuntimeRepository(RepositorySwitches, Generic[T]):
             view.close()
 
 
+class _ForkAwareAuditStore:
+    """The audit handed to the store, each of its operations an activity of
+    the fork gate: a fork must not find its lock held by a thread the child
+    will not have. The audit itself is left as it is: the fork is this
+    store's concern."""
+
+    def __init__(self, delegate: AuditStore) -> None:
+        self._delegate = delegate
+
+    def append(self, entry: AuditEntry, increments: Sequence[str]) -> None:
+        with _FORK_GATE.activity():
+            self._delegate.append(entry, increments)
+
+    def entries(
+        self,
+        limit: int,
+        event_type: Optional[str] = None,
+        username: Optional[str] = None,
+        client_id: Optional[str] = None,
+    ) -> List[AuditEntry]:
+        with _FORK_GATE.activity():
+            return self._delegate.entries(limit, event_type=event_type, username=username, client_id=client_id)
+
+    def client_ids(self) -> List[str]:
+        with _FORK_GATE.activity():
+            return self._delegate.client_ids()
+
+    def counters(self) -> Dict[str, int]:
+        with _FORK_GATE.activity():
+            return self._delegate.counters()
+
+    def clear(self) -> None:
+        with _FORK_GATE.activity():
+            self._delegate.clear()
+
+
 class SqliteRuntimeStore:
     """The runtime store in one SQLite file. The audit is handed in: its own
     SQLite store is the next step (#354), and until then the audit of each
@@ -632,7 +680,7 @@ class SqliteRuntimeStore:
 
     def __init__(self, path: Union[str, Path], audit: AuditStore) -> None:
         self._database = _Database(path)
-        self._audit = audit
+        self._audit: AuditStore = _ForkAwareAuditStore(audit)
         self._users: SqliteRuntimeRepository[User] = SqliteRuntimeRepository(
             self._database, "users", lambda user: user.username, PydanticCodec(User)
         )
