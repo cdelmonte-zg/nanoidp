@@ -164,9 +164,9 @@ def prepare_runtime_store(settings: Settings) -> Tuple[RuntimeStore, RuntimeStor
 
     The store in use when the inputs are the ones in force. A refusal when
     they are not, before anything is built for them. Before the first
-    activation, the provisional store when it is what is asked for (so that
-    what was recorded in it before the configuration was read is kept),
-    and otherwise a new one of the kind asked for.
+    activation, the provisional store when it is what is asked for (made
+    now if nobody has asked yet, so that what is recorded before the
+    publication is kept too), and otherwise a new one of the kind asked for.
     """
     wanted = runtime_store_inputs(settings)
     with _runtime_store_lock:
@@ -178,8 +178,15 @@ def prepare_runtime_store(settings: Settings) -> Tuple[RuntimeStore, RuntimeStor
                 "the runtime store is chosen when the process starts, so restart it to change it"
             )
         return store, inputs
-    if store is not None and wanted == ("memory",) and isinstance(store, MemoryRuntimeStore):
-        return store, wanted
+    if wanted == ("memory",):
+        # The provisional store, made now if nobody has asked for one yet:
+        # between preparing and publishing, the load configures the hooks,
+        # and whatever a plugin records then must land in the store that is
+        # published, not in one the publication would replace. Making it
+        # activates nothing: the inputs stay None until the publication.
+        provisional = get_runtime_store()
+        if isinstance(provisional, MemoryRuntimeStore):
+            return provisional, wanted
     factory = _RUNTIME_STORE_FACTORIES.get(wanted[0])
     if factory is None:
         raise ValueError(f"runtime.store: {wanted[0]} is not a runtime store nanoidp has")

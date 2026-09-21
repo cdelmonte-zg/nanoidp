@@ -302,6 +302,20 @@ class TestBeforeTheFirstActivation:
         assert _activated() == (early, ("memory",))
         assert get_audit_log().get_entries(event_type="before the load")
 
+    def test_what_is_recorded_between_preparing_and_publishing_is_kept(self, tmp_path):
+        """Nobody had asked for a store when the first load began. Between
+        preparing it and publishing it the load configures the hooks, and a
+        plugin's configure() may record an event: it lands in the store that
+        is then published, not in one the publication throws away."""
+        settings = ConfigManager(str(_config_dir(tmp_path))).settings
+        runtime_store_module._runtime_store = runtime_store_module._runtime_store_inputs = None
+
+        publish = activate_runtime_store(settings)
+        get_audit_log().log("while the hooks are configured", "/boot", "INTERNAL", "success")
+        publish()
+
+        assert get_audit_log().get_entries(event_type="while the hooks are configured")
+
     def test_the_first_activation_of_another_backend_replaces_it_and_is_no_restart(self, tmp_path, another_backend):
         early = get_runtime_store()
         settings = ConfigManager(str(_config_dir(tmp_path))).settings
