@@ -310,10 +310,11 @@ def rotate_keys() -> ResponseReturnValue:
 def keys_info() -> ResponseReturnValue:
     """Get information about current cryptographic keys."""
     crypto = get_crypto_service()
+    keys = crypto.keys  # one reading (#420)
 
     return jsonify({
-        "active_kid": crypto.kid,
-        "previous_keys_count": len(crypto.previous_keys),
-        "previous_kids": [k.kid for k in crypto.previous_keys],
+        "active_kid": keys.kid,
+        "previous_keys_count": len(keys.previous_keys),
+        "previous_kids": [k.kid for k in keys.previous_keys],
         "max_previous_keys": crypto.max_previous_keys,
     })
