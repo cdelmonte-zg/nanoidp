@@ -264,7 +264,9 @@ def _unlock(fd: int) -> None:
 
 
 @contextlib.contextmanager
-def _write_lock_within(deadline: float, lock: Optional[threading.Lock] = None) -> Iterator[None]:
+def _write_lock_within(
+    deadline: float, lock: Optional[threading.Lock] = None, of: str = "configuration"
+) -> Iterator[None]:
     """The process-global thread lock, acquired within the budget the whole
     acquisition shares (#246 review round 2).
 
@@ -281,7 +283,7 @@ def _write_lock_within(deadline: float, lock: Optional[threading.Lock] = None) -
     if not thread_lock.acquire(timeout=remaining):
         raise LockUnavailableError(
             f"Timed out after {_LOCK_TIMEOUT_SECONDS}s waiting for this "
-            "process's own configuration lock",
+            f"process's own {of} lock",
             kind="lock_timeout",
         )
     try:
@@ -410,18 +412,23 @@ def _read_bytes(file_path: Path) -> bytes:
 
 
 @contextlib.contextmanager
-def directory_lock(directory: Path, thread_lock: Optional[threading.Lock] = None) -> Iterator[None]:
+def directory_lock(
+    directory: Path, thread_lock: Optional[threading.Lock] = None, of: str = "configuration"
+) -> Iterator[None]:
     """The exclusive section for one configuration directory: the
     directory's advisory file lock and then the process-global thread
     lock, in that order (#246 - it is the reverse of the order writers
     used before, see the comment on the acquisition below).
 
     ``thread_lock`` is for a directory that is not a configuration
-    directory and is locked from inside configuration work: the keys
-    directory (#420), whose section is entered by the activation step of a
-    load. With the configuration's own thread lock, which is not reentrant,
-    a load that already holds it would wait for itself. Such a directory
-    brings a thread lock of its own and shares the mechanism, not the lock.
+    directory: the keys directory (#420). It shares the mechanism and not
+    the lock, so that reading or rotating keys neither waits for a
+    configuration save in this process nor makes one wait, and so that the
+    keys can be reached from anywhere, whatever the caller already holds.
+    (Nothing enters the keys' section while holding the configuration's
+    lock today; with one shared, non-reentrant lock the first caller that
+    did would wait for itself.) ``of`` names the lock in a timeout's
+    message, which otherwise sends the operator to the wrong directory.
 
     Published so that READS can join the protocol through
     ``config_store.ConfigFileStore``. It is NOT reentrant, by design and by
@@ -445,7 +452,7 @@ def directory_lock(directory: Path, thread_lock: Optional[threading.Lock] = None
     # of somebody else's timeout, and making the thread lock per-directory
     # is a separate refactor with no measured case behind it yet.
     deadline = time.monotonic() + _LOCK_TIMEOUT_SECONDS
-    with _cross_process_lock(directory, deadline), _write_lock_within(deadline, thread_lock):
+    with _cross_process_lock(directory, deadline), _write_lock_within(deadline, thread_lock, of):
         yield
 
 

@@ -147,6 +147,23 @@ class TestAColdStartHasOneWinner:
         assert key_directory.active_kid(keys_dir) is None
         _whole(keys_dir)
 
+    @pytest.mark.parametrize("step", ["first:unpublished", "first:rsa_private.pem", "first:rsa_public.pem", "first:marker"])
+    def test_a_stale_marker_never_comes_to_name_a_new_key(self, tmp_path, monkeypatch, step):
+        """A marker with no key behind it, and a cold start that dies half
+        way. Left in place, the marker would name the NEW pair under the OLD
+        kid, which relying parties cached for other key material."""
+        keys_dir = tmp_path / "keys"
+        keys_dir.mkdir()
+        (keys_dir / "kid.txt").write_text("stale")
+
+        _die_at(monkeypatch, step)
+        with pytest.raises(Killed):
+            CryptoService(keys_dir=str(keys_dir))
+        monkeypatch.undo()
+
+        assert key_directory.active_kid(keys_dir) is None
+        assert _whole(keys_dir).kid != "stale"
+
     def test_a_marker_with_no_key_behind_it_is_not_a_bundle(self, tmp_path):
         keys_dir = tmp_path / "keys"
         keys_dir.mkdir()
@@ -173,7 +190,7 @@ _BEFORE_THE_COMMIT = [
     "live:idp-cert.pem",
     "live:keys.json",
 ]
-_AFTER_THE_COMMIT = ["marker:committed", "finish:pruned"]
+_AFTER_THE_COMMIT = ["marker:committed", "finish:pruned", "finish:journal-removed"]
 
 
 class TestARotationCanDieAnywhere:
@@ -253,6 +270,54 @@ class TestARotationCanDieAnywhere:
         assert not (keys_dir / "keys.json").exists()
         assert CryptoService(keys_dir=str(keys_dir)).kid == service.kid
 
+    def test_a_recovery_that_dies_while_it_tidies_up_leaves_nothing_to_trip_over(self, tmp_path, monkeypatch):
+        """The journal goes first and alone. Removed with the rest, in
+        whatever order the directory is walked, it could outlive the
+        rollback it points at, and every later start would fail on it."""
+        keys_dir = tmp_path / "keys"
+        service = CryptoService(keys_dir=str(keys_dir))
+        before = _snapshot(keys_dir)
+        _die_at(monkeypatch, "live:rsa_public.pem")
+        with pytest.raises(Killed):
+            service.rotate_keys()
+        monkeypatch.undo()
+
+        _die_at(monkeypatch, "finish:journal-removed")
+        with pytest.raises(Killed):
+            CryptoService(keys_dir=str(keys_dir))
+        monkeypatch.undo()
+
+        assert not (keys_dir / ".rotation" / "journal.json").exists()
+        assert (keys_dir / ".rotation" / "rollback").is_dir(), "the journal went first"
+        assert _whole(keys_dir).kid == before["kid.txt"].decode()
+        assert _snapshot(keys_dir) == before
+
+    def test_a_writer_killed_in_the_middle_of_a_file_leaves_no_copy_of_a_key(self, tmp_path):
+        keys_dir = tmp_path / "keys"
+        CryptoService(keys_dir=str(keys_dir))
+        (keys_dir / ".writing-abc123").write_bytes(b"-----BEGIN PRIVATE KEY----- half of one")
+        (keys_dir / "previous").mkdir()
+        (keys_dir / "previous" / ".writing-def456").write_bytes(b"half a public key")
+
+        _whole(keys_dir)
+
+        assert [file.name for file in keys_dir.rglob(".writing-*")] == []
+
+    def test_a_write_that_fails_takes_its_temporary_file_with_it(self, tmp_path, monkeypatch):
+        keys_dir = tmp_path / "keys"
+        service = CryptoService(keys_dir=str(keys_dir))
+
+        def no_space(temporary, target):
+            raise OSError(28, "No space left on device")
+
+        monkeypatch.setattr(key_directory, "_replace_with_retry", no_space)
+        with pytest.raises(OSError):
+            service.rotate_keys()
+        monkeypatch.undo()
+
+        assert [file.name for file in keys_dir.rglob(".writing-*")] == []
+        _whole(keys_dir)
+
     def test_the_service_that_died_rotating_did_not_change_what_it_signs_with(self, tmp_path, monkeypatch):
         keys_dir = tmp_path / "keys"
         service = CryptoService(keys_dir=str(keys_dir))
@@ -291,6 +356,64 @@ class TestARotationCanDieAnywhere:
         assert (loaded.kid == before) == (expected == "old")
 
 
+@pytest.mark.skipif(os.name != "posix" or os.geteuid() == 0, reason="needs a directory this user cannot write")
+class TestADirectoryThisProcessCannotWrite:
+    """A keys volume mounted read-only, or created by another user (the
+    pre-3.1 image ran as root): the documented case is that it still boots."""
+
+    @pytest.fixture
+    def read_only(self, tmp_path):
+        keys_dir = tmp_path / "keys"
+        service = CryptoService(keys_dir=str(keys_dir))
+        (keys_dir / ".nanoidp-write.lock").unlink(missing_ok=True)
+        keys_dir.chmod(0o555)
+        yield keys_dir, service
+        keys_dir.chmod(0o755)
+
+    def test_the_published_keys_are_loaded(self, read_only):
+        keys_dir, service = read_only
+
+        loaded = CryptoService(keys_dir=str(keys_dir))
+
+        assert (loaded.kid, loaded.priv_pem, loaded.cert_pem) == (service.kid, service.priv_pem, service.cert_pem)
+        assert sorted(file.name for file in keys_dir.iterdir()) == ["idp-cert.pem", "keys.json", "kid.txt", "rsa_private.pem", "rsa_public.pem"]
+
+    def test_a_rotation_there_is_refused_and_says_why(self, read_only):
+        from nanoidp.config_writer import LockUnavailableError
+
+        keys_dir, service = read_only
+
+        with pytest.raises(LockUnavailableError, match="not writable"):
+            service.rotate_keys()
+
+        assert CryptoService(keys_dir=str(keys_dir)).kid == service.kid
+
+    def test_the_endpoint_does_not_say_come_back_about_a_directory_it_can_never_write(self, read_only, app):
+        """Not the 503 of a busy lock: coming back changes nothing here."""
+        from nanoidp.services import crypto as crypto_module
+
+        keys_dir, service = read_only
+        crypto_module.publish_crypto_service(service)
+
+        response = app.test_client().post("/api/keys/rotate")
+
+        assert response.status_code == 409
+        assert "Retry-After" not in response.headers
+        assert "not writable" in response.get_json()["error"]
+
+    def test_a_rotation_found_under_way_and_never_ending_is_said_not_loaded(self, read_only, monkeypatch):
+        keys_dir, _ = read_only
+        keys_dir.chmod(0o755)
+        (keys_dir / ".rotation").mkdir()
+        (keys_dir / ".rotation" / "journal.json").write_text("{}")
+        (keys_dir / ".nanoidp-write.lock").unlink(missing_ok=True)
+        keys_dir.chmod(0o555)
+        monkeypatch.setattr(key_directory, "_READ_ONLY_PATIENCE_SECONDS", 0.2)
+
+        with pytest.raises(ValueError, match="rotation that was not finished"):
+            CryptoService(keys_dir=str(keys_dir))
+
+
 class TestRotationsComeOneAfterTheOther:
     def test_two_processes_rotating_together_both_succeed_and_the_directory_is_whole(self, tmp_path):
         keys_dir = tmp_path / "keys"
@@ -318,6 +441,56 @@ class TestRotationsComeOneAfterTheOther:
         assert result["old_kid"] == by_the_peer
         assert [key.kid for key in stale.previous_keys] == [by_the_peer, original]
         _whole(keys_dir)
+
+    def test_a_rotation_puts_right_a_directory_that_was_emptied_under_a_running_service(self, tmp_path):
+        keys_dir = tmp_path / "keys"
+        service = CryptoService(keys_dir=str(keys_dir))
+        original = service.kid
+        for file in list(keys_dir.iterdir()):
+            if file.is_file():
+                file.unlink()
+
+        result = service.rotate_keys()
+
+        assert result["old_kid"] == original
+        assert [key.kid for key in _whole(keys_dir).previous_keys] == [original]
+
+    def test_a_lock_that_cannot_be_had_names_the_keys_directory(self, tmp_path, monkeypatch):
+        from nanoidp import config_writer
+
+        keys_dir = tmp_path / "keys"
+        service = CryptoService(keys_dir=str(keys_dir))
+        monkeypatch.setattr(config_writer, "_LOCK_TIMEOUT_SECONDS", 0.2)
+
+        with key_directory._thread_lock:
+            with pytest.raises(config_writer.LockUnavailableError, match="keys directory lock"):
+                service.rotate_keys()
+
+    def test_a_start_does_not_read_around_a_lock_it_could_not_have_in_time(self, tmp_path, monkeypatch):
+        """Reading without the lock is for a directory that has no lock this
+        process could take. One that is there and busy is waited for, and
+        then it is an error: somebody may be in the middle of a rotation."""
+        from nanoidp import config_writer
+
+        keys_dir = tmp_path / "keys"
+        CryptoService(keys_dir=str(keys_dir))
+        monkeypatch.setattr(config_writer, "_LOCK_TIMEOUT_SECONDS", 0.2)
+
+        with key_directory._thread_lock:
+            with pytest.raises(config_writer.LockUnavailableError, match="keys directory lock"):
+                CryptoService(keys_dir=str(keys_dir))
+
+    def test_the_endpoints_say_come_back_when_the_lock_cannot_be_had(self, client, monkeypatch):
+        from nanoidp import config_writer
+
+        monkeypatch.setattr(config_writer, "_LOCK_TIMEOUT_SECONDS", 0.2)
+        with key_directory._thread_lock:
+            response = client.post("/api/keys/rotate")
+
+        assert response.status_code == 503
+        assert response.headers["Retry-After"]
+        body = response.get_json()
+        assert body["success"] is False and "keys directory lock" in body["error"]
 
     def test_rotating_keeps_as_many_previous_keys_as_it_is_told(self, tmp_path):
         keys_dir = tmp_path / "keys"

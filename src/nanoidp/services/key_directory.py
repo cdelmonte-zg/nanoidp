@@ -16,6 +16,12 @@ one of them died.
   advisory file lock, with a thread lock of this module's own), held for a
   cold start, a rotation and a load, and for nothing else. Key material is
   generated before it is taken: an RSA key is a tenth of a second or more.
+- **A process that cannot write the directory can still read it.** A keys
+  volume mounted read-only, or owned by somebody else, has no lock this
+  process could take, and nothing it could repair: it loads what is
+  published without the lock, checking that the marker did not move and
+  that no rotation is under way while it read. The same concession, for the
+  same reason, as ``config_store`` makes for a read-only configuration.
 - **``kid.txt`` is the marker, and replacing it is the commit point.** While
   there is no marker, whatever files are there were never published: a cold
   start ignores them, writes the whole bundle and the marker last.
@@ -42,12 +48,14 @@ import os
 import shutil
 import tempfile
 import threading
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterator, List, Optional, Tuple
 
-from ..config_writer import directory_lock
+from ..config_writer import LockNamespaceUnavailable, directory_lock
+from ..serialization import _replace_with_retry
 
 logger = logging.getLogger(__name__)
 
@@ -64,14 +72,18 @@ _LIVE = (PRIVATE, PUBLIC, CERTIFICATE, METADATA)
 _MODES = {PRIVATE: 0o600, PUBLIC: 0o644, CERTIFICATE: 0o644, METADATA: 0o644, MARKER: 0o644}
 
 # Where a rotation keeps what it needs to be undone or finished.
+_TEMPORARY = ".writing-"
 _WORK = ".rotation"
 _JOURNAL = "journal.json"
 _ROLLBACK = "rollback"
 
-# The configuration's thread lock is not reentrant and this section is
-# entered from inside a load (the activation step builds the service), so the
-# directory brings a lock of its own. See ``config_writer.directory_lock``.
+# A lock of this directory's own, not the configuration's: see ``thread_lock``
+# on ``config_writer.directory_lock``.
 _thread_lock = threading.Lock()
+
+# How long a reader that cannot take the lock waits for a rotation it found
+# under way to end, before it says so.
+_READ_ONLY_PATIENCE_SECONDS = 2.0
 
 
 def _checkpoint(step: str) -> None:
@@ -118,9 +130,41 @@ def locked(keys_dir: Path) -> Iterator[None]:
     rotation that died on the way is settled before the caller sees the
     directory. Not reentrant."""
     keys_dir.mkdir(parents=True, exist_ok=True)
-    with directory_lock(keys_dir, _thread_lock):
+    with directory_lock(keys_dir, _thread_lock, of="keys directory"):
+        _sweep_temporaries(keys_dir)
         _recover(keys_dir)
         yield
+
+
+def load_published(keys_dir: Path) -> Optional[Bundle]:
+    """The published bundle, for a process that is starting: under the lock
+    when it can take it, without it when the directory is not this process's
+    to write (``LockNamespaceUnavailable``, and only that: a lock that is
+    there and cannot be had in time is still an error)."""
+    try:
+        with locked(keys_dir):
+            return load(keys_dir)
+    except (LockNamespaceUnavailable, PermissionError):
+        return _load_without_the_lock(keys_dir)
+
+
+def _load_without_the_lock(keys_dir: Path) -> Optional[Bundle]:
+    """What a read-only view can do: read, and check that nothing moved
+    while it did. It cannot recover a rotation that died, so one it keeps
+    finding under way is an error that says what to do."""
+    deadline = time.monotonic() + _READ_ONLY_PATIENCE_SECONDS
+    while True:
+        before = active_kid(keys_dir)
+        bundle = load(keys_dir)
+        rotating = (keys_dir / _WORK / _JOURNAL).exists()
+        if not rotating and active_kid(keys_dir) == before:
+            return bundle
+        if time.monotonic() >= deadline:
+            raise ValueError(
+                f"{keys_dir} holds a key rotation that was not finished, and this process cannot "
+                "write there to settle it: start a NanoIDP process that can, once"
+            )
+        time.sleep(0.05)
 
 
 def active_kid(keys_dir: Path) -> Optional[str]:
@@ -157,7 +201,14 @@ def load(keys_dir: Path) -> Optional[Bundle]:
 def publish_first(keys_dir: Path, bundle: Bundle) -> None:
     """A cold start's bundle. Caller holds the lock and found no bundle, so
     whatever files are there were never published: they are replaced one by
-    one, and the marker last makes the bundle exist."""
+    one, and the marker last makes the bundle exist.
+
+    A marker may be there all the same, with no key behind it (``load`` does
+    not call that a bundle). It goes first: left in place, a death half way
+    would leave it naming the NEW key pair under the OLD kid, which the next
+    start would load as if it were whole."""
+    (keys_dir / MARKER).unlink(missing_ok=True)
+    _checkpoint("first:unpublished")
     for name, data in bundle.live_files().items():
         _checkpoint(f"first:{name}")
         _replace(keys_dir / name, data, _MODES[name])
@@ -232,7 +283,8 @@ def _recover(keys_dir: Path) -> None:
         journal = json.loads((work / _JOURNAL).read_text(encoding="utf-8"))
         old_kid, new_kid, kept = journal["old_kid"], journal["new_kid"], list(journal["rollback"])
     except (OSError, ValueError, KeyError, TypeError):
-        # No journal: the rotation died before it touched anything live.
+        # No journal: the rotation died before it touched anything live, or
+        # it was settled and died while its leftovers were being removed.
         shutil.rmtree(work, ignore_errors=True)
         return
     if active_kid(keys_dir) == new_kid:
@@ -256,6 +308,18 @@ def _recover(keys_dir: Path) -> None:
     _finish(keys_dir)
 
 
+def _sweep_temporaries(keys_dir: Path) -> None:
+    """What a writer that was killed inside ``_replace`` left beside its
+    target. Every writer here holds the lock, so under it a temporary file
+    is nobody's, and one of them may hold a private key."""
+    for directory in (keys_dir, keys_dir / PREVIOUS, keys_dir / _WORK, keys_dir / _WORK / _ROLLBACK):
+        if not directory.is_dir():
+            continue
+        for file in directory.iterdir():
+            if file.is_file() and file.name.startswith(_TEMPORARY):
+                file.unlink(missing_ok=True)
+
+
 def _finish(keys_dir: Path) -> None:
     """Once the directory holds one bundle again, the new one after a commit
     or the old one after a restore: drop the previous keys its metadata does
@@ -272,6 +336,12 @@ def _finish(keys_dir: Path) -> None:
             if file.name.endswith("_public.pem") and file.name not in referred:
                 file.unlink(missing_ok=True)
     _checkpoint("finish:pruned")
+    # The journal first, and alone: it is what says there is something to
+    # settle. Removed with the rest, in whatever order the directory is
+    # walked, a death in between could leave it pointing at a rollback that
+    # is gone, and every later start would fail on it.
+    (keys_dir / _WORK / _JOURNAL).unlink(missing_ok=True)
+    _checkpoint("finish:journal-removed")
     shutil.rmtree(keys_dir / _WORK, ignore_errors=True)
 
 
@@ -306,12 +376,31 @@ def _read_or_empty(path: Path) -> bytes:
         return b""
 
 
+def write_beside_and_replace(path: Path, data: bytes, mode: int) -> None:
+    """For the one file in the keys directory that is no part of a bundle:
+    the certificate of external keys (#358), which has a name of its own and
+    no marker. Atomic, and nothing more is claimed for it."""
+    _replace(path, data, mode)
+
+
 def _replace(path: Path, data: bytes, mode: int) -> None:
     """Written beside the target and moved into place, so that a reader finds
-    the file as it was or as it is, never part of it."""
-    with tempfile.NamedTemporaryFile(dir=path.parent, prefix=f".{path.name}.", delete=False) as handle:
-        handle.write(data)
-        handle.flush()
-        os.fsync(handle.fileno())
-    os.chmod(handle.name, mode)
-    os.replace(handle.name, path)
+    the file as it was or as it is, never part of it. A write that fails
+    takes its temporary file with it: what it holds may be a private key.
+    The move is the configuration writers', with their patience for a reader
+    that has the target open on Windows (the marker is read without the
+    lock)."""
+    fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=_TEMPORARY)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, mode)
+        _replace_with_retry(temporary, path)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise

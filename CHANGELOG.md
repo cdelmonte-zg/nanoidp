@@ -86,9 +86,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   one after it, and again if the recovery itself dies. The key is generated
   before the lock is taken. A rotation retires the key that is published,
   not the one the rotating process remembers, so a rotation on top of a
-  peer's orphans nothing. The layout and the file names are unchanged;
-  **the private key is now written with mode `0600`** (it followed the
-  umask). Still open, the second part: a running peer does not yet notice
+  peer's orphans nothing. A keys directory this process cannot write (a
+  read-only mount, a volume another user created) still boots, as before:
+  it has no lock to take and nothing it could repair, so it loads what is
+  published without the lock, checking that nothing moved meanwhile; a
+  rotation there is refused (`POST /api/keys/rotate` answers `409`). When
+  the lock cannot be had in time, the endpoint answers `503` with
+  `Retry-After` and the MCP `rotate_keys` tool answers `success: false`,
+  naming the keys directory.
+  The layout and the file names are unchanged; **the private key is now
+  written with mode `0600`** (it followed the umask). Still open, the
+  second part: a running peer does not yet notice
   another process's rotation, and nanoidp's own endpoints verify against
   the active key only.
 - **A cleanup of the in-memory runtime repository costs what is due, not what

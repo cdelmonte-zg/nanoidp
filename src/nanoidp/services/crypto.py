@@ -12,8 +12,6 @@ import dataclasses
 import hashlib
 import json
 import logging
-import os
-import tempfile
 import threading
 import uuid
 from dataclasses import dataclass, field
@@ -130,8 +128,7 @@ class CryptoService:
         # is loaded is a whole bundle, the one the marker names, under the
         # directory's lock. The key itself is generated outside it (it takes
         # a tenth of a second or more), and only by whoever found nothing.
-        with key_directory.locked(self.keys_dir):
-            bundle = key_directory.load(self.keys_dir)
+        bundle = key_directory.load_published(self.keys_dir)
         if bundle is None:
             logger.info("Generating new RSA key pair...")
             candidate = self._new_bundle(previous=())
@@ -150,9 +147,14 @@ class CryptoService:
         # make every SAML signature fail verification against the metadata).
         if not self._certificate_matches(self.cert_pem):
             certificate = self._certificate_for(self.priv_pem, self.pub_pem)
-            with key_directory.locked(self.keys_dir):
-                if key_directory.active_kid(self.keys_dir) == self.kid:
-                    key_directory.replace_certificate(self.keys_dir, certificate)
+            try:
+                with key_directory.locked(self.keys_dir):
+                    if key_directory.active_kid(self.keys_dir) == self.kid:
+                        key_directory.replace_certificate(self.keys_dir, certificate)
+            except key_directory.LockNamespaceUnavailable:
+                # A directory this process cannot write: the certificate is
+                # this process's own until somebody who can write repairs it.
+                logger.warning(f"{self.keys_dir} is not writable: the SAML certificate was not saved")
             self.cert_pem = certificate
 
     def _adopt(self, bundle: "key_directory.Bundle") -> None:
@@ -240,21 +242,36 @@ class CryptoService:
         # pin it. Named by the public key's thumbprint, not the kid, which the
         # operator may reuse for another key.
         cert_path = self.keys_dir / f"external-cert-{self._jwk_thumbprint(self.pub_pem)}.pem"
-        if not self._certificate_matches(cert_path):
-            self._generate_certificate(cert_path)
-        with open(cert_path, "rb") as f:
-            self.cert_pem = f.read()
-
-    def _certificate_matches(self, certificate: Union[Path, bytes]) -> bool:
-        """Whether ``certificate`` (a file, or its bytes) is one for the
-        signing key."""
         try:
-            data = certificate.read_bytes() if isinstance(certificate, Path) else certificate
-            loaded = x509.load_pem_x509_certificate(data)
+            certificate = cert_path.read_bytes()
+        except OSError:
+            certificate = b""
+        if not self._certificate_matches(certificate):
+            certificate = self._certificate_for(self.priv_pem, self.pub_pem)
+            key_directory.write_beside_and_replace(cert_path, certificate, 0o644)  # a certificate is public
+        self.cert_pem = certificate
+
+    def _certificate_matches(self, certificate: bytes) -> bool:
+        """Whether ``certificate`` is one for the signing key."""
+        try:
+            loaded = x509.load_pem_x509_certificate(certificate)
             signing = serialization.load_pem_public_key(self.pub_pem)
             return bool(loaded.public_key().public_numbers() == signing.public_numbers())  # type: ignore[union-attr]
-        except (OSError, ValueError, AttributeError):
+        except (ValueError, AttributeError):
             return False
+
+    def _as_bundle(self) -> "key_directory.Bundle":
+        """What this service signs and verifies with, as a bundle."""
+        return key_directory.Bundle(
+            kid=self.kid,
+            private_pem=self.priv_pem,
+            public_pem=self.pub_pem,
+            certificate_pem=self.cert_pem,
+            previous=tuple(
+                key_directory.PreviousKey(kid=key.kid, public_pem=key.pub_pem, created_at=key.created_at)
+                for key in self.previous_keys
+            ),
+        )
 
     @staticmethod
     def _certificate_for(private_pem: bytes, public_pem: bytes) -> bytes:
@@ -294,20 +311,6 @@ class CryptoService:
             .sign(private_key, hashes.SHA256())
         )
         return cert.public_bytes(Encoding.PEM)
-
-    def _generate_certificate(self, cert_path: Path) -> None:
-        """Write a certificate for the signing key to ``cert_path`` (the
-        external keys' own file, #358; the generated keys' certificate is
-        part of their bundle)."""
-        certificate = self._certificate_for(self.priv_pem, self.pub_pem)
-        # Written beside the target and moved into place, so a reader never
-        # sees a partly written certificate.
-        with tempfile.NamedTemporaryFile(dir=cert_path.parent, delete=False) as tmp:
-            tmp.write(certificate)
-        os.chmod(tmp.name, 0o644)  # a certificate is public
-        os.replace(tmp.name, cert_path)
-
-        logger.info("Certificate generated successfully")
 
     def _pem_to_jwk(self, pub_pem: bytes, kid: str) -> Dict[str, Any]:
         """Convert a PEM public key to JWK format."""
@@ -468,9 +471,11 @@ class CryptoService:
             # What is rotated is what is published, which is this service's
             # own bundle unless another process rotated since it was loaded:
             # then that one becomes the previous key, as it should.
-            old = key_directory.load(self.keys_dir)
-            if old is None:
-                raise RuntimeError(f"No published signing keys in {self.keys_dir} to rotate")
+            # And when nothing is published any more (the directory was
+            # emptied under a running service), what this service signs with
+            # is what is retired, as it always was: a rotation puts the
+            # directory right instead of failing on it.
+            old = key_directory.load(self.keys_dir) or self._as_bundle()
             retired = key_directory.PreviousKey(
                 kid=old.kid,
                 public_pem=old.public_pem,
