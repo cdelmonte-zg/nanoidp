@@ -86,6 +86,22 @@ _thread_lock = threading.Lock()
 _READ_ONLY_PATIENCE_SECONDS = 2.0
 
 
+class KeysDirectoryNotWritable(LockNamespaceUnavailable):
+    """This process cannot write the keys directory. A kind of
+    ``LockNamespaceUnavailable`` because it means the same to every caller,
+    "not here, and not later either", and is reached by another road: a lock
+    file that is already there can be taken through a read-only view, as
+    ``config_writer`` allows on purpose, so the lock is had and it is the
+    writing that fails. A directory NanoIDP has used before has that file."""
+
+    def __init__(self, keys_dir: Path, failure: OSError) -> None:
+        super().__init__(
+            f"{keys_dir} is not writable for this process ({failure.strerror or failure}): it can sign "
+            "with the keys there and cannot create, rotate or repair them",
+            kind="keys_directory_not_writable",
+        )
+
+
 def _checkpoint(step: str) -> None:
     """A seam and nothing else: the tests put a death here, at each step in
     turn."""
@@ -131,9 +147,26 @@ def locked(keys_dir: Path) -> Iterator[None]:
     directory. Not reentrant."""
     keys_dir.mkdir(parents=True, exist_ok=True)
     with directory_lock(keys_dir, _thread_lock, of="keys directory"):
-        _sweep_temporaries(keys_dir)
-        _recover(keys_dir)
+        try:
+            _sweep_temporaries(keys_dir)
+            _recover(keys_dir)
+        except PermissionError as failure:
+            # There is something to settle and this process cannot write
+            # it down: said as what it is, not as whatever file it met.
+            raise KeysDirectoryNotWritable(keys_dir, failure) from failure
         yield
+
+
+def _require_writable(keys_dir: Path) -> None:
+    """Before anything is changed: find out by writing, under the lock.
+    ``os.access`` answers for the mode bits and not for a read-only mount,
+    and a mutation that finds out half way has already begun."""
+    try:
+        fd, probe = tempfile.mkstemp(dir=keys_dir, prefix=_TEMPORARY)
+        os.close(fd)
+        os.unlink(probe)
+    except OSError as failure:
+        raise KeysDirectoryNotWritable(keys_dir, failure) from failure
 
 
 def load_published(keys_dir: Path) -> Optional[Bundle]:
@@ -144,7 +177,9 @@ def load_published(keys_dir: Path) -> Optional[Bundle]:
     try:
         with locked(keys_dir):
             return load(keys_dir)
-    except (LockNamespaceUnavailable, PermissionError):
+    except LockNamespaceUnavailable:
+        # No lock this process could take, or (KeysDirectoryNotWritable) a
+        # lock it could take over something it cannot settle.
         return _load_without_the_lock(keys_dir)
 
 
@@ -207,6 +242,7 @@ def publish_first(keys_dir: Path, bundle: Bundle) -> None:
     not call that a bundle). It goes first: left in place, a death half way
     would leave it naming the NEW key pair under the OLD kid, which the next
     start would load as if it were whole."""
+    _require_writable(keys_dir)
     (keys_dir / MARKER).unlink(missing_ok=True)
     _checkpoint("first:unpublished")
     for name, data in bundle.live_files().items():
@@ -218,7 +254,10 @@ def publish_first(keys_dir: Path, bundle: Bundle) -> None:
 
 def replace_certificate(keys_dir: Path, certificate_pem: bytes) -> None:
     """Repair the one file a bundle can be loaded without. Caller holds the
-    lock."""
+    lock, and has looked again under it: the marker does not move for a
+    certificate, so nothing would ever tell two processes that they had each
+    installed their own."""
+    _require_writable(keys_dir)
     _replace(keys_dir / CERTIFICATE, certificate_pem, _MODES[CERTIFICATE])
 
 
@@ -230,6 +269,7 @@ def rotate(keys_dir: Path, new: Bundle) -> None:
     killed runs none, so there must be nothing here that only a handler
     would put right. What is left behind is settled by the next ``locked``.
     """
+    _require_writable(keys_dir)
     old_kid = active_kid(keys_dir)
     work = keys_dir / _WORK
     rollback = work / _ROLLBACK

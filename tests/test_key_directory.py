@@ -66,7 +66,7 @@ def _whole(keys_dir):
     on_disk = sorted(file.name for file in (keys_dir / "previous").glob("*_public.pem")) if (keys_dir / "previous").is_dir() else []
     assert on_disk == sorted(f"{kid}_public.pem" for kid in listed)
     assert not (keys_dir / ".rotation").exists()
-    assert [file.name for file in keys_dir.iterdir() if file.name.startswith(".rsa") or file.name.startswith(".kid")] == []
+    assert [file.name for file in keys_dir.rglob(".writing-*")] == []
     return service
 
 
@@ -98,6 +98,20 @@ def _rotate(keys_dir, barrier, out):
     barrier.wait()
     try:
         out.put(("ok", service.rotate_keys()["new_kid"], b""))
+    except BaseException as failure:  # noqa: BLE001
+        out.put(("raised", repr(failure), b""))
+
+
+def _start_without_a_certificate(keys_dir, barrier, out):
+    import logging
+
+    logging.disable(logging.CRITICAL)
+    from nanoidp.services.crypto import CryptoService
+
+    barrier.wait()
+    try:
+        service = CryptoService(keys_dir=keys_dir)
+        out.put(("ok", service.kid, service.cert_pem))
     except BaseException as failure:  # noqa: BLE001
         out.put(("raised", repr(failure), b""))
 
@@ -163,6 +177,64 @@ class TestAColdStartHasOneWinner:
 
         assert key_directory.active_kid(keys_dir) is None
         assert _whole(keys_dir).kid != "stale"
+
+    @pytest.mark.parametrize("round_", range(3))
+    def test_processes_repairing_a_missing_certificate_end_with_one_certificate(self, tmp_path, round_):
+        """A bundle can be loaded without its certificate, and whoever loads
+        it repairs it. The marker does not move for that, so nothing would
+        ever tell two processes that repaired it differently: whoever takes
+        the lock second adopts what the first installed."""
+        keys_dir = tmp_path / "keys"
+        kid = CryptoService(keys_dir=str(keys_dir)).kid
+        (keys_dir / "idp-cert.pem").unlink()
+
+        results = _in_processes(_start_without_a_certificate, keys_dir, 4)
+
+        assert [kind for kind, _, _ in results] == ["ok"] * 4, results
+        assert {got for _, got, _ in results} == {kid}
+        certificates = {certificate for _, _, certificate in results}
+        assert certificates == {(keys_dir / "idp-cert.pem").read_bytes()}
+
+    def test_a_certificate_a_peer_installed_meanwhile_is_adopted_not_overwritten(self, tmp_path, monkeypatch):
+        """The window, opened on purpose: A has loaded the bundle without
+        its certificate and is making one; B starts, repairs and installs
+        its own; A then takes the lock. The real-process test above meets
+        this window only now and then (a lock that is busy is asked for
+        again after 50 ms), and here it is met every time."""
+        keys_dir = tmp_path / "keys"
+        CryptoService(keys_dir=str(keys_dir))
+        (keys_dir / "idp-cert.pem").unlink()
+        make = CryptoService._certificate_for
+        peers = []
+
+        def while_a_peer_repairs_it_too(private_pem, public_pem):
+            mine = make(private_pem, public_pem)
+            if not peers:
+                peers.append(None)  # the peer's own repair comes through here as well
+                peers[0] = CryptoService(keys_dir=str(keys_dir))
+            return mine
+
+        monkeypatch.setattr(CryptoService, "_certificate_for", staticmethod(while_a_peer_repairs_it_too))
+
+        service = CryptoService(keys_dir=str(keys_dir))
+
+        on_disk = (keys_dir / "idp-cert.pem").read_bytes()
+        assert peers[0].cert_pem == on_disk
+        assert service.cert_pem == on_disk
+
+    def test_a_certificate_of_another_key_is_replaced_not_adopted(self, tmp_path):
+        """Looking again under the lock adopts a certificate that belongs to
+        the signing key, not whatever is in the file: one left behind by
+        another key would make every SAML signature fail against the
+        metadata."""
+        keys_dir = tmp_path / "keys"
+        CryptoService(keys_dir=str(keys_dir))
+        (keys_dir / "idp-cert.pem").write_bytes(CryptoService(keys_dir=str(tmp_path / "another")).cert_pem)
+
+        service = CryptoService(keys_dir=str(keys_dir))
+
+        assert service._certificate_matches(service.cert_pem)
+        assert (keys_dir / "idp-cert.pem").read_bytes() == service.cert_pem
 
     def test_a_marker_with_no_key_behind_it_is_not_a_bundle(self, tmp_path):
         keys_dir = tmp_path / "keys"
@@ -369,6 +441,62 @@ class TestADirectoryThisProcessCannotWrite:
         keys_dir.chmod(0o555)
         yield keys_dir, service
         keys_dir.chmod(0o755)
+
+    @pytest.fixture
+    def read_only_with_its_lock_file(self, tmp_path):
+        """The usual case, not the easy one: a directory NanoIDP has used
+        has its lock file already, and a lock file that is there can be
+        taken through a read-only view. So the lock is had, and it is the
+        writing that fails."""
+        keys_dir = tmp_path / "keys"
+        service = CryptoService(keys_dir=str(keys_dir))
+        assert (keys_dir / ".nanoidp-write.lock").exists()
+        keys_dir.chmod(0o555)
+        yield keys_dir, service
+        keys_dir.chmod(0o755)
+
+    def test_with_its_lock_file_there_the_published_keys_are_loaded(self, read_only_with_its_lock_file):
+        keys_dir, service = read_only_with_its_lock_file
+
+        loaded = CryptoService(keys_dir=str(keys_dir))
+
+        assert (loaded.kid, loaded.priv_pem, loaded.cert_pem) == (service.kid, service.priv_pem, service.cert_pem)
+
+    def test_with_its_lock_file_there_a_rotation_is_refused_the_same_way(self, read_only_with_its_lock_file, app):
+        from nanoidp.config_writer import LockNamespaceUnavailable
+        from nanoidp.services import crypto as crypto_module
+
+        keys_dir, service = read_only_with_its_lock_file
+        before = _snapshot(keys_dir)
+
+        with pytest.raises(LockNamespaceUnavailable, match="not writable"):
+            service.rotate_keys()
+        crypto_module.publish_crypto_service(service)
+        response = app.test_client().post("/api/keys/rotate")
+
+        assert response.status_code == 409 and "Retry-After" not in response.headers
+        assert _snapshot(keys_dir) == before
+        assert sorted(file.name for file in keys_dir.iterdir() if not file.name.startswith(".nanoidp")) == sorted(before)
+
+    def test_with_its_lock_file_there_a_rotation_that_died_cannot_be_settled_and_is_said(
+        self, read_only_with_its_lock_file, monkeypatch
+    ):
+        keys_dir, service = read_only_with_its_lock_file
+        keys_dir.chmod(0o755)
+        _die_at(monkeypatch, "live:rsa_public.pem")
+        with pytest.raises(Killed):
+            service.rotate_keys()
+        monkeypatch.undo()
+        for directory in (keys_dir / ".rotation" / "rollback", keys_dir / ".rotation", keys_dir / "previous", keys_dir):
+            directory.chmod(0o555)
+        monkeypatch.setattr(key_directory, "_READ_ONLY_PATIENCE_SECONDS", 0.2)
+
+        try:
+            with pytest.raises(ValueError, match="rotation that was not finished"):
+                CryptoService(keys_dir=str(keys_dir))
+        finally:
+            for directory in (keys_dir, keys_dir / "previous", keys_dir / ".rotation", keys_dir / ".rotation" / "rollback"):
+                directory.chmod(0o755)
 
     def test_the_published_keys_are_loaded(self, read_only):
         keys_dir, service = read_only

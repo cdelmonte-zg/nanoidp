@@ -88,9 +88,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   not the one the rotating process remembers, so a rotation on top of a
   peer's orphans nothing. A keys directory this process cannot write (a
   read-only mount, a volume another user created) still boots, as before:
-  it has no lock to take and nothing it could repair, so it loads what is
-  published without the lock, checking that nothing moved meanwhile; a
-  rotation there is refused (`POST /api/keys/rotate` answers `409`). When
+  it has nothing it could repair, so it loads what is published, checking
+  that nothing moved meanwhile, and a rotation there is refused (`POST
+  /api/keys/rotate` answers `409`). That holds whether or not the
+  directory already has its lock file: one that is there can be taken
+  through a read-only view, so every mutation first finds out, by writing
+  under the lock, whether it can write at all. A missing SAML certificate
+  is repaired after looking again under the lock, so that processes
+  repairing it together end with one certificate and not one each. When
   the lock cannot be had in time, the endpoint answers `503` with
   `Retry-After` and the MCP `rotate_keys` tool answers `success: false`,
   naming the keys directory.

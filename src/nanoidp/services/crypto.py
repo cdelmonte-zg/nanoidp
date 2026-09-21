@@ -146,11 +146,19 @@ class CryptoService:
         # to the signing key (a certificate left behind by another key would
         # make every SAML signature fail verification against the metadata).
         if not self._certificate_matches(self.cert_pem):
+            # Made outside the lock, installed under it after looking again:
+            # a peer may have repaired it meanwhile, and then its certificate
+            # is the one. The marker does not move for a certificate, so two
+            # processes that each installed their own would never find out.
             certificate = self._certificate_for(self.priv_pem, self.pub_pem)
             try:
                 with key_directory.locked(self.keys_dir):
-                    if key_directory.active_kid(self.keys_dir) == self.kid:
-                        key_directory.replace_certificate(self.keys_dir, certificate)
+                    published = key_directory.load(self.keys_dir)
+                    if published is not None and published.kid == self.kid:
+                        if self._certificate_matches(published.certificate_pem):
+                            certificate = published.certificate_pem
+                        else:
+                            key_directory.replace_certificate(self.keys_dir, certificate)
             except key_directory.LockNamespaceUnavailable:
                 # A directory this process cannot write: the certificate is
                 # this process's own until somebody who can write repairs it.
