@@ -139,10 +139,11 @@ def _reset_process_singletons() -> None:
     """Every process-wide singleton, services and runtime stores alike.
 
     The list is the singleton inventory of the #230 audit; a store added
-    later belongs here (the runtime identity store of #235 is one), or its state leaks across
-    tests as order-dependent flakes. Until #305 the three runtime stores
-    were missing and test files that touched them carried their own
-    autouse cleanup fixtures; any new file that forgot one leaked.
+    later belongs here (the runtime store, introduced for identities in
+    #235, is one), or its state leaks across tests as order-dependent
+    flakes. Until #305 the three runtime stores were missing and test files
+    that touched them carried their own autouse cleanup fixtures; any new
+    file that forgot one leaked.
     """
     crypto_module._crypto_service = None
     config_module._config = None
