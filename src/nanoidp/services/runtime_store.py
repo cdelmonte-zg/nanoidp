@@ -159,14 +159,23 @@ def runtime_store_inputs(settings: Settings) -> RuntimeStoreInputs:
 
 
 def prepare_runtime_store(settings: Settings) -> Tuple[RuntimeStore, RuntimeStoreInputs]:
-    """The store the candidate settings need, and its inputs: built, or
-    found, but not published, and nothing global touched.
+    """The store the candidate settings need, and its inputs, prepared
+    and not activated: only ``publish_runtime_store`` makes a store the
+    process's configured choice, by recording the inputs it was chosen
+    with. Until then they stay None, whatever happens here.
 
     The store in use when the inputs are the ones in force. A refusal when
     they are not, before anything is built for them. Before the first
-    activation, the provisional store when it is what is asked for (made
-    now if nobody has asked yet, so that what is recorded before the
-    publication is kept too), and otherwise a new one of the kind asked for.
+    activation, and asking for memory: the provisional store, which this
+    may bring into existence if nobody has asked for one yet (so that what
+    is recorded between preparing and publishing lands in the store that
+    is published); that is the one global effect, and the same one any
+    ``get_runtime_store()`` has. Asking for another kind: a new store of
+    that kind, built aside and published by nobody.
+
+    So a load that fails after this leaves no configured choice behind: at
+    most a provisional store, which is what there was before or what the
+    next reader would have made.
     """
     wanted = runtime_store_inputs(settings)
     with _runtime_store_lock:

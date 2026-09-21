@@ -10,8 +10,10 @@ chosen and nothing said which store a process was using. Now:
   not have (``sqlite`` and its path arrive with the backend, in the next step);
 - the store is **activated** in the configuration's activation step, next to
   the signing service (#359): prepared from the candidate settings before
-  anything is committed, without touching anything global, and published once
-  nothing can fail;
+  anything is committed, and published once nothing can fail. Preparing does
+  not activate: only the publication records the inputs a store was chosen
+  with. (For memory, preparing may bring the provisional store into
+  existence, as any reader of it would; that is no configured choice);
 - **restart required**: a reload whose runtime store inputs differ from the
   ones in force is refused, and nothing is built for it;
 - before the first activation there is a **provisional** memory store for
@@ -170,7 +172,7 @@ class TestTheStoreIsChosenByTheConfiguration:
         assert _activated() == (provisional, None)
 
 
-class TestPreparingChangesNothing:
+class TestPreparingDoesNotActivate:
     def test_a_prepared_store_is_not_published(self, tmp_path, another_backend):
         _app(_config_dir(tmp_path))
         settings = get_config().settings

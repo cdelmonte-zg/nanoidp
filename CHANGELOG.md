@@ -75,8 +75,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   default, and in this version the one value: the schema names no backend
   NanoIDP does not have), and the store is activated in the configuration's
   activation step next to the signing service: prepared from the candidate
-  settings before anything is committed, touching nothing global, and
-  published once the load can no longer fail. **A reload that asks for
+  settings before anything is committed, activated by nothing but its
+  publication, once the load can no longer fail. **A reload that asks for
   another store is refused** (`422`, kind `activation`) and nothing is built
   for it: the store is chosen when the process starts. Before the first
   activation there is a provisional memory store for whoever asks (the audit
