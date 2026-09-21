@@ -17,7 +17,7 @@ from typing import Any, Dict, Optional, Sequence, Union
 
 from ..config import get_config_if_loaded
 from .runtime_repository import RepositoryTransaction
-from .runtime_store import MemoryRuntimeRepository, get_runtime_store
+from .runtime_store import RuntimeRepository, get_runtime_store
 
 logger = logging.getLogger(__name__)
 
@@ -147,7 +147,7 @@ class AuthCodeStore:
     """
 
     @property
-    def _repository(self) -> MemoryRuntimeRepository[AuthorizationCode]:
+    def _repository(self) -> RuntimeRepository[AuthorizationCode]:
         # Looked up on every use: the runtime store owns the state, whatever
         # replaces it (a reset, #354's durable backend).
         return get_runtime_store().repository("authorization_codes", _code_of, _CODEC)

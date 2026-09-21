@@ -718,6 +718,29 @@ YAML-only, like `session.secret_key` (see
 [Session Cookie Trust](../guides/SECURITY.md#session-cookie-trust-secret_key)
 for why that one matters here too).
 
+### Runtime store (`runtime:`)
+
+```yaml
+runtime:
+  store: memory     # the default, and in this version the one value
+```
+
+Where runtime state is kept: runtime users and clients, authorization codes,
+device codes, revocations, the audit, and the rest of what a running IdP
+records that is not declared in these files. `memory` keeps it in the process
+and loses it on restart, as NanoIDP always has.
+
+The store is chosen when the process starts. A reload that asks for another
+store is refused (`422`, kind `activation`, with a message that says to
+restart), because processes that share one would otherwise disagree about
+what exists. `GET /api/config` and the MCP `get_settings` tool report the
+store in use as `runtime.store`. The section is YAML-only: the settings form
+and MCP do not write it.
+
+A store that several NanoIDP processes on one host share is in the works
+([#354](https://github.com/cdelmonte-zg/nanoidp/issues/354)); the schema will
+name it when it is there.
+
 ## Logging
 
 NanoIDP logs all authentication events to both the audit log (viewable in

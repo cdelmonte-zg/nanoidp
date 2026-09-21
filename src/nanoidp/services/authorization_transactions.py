@@ -43,8 +43,8 @@ from .runtime_repository import (
 )
 from .runtime_repository import consume as consume_entry
 from .runtime_store import (
-    MemoryRuntimeRepository,
     PydanticCodec,
+    RuntimeRepository,
     get_runtime_store,
 )
 
@@ -158,7 +158,7 @@ class AuthorizationTransactionStore:
     absent for a read to find."""
 
     @property
-    def _repository(self) -> MemoryRuntimeRepository[AuthorizationTransaction]:
+    def _repository(self) -> RuntimeRepository[AuthorizationTransaction]:
         # Looked up on every use rather than kept: the runtime store is the
         # owner, and whatever replaces it (a reset, #354's durable backend)
         # is what the transactions must be read from.

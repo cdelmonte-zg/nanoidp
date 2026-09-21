@@ -38,8 +38,8 @@ from .audit import get_audit_log
 from .client_metadata import cached_client, cached_entries, looks_like_client_id_url
 from .runtime_repository import Entry, RepositoryTransaction, T
 from .runtime_store import (
-    MemoryRuntimeRepository,
-    MemoryRuntimeStore,
+    RuntimeRepository,
+    RuntimeStore,
     get_runtime_store,
 )
 from .yaml_writer import EntryAlreadyExists, PostWriteError, get_yaml_writer
@@ -144,7 +144,7 @@ def _find_client(settings: Settings, client_id: str) -> Optional[OAuthClient]:
 class IdentityResolver:
     """Declared configuration composed with the runtime store's identities."""
 
-    def __init__(self, config: ConfigManager, store: MemoryRuntimeStore) -> None:
+    def __init__(self, config: ConfigManager, store: RuntimeStore) -> None:
         self.config = config
         self.store = store
 
@@ -348,7 +348,7 @@ class IdentityResolver:
 
     def _delete(
         self,
-        repository: MemoryRuntimeRepository[T],
+        repository: RuntimeRepository[T],
         kind: Kind,
         name: str,
         instance_id: Optional[str] = None,
@@ -558,7 +558,7 @@ def reconcile_runtime_identities(config: ConfigManager) -> None:
     def declared(kind: Kind, name: str) -> bool:
         return config.get_user(name) is not None if kind == "user" else name in declared_ids
 
-    repositories: List[Tuple[Kind, MemoryRuntimeRepository[Any]]] = [
+    repositories: List[Tuple[Kind, RuntimeRepository[Any]]] = [
         ("user", store.users),
         ("client", store.clients),
     ]
@@ -570,7 +570,7 @@ def reconcile_runtime_identities(config: ConfigManager) -> None:
                 _abandon_if_written(repository, kind, seen, config.observed_at)
 
 
-def _retire(repository: MemoryRuntimeRepository[Any], kind: Kind, name: str) -> None:
+def _retire(repository: RuntimeRepository[Any], kind: Kind, name: str) -> None:
     """Remove the runtime object the configuration now declares, and say
     what that was.
 
@@ -618,7 +618,7 @@ def _retire(repository: MemoryRuntimeRepository[Any], kind: Kind, name: str) -> 
 
 
 def _abandon_if_written(
-    repository: MemoryRuntimeRepository[Any], kind: Kind, seen: Entry[Any], observed_at: float
+    repository: RuntimeRepository[Any], kind: Kind, seen: Entry[Any], observed_at: float
 ) -> None:
     """A promotion that wrote its entry, lost its reload, and whose name a
     successful load does not declare after all: the claim is released and
@@ -666,7 +666,7 @@ def _refuse_if_held(entry: Entry[Any], kind: str) -> None:
 
 
 def _claim(
-    repository: MemoryRuntimeRepository[T], kind: Kind, name: str, context: Dict[str, Any]
+    repository: RuntimeRepository[T], kind: Kind, name: str, context: Dict[str, Any]
 ) -> Entry[T]:
     """Hold the object for a promotion and return the entry that is held:
     its instance, its hold, and the value the promotion is of."""
@@ -682,7 +682,7 @@ def _claim(
     return repository.transact(decide)
 
 
-def _release(repository: MemoryRuntimeRepository[T], claimed: Entry[T]) -> None:
+def _release(repository: RuntimeRepository[T], claimed: Entry[T]) -> None:
     """Give the claim up. By its own id, so never somebody else's; nothing
     to do when the object has been retired with it."""
     if claimed.hold is not None:
@@ -690,7 +690,7 @@ def _release(repository: MemoryRuntimeRepository[T], claimed: Entry[T]) -> None:
         repository.transact(lambda view: view.release_hold(claimed.name, hold_id))
 
 
-def _mark_written(repository: MemoryRuntimeRepository[T], claimed: Entry[T]) -> None:
+def _mark_written(repository: RuntimeRepository[T], claimed: Entry[T]) -> None:
     """Turn the claim to ``written``, from what the claim itself carries:
     the context is the one given when it was made, and there is no second
     source for it. ``written_at`` is taken after the write, so a
@@ -703,7 +703,7 @@ def _mark_written(repository: MemoryRuntimeRepository[T], claimed: Entry[T]) -> 
     repository.transact(lambda view: view.update_hold(claimed.name, hold_id, payload))
 
 
-def _delete_unheld(repository: MemoryRuntimeRepository[T]) -> int:
+def _delete_unheld(repository: RuntimeRepository[T]) -> int:
     """Remove every object nobody holds, as one step, and say how many."""
 
     def decide(view: RepositoryTransaction[T]) -> int:

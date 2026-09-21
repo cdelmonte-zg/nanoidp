@@ -68,6 +68,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`record_registration(entry, ...)`) and dropped with
   `forget_registration_of(entry)`.
 
+- **The runtime store is chosen by the configuration and activated with it**
+  (#354, first step). `get_runtime_store()` built an in-memory store on first
+  use, took no settings and was published by nobody, so no backend could ever
+  be chosen. Now `runtime.store` is read from `settings.yaml` (`memory`, the
+  default, and in this version the one value: the schema names no backend
+  NanoIDP does not have), and the store is activated in the configuration's
+  activation step next to the signing service: prepared from the candidate
+  settings before anything is committed, activated by nothing but its
+  publication, once the load can no longer fail. **A reload that asks for
+  another store is refused** (`422`, kind `activation`) and nothing is built
+  for it: the store is chosen when the process starts. Before the first
+  activation there is a provisional memory store for whoever asks (the audit
+  of a plugin's load hook), and the first activation that asks for memory
+  adopts that very instance, so what was recorded before the configuration
+  was read is kept; `get_runtime_store()` never reads the configuration. The
+  services know the store only by its contracts (`RuntimeStore`,
+  `RuntimeRepository`, `AuditStore`), and `GET /api/config` and the MCP
+  `get_settings` tool report `runtime.store`. `services.activate_services`
+  is the activation both the app and the MCP server pass to `init_config`;
+  `activate_crypto_service` is still there.
 - **A token is verified against the key its `kid` names, and a process
   notices a peer's key rotation** (#420, second of two parts). Two things
   measured before. **In a single process, a token minted before a rotation

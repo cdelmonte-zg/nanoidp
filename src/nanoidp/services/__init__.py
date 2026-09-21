@@ -1,5 +1,6 @@
 """Services module for NanoIDP."""
 
+from .activation import activate_services
 from .audit import AuditLog, get_audit_log
 from .auth_code import AuthCodeStore, AuthorizationCode, get_auth_code_store
 from .crypto import (
@@ -32,6 +33,7 @@ __all__ = [
     "ExternalKeysNotRotatable",
     "get_crypto_service",
     "activate_crypto_service",
+    "activate_services",
     "TokenService",
     "get_token_service",
     "AuditLog",

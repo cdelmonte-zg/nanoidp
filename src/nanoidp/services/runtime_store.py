@@ -23,12 +23,21 @@ has to be atomic across the two. Resetting the store resets both; ``DELETE
 The store knows nothing about declared configuration. The precedence rule
 (declared first), the collision rule on creation and the reconciliation on
 reload live in ``services.identities``, the one place that composes the two.
+
+Which store a process uses is the configuration's to say (``runtime.store``,
+#354), and it is said once. The store is activated with the configuration,
+next to the signing service: prepared from the candidate settings before
+anything is committed, published once nothing can fail. A reload that asks for
+another store is refused: the processes that share one would otherwise be
+split between two runtime universes. Before the first activation there is a
+provisional memory store for whoever asks (the audit of a plugin's load hook),
+which the first activation adopts when it asks for memory.
 """
 
 import threading
-from typing import Any, Callable, Dict, Optional, cast
+from typing import Any, Callable, Dict, Optional, Protocol, Tuple, cast
 
-from ..config import OAuthClient, User
+from ..config import OAuthClient, Settings, User
 from .audit_store import AuditStore, MemoryAuditStore
 from .runtime_repository import (
     Codec,
@@ -49,8 +58,32 @@ __all__ = [
     "PydanticCodec",
     "RuntimeObjectExists",
     "RuntimeRepository",
+    "RuntimeStore",
+    "RuntimeStoreRestartRequired",
+    "activate_runtime_store",
     "get_runtime_store",
 ]
+
+
+class RuntimeStore(Protocol):
+    """What the services know of the runtime store: its repositories and its
+    audit, by their contracts. No backend is named outside the backend
+    modules, and nothing here says how a store came to be the process's:
+    that is the activation's business (see below)."""
+
+    # Read-only to a consumer: a service uses the store's repositories and
+    # never replaces them (and a backend keeps its own kind of repository).
+    @property
+    def users(self) -> RuntimeRepository[User]: ...
+
+    @property
+    def clients(self) -> RuntimeRepository[OAuthClient]: ...
+
+    @property
+    def audit(self) -> AuditStore: ...
+
+    def repository(self, name: str, key_of: Callable[[T], str], codec: Codec[T]) -> RuntimeRepository[T]:
+        """The repository a service keeps under ``name``, created once."""
 
 
 class MemoryRuntimeStore:
@@ -95,15 +128,114 @@ class MemoryRuntimeStore:
             return cast(MemoryRuntimeRepository[T], existing)
 
 
-_runtime_store: Optional[MemoryRuntimeStore] = None
+# What a store is built from: the kind first, then whatever else that kind
+# needs to be the same store (a path, for a backend that has one). Two
+# configurations with equal inputs share one store.
+RuntimeStoreInputs = Tuple[str, ...]
+
+# How each kind is built, from the settings. Internal, not a plugin API: a
+# kind is added with its backend, and a kind is named in the schema
+# (models.RuntimeStoreKind) only once it is here.
+_RUNTIME_STORE_FACTORIES: Dict[str, Callable[[Settings], RuntimeStore]] = {
+    "memory": lambda settings: MemoryRuntimeStore(),
+}
+
+# The store of this process, and the inputs it was activated with. Kept apart:
+# being the activated store is the lifecycle's business and no property of a
+# store. Inputs of None mean that no configuration has chosen yet, and the
+# store there is provisional.
+_runtime_store: Optional[RuntimeStore] = None
+_runtime_store_inputs: Optional[RuntimeStoreInputs] = None
 _runtime_store_lock = threading.Lock()
 
 
-def get_runtime_store() -> MemoryRuntimeStore:
-    """The runtime store of this process (thread-safe lazy init)."""
+class RuntimeStoreRestartRequired(ValueError):
+    """A configuration asked for another runtime store than the one in use."""
+
+
+def runtime_store_inputs(settings: Settings) -> RuntimeStoreInputs:
+    """What the store these settings ask for is built from."""
+    return (settings.runtime_store,)
+
+
+def prepare_runtime_store(settings: Settings) -> Tuple[RuntimeStore, RuntimeStoreInputs]:
+    """The store the candidate settings need, and its inputs, prepared
+    and not activated: only ``publish_runtime_store`` makes a store the
+    process's configured choice, by recording the inputs it was chosen
+    with. Until then they stay None, whatever happens here.
+
+    The store in use when the inputs are the ones in force. A refusal when
+    they are not, before anything is built for them. Before the first
+    activation, and asking for memory: the provisional store, which this
+    may bring into existence if nobody has asked for one yet (so that what
+    is recorded between preparing and publishing lands in the store that
+    is published); that is the one global effect, and the same one any
+    ``get_runtime_store()`` has. Asking for another kind: a new store of
+    that kind, built aside and published by nobody.
+
+    So a load that fails after this leaves no configured choice behind: at
+    most a provisional store, which is what there was before or what the
+    next reader would have made.
+    """
+    wanted = runtime_store_inputs(settings)
+    with _runtime_store_lock:
+        store, inputs = _runtime_store, _runtime_store_inputs
+    if store is not None and inputs is not None:
+        if wanted != inputs:
+            raise RuntimeStoreRestartRequired(
+                f"runtime.store asks for {_described(wanted)} while this process uses {_described(inputs)}: "
+                "the runtime store is chosen when the process starts, so restart it to change it"
+            )
+        return store, inputs
+    if wanted == ("memory",):
+        # The provisional store, made now if nobody has asked for one yet:
+        # between preparing and publishing, the load configures the hooks,
+        # and whatever a plugin records then must land in the store that is
+        # published, not in one the publication would replace. Making it
+        # activates nothing: the inputs stay None until the publication.
+        provisional = get_runtime_store()
+        if isinstance(provisional, MemoryRuntimeStore):
+            return provisional, wanted
+    factory = _RUNTIME_STORE_FACTORIES.get(wanted[0])
+    if factory is None:
+        raise ValueError(f"runtime.store: {wanted[0]} is not a runtime store nanoidp has")
+    return factory(settings), wanted
+
+
+def publish_runtime_store(store: RuntimeStore, inputs: RuntimeStoreInputs) -> None:
+    """Make ``store`` the one every reader gets from get_runtime_store(),
+    chosen by a configuration."""
+    global _runtime_store, _runtime_store_inputs
+    with _runtime_store_lock:
+        _runtime_store, _runtime_store_inputs = store, inputs
+
+
+def activate_runtime_store(settings: Settings) -> Callable[[], None]:
+    """The configuration activation step for the runtime store (#354): the
+    store is prepared now, and the returned function publishes it once the
+    load can no longer fail."""
+    store, inputs = prepare_runtime_store(settings)
+    return lambda: publish_runtime_store(store, inputs)
+
+
+def _described(inputs: RuntimeStoreInputs) -> str:
+    return " at ".join(inputs)
+
+
+def get_runtime_store() -> RuntimeStore:
+    """The runtime store of this process: the one a configuration activated,
+    or, before any did, a provisional memory store (thread-safe lazy init).
+
+    It never reads the configuration: it is called while the configuration
+    is being built (the audit of a plugin's load hook), and a configuration
+    manager built without the activation step is not the process's to
+    govern the store by.
+    """
     global _runtime_store
-    if _runtime_store is None:
-        with _runtime_store_lock:
-            if _runtime_store is None:
-                _runtime_store = MemoryRuntimeStore()
-    return _runtime_store
+    store = _runtime_store
+    if store is not None:
+        return store
+    with _runtime_store_lock:
+        if _runtime_store is None:
+            _runtime_store = MemoryRuntimeStore()
+        return _runtime_store

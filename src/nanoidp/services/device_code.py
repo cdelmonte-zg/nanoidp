@@ -40,7 +40,7 @@ from .runtime_repository import (
     delete_expired,
     delete_if,
 )
-from .runtime_store import MemoryRuntimeRepository, get_runtime_store
+from .runtime_store import RuntimeRepository, get_runtime_store
 
 if TYPE_CHECKING:
     # From the model's real home (#285): config only re-exports it for
@@ -217,11 +217,11 @@ class DeviceCodeStore:
     runtime store (#363). A view, with no state of its own."""
 
     @property
-    def _grants(self) -> MemoryRuntimeRepository[DeviceCodeGrant]:
+    def _grants(self) -> RuntimeRepository[DeviceCodeGrant]:
         return get_runtime_store().repository("device_grants", _device_code_of, _GRANTS)
 
     @property
-    def _index(self) -> MemoryRuntimeRepository[UserCodeIndex]:
+    def _index(self) -> RuntimeRepository[UserCodeIndex]:
         return get_runtime_store().repository("device_user_codes", _user_code_of, _INDEX)
 
     def create(

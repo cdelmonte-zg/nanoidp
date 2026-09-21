@@ -33,8 +33,8 @@ from pydantic import BaseModel
 from .runtime_repository import consume as consume_entry
 from .runtime_repository import create_within
 from .runtime_store import (
-    MemoryRuntimeRepository,
     PydanticCodec,
+    RuntimeRepository,
     get_runtime_store,
 )
 
@@ -101,7 +101,7 @@ class PendingSecondFactorStore:
     respect to the others."""
 
     @property
-    def _repository(self) -> MemoryRuntimeRepository[PendingSecondFactor]:
+    def _repository(self) -> RuntimeRepository[PendingSecondFactor]:
         # Looked up on every use, like the authorization transactions: the
         # runtime store owns the state, whatever replaces it.
         return get_runtime_store().repository(
