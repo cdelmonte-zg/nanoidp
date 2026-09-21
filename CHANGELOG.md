@@ -79,8 +79,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   transaction, so decisions in two processes come one after the other;
   WAL with `synchronous=NORMAL` keeps atomicity, consistency and isolation
   and gives up only a commit's survival of a power loss, which a disposable
-  file never promised. One connection per thread and per process, never
-  used across a fork. The file is private: created `0600`, `-wal` and
+  file never promised. One connection per thread, and none across a fork:
+  SQLite asks that none be open when a process forks, and one opened afresh
+  in the child is not enough (a parent that closes its own afterwards
+  deletes the WAL under the child, whose commits are lost). An at-fork hook
+  waits until no operation of any store is in progress, closes every
+  connection of the process, and both sides open their own afterwards; so a
+  pre-fork server started through Python (gunicorn `--preload`) can share
+  the store. A fork must not be made from inside a decision, and one made
+  from C without Python's at-fork calls skips the hook. The file is private: created `0600`, `-wal` and
   `-shm` brought to `0600` too, an existing store made private; a file
   that is not a NanoIDP runtime store, or one of another schema version, is
   refused and left as it was. A store held by another process for longer

@@ -420,28 +420,340 @@ class TestContention:
 
         assert len(users.list()) == 200
 
-    @pytest.mark.skipif(not hasattr(os, "fork"), reason="needs fork")
-    def test_a_forked_child_uses_a_connection_of_its_own(self, tmp_path):
+_FORK = pytest.mark.skipif(not hasattr(os, "fork"), reason="needs fork")
+
+
+# How long a step of these tests may take before it counts as stuck: each
+# is bounded here, so that a gate left shut fails the test that shows it and
+# never hangs the run.
+_BOUND = 5
+
+
+def _child_body(child):  # pragma: no cover - the child
+    import signal
+
+    code = 0
+    try:
+        signal.alarm(_BOUND)
+        child()
+    except BaseException:
+        code = 3
+    os._exit(code)
+
+
+def _forked(child):
+    """Run ``child`` in a forked process, bounded: a child that hangs is
+    killed by its alarm and counts as a failure. Its exit code, 0 when it
+    returned."""
+    pid = os.fork()
+    if pid == 0:  # pragma: no cover - the child
+        _child_body(child)
+    _, status = os.waitpid(pid, 0)
+    return os.waitstatus_to_exitcode(status)
+
+
+def _within(action):
+    """``action`` on a thread of its own, which must end within the bound:
+    what it returned."""
+    done = []
+    worker = threading.Thread(target=lambda: done.append(action()), daemon=True)
+    worker.start()
+    worker.join(_BOUND)
+    assert done, "stuck: the store never let the operation through"
+    return done[0]
+
+
+def _thread(target, *args):
+    worker = threading.Thread(target=target, args=args, daemon=True)
+    worker.start()
+    return worker
+
+
+def _rows(path):
+    """What a connection of nobody else's sees, in order of creation."""
+    connection = sqlite3.connect(path)
+    try:
+        return [row[0] for row in connection.execute("SELECT name FROM entries WHERE repository = 'users' ORDER BY seq")]
+    finally:
+        connection.close()
+
+
+def _registered(database):
+    return len(database._connections)
+
+
+class TestAFork:
+    """SQLite asks that no connection be open across a fork: a connection
+    opened afresh in the child is not enough, since the child inherits the
+    parent's bookkeeping of the file's locks, and a parent that then closes
+    its connection believes it is the file's last user, checkpoints and
+    deletes the WAL under the child. So every connection of the process is
+    closed before a fork (an at-fork hook, once nothing is using one), and
+    both sides open their own afterwards."""
+
+    @_FORK
+    @pytest.mark.filterwarnings("ignore::DeprecationWarning")
+    def test_a_childs_commits_survive_the_parent_closing_its_connection(self, tmp_path):
         path = tmp_path / "runtime.db"
         store = _store(path)
         store.users.create(_user("parent"))
-        parent_connection = store._database.connection()
+        assert store.users.list()  # a connection of the parent's, open at the fork
+        first, then = os.pipe(), os.pipe()
+
+        def child():
+            store.users.create(_user("c1"))
+            os.write(first[1], b"x")
+            os.read(then[0], 1)
+            store.users.create(_user("c2"))
+            store.users.create(_user("c3"))
+            assert [user.username for user in store.users.list()] == ["parent", "c1", "c2", "c3"]
 
         pid = os.fork()
         if pid == 0:  # pragma: no cover - the child
-            code = 0
-            try:
-                if store._database.connection() is parent_connection:
-                    code = 2
-                store.users.create(_user("child"))
-            except BaseException:
-                code = 3
-            os._exit(code)
+            os.close(first[0])
+            os.close(then[1])
+            _child_body(child)
+        # A child that dies is an end of file here, not a wait.
+        os.close(first[1])
+        os.close(then[0])
+        assert os.read(first[0], 1) == b"x"
+        # The parent goes on, and closes its connection while the child is
+        # still writing: what a parent does at its exit.
+        _within(store.users.list)
+        _within(lambda: store._database.connection().close())
+        os.write(then[1], b"x")
         _, status = os.waitpid(pid, 0)
 
         assert os.waitstatus_to_exitcode(status) == 0
-        assert sorted(user.username for user in store.users.list()) == ["child", "parent"]
+        assert _rows(path) == ["parent", "c1", "c2", "c3"]
 
+    def test_before_a_fork_no_connection_of_any_store_is_open(self, tmp_path):
+        stores = [_store(tmp_path / "a.db"), _store(tmp_path / "b.db")]
+        opened = []
+
+        def use(store):
+            store.users.list()
+            opened.append(store._database.connection())
+
+        for store in stores:
+            use(store)
+            _thread(use, store).join(_BOUND)
+        assert [_registered(store._database) for store in stores] == [2, 2]
+
+        _within(sqlite_module._FORK_GATE.before_fork)
+        try:
+            assert [_registered(store._database) for store in stores] == [0, 0]
+            for connection in opened:
+                with pytest.raises(sqlite3.ProgrammingError):
+                    connection.execute("SELECT 1")
+        finally:
+            sqlite_module._FORK_GATE.after_in_parent()
+
+    def test_after_a_fork_every_thread_opens_a_connection_again(self, tmp_path):
+        store = _store(tmp_path / "runtime.db")
+        store.users.create(_user("before"))
+        ready, go, done, seen = threading.Event(), threading.Event(), threading.Event(), []
+
+        def worker():
+            store.users.list()
+            ready.set()
+            go.wait(_BOUND)
+            seen.append([user.username for user in store.users.list()])
+            done.set()
+
+        thread = _thread(worker)
+        assert ready.wait(_BOUND)
+        _within(sqlite_module._FORK_GATE.before_fork)
+        sqlite_module._FORK_GATE.after_in_parent()
+        _within(lambda: store.users.create(_user("after")))
+        go.set()
+        thread.join(_BOUND)
+
+        assert seen == [["before", "after"]]
+
+    def test_the_hook_waits_for_an_operation_in_progress(self, tmp_path):
+        store = _store(tmp_path / "runtime.db")
+        inside, release = threading.Event(), threading.Event()
+
+        def decide(view):
+            inside.set()
+            release.wait(_BOUND)
+            return view.create(_user("slow"))
+
+        writer = _thread(store.users.transact, decide)
+        assert inside.wait(_BOUND)
+        forked = threading.Event()
+
+        def fork_hook():
+            sqlite_module._FORK_GATE.before_fork()
+            forked.set()
+
+        hook = _thread(fork_hook)
+        try:
+            assert not forked.wait(0.3)
+            release.set()
+            writer.join(_BOUND)
+            assert forked.wait(_BOUND)
+            assert _registered(store._database) == 0
+        finally:
+            hook.join(_BOUND)
+            sqlite_module._FORK_GATE.after_in_parent()
+
+        assert [user.username for user in _within(store.users.list)] == ["slow"]
+
+    def test_an_operation_begun_during_the_fork_waits_for_it(self, tmp_path):
+        store = _store(tmp_path / "runtime.db")
+        store.users.create(_user("alice"))
+        _within(sqlite_module._FORK_GATE.before_fork)
+        finished = threading.Event()
+
+        def read():
+            store.users.list()
+            finished.set()
+
+        try:
+            reader = _thread(read)
+            assert not finished.wait(0.3)
+            assert _registered(store._database) == 0
+        finally:
+            sqlite_module._FORK_GATE.after_in_parent()
+        assert finished.wait(_BOUND)
+        reader.join(_BOUND)
+
+    def test_a_connection_being_opened_is_waited_for_and_closed(self, tmp_path, monkeypatch):
+        store = _store(tmp_path / "runtime.db")
+        database = store._database
+        opening, release = threading.Event(), threading.Event()
+        real_open = database._open
+
+        def slow_open():
+            opening.set()
+            release.wait(_BOUND)
+            return real_open()
+
+        monkeypatch.setattr(database, "_open", slow_open)
+        reader = _thread(store.users.list)
+        assert opening.wait(_BOUND)
+        forked = threading.Event()
+
+        def fork_hook():
+            sqlite_module._FORK_GATE.before_fork()
+            forked.set()
+
+        hook = _thread(fork_hook)
+        try:
+            assert not forked.wait(0.3)
+            release.set()
+            reader.join(_BOUND)
+            assert forked.wait(_BOUND)
+            assert _registered(database) == 0
+        finally:
+            hook.join(_BOUND)
+            sqlite_module._FORK_GATE.after_in_parent()
+
+    def test_a_store_being_opened_is_waited_for(self, tmp_path, monkeypatch):
+        opening, release = threading.Event(), threading.Event()
+        real_initialise = sqlite_module._Database._initialise
+
+        def slow_initialise(database, created):
+            opening.set()
+            release.wait(_BOUND)
+            return real_initialise(database, created)
+
+        monkeypatch.setattr(sqlite_module._Database, "_initialise", slow_initialise)
+        opener = _thread(_store, tmp_path / "runtime.db")
+        assert opening.wait(_BOUND)
+        forked = threading.Event()
+
+        def fork_hook():
+            sqlite_module._FORK_GATE.before_fork()
+            forked.set()
+
+        hook = _thread(fork_hook)
+        try:
+            assert not forked.wait(0.3)
+            release.set()
+            opener.join(_BOUND)
+            assert forked.wait(_BOUND)
+        finally:
+            hook.join(_BOUND)
+            sqlite_module._FORK_GATE.after_in_parent()
+
+    @_FORK
+    @pytest.mark.filterwarnings("ignore::DeprecationWarning")
+    def test_a_child_uses_the_store_while_the_parent_is_forking_elsewhere(self, tmp_path):
+        """The child's gate is its own: it is not left closed by the fork
+        that made it."""
+        path = tmp_path / "runtime.db"
+        store = _store(path)
+        store.users.create(_user("parent"))
+
+        assert _forked(lambda: store.users.create(_user("child"))) == 0
+        assert _rows(path) == ["parent", "child"]
+        # And the parent's is open again.
+        _within(lambda: store.users.create(_user("again")))
+        assert _rows(path) == ["parent", "child", "again"]
+
+    @_FORK
+    @pytest.mark.filterwarnings("ignore::DeprecationWarning")
+    def test_a_real_fork_leaves_no_connection_open(self, tmp_path):
+        store = _store(tmp_path / "runtime.db")
+        store.users.list()
+        assert _registered(store._database) == 1
+
+        assert _forked(lambda: None) == 0
+        assert _registered(store._database) == 0
+
+    def test_a_close_that_fails_does_not_stop_the_hook(self, tmp_path):
+        store = _store(tmp_path / "runtime.db")
+        store.users.list()
+        opened = store._database.connection()
+
+        class Failing:
+            def close(self):
+                raise sqlite3.ProgrammingError("cannot close")
+
+        store._database._connections.add(Failing())
+
+        _within(sqlite_module._FORK_GATE.before_fork)
+        try:
+            assert _registered(store._database) == 0
+            with pytest.raises(sqlite3.ProgrammingError):
+                opened.execute("SELECT 1")
+        finally:
+            sqlite_module._FORK_GATE.after_in_parent()
+
+    def test_a_repository_being_lent_is_waited_for(self, tmp_path, monkeypatch):
+        """Nothing a store locks is held by another thread at the fork: the
+        child would inherit that lock taken, by a thread it does not have."""
+        store = _store(tmp_path / "runtime.db")
+        lending, release = threading.Event(), threading.Event()
+        real_init = sqlite_module.SqliteRuntimeRepository.__init__
+
+        def slow_init(repository, *args):
+            lending.set()
+            release.wait(_BOUND)
+            real_init(repository, *args)
+
+        monkeypatch.setattr(sqlite_module.SqliteRuntimeRepository, "__init__", slow_init)
+        lender = _thread(store.repository, "codes", lambda user: user.username, PydanticCodec(User))
+        assert lending.wait(_BOUND)
+        forked = threading.Event()
+
+        def fork_hook():
+            sqlite_module._FORK_GATE.before_fork()
+            forked.set()
+
+        hook = _thread(fork_hook)
+        try:
+            assert not forked.wait(0.3)
+            release.set()
+            lender.join(_BOUND)
+            assert forked.wait(_BOUND)
+            assert not store._lock.locked()
+        finally:
+            hook.join(_BOUND)
+            sqlite_module._FORK_GATE.after_in_parent()
 
 def _open_and_create(path, name, barrier, out):
     import logging

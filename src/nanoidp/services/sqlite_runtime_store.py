@@ -26,8 +26,18 @@ commit may be lost to a power loss, which a disposable file never promised,
 at a fraction of the cost of FULL. ``busy_timeout`` is how long a process
 waits for another's transaction; past it, ``RuntimeStoreUnavailable``.
 
-One connection per thread, and per process: a connection is never used on
-the other side of a fork.
+One connection per thread. No connection crosses a fork: SQLite asks that
+none be open when a process forks, since the child inherits the parent's
+bookkeeping of the file's locks, and a connection opened afresh in the child
+does not undo that (a parent that then closes its own believes it is the
+file's last user, and deletes the WAL under the child). So an at-fork hook
+waits until no operation of any store is in progress, blocks new ones, and
+closes every connection of the process; parent and child each open their own
+afterwards. This holds for a fork made through Python (``os.fork()``, and the
+pre-fork servers built on it, such as gunicorn ``--preload``); a fork made
+from C without Python's at-fork calls skips the hook. A fork must not be made
+from inside a decision, or from inside any operation of a store: the hook
+would wait for the thread that is forking.
 
 The file is the process's secret and NanoIDP's own: created ``0600`` (and so
 are ``-wal`` and ``-shm``, which SQLite makes with the database's mode, and
@@ -42,8 +52,10 @@ import stat
 import threading
 import time
 import uuid
+import weakref
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Callable, Dict, Generic, List, Optional, Tuple, Union, cast
+from typing import Any, Callable, Dict, Generic, Iterator, List, Optional, Set, Tuple, Union, cast
 
 from ..config import OAuthClient, User
 from .audit_store import AuditStore
@@ -129,6 +141,69 @@ def _unavailable(failure: sqlite3.Error) -> BaseException:
     return failure
 
 
+class _ForkGate:
+    """What makes a fork wait until no store's connection is in use, and
+    closes them all before it. One for the process: every connection of
+    every store has to be closed, not those of one file.
+
+    An operation of a store (opening one included) is an activity: it waits
+    while a fork is pending, and is counted until it ends. The hook, before
+    the fork, blocks new activities, waits until none is left, and closes
+    every connection; after it, the parent opens the gate again, and the
+    child starts with a gate of its own. The hook does nothing that can fail
+    but a close: CPython ignores what an at-fork hook raises and forks all
+    the same."""
+
+    def __init__(self) -> None:
+        self._reset()
+
+    def _reset(self) -> None:
+        self._condition = threading.Condition(threading.Lock())
+        self._active = 0
+        self._forking = False
+
+    @contextmanager
+    def activity(self) -> Iterator[None]:
+        with self._condition:
+            while self._forking:
+                self._condition.wait()
+            self._active += 1
+        try:
+            yield
+        finally:
+            with self._condition:
+                self._active -= 1
+                if self._active == 0:
+                    self._condition.notify_all()
+
+    def before_fork(self) -> None:
+        with self._condition:
+            self._forking = True
+            while self._active:
+                self._condition.wait()
+        for database in list(_DATABASES):
+            database._close_all()
+
+    def after_in_parent(self) -> None:
+        with self._condition:
+            self._forking = False
+            self._condition.notify_all()
+
+    def after_in_child(self) -> None:
+        # The other threads are gone, and with them whatever they held.
+        self._reset()
+
+
+_FORK_GATE = _ForkGate()
+_DATABASES: "weakref.WeakSet[_Database]" = weakref.WeakSet()
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(
+        before=_FORK_GATE.before_fork,
+        after_in_parent=_FORK_GATE.after_in_parent,
+        after_in_child=_FORK_GATE.after_in_child,
+    )
+
+
 class _Database:
     """The file, its schema, and the connections to it."""
 
@@ -137,12 +212,17 @@ class _Database:
         if self.path.is_dir():
             raise RuntimeStoreFileRefused(f"{self.path} is a directory, not a runtime store file")
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        created = self._create_private()
         self._local = threading.local()
-        # Connections left behind by a fork: never used, and never closed
-        # either, since closing one could release the parent's locks.
-        self._orphans: List[sqlite3.Connection] = []
-        self._initialise(created)
+        # Every connection open, whichever thread it belongs to, for the
+        # fork hook to close; and the count of those closings, by which a
+        # thread knows its own was closed.
+        self._connections: Set[sqlite3.Connection] = set()
+        self._connections_lock = threading.Lock()
+        self._generation = 0
+        with _FORK_GATE.activity():
+            created = self._create_private()
+            self._initialise(created)
+            _DATABASES.add(self)
 
     def _create_private(self) -> bool:
         """Create the file 0600 if it is not there. Whether it was made now."""
@@ -234,24 +314,39 @@ class _Database:
         return RuntimeStoreFileRefused(f"{self.path} cannot be used as a runtime store: {failure}")
 
     def _open(self) -> sqlite3.Connection:
+        # Not shared between threads: another thread may only close it, in
+        # the fork hook, once nothing is using it.
         connection = sqlite3.connect(
-            str(self.path), timeout=_BUSY_TIMEOUT_MS / 1000, isolation_level=None
+            str(self.path), timeout=_BUSY_TIMEOUT_MS / 1000, isolation_level=None, check_same_thread=False
         )
         connection.execute(f"PRAGMA busy_timeout = {_BUSY_TIMEOUT_MS}")
         connection.execute("PRAGMA synchronous = NORMAL")
         return connection
 
     def connection(self) -> sqlite3.Connection:
-        """This thread's connection, in this process."""
+        """This thread's connection; a new one if the fork hook closed it.
+        Only within an activity of the fork gate."""
         local = self._local
-        pid = os.getpid()
-        if getattr(local, "pid", None) != pid:
-            inherited = getattr(local, "connection", None)
-            if inherited is not None:
-                self._orphans.append(inherited)
-            local.connection = self._open()
-            local.pid = pid
+        if getattr(local, "generation", None) != self._generation:
+            connection = self._open()
+            with self._connections_lock:
+                self._connections.add(connection)
+            local.connection = connection
+            local.generation = self._generation
         return cast(sqlite3.Connection, local.connection)
+
+    def _close_all(self) -> None:
+        """Close every connection, of every thread. Only from the fork hook,
+        once no activity is left."""
+        with self._connections_lock:
+            connections = list(self._connections)
+            self._connections.clear()
+            self._generation += 1
+        for connection in connections:
+            try:
+                connection.close()
+            except Exception:  # noqa: BLE001 - nothing may stop the hook
+                pass
 
 
 def _hold_of(text: Optional[str]) -> Optional[Hold]:
@@ -467,16 +562,21 @@ class SqliteRuntimeRepository(RepositorySwitches, Generic[T]):
 
     def _read(self, read: Callable[["_SqliteTransaction[T]"], R]) -> R:
         """A read outside a decision: one statement, its own snapshot."""
-        view = _SqliteTransaction(self._database.connection(), self._repository, self._name_of, self._codec)
-        try:
-            return read(view)
-        except sqlite3.Error as failure:
-            raise _unavailable(failure) from failure
-        finally:
-            view.close()
+        with _FORK_GATE.activity():
+            view = _SqliteTransaction(self._database.connection(), self._repository, self._name_of, self._codec)
+            try:
+                return read(view)
+            except sqlite3.Error as failure:
+                raise _unavailable(failure) from failure
+            finally:
+                view.close()
 
     def transact(self, decide: Callable[[RepositoryTransaction[T]], R]) -> R:
         refuse_inside_a_decision()
+        with _FORK_GATE.activity():
+            return self._transact(decide)
+
+    def _transact(self, decide: Callable[[RepositoryTransaction[T]], R]) -> R:
         connection = self._database.connection()
         try:
             connection.execute("BEGIN IMMEDIATE")
@@ -552,7 +652,10 @@ class SqliteRuntimeStore:
         refuse_inside_a_decision()
         if name in _OWN:
             raise ValueError(f"{name!r} is the store's own repository")
-        with self._lock:
+        # An activity of the fork gate, although it touches no connection:
+        # a fork must not find the lock held by a thread the child will not
+        # have.
+        with _FORK_GATE.activity(), self._lock:
             existing = self._lent.get(name)
             if existing is None:
                 existing = SqliteRuntimeRepository(self._database, name, key_of, codec)
