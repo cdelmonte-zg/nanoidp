@@ -55,7 +55,7 @@ import uuid
 import weakref
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Callable, Dict, Generic, Iterator, List, Optional, Set, Tuple, Union, cast
+from typing import Any, Callable, Dict, Generic, Iterator, List, Optional, Tuple, Union, cast
 
 from ..config import OAuthClient, User
 from .audit_store import AuditStore
@@ -213,10 +213,10 @@ class _Database:
             raise RuntimeStoreFileRefused(f"{self.path} is a directory, not a runtime store file")
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._local = threading.local()
-        # Every connection open, whichever thread it belongs to, for the
-        # fork hook to close; and the count of those closings, by which a
-        # thread knows its own was closed.
-        self._connections: Set[sqlite3.Connection] = set()
+        # Every connection open, by the thread it belongs to, for the fork
+        # hook to close; and the count of those closings, by which a thread
+        # knows its own was closed.
+        self._connections: Dict[threading.Thread, sqlite3.Connection] = {}
         self._connections_lock = threading.Lock()
         self._generation = 0
         with _FORK_GATE.activity():
@@ -330,16 +330,28 @@ class _Database:
         if getattr(local, "generation", None) != self._generation:
             connection = self._open()
             with self._connections_lock:
-                self._connections.add(connection)
+                ended = self._ended()
+                self._connections[threading.current_thread()] = connection
+            for gone in ended:
+                gone.close()
             local.connection = connection
             local.generation = self._generation
         return cast(sqlite3.Connection, local.connection)
+
+    def _ended(self) -> List[sqlite3.Connection]:
+        """Take out of the registry the connections of threads that are
+        gone, for the caller to close: a server that starts a thread per
+        request would otherwise keep two descriptors per request until the
+        next fork. Nothing is using them, and within an activity no fork can
+        come in between. Under the registry's lock."""
+        ended = [thread for thread in self._connections if not thread.is_alive()]
+        return [self._connections.pop(thread) for thread in ended]
 
     def _close_all(self) -> None:
         """Close every connection, of every thread. Only from the fork hook,
         once no activity is left."""
         with self._connections_lock:
-            connections = list(self._connections)
+            connections = list(self._connections.values())
             self._connections.clear()
             self._generation += 1
         for connection in connections:

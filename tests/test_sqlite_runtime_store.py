@@ -704,6 +704,47 @@ class TestAFork:
         assert _forked(lambda: None) == 0
         assert _registered(store._database) == 0
 
+    def test_the_connection_of_a_thread_that_ended_is_closed(self, tmp_path):
+        """The registry the hook closes from must not keep the connections
+        of threads that are gone: a server that starts a thread per request
+        would otherwise hold two descriptors per request until it forks."""
+        store = _store(tmp_path / "runtime.db")
+        left = []
+
+        def request():
+            store.users.list()
+            left.append(store._database.connection())
+
+        for _ in range(50):
+            _thread(request).join(_BOUND)
+
+        assert _registered(store._database) <= 1
+        for connection in left[:-1]:
+            with pytest.raises(sqlite3.ProgrammingError):
+                connection.execute("SELECT 1")
+
+    def test_the_connection_of_a_thread_still_there_is_kept(self, tmp_path):
+        store = _store(tmp_path / "runtime.db")
+        ready, go = threading.Event(), threading.Event()
+        kept = []
+
+        def long_lived():
+            store.users.list()
+            kept.append(store._database.connection())
+            ready.set()
+            go.wait(_BOUND)
+            kept.append(store._database.connection())
+
+        worker = _thread(long_lived)
+        assert ready.wait(_BOUND)
+        for _ in range(5):
+            _thread(store.users.list).join(_BOUND)
+        go.set()
+        worker.join(_BOUND)
+
+        assert kept[0] is kept[1]
+        kept[0].execute("SELECT 1")
+
     def test_a_close_that_fails_does_not_stop_the_hook(self, tmp_path):
         store = _store(tmp_path / "runtime.db")
         store.users.list()
@@ -713,7 +754,7 @@ class TestAFork:
             def close(self):
                 raise sqlite3.ProgrammingError("cannot close")
 
-        store._database._connections.add(Failing())
+        store._database._connections[threading.Thread()] = Failing()
 
         _within(sqlite_module._FORK_GATE.before_fork)
         try:
