@@ -106,6 +106,50 @@ class NestedRepositoryUse(RuntimeError):
     """
 
 
+class RuntimeStoreUnavailable(RuntimeError):
+    """The store could not be had in time: another process holds it for
+    longer than the store waits (#354). A reason to come back, not a fault:
+    the endpoints answer 503 with Retry-After. Only contention is this; a
+    store that is broken (corrupt, unreadable, out of space) is an error of
+    its own."""
+
+
+class RepositorySwitches:
+    """Two switches for the test suite, one for every backend: set on this
+    class, they hold for all of them, which is the point of having them.
+
+    ``run_decisions_twice``: each decision is first run against a view that
+    is thrown away. A backend that never runs a decision again would
+    otherwise let a decision that is not safe to repeat pass every test.
+
+    ``verify_codecs``: every value stored is first taken through dump, JSON
+    and load, and must come back equal. A diagnostic: a backend that has to
+    write values down does so whatever this says; the switch adds the check
+    that what comes back is what went in.
+    """
+
+    run_decisions_twice = False
+    verify_codecs = False
+
+
+def verified(codec: "Codec[T]", obj: T) -> Any:
+    """``obj`` as JSON through its codec, and, with ``verify_codecs`` on,
+    checked to come back equal. What a backend writes down."""
+    try:
+        written = codec.dump(obj)
+        text = json.dumps(written, allow_nan=False)
+    except Exception as failure:
+        raise ValueError(f"{type(obj).__name__} does not survive its codec: {failure}") from failure
+    if RepositorySwitches.verify_codecs:
+        try:
+            read_back = codec.load(json.loads(text))
+        except Exception as failure:
+            raise ValueError(f"{type(obj).__name__} does not survive its codec: {failure}") from failure
+        if read_back != obj:
+            raise ValueError(f"{type(obj).__name__} does not survive its codec: it comes back changed")
+    return text
+
+
 class Codec(Protocol[T]):
     """What a repository needs to know about the type it keeps: how a value
     is copied, how it is written down and how it is read back.
@@ -727,20 +771,12 @@ class _MemoryTransaction(Generic[T]):
         return current
 
 
-class MemoryRuntimeRepository(Generic[T]):
-    """A runtime repository in process memory, keyed by the object's name."""
+class MemoryRuntimeRepository(RepositorySwitches, Generic[T]):
+    """A runtime repository in process memory, keyed by the object's name.
 
-    # For tests. This backend has no reason of its own to run a decision
-    # again, so a decision that is not safe to repeat would pass every test
-    # here and fail on a backend that retries. Set, each decision is first
-    # run against a view that is thrown away.
-    run_decisions_twice = False
-    # For tests, in the same spirit. This backend copies and never writes a
-    # value down, so a codec whose dump loses something, or is not JSON,
-    # would go unnoticed until a backend that serializes. Set, every value
-    # stored is first taken through dump, JSON and load, and must come back
-    # equal.
-    verify_codecs = False
+    It copies and never writes a value down, so with ``verify_codecs`` off a
+    codec that loses something, or is not JSON, goes unnoticed here: the
+    suite runs with it on (see ``RepositorySwitches``)."""
 
     def __init__(
         self, lock: threading.RLock, name_of: Callable[[T], str], codec: Codec[T]
@@ -765,14 +801,8 @@ class MemoryRuntimeRepository(Generic[T]):
 
     def _stored(self, obj: T) -> T:
         """The copy of ``obj`` the repository keeps."""
-        if self.verify_codecs:
-            try:
-                written = json.dumps(self._codec.dump(obj), allow_nan=False)
-                read_back = self._codec.load(json.loads(written))
-            except Exception as failure:
-                raise ValueError(f"{type(obj).__name__} does not survive its codec: {failure}") from failure
-            if read_back != obj:
-                raise ValueError(f"{type(obj).__name__} does not survive its codec: it comes back changed")
+        if RepositorySwitches.verify_codecs:
+            verified(self._codec, obj)
         return self._codec.copy(obj)
 
     def create(self, obj: T, expires_at: Optional[float] = None) -> T:
@@ -813,7 +843,7 @@ class MemoryRuntimeRepository(Generic[T]):
     def transact(self, decide: Callable[[RepositoryTransaction[T]], R]) -> R:
         refuse_inside_a_decision()
         with self._lock:
-            if self.run_decisions_twice:
+            if RepositorySwitches.run_decisions_twice:
                 _, thrown_away = self._decide(decide)
                 self._put_back(thrown_away)
             result, view = self._decide(decide)

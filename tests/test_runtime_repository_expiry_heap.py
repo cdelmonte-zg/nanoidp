@@ -29,6 +29,7 @@ import pytest
 from nanoidp.services import runtime_repository
 from nanoidp.services.runtime_repository import (
     MemoryRuntimeRepository,
+    RepositorySwitches,
     RuntimeObjectExists,
     consume,
     delete_expired,
@@ -72,7 +73,7 @@ def settled(monkeypatch):
 def _per_decision(names):
     """What one decision looks at: the suite also runs with every decision
     run twice, the first time against a view that is thrown away."""
-    return names * (2 if MemoryRuntimeRepository.run_decisions_twice else 1)
+    return names * (2 if RepositorySwitches.run_decisions_twice else 1)
 
 
 def _heap(repository):
@@ -332,7 +333,7 @@ class TestTheHeapIsTransactionalState:
         assert all(entry.instance_id in on_the_heap for entry in repository.entries())
 
     def test_a_decision_run_twice_pushes_once_and_loses_no_pop(self, monkeypatch):
-        monkeypatch.setattr(MemoryRuntimeRepository, "run_decisions_twice", True)
+        monkeypatch.setattr(RepositorySwitches, "run_decisions_twice", True)
         repository = _repository()
         repository.create(Thing("due"), expires_at=1000.0)
         repository.create(Thing("later"), expires_at=3000.0)

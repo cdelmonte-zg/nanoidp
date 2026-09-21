@@ -68,6 +68,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`record_registration(entry, ...)`) and dropped with
   `forget_registration_of(entry)`.
 
+- **A runtime store in a SQLite file, not selectable yet** (#354, second
+  step). `SqliteRuntimeStore` keeps users, clients and every repository a
+  service is lent in one SQLite file, for several NanoIDP processes on one
+  host, and runs the whole repository contract, like the memory store: the
+  contract tests now run over both backends. One table for every repository,
+  its rows in the order of creation (a replace keeps its place, a delete and
+  a create take a new one); a partial index on what has a time and is not
+  held makes a cleanup cost what is due. A decision is a `BEGIN IMMEDIATE`
+  transaction, so decisions in two processes come one after the other;
+  WAL with `synchronous=NORMAL` keeps atomicity, consistency and isolation
+  and gives up only a commit's survival of a power loss, which a disposable
+  file never promised. One connection per thread and per process, never
+  used across a fork. The file is private: created `0600`, `-wal` and
+  `-shm` brought to `0600` too, an existing store made private; a file
+  that is not a NanoIDP runtime store, or one of another schema version, is
+  refused and left as it was. A store held by another process for longer
+  than it waits is `RuntimeStoreUnavailable`, which the endpoints answer
+  with `503` and `Retry-After`; any other SQLite error is not called that.
+  The two switches of the test suite (`run_decisions_twice`,
+  `verify_codecs`) are now one for every backend (`RepositorySwitches`).
+  Measured, median per call, memory -> SQLite on ext4: creating an
+  authorization code 15 -> 66 us, redeeming it 17 -> 51 us, `is_revoked()`
+  1.2 -> 5.5 us, a refresh claim 10 -> 37 us; with ten thousand revocation
+  markers the refresh claim is 52 us in memory (the index copy) and 30 us in
+  SQLite. A few writes reach a p99 of 1 to 2 ms (a WAL checkpoint).
+  `runtime.store: sqlite` is not in the schema: it arrives once a store
+  shared by several processes keeps every invariant it has to, the audit
+  and the declared configuration included (#354, fourth step).
 - **The runtime store is chosen by the configuration and activated with it**
   (#354, first step). `get_runtime_store()` built an in-memory store on first
   use, took no settings and was published by nobody, so no backend could ever
