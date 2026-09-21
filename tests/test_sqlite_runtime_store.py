@@ -126,12 +126,16 @@ class TestTheFile:
         previous = os.umask(0o022)
         try:
             path = tmp_path / "runtime.db"
-            _store(path).users.create(_user("alice"))
+            # Kept while the sidecars are looked at: when the last
+            # connection to the file closes, SQLite removes them.
+            store = _store(path)
+            store.users.create(_user("alice"))
         finally:
             os.umask(previous)
 
         for name in ("runtime.db", "runtime.db-wal", "runtime.db-shm"):
             assert _mode(tmp_path / name) == 0o600, name
+        assert store.users.get("alice") is not None
 
     @pytest.mark.skipif(not _POSIX, reason="POSIX file modes")
     def test_a_new_file_is_private_from_the_moment_it_exists(self, tmp_path, monkeypatch):
@@ -156,16 +160,18 @@ class TestTheFile:
     @pytest.mark.skipif(not _POSIX, reason="POSIX file modes")
     def test_a_store_that_is_there_already_is_made_private(self, tmp_path):
         path = tmp_path / "runtime.db"
-        _store(path).users.create(_user("alice"))
+        # Kept open, so that the sidecars are there to be found: when the
+        # last connection to the file closes, SQLite removes them.
+        first = _store(path)
+        first.users.create(_user("alice"))
         for name in ("runtime.db", "runtime.db-wal", "runtime.db-shm"):
-            if (tmp_path / name).exists():
-                (tmp_path / name).chmod(0o644)
+            (tmp_path / name).chmod(0o644)
 
         _store(path)
 
         for name in ("runtime.db", "runtime.db-wal", "runtime.db-shm"):
-            if (tmp_path / name).exists():
-                assert _mode(tmp_path / name) == 0o600, name
+            assert _mode(tmp_path / name) == 0o600, name
+        assert first.users.get("alice") is not None
 
     def test_wal_is_the_journal(self, tmp_path):
         path = tmp_path / "runtime.db"
