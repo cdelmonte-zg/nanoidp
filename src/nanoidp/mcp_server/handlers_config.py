@@ -296,10 +296,11 @@ def _tool_clear_audit_log(arguments: dict[str, Any], config: ConfigManager) -> d
 # Key management (mirrors /api/keys*, issue #48)
 def _tool_get_keys_info(arguments: dict[str, Any], config: ConfigManager) -> dict[str, Any]:
     crypto = get_crypto_service()
+    keys = crypto.keys  # one reading (#420)
     return {
-        "active_kid": crypto.kid,
-        "previous_keys_count": len(crypto.previous_keys),
-        "previous_kids": [k.kid for k in crypto.previous_keys],
+        "active_kid": keys.kid,
+        "previous_keys_count": len(keys.previous_keys),
+        "previous_kids": [k.kid for k in keys.previous_keys],
         "max_previous_keys": crypto.max_previous_keys,
     }
 

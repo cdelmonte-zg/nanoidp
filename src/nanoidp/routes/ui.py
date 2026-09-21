@@ -1085,9 +1085,10 @@ def keys() -> ResponseReturnValue:
     if kid_file.exists():
         key_created = datetime.fromtimestamp(os.path.getmtime(kid_file)).strftime("%Y-%m-%d %H:%M:%S")
 
-    # Get previous keys info
+    # All of it from one reading of the keys (#420).
+    keys = crypto.keys
     previous_keys = []
-    for prev_key in crypto.previous_keys:
+    for prev_key in keys.previous_keys:
         previous_keys.append({
             "kid": prev_key.kid,
             "created_at": prev_key.created_at if prev_key.created_at else "Unknown",
@@ -1095,9 +1096,9 @@ def keys() -> ResponseReturnValue:
 
     return render_template(
         "keys.html",
-        kid=crypto.kid,
-        public_key_pem=crypto.pub_pem.decode("utf-8"),
-        certificate_pem=crypto.cert_pem.decode("utf-8") if crypto.cert_pem else None,
+        kid=keys.kid,
+        public_key_pem=keys.pub_pem.decode("utf-8"),
+        certificate_pem=keys.cert_pem.decode("utf-8") if keys.cert_pem else None,
         # The operator's spelling while it names the service's directory.
         keys_dir=settings.keys_dir if Path(settings.keys_dir) == keys_dir else str(keys_dir),
         settings=settings,

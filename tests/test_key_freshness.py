@@ -22,6 +22,7 @@ import multiprocessing
 import jwt as pyjwt
 import pytest
 
+from nanoidp.services import crypto as crypto_module
 from nanoidp.services import key_directory
 from nanoidp.services.crypto import CryptoService, get_crypto_service, publish_crypto_service
 
@@ -101,6 +102,17 @@ class TestVerificationIsByKid:
 
         assert not _verifies(service, _mint(stranger))
 
+    def test_the_active_key_under_a_kid_that_is_not_its_own_is_refused(self, tmp_path):
+        """What a resource server that looks the kid up in the JWKS does:
+        a kid the issuer does not publish names no key, whoever signed. Only
+        the key holder could make such a token, and nanoidp refuses it as its
+        relying parties would (external keys excepted, see below)."""
+        service = CryptoService(keys_dir=str(tmp_path / "keys"))
+
+        token = _signed_by_hand(service.priv_pem, {"alg": "RS256", "typ": "JWT", "kid": "not-one-of-its-kids"})
+
+        assert not _verifies(service, token)
+
     def test_a_kid_that_is_known_does_not_vouch_for_another_key(self, tmp_path):
         """The kid chooses which key to check against, and nothing else: a
         token signed by a stranger under a kid this service keeps is checked
@@ -151,16 +163,91 @@ class TestVerificationIsByKid:
             with pytest.raises(ValueError, match="Invalid token"):
                 service.verify_jwt(garbage, audience="x")
 
-    def test_external_keys_verify_as_before(self, tmp_path):
+    def test_external_keys_verify_as_they_always_did_whatever_the_kid(self, tmp_path):
+        """External keys have no history: one key, whatever kid it has been
+        published under. Here the same pair under the kid the generated
+        service gave it, and after ``external_key_id`` is changed."""
         source = CryptoService(keys_dir=str(tmp_path / "source"))
-        service = CryptoService(
-            keys_dir=str(tmp_path / "keys"),
-            external_private_key=str(tmp_path / "source" / "rsa_private.pem"),
-            external_public_key=str(tmp_path / "source" / "rsa_public.pem"),
-        )
+        external = {
+            "external_private_key": str(tmp_path / "source" / "rsa_private.pem"),
+            "external_public_key": str(tmp_path / "source" / "rsa_public.pem"),
+        }
+        service = CryptoService(keys_dir=str(tmp_path / "keys"), external_key_id="one", **external)
+        before = _mint(service)
 
-        assert _verifies(service, _mint(service))
-        assert not _verifies(service, _mint(source)), "another kid: the thumbprint is the external key's"
+        renamed = CryptoService(keys_dir=str(tmp_path / "keys"), external_key_id="two", **external)
+
+        assert renamed.kid == "two"
+        assert _verifies(renamed, before) and _verifies(renamed, _mint(renamed))
+        assert _verifies(renamed, _mint(source)), "the same key, under the kid of the generated service"
+        stranger = CryptoService(keys_dir=str(tmp_path / "another"))
+        assert not _verifies(renamed, _mint(stranger)), "and the signature is still what decides"
+
+
+class TestTheKeysAreTakenOnce:
+    """A rotation between two readings of the service would pair one key's
+    kid with the other's private key. The service's keys are one value,
+    replaced whole; minting, verifying and the JWKS each take it once. The
+    trap below makes any reading of a single field rotate the service
+    right after it has answered, so that a second reading answers for the
+    other key."""
+
+    @pytest.fixture
+    def trapped(self, tmp_path, monkeypatch):
+        service = CryptoService(keys_dir=str(tmp_path / "keys"), max_previous_keys=5)
+        armed = []
+
+        def trap(field):
+            def read(self):
+                value = getattr(self._keys, field)
+                if armed and armed.pop():
+                    self.rotate_keys()
+                return value
+
+            return property(read)
+
+        for field in ("kid", "priv_pem", "pub_pem", "cert_pem", "previous_keys"):
+            monkeypatch.setattr(CryptoService, field, trap(field))
+        return service, lambda: armed.append(True)
+
+    def test_a_rotation_replaces_the_keys_and_changes_none_in_place(self, tmp_path):
+        import dataclasses
+
+        service = CryptoService(keys_dir=str(tmp_path / "keys"))
+        before = service.keys
+        snapshot = (before.kid, before.priv_pem, before.pub_pem, before.cert_pem, before.previous_keys)
+
+        service.rotate_keys()
+
+        assert service.keys is not before
+        assert (before.kid, before.priv_pem, before.pub_pem, before.cert_pem, before.previous_keys) == snapshot
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            before.kid = "changed"  # type: ignore[misc]
+
+    def test_minting(self, trapped):
+        service, arm = trapped
+        arm()
+        token = _mint(service)
+
+        assert _verifies(service, token)
+
+    def test_verifying(self, trapped):
+        service, arm = trapped
+        token = _mint(service)
+        arm()
+
+        assert _verifies(service, token)
+
+    def test_the_jwks(self, trapped):
+        service, arm = trapped
+        arm()
+        published = service.get_jwks()["keys"]
+        arm()
+        active = service.get_jwk()
+
+        by_kid = {service.kid: service.pub_pem, **{key.kid: key.pub_pem for key in service.previous_keys}}
+        for jwk in published + [active]:
+            assert jwk == service._pem_to_jwk(by_kid[jwk["kid"]], jwk["kid"])
 
 
 class TestTheEndpointsKeepTheirOwnEarlierTokens:
@@ -211,12 +298,25 @@ class TestAPeerNoticesARotation:
         return keys_dir, service
 
     def test_nothing_is_reloaded_while_the_marker_stays(self, published, monkeypatch):
+        """Not loaded, and not even the refresh's lock asked for: a look that
+        finds the marker as it was is a stat and nothing more."""
         _, service = published
-        loads = []
+        loads, refreshes = [], []
         monkeypatch.setattr(key_directory, "load_published", lambda keys_dir: loads.append(keys_dir))
+        lock = crypto_module._refresh_lock
+
+        class Counting:
+            def acquire(self, *args, **kwargs):
+                refreshes.append(1)
+                return lock.acquire(*args, **kwargs)
+
+            def release(self):
+                lock.release()
+
+        monkeypatch.setattr(crypto_module, "_refresh_lock", Counting())
 
         assert all(get_crypto_service() is service for _ in range(5))
-        assert loads == []
+        assert loads == [] and refreshes == []
 
     def test_the_lock_is_not_taken_to_look(self, published):
         """Every signature comes through here. The marker is one small file
@@ -228,9 +328,10 @@ class TestAPeerNoticesARotation:
         _, service = published
         got = []
 
-        # Neither the directory's lock nor the one services are published
-        # under: both are held here, and a look from another thread returns.
-        with key_directory._thread_lock, crypto_module._crypto_service_lock:
+        # Not the directory's lock, not the one services are published
+        # under, not the refresh's: all three are held here, and a look from
+        # another thread returns.
+        with key_directory._thread_lock, crypto_module._crypto_service_lock, crypto_module._refresh_lock:
             looking = threading.Thread(target=lambda: got.append(get_crypto_service()))
             looking.start()
             looking.join(5)
@@ -286,17 +387,137 @@ class TestAPeerNoticesARotation:
 
         assert get_crypto_service() is service
 
-    def test_a_directory_emptied_under_a_running_service_is_not_a_rotation(self, published):
+    def test_a_rotation_has_its_new_keys_before_it_lets_the_directory_go(self, published, monkeypatch):
+        """A thread of this process that sees the new marker waits for the
+        directory's lock to load it; by then the rotating service must have
+        the new keys, or that thread publishes a second service for one
+        rotation."""
+        keys_dir, service = published
+        at_release = []
+        lock = key_directory._thread_lock
+
+        class Watching:
+            def acquire(self, *args, **kwargs):
+                return lock.acquire(*args, **kwargs)
+
+            def release(self):
+                at_release.append(service.kid)
+                lock.release()
+
+            def locked(self):
+                return lock.locked()
+
+        monkeypatch.setattr(key_directory, "_thread_lock", Watching())
+        new_kid = service.rotate_keys()["new_kid"]
+
+        assert at_release[-1] == new_kid
+
+    def test_a_refresh_that_finds_the_service_caught_up_publishes_nothing(self, published):
+        keys_dir, service = published
+        service.rotate_keys()
+        refreshed = service.reloaded()
+
+        assert refreshed is not None and refreshed.kid == service.kid
+        assert crypto_module._publish_refreshed(service, refreshed) is service
+        assert get_crypto_service() is service
+
+    def test_threads_that_look_during_this_processes_own_rotation_end_with_it(self, published, monkeypatch):
+        import threading
+
+        keys_dir, service = published
+        got = []
+
+        def look_while_committed(step):
+            if step == "marker:committed":
+                looker = threading.Thread(target=lambda: got.append(get_crypto_service()))
+                looker.start()
+                got.append(looker)
+
+        monkeypatch.setattr(key_directory, "_checkpoint", look_while_committed)
+        service.rotate_keys()
+        got[0].join(10)
+
+        assert got[1:] == [service]
+        assert get_crypto_service() is service
+
+    def test_a_directory_emptied_under_a_running_service_is_not_a_rotation(self, published, monkeypatch):
         """No marker says nothing was published, not that something else
-        was. The service goes on as it always did; its next rotation puts
-        the directory right (first part)."""
+        was. The service goes on as it always did, and does not even try to
+        load anything; its next rotation puts the directory right (first
+        part)."""
         keys_dir, service = published
         for file in list(keys_dir.iterdir()):
             if file.is_file():
                 file.unlink()
+        monkeypatch.setattr(CryptoService, "reloaded", lambda self: pytest.fail("tried to load an emptied directory"))
 
         assert get_crypto_service() is service
         assert not (keys_dir / "kid.txt").exists(), "and looking did not start cold over it"
+
+    def test_a_marker_with_no_key_behind_it_makes_no_new_key(self, published, caplog):
+        """A running process that follows the marker loads, and does nothing
+        else: the constructor would have generated a key pair here, and
+        replaced the signing key and every previous one with it."""
+        keys_dir, service = published
+        peer = CryptoService(keys_dir=str(keys_dir))
+        peer.rotate_keys()
+        (keys_dir / "rsa_private.pem").unlink()
+        marker = (keys_dir / "kid.txt").read_bytes()
+
+        with caplog.at_level("WARNING", logger="nanoidp.services.crypto"):
+            assert get_crypto_service() is service
+
+        assert (keys_dir / "kid.txt").read_bytes() == marker
+        assert not (keys_dir / "rsa_private.pem").exists()
+        assert "no key is there" in caplog.text
+
+    def test_the_marker_is_read_only_when_the_file_is_another(self, published, monkeypatch):
+        """A stat first: every signature comes through here, and on a shared
+        mount a read costs more than a stat."""
+        keys_dir, service = published
+        reads = []
+        active_kid = key_directory.active_kid
+        monkeypatch.setattr(key_directory, "active_kid", lambda directory: reads.append(1) or active_kid(directory))
+
+        for _ in range(20):
+            assert get_crypto_service() is service
+        assert len(reads) <= 1
+
+        new_kid = CryptoService(keys_dir=str(keys_dir)).rotate_keys()["new_kid"]
+        reads.clear()
+        assert get_crypto_service().kid == new_kid
+        assert reads, "a new file is read"
+
+    def test_a_marker_that_cannot_be_read_is_said_and_is_not_no_rotation(self, published, monkeypatch, caplog):
+        import errno
+
+        keys_dir, service = published
+        CryptoService(keys_dir=str(keys_dir)).rotate_keys()
+
+        def out_of_descriptors(directory):
+            raise OSError(errno.EMFILE, "Too many open files")
+
+        monkeypatch.setattr(key_directory, "active_kid", out_of_descriptors)
+        with caplog.at_level("WARNING", logger="nanoidp.services.crypto"):
+            assert get_crypto_service() is service
+
+        assert "cannot be read" in caplog.text
+
+    def test_only_a_marker_that_is_not_there_means_nothing_is_published(self, tmp_path):
+        import os
+
+        if os.name != "posix" or os.geteuid() == 0:
+            pytest.skip("needs a file this user cannot read")
+        keys_dir = tmp_path / "keys"
+        CryptoService(keys_dir=str(keys_dir))
+        (keys_dir / "kid.txt").chmod(0o000)
+        try:
+            with pytest.raises(PermissionError):
+                key_directory.active_kid(keys_dir)
+        finally:
+            (keys_dir / "kid.txt").chmod(0o644)
+        (keys_dir / "kid.txt").unlink()
+        assert key_directory.active_kid(keys_dir) is None
 
     def test_external_keys_are_not_looked_for_in_the_directory(self, tmp_path, monkeypatch):
         CryptoService(keys_dir=str(tmp_path / "source"))
@@ -321,10 +542,77 @@ class TestAPeerNoticesARotation:
         keys_dir, service = published
         CryptoService(keys_dir=str(keys_dir)).rotate_keys()
         monkeypatch.setattr(config_writer, "_LOCK_TIMEOUT_SECONDS", 0.2)
+        monkeypatch.setattr(crypto_module, "_REFRESH_RETRY_SECONDS", 0.0)
 
         with key_directory._thread_lock:
             assert get_crypto_service() is service
         assert get_crypto_service() is not service, "and the next look finds it"
+
+    def test_a_refresh_that_failed_is_not_tried_again_at_every_look(self, published, monkeypatch):
+        """Every request looks. A refresh that fails because the directory's
+        lock is stuck would otherwise wait for it again at each one."""
+        import time
+
+        from nanoidp import config_writer
+
+        keys_dir, service = published
+        CryptoService(keys_dir=str(keys_dir)).rotate_keys()
+        monkeypatch.setattr(config_writer, "_LOCK_TIMEOUT_SECONDS", 0.2)
+        tries = []
+        reloaded = CryptoService.reloaded
+        monkeypatch.setattr(CryptoService, "reloaded", lambda self: tries.append(1) or reloaded(self))
+
+        with key_directory._thread_lock:
+            assert get_crypto_service() is service
+            began = time.monotonic()
+            for _ in range(20):
+                assert get_crypto_service() is service
+            assert time.monotonic() - began < 0.2
+
+        assert tries == [1]
+
+    def test_nobody_waits_for_a_refresh_that_is_stuck_nor_for_the_publication_lock(self, published, monkeypatch, tmp_path):
+        """One request refreshes and is stuck on the directory's lock. The
+        others wait for it at most a moment, and not at all once it has been
+        stuck longer than that; and a configuration that publishes a service
+        meanwhile is not held up either (the refresh has a lock of its own)."""
+        import threading
+        import time
+
+        from nanoidp import config_writer
+
+        keys_dir, service = published
+        CryptoService(keys_dir=str(keys_dir)).rotate_keys()
+        monkeypatch.setattr(config_writer, "_LOCK_TIMEOUT_SECONDS", 3.0)
+        monkeypatch.setattr(crypto_module, "_REFRESH_WAIT_SECONDS", 0.2)
+        entered = threading.Event()
+        reloaded = CryptoService.reloaded
+
+        def announced(self):
+            entered.set()
+            return reloaded(self)
+
+        monkeypatch.setattr(CryptoService, "reloaded", announced)
+        other = CryptoService(keys_dir=str(tmp_path / "another"))
+
+        with key_directory._thread_lock:
+            refresher = threading.Thread(target=get_crypto_service)
+            refresher.start()
+            assert entered.wait(5)
+            began = time.monotonic()
+            assert get_crypto_service() is service
+            waited = time.monotonic() - began
+            time.sleep(0.25)
+            began = time.monotonic()
+            assert get_crypto_service() is service
+            not_waited = time.monotonic() - began
+            began = time.monotonic()
+            publish_crypto_service(other)
+            published_in = time.monotonic() - began
+        refresher.join(10)
+
+        assert waited < 0.5 and not_waited < 0.05 and published_in < 0.05
+        assert crypto_module._crypto_service is other, "a refresh does not undo a newer publication"
 
     def test_threads_that_notice_together_publish_one_service(self, published, monkeypatch):
         import threading
@@ -362,27 +650,37 @@ def _peer(keys_dir, commands, answers):
     logging.disable(logging.CRITICAL)
     from nanoidp.services.crypto import CryptoService, get_crypto_service, publish_crypto_service
 
-    publish_crypto_service(CryptoService(keys_dir=keys_dir))
-    answers.put(("ready", get_crypto_service().kid))
+    try:
+        publish_crypto_service(CryptoService(keys_dir=keys_dir))
+        answers.put(("ready", get_crypto_service().kid))
+    except BaseException as failure:  # noqa: BLE001 - said to the parent, not swallowed
+        answers.put(("raised", repr(failure)))
+        return
     while True:
         command, argument = commands.get()
-        service = get_crypto_service()
         if command == "stop":
             return
-        if command == "mint":
-            answers.put(service.create_jwt("u", "http://idp", "x"))
-        elif command == "verify":
-            try:
-                service.verify_jwt(argument, audience="x")
-                answers.put(True)
-            except ValueError:
-                answers.put(False)
-        elif command == "jwks":
-            answers.put(sorted(key["kid"] for key in service.get_jwks()["keys"]))
-        elif command == "certificate":
-            answers.put(service.cert_pem)
-        elif command == "rotate":
-            answers.put(service.rotate_keys()["new_kid"])
+        try:
+            _answer(command, argument, get_crypto_service(), answers)
+        except BaseException as failure:  # noqa: BLE001
+            answers.put(("raised", repr(failure)))
+
+
+def _answer(command, argument, service, answers):
+    if command == "mint":
+        answers.put(service.create_jwt("u", "http://idp", "x"))
+    elif command == "verify":
+        try:
+            service.verify_jwt(argument, audience="x")
+            answers.put(True)
+        except ValueError:
+            answers.put(False)
+    elif command == "jwks":
+        answers.put(sorted(key["kid"] for key in service.get_jwks()["keys"]))
+    elif command == "certificate":
+        answers.put(service.cert_pem)
+    elif command == "rotate":
+        answers.put(service.rotate_keys()["new_kid"])
 
 
 class TestWithARealPeer:
@@ -392,17 +690,28 @@ class TestWithARealPeer:
         mine = CryptoService(keys_dir=str(keys_dir))
         publish_crypto_service(mine)
         commands, answers = _SPAWN.Queue(), _SPAWN.Queue()
-        process = _SPAWN.Process(target=_peer, args=(str(keys_dir), commands, answers))
+        # A daemon, and stopped whatever happens: a peer left waiting on its
+        # queue would hold the test run open at exit.
+        process = _SPAWN.Process(target=_peer, args=(str(keys_dir), commands, answers), daemon=True)
         process.start()
-        assert answers.get(timeout=120) == ("ready", mine.kid)
 
         def ask(command, argument=None):
             commands.put((command, argument))
-            return answers.get(timeout=60)
+            answer = answers.get(timeout=60)
+            if isinstance(answer, tuple) and answer[:1] == ("raised",):
+                raise AssertionError(f"the peer raised: {answer[1]}")
+            return answer
 
-        yield keys_dir, ask
-        commands.put(("stop", None))
-        process.join(30)
+        try:
+            ready = answers.get(timeout=120)
+            assert ready == ("ready", mine.kid), ready
+            yield keys_dir, ask
+        finally:
+            commands.put(("stop", None))
+            process.join(10)
+            if process.is_alive():
+                process.terminate()
+                process.join(5)
 
     def test_after_this_process_rotates_the_peer_signs_verifies_and_publishes_as_it_does(self, peer):
         keys_dir, ask = peer

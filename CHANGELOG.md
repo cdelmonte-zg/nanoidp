@@ -80,18 +80,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `jwt.max_previous_keys` and so the same set the JWKS shows; a `kid` that
   is not kept, or is nobody's, is an invalid token; a token with no `kid` is
   checked against the active key, as before. The `kid` chooses the key and
-  vouches for nothing. **And after one process rotated, it and a running
+  vouches for nothing. External keys have no history: they verify with
+  their one key whatever `kid` a token names, as before, so that changing
+  `jwt.external_key_id` for the same pair invalidates nothing. With that,
+  **the keys of a service are one value, replaced whole**: before, a
+  rotation set the kid, the private key and the public key one after the
+  other on the service every request was using, and minting between two of
+  those assignments named one key and signed with the other, which
+  verification by `kid` would refuse for good. Minting, verifying, the
+  JWKS and SAML signing each read the keys once. **And after one process rotated, it and a running
   peer refused each other's tokens for as long as the peer ran**, the
   peer's JWKS never showing the new key. A peer's rotation is now noticed
   in one place, `get_crypto_service()`, through which JWT, JWKS, SAML and
-  the key information all come: it reads `kid.txt` without the lock (about
-  ten microseconds) and takes the directory's lock only when the marker
-  names another key, to load that bundle whole. A new service is published
-  and the one in hand is left as it is, so a request that already holds it
-  never finds half of each; a signature made with the old key just before
-  the peer's commit is correct, that key being a previous one now. A
-  refresh that cannot be made just now leaves the service there is, and the
-  next look tries again. External keys are not looked for in the directory.
+  the key information all come. It looks at `kid.txt` without a lock, with
+  a `stat` first and a read only when the file is a new one (about two
+  microseconds when nothing changed), and loads the bundle, whole, under
+  the directory's lock, only when the marker names another key. It loads
+  and does nothing else: a marker with no key behind it is reported and
+  left, never answered by generating a key pair. A new service is
+  published and the one in hand is left as it is, so a request that
+  already holds it keeps a whole one; a signature made with the old key
+  just before the peer's commit is correct, that key being a previous one
+  now. The refresh has a lock of its own, so the lock services are
+  published under is never held while the directory's is waited for; a
+  request waits for another's refresh at most half a second, and not at all
+  for one that is stuck; a refresh that failed is not tried again for five
+  seconds, the key in hand being used meanwhile. A marker that cannot be
+  read is said in the log, not taken for "no rotation". This process's own
+  rotation has its new keys before it lets the directory go, so no thread
+  of it loads and publishes a second service for it. External keys are not
+  looked for in the directory.
 - **Generated signing keys are one bundle for every process that shares the
   keys directory** (#420, first of two parts). Measured before: two
   processes cold-starting on one empty `jwt.keys_dir` ended with different

@@ -314,8 +314,11 @@ def _build_saml_response(
 
     if sign and SIGNXML_AVAILABLE:
         # The published service's certificate, the one for the key it signs
-        # with (#358), not the idp-cert.pem file re-read per request.
-        cert_pem = crypto.cert_pem
+        # with (#358), not the idp-cert.pem file re-read per request. Both
+        # taken at once: between two reads a rotation could pair one key's
+        # certificate with the other's signature (#420).
+        keys = crypto.keys
+        cert_pem = keys.cert_pem
 
         c14n_algo = _get_c14n_algorithm(settings.saml_c14n_algorithm)
         signer = XMLSigner(
@@ -327,7 +330,7 @@ def _build_saml_response(
         signed = signer.sign(
             # signxml's typed API takes the certificate as a PEM string
             assertion,
-            key=crypto.priv_pem,
+            key=keys.priv_pem,
             cert=cert_pem.decode("ascii"),
             reference_uri=assertion_id,
         )
@@ -960,8 +963,10 @@ def _sign_attribute_query_response(response_xml: str, sign: bool = True) -> str:
         root = secure_fromstring(response_xml.encode("utf-8"))
 
         # The published service's certificate, the one for the key it signs
-        # with (#358), not the idp-cert.pem file re-read per request.
-        cert_pem = crypto.cert_pem
+        # with (#358), not the idp-cert.pem file re-read per request; both
+        # taken at once (#420).
+        keys = crypto.keys
+        cert_pem = keys.cert_pem
 
         c14n_algo = _get_c14n_algorithm(settings.saml_c14n_algorithm)
         signer = XMLSigner(
@@ -971,7 +976,7 @@ def _sign_attribute_query_response(response_xml: str, sign: bool = True) -> str:
             c14n_algorithm=c14n_algo,
         )
 
-        signed_root = signer.sign(root, key=crypto.priv_pem, cert=cert_pem.decode("ascii"))
+        signed_root = signer.sign(root, key=keys.priv_pem, cert=cert_pem.decode("ascii"))
         return etree.tostring(signed_root, encoding="unicode", pretty_print=True)
 
     except Exception as e:

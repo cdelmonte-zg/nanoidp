@@ -218,10 +218,11 @@ def _load_without_the_lock(keys_dir: Path) -> Optional[Bundle]:
 def active_kid(keys_dir: Path) -> Optional[str]:
     """What the marker says, read without the lock: one small file, replaced
     atomically, so either the kid before a commit or the one after it. None
-    when nothing was ever published."""
+    when nothing was ever published, and only then: a marker that is there
+    and cannot be read (EMFILE, EIO, EACCES) is an error, not "no keys"."""
     try:
         kid = (keys_dir / MARKER).read_text(encoding="utf-8").strip()
-    except OSError:
+    except FileNotFoundError:
         return None
     return kid or None
 
