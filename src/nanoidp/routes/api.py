@@ -151,6 +151,9 @@ def get_configuration() -> ResponseReturnValue:
         # or settings.yaml's config_validation; reported like security_profile
         # so the contract is observable.
         "config_validation": "strict" if config.strict_config else "warn",
+        # Where runtime state is kept (#354): chosen when the process starts,
+        # reported so that a client knows which store it is talking to.
+        "runtime": {"store": settings.runtime_store},
         "server": {
             "host": settings.host,
             "port": settings.port,

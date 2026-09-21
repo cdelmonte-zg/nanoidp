@@ -55,6 +55,7 @@ from .models import (
     SAML_C14N_DEFAULT,
     LoginMode,
     OAuthClient,
+    RuntimeStoreKind,
     SamlC14nAlgorithm,
     Settings,
     User,
@@ -275,6 +276,15 @@ class JwtSection(BaseModel):
     max_previous_keys: int = Field(default=2, ge=0, le=10)
 
 
+class RuntimeSection(BaseModel):
+    """Where runtime state is kept (#354). Read at activation, and a change
+    needs a restart: never written by the settings form or MCP."""
+
+    model_config = _FORBID
+
+    store: RuntimeStoreKind = "memory"
+
+
 class SessionSection(BaseModel):
     model_config = _FORBID
 
@@ -354,7 +364,7 @@ def _validate_plugins_mapping(value: Any) -> Dict[str, Dict[str, Any]]:
 
 
 
-_SECTIONS = ("server", "oauth", "saml", "jwt", "session", "logging", "login")
+_SECTIONS = ("server", "oauth", "saml", "jwt", "session", "logging", "login", "runtime")
 
 
 class SettingsDocument(BaseModel):
@@ -372,6 +382,7 @@ class SettingsDocument(BaseModel):
     session: SessionSection = Field(default_factory=SessionSection)
     logging: LoggingSection = Field(default_factory=LoggingSection)
     login: LoginSection = Field(default_factory=LoginSection)
+    runtime: RuntimeSection = Field(default_factory=RuntimeSection)
     security_profile: str = "dev"
     # How the loader reacts to an unknown key in this configuration directory
     # (#175 piece 4). "warn" (default) logs it with its dotted path and
@@ -498,6 +509,7 @@ class SettingsDocument(BaseModel):
             ),
             external_key_id=self.jwt.external_keys.kid if self.jwt.external_keys else None,
             max_previous_keys=self.jwt.max_previous_keys,
+            runtime_store=self.runtime.store,
             login_mode=self.login.mode,
             auto_login=self.login.auto_login,
             two_step=self.login.two_step,

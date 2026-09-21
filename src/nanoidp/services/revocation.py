@@ -41,7 +41,7 @@ from dataclasses import dataclass
 from typing import Any, Optional, Union
 
 from .runtime_repository import RepositoryTransaction, checked_time
-from .runtime_store import MemoryRuntimeRepository, get_runtime_store
+from .runtime_store import RuntimeRepository, get_runtime_store
 
 # The retention when the caller cannot supply a TRUSTED exp: covers the
 # 7-day refresh JWT (services/token.py mints refresh tokens with a fixed
@@ -137,7 +137,7 @@ class RevocationStore:
     """
 
     @property
-    def _markers(self) -> MemoryRuntimeRepository[RevocationMarker]:
+    def _markers(self) -> RuntimeRepository[RevocationMarker]:
         # Looked up on every use: the runtime store owns the state, whatever
         # replaces it (a reset, #354's durable backend).
         return get_runtime_store().repository("revocations", _name_of, _CODEC)

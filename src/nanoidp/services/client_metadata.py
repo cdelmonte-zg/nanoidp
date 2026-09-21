@@ -31,8 +31,8 @@ from .runtime_repository import (
     transact_refusing,
 )
 from .runtime_store import (
-    MemoryRuntimeRepository,
     PydanticCodec,
+    RuntimeRepository,
     get_runtime_store,
 )
 
@@ -305,7 +305,7 @@ def bounded_lifetime(seconds: Optional[float]) -> float:
     return float(min(max(seconds, MIN_LIFETIME_SECONDS), MAX_LIFETIME_SECONDS))
 
 
-def cache() -> MemoryRuntimeRepository[CachedClient]:
+def cache() -> RuntimeRepository[CachedClient]:
     """The repository the runtime store keeps for this module.
 
     Process memory, like every other runtime repository: two nanoidp

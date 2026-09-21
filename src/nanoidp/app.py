@@ -16,7 +16,7 @@ from . import __version__
 from .config import ConfigManager, get_config, init_config
 from .config_writer import LockUnavailableError
 from .routes import api_bp, oauth_bp, registration_bp, runtime_bp, saml_bp, ui_bp
-from .services import activate_crypto_service
+from .services import activate_services
 from .services.dynamic_registration import prune_stale_registrations
 from .services.identities import identities_for, reconcile_runtime_identities
 
@@ -79,7 +79,7 @@ def create_app(
         config_dir,
         profile_override=profile,
         strict_config=strict_config,
-        activate=activate_crypto_service,
+        activate=activate_services,
         after_load=_after_load,
     )
     settings = config.settings

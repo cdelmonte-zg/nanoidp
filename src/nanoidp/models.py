@@ -23,6 +23,9 @@ _SAML_ATTR_NAME_DEFAULTS = {
 # configuration document that feeds it (#297).
 LoginMode = Literal["password", "persona"]
 SamlC14nAlgorithm = Literal["exc_c14n", "c14n", "c14n11"]
+# The kinds of runtime store a configuration can ask for (#354). Only the ones
+# nanoidp has: the schema offers no backend that is not there.
+RuntimeStoreKind = Literal["memory"]
 SAML_C14N_DEFAULT: SamlC14nAlgorithm = "exc_c14n"
 
 
@@ -715,6 +718,11 @@ class Settings(BaseModel):
     external_public_key: Optional[str] = Field(default=None, description="Path to external public PEM key")
     external_key_id: Optional[str] = Field(default=None, description="Key ID for external keys")
     max_previous_keys: int = Field(default=2, ge=0, le=10, description="Max previous keys to keep in JWKS")
+    runtime_store: RuntimeStoreKind = Field(
+        default="memory",
+        description="Where runtime state is kept (runtime.store). Chosen when the process starts: "
+        "a reload that changes it is refused (#354)",
+    )
 
     @field_validator("saml_roles_attr_name", "saml_groups_attr_name", mode="before")
     @classmethod

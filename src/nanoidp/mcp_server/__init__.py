@@ -59,7 +59,7 @@ from mcp.types import (
 from .. import __version__
 from ..config import ConfigManager, ConfigurationRejected, get_config_if_loaded, init_config
 from ..security import verify_secret
-from ..services import activate_crypto_service, get_audit_log
+from ..services import activate_services, get_audit_log
 
 # Split into a package (#286); these re-imports keep the EXPLICITLY listed
 # names importable as before: `from nanoidp.mcp_server import <name>` and
@@ -238,7 +238,7 @@ def _ensure_config() -> ConfigManager:
     config = get_config_if_loaded()
     if config is None:
         config = init_config(
-            os.getenv("NANOIDP_CONFIG_DIR", "./config"), activate=activate_crypto_service
+            os.getenv("NANOIDP_CONFIG_DIR", "./config"), activate=activate_services
         )
     return config
 

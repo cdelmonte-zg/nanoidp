@@ -149,6 +149,7 @@ def _reset_process_singletons() -> None:
     config_module._config = None
     yaml_writer_module._yaml_writer = None
     runtime_store_module._runtime_store = None
+    runtime_store_module._runtime_store_inputs = None
     # The metadata fetch budget is process state like the stores above: a
     # sliding window of thirty a minute, shared by every caller, so without
     # this a file that fetches often would spend what the next one needs

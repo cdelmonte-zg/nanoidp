@@ -535,6 +535,20 @@
         "title": "OAuthSection",
         "type": "object"
       },
+      "RuntimeSection": {
+        "additionalProperties": false,
+        "description": "Where runtime state is kept (#354). Read at activation, and a change\nneeds a restart: never written by the settings form or MCP.",
+        "properties": {
+          "store": {
+            "const": "memory",
+            "default": "memory",
+            "title": "Store",
+            "type": "string"
+          }
+        },
+        "title": "RuntimeSection",
+        "type": "object"
+      },
       "SamlSection": {
         "additionalProperties": false,
         "properties": {
@@ -782,6 +796,9 @@
         },
         "title": "Plugins",
         "type": "object"
+      },
+      "runtime": {
+        "$ref": "#/$defs/RuntimeSection"
       },
       "saml": {
         "$ref": "#/$defs/SamlSection"

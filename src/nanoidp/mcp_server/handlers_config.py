@@ -32,6 +32,8 @@ def _tool_get_settings(arguments: dict[str, Any], config: ConfigManager) -> dict
         # The settings.yaml revision this runtime was loaded from (#229
         # phase 5), for save_config's expected_settings_revision.
         "settings_revision": config.settings_revision,
+        # Same as GET /api/config (#354): where runtime state is kept.
+        "runtime": {"store": settings.runtime_store},
         "issuer": settings.issuer,
         "issuer_from_request": settings.issuer_from_request,
         "issuer_allowlist": settings.issuer_allowlist,

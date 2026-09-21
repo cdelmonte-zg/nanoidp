@@ -42,8 +42,8 @@ from .identities import IdentityResolver
 from .redirect_uri import redirect_uri_rejection_reason
 from .runtime_repository import Entry, consume, create_within, delete_if
 from .runtime_store import (
-    MemoryRuntimeRepository,
     PydanticCodec,
+    RuntimeRepository,
     get_runtime_store,
 )
 
@@ -100,7 +100,7 @@ def token_matches(token: str, registration: DynamicRegistration) -> bool:
     return verify_secret(token_hash(token), registration.registration_token_hash)
 
 
-def registrations() -> MemoryRuntimeRepository[DynamicRegistration]:
+def registrations() -> RuntimeRepository[DynamicRegistration]:
     """The repository the runtime store keeps for this module."""
     return get_runtime_store().repository(
         "dynamic_registrations",
