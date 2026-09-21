@@ -46,6 +46,7 @@ for a repository's sweep, #417).
 import copy
 import json
 import math
+import sys
 import threading
 from collections import deque
 from dataclasses import dataclass, field
@@ -149,6 +150,17 @@ def checked_increments(increments: Sequence[str]) -> List[str]:
     return list(increments)
 
 
+def checked_bound(max_entries: Optional[int]) -> int:
+    """How many events a backend keeps: ``MAX_AUDIT_ENTRIES`` unless it is
+    given, and then a whole number, not below zero, that a count of events
+    can reach (``sys.maxsize``)."""
+    if max_entries is None:
+        return MAX_AUDIT_ENTRIES
+    if isinstance(max_entries, bool) or not isinstance(max_entries, int) or not 0 <= max_entries <= sys.maxsize:
+        raise ValueError(f"a bound is a whole number from 0 to {sys.maxsize}, not {max_entries!r}")
+    return max_entries
+
+
 def checked_limit(limit: int) -> int:
     if isinstance(limit, bool) or not isinstance(limit, int) or limit < 0:
         raise ValueError(f"a limit is a whole number, not below zero, not {limit!r}")
@@ -223,9 +235,7 @@ class MemoryAuditStore:
         self._lock = threading.Lock()
         self._codec = AuditEntryCodec()
         # In the order of the appends, newest last: the deque is the sequence.
-        self._events: Deque[AuditEntry] = deque(
-            maxlen=MAX_AUDIT_ENTRIES if max_entries is None else max_entries
-        )
+        self._events: Deque[AuditEntry] = deque(maxlen=checked_bound(max_entries))
         self._counters: Dict[str, int] = {}
 
     def _stored(self, entry: AuditEntry) -> AuditEntry:

@@ -1010,6 +1010,12 @@ class TestTheAudit:
         audit.append(_event(details={"kept": "no"}), ["n"])
         assert audit.entries(1)[0].details == {}
 
+    def test_a_bound_that_is_refused_makes_no_file(self, tmp_path):
+        with pytest.raises(ValueError, match="bound"):
+            SqliteAuditStore(tmp_path / "audit.db", max_entries=-1)
+
+        assert list(tmp_path.iterdir()) == []
+
     def test_an_append_is_one_transaction(self, tmp_path):
         """The event, the bound and the counters, or nothing: a counter that
         cannot be written takes the event back with it."""

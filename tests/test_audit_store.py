@@ -418,6 +418,25 @@ class TestTheStore:
         with pytest.raises(ValueError):
             self._store().entries(limit)
 
+    def test_a_limit_beyond_anything_kept_gives_everything_kept(self):
+        store = self._store()
+        store.append(self._entry("e0"), [])
+        store.append(self._entry("e1"), [])
+
+        assert [entry.event_type for entry in store.entries(10**20)] == ["e1", "e0"]
+        assert [entry.event_type for entry in store.entries(10**20, event_type="e0")] == ["e0"]
+
+    @pytest.mark.parametrize("bound", [-1, True, 1.5, "3", 10**20])
+    def test_a_bound_is_a_whole_number_not_below_zero_and_one_that_can_be_kept(self, bound):
+        with pytest.raises(ValueError, match="bound"):
+            self._store(max_entries=bound)
+
+    def test_a_bound_of_zero_keeps_nothing_and_counts_all(self):
+        store = self._store(max_entries=0)
+        store.append(self._entry(), ["n"])
+
+        assert (store.entries(10), store.counters()) == ([], {"n": 1})
+
     def test_the_bound_is_the_backends_and_drops_the_oldest(self):
         store = self._store(max_entries=2)
         for name in ("e0", "e1", "e2"):

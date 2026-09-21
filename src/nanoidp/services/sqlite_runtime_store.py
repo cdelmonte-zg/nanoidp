@@ -74,10 +74,10 @@ from typing import (
 
 from ..config import OAuthClient, User
 from .audit_store import (
-    MAX_AUDIT_ENTRIES,
     AuditEntry,
     AuditEntryCodec,
     AuditStore,
+    checked_bound,
     checked_increments,
     checked_limit,
     outside_the_domain,
@@ -722,8 +722,9 @@ class SqliteAuditStore:
 
     def __init__(self, path: Union[str, Path], max_entries: Optional[int] = None) -> None:
         _require_upsert()
+        # Before the file is made: a bound that is refused makes nothing.
+        self._bound = checked_bound(max_entries)
         self._database = _Database(path, _AUDIT)
-        self._bound = MAX_AUDIT_ENTRIES if max_entries is None else max_entries
         self._codec = AuditEntryCodec()
 
     @property
@@ -780,7 +781,11 @@ class SqliteAuditStore:
                 conditions.append(f"{column} = ?")
                 arguments.append(wanted)
         where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
-        rows = self._read(f"SELECT value FROM events{where} ORDER BY seq DESC LIMIT ?", (*arguments, limit))
+        # No more is kept than the bound, which fits a SQLite integer: a limit
+        # need not (#354, third step, review).
+        rows = self._read(
+            f"SELECT value FROM events{where} ORDER BY seq DESC LIMIT ?", (*arguments, min(limit, self._bound))
+        )
         return [self._codec.load(json.loads(value)) for (value,) in rows]
 
     def client_ids(self) -> List[str]:
