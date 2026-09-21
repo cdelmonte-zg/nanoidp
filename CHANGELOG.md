@@ -68,6 +68,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`record_registration(entry, ...)`) and dropped with
   `forget_registration_of(entry)`.
 
+- **A token is verified against the key its `kid` names, and a process
+  notices a peer's key rotation** (#420, second of two parts). Two things
+  measured before. **In a single process, a token minted before a rotation
+  was refused after it**: `verify_jwt` decoded against the active key
+  whatever the token named, so `/userinfo` went from `200` to `401`,
+  `/introspect` to `active: false` and the refresh grant to `invalid_grant`,
+  while the JWKS went on publishing the previous key and the documentation
+  said "old key stays valid for verification". Verification is now by
+  `kid`, among the active key and the previous ones kept, no wider than
+  `jwt.max_previous_keys` and so the same set the JWKS shows; a `kid` that
+  is not kept, or is nobody's, is an invalid token; a token with no `kid` is
+  checked against the active key, as before. The `kid` chooses the key and
+  vouches for nothing. **And after one process rotated, it and a running
+  peer refused each other's tokens for as long as the peer ran**, the
+  peer's JWKS never showing the new key. A peer's rotation is now noticed
+  in one place, `get_crypto_service()`, through which JWT, JWKS, SAML and
+  the key information all come: it reads `kid.txt` without the lock (about
+  ten microseconds) and takes the directory's lock only when the marker
+  names another key, to load that bundle whole. A new service is published
+  and the one in hand is left as it is, so a request that already holds it
+  never finds half of each; a signature made with the old key just before
+  the peer's commit is correct, that key being a previous one now. A
+  refresh that cannot be made just now leaves the service there is, and the
+  next look tries again. External keys are not looked for in the directory.
 - **Generated signing keys are one bundle for every process that shares the
   keys directory** (#420, first of two parts). Measured before: two
   processes cold-starting on one empty `jwt.keys_dir` ended with different
@@ -110,10 +134,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Retry-After` and the MCP `rotate_keys` tool answers `success: false`,
   naming the keys directory.
   The layout and the file names are unchanged; **the private key is now
-  written with mode `0600`** (it followed the umask). Still open, the
-  second part: a running peer does not yet notice
-  another process's rotation, and nanoidp's own endpoints verify against
-  the active key only.
+  written with mode `0600`** (it followed the umask).
 - **A cleanup of the in-memory runtime repository costs what is due, not what
   is kept** (#417). Since #413 `delete_expired(now)` sits inside the writing
   decision of every service that keeps expiring state, so every write

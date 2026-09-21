@@ -458,10 +458,13 @@ class CryptoService:
         guard is ``token_use``, not the audience (RFC 7662, issue #34).
         """
         try:
-            # Use public key for verification
+            # Verified against the key the token names, among the ones this
+            # service keeps (#420): the JWKS publishes the previous keys so
+            # that tokens signed with them stay valid, and that has to hold
+            # for nanoidp's own endpoints too.
             payload = jwt.decode(
                 token,
-                self.pub_pem,
+                self._verification_key(jwt.get_unverified_header(token).get("kid")),
                 algorithms=["RS256"],
                 audience=audience,
                 options={
@@ -475,6 +478,35 @@ class CryptoService:
             raise ValueError("Token has expired") from e
         except jwt.InvalidTokenError as e:
             raise ValueError(f"Invalid token: {str(e)}") from e
+
+    def _verification_key(self, kid: Any) -> bytes:
+        """The public key a token is checked against, by the ``kid`` of its
+        header. The kid chooses the key and vouches for nothing: the
+        signature is still checked against it.
+
+            no kid                   the active key, as it has always been
+            the active kid           the active key
+            a previous kid kept      that key (no more of them than
+                                     ``max_previous_keys``, as in the JWKS)
+            anything else            not a key of this service's
+        """
+        if kid is None or kid == "" or kid == self.kid:
+            return self.pub_pem
+        for previous in self.previous_keys:
+            if kid == previous.kid:
+                return previous.pub_pem
+        raise jwt.InvalidTokenError("the key it names is not one of this issuer's keys")
+
+    def reloaded(self) -> "CryptoService":
+        """A service built as this one was, from what the keys directory
+        holds now: what a process adopts when a peer rotated (#420)."""
+        return CryptoService(
+            keys_dir=str(self.keys_dir),
+            external_private_key=self._external_private_key,
+            external_public_key=self._external_public_key,
+            external_key_id=self._external_key_id,
+            max_previous_keys=self.max_previous_keys,
+        )
 
     def get_certificate_base64(self) -> str:
         """Get the certificate in base64 format (without headers)."""
@@ -601,6 +633,51 @@ def activate_crypto_service(settings: Settings) -> Callable[[], None]:
     return lambda: publish_crypto_service(service)
 
 
+def _fresh(service: CryptoService) -> CryptoService:
+    """``service``, or the one that replaces it because another process
+    rotated the generated keys (#420).
+
+    The ONE place a peer's rotation is noticed: every reader of the keys
+    comes through ``get_crypto_service()``, JWT and JWKS and SAML (which
+    reads ``priv_pem`` and ``cert_pem`` directly) and the key information,
+    so none of them has a freshness of its own.
+
+    The marker is read without the lock: one small file, replaced
+    atomically, about ten microseconds. The directory's lock is taken only
+    when it names another key than the one in hand, to load that bundle
+    whole. A signature that saw OLD just before a peer committed NEW is
+    correct: OLD becomes a previous key and stays verifiable. A NEW service
+    is published and the old one is left as it is, so that a request that
+    already holds it never finds half of each.
+    """
+    global _crypto_service
+    if service.uses_external_keys:
+        return service  # not generated, not rotated, not in the directory's marker
+    published = key_directory.active_kid(service.keys_dir)
+    if published is None or published == service.kid:
+        # No marker says that nothing is published, not that something else
+        # is: a directory emptied under a running service is not a rotation.
+        return service
+    with _crypto_service_lock:
+        current = _crypto_service if _crypto_service is not None else service
+        if current.kid == published:
+            return current  # another thread noticed first
+        try:
+            refreshed = current.reloaded()
+        except Exception as failure:
+            # The bundle cannot be loaded just now (the lock is busy past its
+            # time, say). Signing with the key in hand is as correct as it
+            # was a moment ago; failing every request is not. The next look
+            # tries again.
+            logger.warning(f"The signing keys were rotated to {published} and could not be loaded yet: {failure}")
+            return current
+        if refreshed.kid != current.kid:
+            logger.info(f"The signing keys were rotated by another process: {current.kid} -> {refreshed.kid}")
+            _crypto_service = refreshed
+            return refreshed
+        return current
+
+
 def get_crypto_service() -> CryptoService:
     """The published signing service.
 
@@ -609,6 +686,9 @@ def get_crypto_service() -> CryptoService:
     pair older settings with a newer service, never newer settings with an
     older one.
 
+    With generated keys, the service returned is the one for the key that
+    is published now: see ``_fresh``.
+
     A process whose configuration was loaded without the activation step
     (a ConfigManager built directly, as tests do) gets a service built
     from the current settings on first use.
@@ -616,7 +696,7 @@ def get_crypto_service() -> CryptoService:
     global _crypto_service
     service = _crypto_service
     if service is not None:
-        return service
+        return _fresh(service)
     settings = get_config().settings
     with _crypto_service_lock:
         service = _crypto_service
