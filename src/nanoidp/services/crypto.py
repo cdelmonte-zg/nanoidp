@@ -811,6 +811,7 @@ def _fresh(service: CryptoService) -> CryptoService:
         failed = _refresh_failed
         if failed is not None and failed[0] == published and time.monotonic() - failed[1] < _REFRESH_RETRY_SECONDS:
             return current
+        seen = current.kid
         try:
             refreshed = current.reloaded()
         except Exception as failure:
@@ -825,20 +826,27 @@ def _fresh(service: CryptoService) -> CryptoService:
             )
             return current
         _refresh_failed = None
-        return _publish_refreshed(current, refreshed)
+        return _publish_refreshed(current, refreshed, seen)
     finally:
         _refresh_started = None
         _refresh_lock.release()
 
 
-def _publish_refreshed(current: CryptoService, refreshed: CryptoService) -> CryptoService:
+def _publish_refreshed(current: CryptoService, refreshed: CryptoService, seen: str) -> CryptoService:
     """Publish ``refreshed`` in place of ``current``, unless the world moved
-    while it was loaded: ``current`` caught up by itself (this process's own
-    rotation), or another service was published (a reload of the
-    configuration), whose inputs are the ones that count."""
+    while it was loaded: ``current`` caught up by itself, or another service
+    was published (a reload of the configuration), whose inputs are the ones
+    that count.
+
+    ``seen`` is the kid ``current`` had when the refresh began. Only this
+    process's own rotation changes it, and a rotation retires what is
+    published, so a ``current`` whose kid moved while the bundle was being
+    loaded has keys newer than the ones loaded: publishing them would have
+    the process sign with a key already retired.
+    """
     global _crypto_service
     with _crypto_service_lock:
-        if current.kid == refreshed.kid:
+        if current.kid != seen or current.kid == refreshed.kid:
             return current
         if _crypto_service is not None and _crypto_service is not current:
             return _crypto_service

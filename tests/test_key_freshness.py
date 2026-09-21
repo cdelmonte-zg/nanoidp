@@ -412,13 +412,34 @@ class TestAPeerNoticesARotation:
 
         assert at_release[-1] == new_kid
 
+    def test_a_rotation_of_this_process_that_lands_during_a_refresh_is_not_undone(self, published, monkeypatch):
+        """A peer rotates; a request loads that bundle; before it publishes,
+        this process rotates on top (it retires what is published, so its key
+        is the newest). The request must not publish the older bundle over
+        it: the process would sign with a key already retired."""
+        keys_dir, service = published
+        CryptoService(keys_dir=str(keys_dir)).rotate_keys()
+        reloaded = CryptoService.reloaded
+        own = []
+
+        def and_then_this_process_rotates(self):
+            loaded = reloaded(self)
+            own.append(service.rotate_keys()["new_kid"])
+            return loaded
+
+        monkeypatch.setattr(CryptoService, "reloaded", and_then_this_process_rotates)
+
+        assert get_crypto_service() is service
+        assert service.kid == own[0] == (keys_dir / "kid.txt").read_text()
+        assert crypto_module._crypto_service is service
+
     def test_a_refresh_that_finds_the_service_caught_up_publishes_nothing(self, published):
         keys_dir, service = published
         service.rotate_keys()
         refreshed = service.reloaded()
 
         assert refreshed is not None and refreshed.kid == service.kid
-        assert crypto_module._publish_refreshed(service, refreshed) is service
+        assert crypto_module._publish_refreshed(service, refreshed, service.kid) is service
         assert get_crypto_service() is service
 
     def test_threads_that_look_during_this_processes_own_rotation_end_with_it(self, published, monkeypatch):
