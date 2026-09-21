@@ -68,6 +68,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`record_registration(entry, ...)`) and dropped with
   `forget_registration_of(entry)`.
 
+- **The SQLite runtime store keeps the audit too, in a file of its own**
+  (#354, third step). A SQLite file has one writer, and the audit's contract
+  says it does not wait for the repositories: an append on the store's file
+  while a decision holds it waits, and fails past the busy timeout
+  (measured). So the store is a pair of files, `runtime.db` and
+  `runtime-audit.db` (named after it), each with its own marker, neither
+  usable as the other, both private; what exists is opened before what is
+  missing is made, so a refusal of either leaves no new file behind. An
+  append is one transaction: the event, the delete of what is past the bound
+  (1000), and one upsert per counter named, a name given twice counting
+  twice; the event is checked and dumped before the file is locked. The
+  bound is the file's, written in it when it is made: the audit is one for
+  every process that appends to it, and a process given another bound is
+  refused, instead of cutting the history of the others and reading it cut. The
+  audit's contract now says what it always assumed: the details of an event
+  are a JSON object. A backend that writes events down refuses anything
+  else before any event or counter changes; that the in-memory backend
+  copies a set or a tuple is its own behaviour, not the contract's. The
+  suite's `verify_codecs` is one switch for the audit and the repositories.
+  SQLite 3.24 or later is required (the counters' upsert), and an older one
+  is refused before any file is made. Measured, median per call at the bound,
+  memory -> SQLite: an append 2.3 -> 20 us, the latest hundred events 80 ->
+  297 us, a filtered read about 34 us either way; four processes appending
+  together reach 13,000 appends a second, p99 0.08 ms. `SqliteRuntimeStore`
+  takes no audit any more: it has its own.
 - **A runtime store in a SQLite file, not selectable yet** (#354, second
   step). `SqliteRuntimeStore` keeps users, clients and every repository a
   service is lent in one SQLite file, for several NanoIDP processes on one

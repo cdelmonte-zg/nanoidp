@@ -12,6 +12,7 @@ Not selectable from settings.yaml yet (the fourth step), so nothing here goes
 through a configuration.
 """
 
+import datetime as dt
 import json
 import multiprocessing
 import os
@@ -23,7 +24,6 @@ import pytest
 
 from nanoidp.config import User
 from nanoidp.services import sqlite_runtime_store as sqlite_module
-from nanoidp.services.audit_store import MemoryAuditStore
 from nanoidp.services.runtime_repository import (
     EntryHeld,
     NestedRepositoryUse,
@@ -34,14 +34,18 @@ from nanoidp.services.runtime_repository import (
     create_within,
     replace,
 )
-from nanoidp.services.sqlite_runtime_store import RuntimeStoreFileRefused, SqliteRuntimeStore
+from nanoidp.services.sqlite_runtime_store import (
+    RuntimeStoreFileRefused,
+    SqliteAuditStore,
+    SqliteRuntimeStore,
+)
 
 _SPAWN = multiprocessing.get_context("spawn")
 _POSIX = os.name == "posix"
 
 
 def _store(path):
-    return SqliteRuntimeStore(path, MemoryAuditStore())
+    return SqliteRuntimeStore(path)
 
 
 def _user(name):
@@ -155,7 +159,8 @@ class TestTheFile:
         finally:
             os.umask(previous)
 
-        assert seen == [0o600]
+        # The store's file and the audit's.
+        assert seen == [0o600, 0o600]
 
     @pytest.mark.skipif(not _POSIX, reason="POSIX file modes")
     def test_a_store_that_is_there_already_is_made_private(self, tmp_path):
@@ -753,48 +758,25 @@ class TestAFork:
 
     @_FORK
     @pytest.mark.filterwarnings("ignore::DeprecationWarning")
-    def test_an_audit_append_in_progress_is_waited_for(self, tmp_path):
-        """The audit is the store's too: a fork must not find its lock held
-        by a thread the child will not have, or the child's first append
-        waits for ever."""
-        import datetime as dt
-
-        from nanoidp.services.audit_store import AuditEntry
-
-        def entry():
-            return AuditEntry(
-                timestamp=dt.datetime(2026, 9, 21, tzinfo=dt.timezone.utc),
-                event_type="login",
-                username="alice",
-                client_id=None,
-                ip_address="127.0.0.1",
-                user_agent="test",
-                endpoint="/login",
-                method="POST",
-                status="success",
-            )
-
-        audit = MemoryAuditStore()
-        store = SqliteRuntimeStore(tmp_path / "runtime.db", audit)
-        lock = audit._lock
+    def test_an_audit_append_in_progress_is_waited_for(self, tmp_path, monkeypatch):
+        """The audit is the store's too, in a file of its own: a fork waits
+        for an append in progress, closes the audit's connections with the
+        store's, and the child appends and reads its own way."""
+        store = _store(tmp_path / "runtime.db")
+        audit = store.audit
+        database = audit._database
         inside, release = threading.Event(), threading.Event()
+        real_connection = database.connection
 
-        class Holding:
-            """The audit's own lock, held until released."""
-
-            def __enter__(self):
-                lock.acquire()
+        def slow_connection():
+            if not release.is_set():
                 inside.set()
                 release.wait(_BOUND)
-                return self
+            return real_connection()
 
-            def __exit__(self, *failure):
-                lock.release()
-
-        audit._lock = Holding()
-        writer = _thread(store.audit.append, entry(), ["logins"])
+        monkeypatch.setattr(database, "connection", slow_connection)
+        writer = _thread(audit.append, _event(), ["logins"])
         assert inside.wait(_BOUND)
-        audit._lock = lock
         forked = threading.Event()
 
         def fork_hook():
@@ -807,22 +789,23 @@ class TestAFork:
             release.set()
             writer.join(_BOUND)
             assert forked.wait(_BOUND)
-            assert not lock.locked()
+            assert _registered(database) == 0
         finally:
             hook.join(_BOUND)
             sqlite_module._FORK_GATE.after_in_parent()
 
         def child():
-            store.audit.append(entry(), ["logins"])
-            assert store.audit.counters() == {"logins": 2}
-            assert len(store.audit.entries(10)) == 2
+            audit.append(_event(), ["logins"])
+            assert audit.counters() == {"logins": 2}
+            assert len(audit.entries(10)) == 2
 
         assert _forked(child) == 0
+        assert _within(audit.counters) == {"logins": 2}
 
     @pytest.mark.parametrize(
         "operation",
         [
-            lambda audit: audit.append(None, []),
+            lambda audit: audit.append(_event(), ["n"]),
             lambda audit: audit.entries(10),
             lambda audit: audit.client_ids(),
             lambda audit: audit.counters(),
@@ -830,21 +813,18 @@ class TestAFork:
         ],
         ids=["append", "entries", "client_ids", "counters", "clear"],
     )
-    def test_every_operation_of_the_audit_is_waited_for(self, tmp_path, operation):
+    def test_every_operation_of_the_audit_is_waited_for(self, tmp_path, monkeypatch, operation):
+        store = _store(tmp_path / "runtime.db")
+        database = store.audit._database
         inside, release = threading.Event(), threading.Event()
+        real_connection = database.connection
 
-        class Blocking:
-            """An audit whose every operation waits to be released."""
+        def slow_connection():
+            inside.set()
+            release.wait(_BOUND)
+            return real_connection()
 
-            def __getattr__(self, name):
-                def operation(*args, **kwargs):
-                    inside.set()
-                    release.wait(_BOUND)
-                    return [] if name in ("entries", "client_ids") else ({} if name == "counters" else None)
-
-                return operation
-
-        store = SqliteRuntimeStore(tmp_path / "runtime.db", Blocking())
+        monkeypatch.setattr(database, "connection", slow_connection)
         caller = _thread(operation, store.audit)
         assert inside.wait(_BOUND)
         forked = threading.Event()
@@ -916,48 +896,264 @@ class TestAFork:
 
 
 class TestTheAudit:
-    def test_the_audit_handed_in_is_what_the_store_answers_with(self, tmp_path):
-        """The store keeps the audit it is given (its own SQLite audit is the
-        next step), behind the fork gate but with nothing else changed."""
-        import datetime as dt
+    """The audit of the SQLite store: a file of its own, since a file has
+    one writer and the audit must not wait for the repositories (#354, third
+    step). Its contract runs in ``tests/test_audit_store.py`` over both
+    backends; what is here is what only a file has."""
 
-        from nanoidp.services.audit_store import AuditEntry
+    @pytest.mark.parametrize(
+        "store, audit",
+        [
+            ("/state/runtime.db", "/state/runtime-audit.db"),
+            ("/state/runtime.sqlite3", "/state/runtime-audit.sqlite3"),
+            ("/state/runtime", "/state/runtime-audit"),
+        ],
+    )
+    def test_the_audits_file_is_named_after_the_stores(self, store, audit):
+        from pathlib import Path
 
-        def entry(event_type, username, client_id):
-            return AuditEntry(
-                timestamp=dt.datetime(2026, 9, 21, tzinfo=dt.timezone.utc),
-                event_type=event_type,
-                username=username,
-                client_id=client_id,
-                ip_address="127.0.0.1",
-                user_agent="test",
-                endpoint="/token",
-                method="POST",
-                status="success",
-            )
+        assert sqlite_module.audit_path_of(Path(store)) == Path(audit)
 
-        audit = MemoryAuditStore()
-        store = SqliteRuntimeStore(tmp_path / "runtime.db", audit)
-        store.audit.append(entry("login", "alice", "a"), ["logins"])
-        store.audit.append(entry("token", "bob", "b"), ["tokens"])
-        store.audit.append(entry("token", "alice", "b"), ["tokens"])
+    @pytest.mark.skipif(not _POSIX, reason="POSIX file modes")
+    def test_the_store_is_a_pair_of_private_files(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(os, "umask", os.umask)
+        previous = os.umask(0o022)
+        try:
+            # Kept open while the sidecars are looked at.
+            store = _store(tmp_path / "runtime.db")
+            store.users.create(_user("alice"))
+            store.audit.append(_event(), ["n"])
+        finally:
+            os.umask(previous)
 
-        def users(**filters):
-            return [(found.event_type, found.username) for found in store.audit.entries(10, **filters)]
+        assert store.audit.path == tmp_path / "runtime-audit.db"
+        for name in ("runtime-audit.db", "runtime-audit.db-wal", "runtime-audit.db-shm"):
+            assert _mode(tmp_path / name) == 0o600, name
 
-        assert users() == [("token", "alice"), ("token", "bob"), ("login", "alice")]
-        assert users(event_type="login") == [("login", "alice")]
-        assert users(username="bob") == [("token", "bob")]
-        assert users(client_id="a") == [("login", "alice")]
-        assert users(event_type="token", username="alice", client_id="b") == [("token", "alice")]
-        assert store.audit.entries(1)[0].username == "alice"
-        assert store.audit.client_ids() == ["a", "b"]
-        assert store.audit.counters() == {"logins": 1, "tokens": 2}
-        assert audit.counters() == {"logins": 1, "tokens": 2}
+    def test_the_two_files_are_not_interchangeable(self, tmp_path):
+        store = _store(tmp_path / "runtime.db")
+        store.users.create(_user("alice"))
+        store.audit.append(_event(), ["n"])
 
-        store.audit.clear()
+        with pytest.raises(RuntimeStoreFileRefused, match="not a NanoIDP runtime audit"):
+            SqliteAuditStore(tmp_path / "runtime.db")
+        with pytest.raises(RuntimeStoreFileRefused, match="not a NanoIDP runtime store"):
+            # A store at the audit's file: its own audit would be elsewhere,
+            # the store's file is the audit's.
+            SqliteRuntimeStore(tmp_path / "runtime-audit.db")
+        assert [user.username for user in store.users.list()] == ["alice"]
+        assert store.audit.counters() == {"n": 1}
 
-        assert (store.audit.entries(10), store.audit.counters(), audit.counters()) == ([], {}, {})
+    def test_an_audit_of_another_schema_version_is_refused(self, tmp_path):
+        _store(tmp_path / "runtime.db").audit.append(_event(), ["n"])
+        connection = sqlite3.connect(tmp_path / "runtime-audit.db")
+        connection.execute("UPDATE meta SET value = '99' WHERE key = 'schema_version'")
+        connection.commit()
+        connection.close()
+
+        with pytest.raises(RuntimeStoreFileRefused, match="schema version 99"):
+            _store(tmp_path / "runtime.db")
+
+    def test_a_sqlite_without_upsert_is_refused_before_any_file_is_made(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(sqlite3, "sqlite_version_info", (3, 23, 1))
+        monkeypatch.setattr(sqlite3, "sqlite_version", "3.23.1")
+
+        with pytest.raises(sqlite_module.RuntimeStoreUnsupported, match=r"SQLite >= 3\.24; running 3\.23\.1"):
+            _store(tmp_path / "state" / "runtime.db")
+        assert not (tmp_path / "state").exists() or list((tmp_path / "state").iterdir()) == []
+        assert not issubclass(sqlite_module.RuntimeStoreUnsupported, RuntimeStoreFileRefused)
+
+    @pytest.mark.parametrize(
+        "details",
+        [
+            {"a set": {1}},
+            {"a tuple": (1, 2)},
+            {1: "a key that is no text"},
+            {"nan": float("nan")},
+            {"infinity": float("-inf")},
+            {"deep": [{"when": dt.datetime(2026, 1, 1)}]},
+        ],
+        ids=["set", "tuple", "int-key", "nan", "infinity", "deep-datetime"],
+    )
+    def test_details_that_are_no_json_object_are_refused_before_the_write_lock(self, tmp_path, monkeypatch, details):
+        """Outside the audit's domain, whatever the stress mode says: the
+        details are a JSON object, and what JSON would change (a tuple into
+        a list, a key into text) is no more by value than what it cannot
+        write. Refused before BEGIN, so it never holds the file's lock."""
+        monkeypatch.setattr(RepositorySwitches, "verify_codecs", False)
+        audit = _store(tmp_path / "runtime.db").audit
+        audit.append(_event(), ["n"])
+        statements = []
+        audit._database.connection().set_trace_callback(statements.append)
+
+        with pytest.raises(ValueError, match="JSON object"):
+            audit.append(_event(details=details), ["n"])
+
+        assert not any(statement.startswith("BEGIN") for statement in statements)
+        assert audit.counters() == {"n": 1}
+        assert len(audit.entries(10)) == 1
+
+    def test_in_the_stress_mode_a_codec_that_loses_a_field_is_refused(self, tmp_path, monkeypatch):
+        """This backend always writes the event down; the switch adds the
+        reading back, which is what catches a codec that is wrong."""
+        from nanoidp.services.audit_store import AuditEntryCodec
+
+        audit = _store(tmp_path / "runtime.db").audit
+        dump = AuditEntryCodec.dump
+        monkeypatch.setattr(AuditEntryCodec, "dump", lambda codec, value: {**dump(codec, value), "details": {}})
+
+        with pytest.raises(ValueError, match="comes back changed"):
+            audit.append(_event(details={"kept": "no"}), ["n"])
+        assert audit.counters() == {}
+
+        monkeypatch.setattr(RepositorySwitches, "verify_codecs", False)
+        audit.append(_event(details={"kept": "no"}), ["n"])
+        assert audit.entries(1)[0].details == {}
+
+    def test_the_bound_is_the_files_and_a_process_with_another_is_refused(self, tmp_path):
+        """The audit is one for every process that opens its file, and so is
+        its bound: one process keeping ten would cut the history of one
+        keeping a thousand, and read it cut."""
+        audit = SqliteAuditStore(tmp_path / "audit.db", max_entries=1000)
+        for number in range(20):
+            audit.append(_event(f"e{number}"), ["n"])
+
+        with pytest.raises(RuntimeStoreFileRefused, match="a bound of 1000") as refused:
+            SqliteAuditStore(tmp_path / "audit.db", max_entries=10)
+        # The one way out: nobody gives a bound to the store's own audit.
+        assert "disposable: delete the file (and its -wal and -shm)" in str(refused.value)
+        assert len(SqliteAuditStore(tmp_path / "audit.db", max_entries=1000).entries(10**6)) == 20
+        assert len(audit.entries(10**6)) == 20
+
+    @pytest.mark.parametrize(
+        "refused",
+        ["audit is a directory", "audit is somebody else's", "store is somebody else's"],
+    )
+    def test_a_file_that_is_refused_leaves_no_new_file_behind(self, tmp_path, refused):
+        """What exists is opened first and what is missing made after, so a
+        refusal of either file makes neither."""
+        store_path, audit_path = tmp_path / "runtime.db", tmp_path / "runtime-audit.db"
+        if refused == "audit is a directory":
+            audit_path.mkdir()
+        foreign = audit_path if refused == "audit is somebody else's" else store_path
+        if refused != "audit is a directory":
+            connection = sqlite3.connect(foreign)
+            connection.execute("CREATE TABLE theirs (x)")
+            connection.commit()
+            connection.close()
+        before = sorted(path.name for path in tmp_path.iterdir())
+
+        with pytest.raises(RuntimeStoreFileRefused):
+            _store(store_path)
+
+        assert sorted(path.name for path in tmp_path.iterdir()) == before
+
+    def test_a_bound_that_is_refused_makes_no_file(self, tmp_path):
+        with pytest.raises(ValueError, match="bound"):
+            SqliteAuditStore(tmp_path / "audit.db", max_entries=-1)
+
+        assert list(tmp_path.iterdir()) == []
+
+    def test_an_append_is_one_transaction(self, tmp_path):
+        """The event, the bound and the counters, or nothing: a counter that
+        cannot be written takes the event back with it."""
+        audit = _store(tmp_path / "runtime.db").audit
+        audit.append(_event("before"), ["n"])
+        audit._database.connection().execute("DROP TABLE counters")
+
+        with pytest.raises(sqlite3.OperationalError):
+            audit.append(_event("lost"), ["n"])
+
+        assert [entry.event_type for entry in audit.entries(10)] == ["before"]
+
+    def test_the_bound_is_kept_in_the_append(self, tmp_path):
+        audit = SqliteAuditStore(tmp_path / "audit.db", max_entries=3)
+        for number in range(10):
+            audit.append(_event(f"e{number}"), ["n"])
+
+        rows = sqlite3.connect(tmp_path / "audit.db").execute("SELECT count(*) FROM events").fetchone()[0]
+        assert rows == 3
+        assert [entry.event_type for entry in audit.entries(10)] == ["e9", "e8", "e7"]
+        assert audit.counters() == {"n": 10}
+
+    def test_the_audit_is_held_past_the_wait_is_unavailable(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(sqlite_module, "_BUSY_TIMEOUT_MS", 100)
+        audit = _store(tmp_path / "runtime.db").audit
+        audit.append(_event("kept"), ["n"])
+        holder = sqlite3.connect(tmp_path / "runtime-audit.db", isolation_level=None)
+        holder.execute("BEGIN IMMEDIATE")
+        try:
+            with pytest.raises(RuntimeStoreUnavailable, match="held by another process"):
+                audit.append(_event("waited"), ["n"])
+            with pytest.raises(RuntimeStoreUnavailable):
+                audit.clear()
+            # Readers are not held up by a writer in WAL.
+            assert [entry.event_type for entry in audit.entries(10)] == ["kept"]
+            assert audit.counters() == {"n": 1}
+        finally:
+            holder.execute("ROLLBACK")
+            holder.close()
+
+    def test_an_error_of_the_audit_that_is_not_contention_is_not_called_one(self, tmp_path):
+        audit = _store(tmp_path / "runtime.db").audit
+        audit._database.connection().execute("DROP TABLE events")
+
+        for operation in (lambda: audit.append(_event(), ["n"]), lambda: audit.entries(10), audit.client_ids):
+            with pytest.raises(sqlite3.OperationalError) as raised:
+                operation()
+            assert not isinstance(raised.value, RuntimeStoreUnavailable)
+
+    def test_the_audit_is_one_across_processes(self, tmp_path):
+        """Four processes append at once: every event counted once, the
+        bound kept for all of them, and each process's events in the order
+        it appended them."""
+        path = str(tmp_path / "runtime.db")
+        # The audit exists, with the bound the contenders are given, before
+        # they open it.
+        SqliteAuditStore(tmp_path / "runtime-audit.db", max_entries=500)
+        results = _in_processes(_append_many, [(path, index) for index in range(4)])
+
+        assert results == [("ok", 150)] * 4
+        audit = SqliteAuditStore(tmp_path / "runtime-audit.db", max_entries=500)
+        assert audit.counters() == {"n": 600}
+        kept = audit.entries(1000)
+        assert len(kept) == 500
+        for index in range(4):
+            mine = [int(entry.details["i"]) for entry in kept if entry.username == f"p{index}"]
+            assert mine == sorted(mine, reverse=True)
+
+
+def _event(event_type="login", **more):
+    from nanoidp.services.audit_store import AuditEntry
+
+    fields = {
+        "timestamp": dt.datetime(2026, 9, 21, tzinfo=dt.timezone.utc),
+        "event_type": event_type,
+        "username": "alice",
+        "client_id": None,
+        "ip_address": "127.0.0.1",
+        "user_agent": "test",
+        "endpoint": "/login",
+        "method": "POST",
+        "status": "success",
+    }
+    return AuditEntry(**{**fields, **more})
+
+
+def _append_many(path, index, barrier, out):
+    import logging
+
+    logging.disable(logging.CRITICAL)
+    from nanoidp.services.sqlite_runtime_store import SqliteAuditStore
+
+    barrier.wait()
+    try:
+        audit = SqliteAuditStore(__import__("pathlib").Path(path).with_name("runtime-audit.db"), max_entries=500)
+        for number in range(150):
+            audit.append(_event(username=f"p{index}", details={"i": number}), ["n"])
+        out.put(("ok", 150))
+    except BaseException as failure:  # noqa: BLE001 - said to the parent
+        out.put(("raised", repr(failure)))
 
 
 def _open_and_create(path, name, barrier, out):
@@ -965,12 +1161,11 @@ def _open_and_create(path, name, barrier, out):
 
     logging.disable(logging.CRITICAL)
     from nanoidp.config import User
-    from nanoidp.services.audit_store import MemoryAuditStore
     from nanoidp.services.sqlite_runtime_store import SqliteRuntimeStore
 
     barrier.wait()
     try:
-        SqliteRuntimeStore(path, MemoryAuditStore()).users.create(User(username=name, password="pw"))
+        SqliteRuntimeStore(path).users.create(User(username=name, password="pw"))
         out.put(("ok", name))
     except BaseException as failure:  # noqa: BLE001 - said to the parent
         out.put(("raised", repr(failure)))
@@ -999,10 +1194,9 @@ def _race(path, operation, barrier, out):
 
     logging.disable(logging.CRITICAL)
     from nanoidp.services import runtime_store
-    from nanoidp.services.audit_store import MemoryAuditStore
     from nanoidp.services.sqlite_runtime_store import SqliteRuntimeStore
 
-    runtime_store.publish_runtime_store(SqliteRuntimeStore(path, MemoryAuditStore()), ("sqlite", path))
+    runtime_store.publish_runtime_store(SqliteRuntimeStore(path), ("sqlite", path))
     barrier.wait()
     try:
         out.put(("ok", _OPERATIONS[operation]()))

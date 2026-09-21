@@ -14,7 +14,6 @@ from typing import Any, List
 import pytest
 
 from nanoidp.config import OAuthClient, User
-from nanoidp.services.audit_store import MemoryAuditStore
 from nanoidp.services.dynamic_registration import DynamicRegistration
 from nanoidp.services.runtime_store import MemoryRuntimeStore, PydanticCodec
 from nanoidp.services.sqlite_runtime_store import SqliteRuntimeStore
@@ -73,7 +72,7 @@ def grant(code: str) -> Grant:
 
 def sqlite_store() -> SqliteRuntimeStore:
     """A store in a file of its own (#354): the same contract, on disk."""
-    return SqliteRuntimeStore(Path(tempfile.mkdtemp(prefix="nanoidp-contract-")) / "runtime.db", MemoryAuditStore())
+    return SqliteRuntimeStore(Path(tempfile.mkdtemp(prefix="nanoidp-contract-")) / "runtime.db")
 
 
 STORE_FACTORIES = [pytest.param(MemoryRuntimeStore, id="memory"), pytest.param(sqlite_store, id="sqlite")]

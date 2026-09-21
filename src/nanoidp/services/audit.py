@@ -55,7 +55,7 @@ def _increments(event_type: str, status: str) -> List[str]:
 class AuditLog:
     """The audit of this process: a view, with no state, over the runtime
     store's ``AuditStore``. The bound on how many events are kept is the
-    backend's (``audit_store.MAX_AUDIT_ENTRIES`` in memory)."""
+    backend's (``audit_store.MAX_AUDIT_ENTRIES`` unless a backend is given another)."""
 
     @property
     def _store(self) -> AuditStore:
