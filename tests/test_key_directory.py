@@ -27,6 +27,7 @@ from pathlib import Path
 import pytest
 from cryptography.hazmat.primitives import serialization
 
+from nanoidp import serialization as nanoidp_serialization
 from nanoidp.services import key_directory
 from nanoidp.services.crypto import CryptoService
 
@@ -222,6 +223,85 @@ class TestAColdStartHasOneWinner:
         assert peers[0].cert_pem == on_disk
         assert service.cert_pem == on_disk
 
+    def test_a_peer_that_rotated_while_a_certificate_was_being_made_is_followed(self, tmp_path, monkeypatch):
+        """Looking again under the lock finds another bundle published: that
+        is the one to sign with, not the retired one this service had loaded
+        a moment ago, with a certificate nobody else has."""
+        keys_dir = tmp_path / "keys"
+        CryptoService(keys_dir=str(keys_dir))
+        (keys_dir / "idp-cert.pem").unlink()
+        make = CryptoService._certificate_for
+        rotated = []
+
+        def while_a_peer_rotates(private_pem, public_pem):
+            mine = make(private_pem, public_pem)
+            if not rotated:
+                rotated.append(None)
+                monkeypatch.undo()
+                rotated[0] = CryptoService(keys_dir=str(keys_dir)).rotate_keys()["new_kid"]
+            return mine
+
+        monkeypatch.setattr(CryptoService, "_certificate_for", staticmethod(while_a_peer_rotates))
+
+        service = CryptoService(keys_dir=str(keys_dir))
+
+        assert service.kid == rotated[0]
+        assert service._certificate_matches(service.cert_pem)
+        assert service.cert_pem == (keys_dir / "idp-cert.pem").read_bytes()
+
+    def test_a_peer_that_rotated_and_left_no_certificate_gets_one_for_its_key(self, tmp_path, monkeypatch):
+        """The same, and the bundle rotated to has no usable certificate
+        either. The one this service had made is for the key it no longer
+        signs with: installed, every SAML signature would fail against it."""
+        keys_dir = tmp_path / "keys"
+        CryptoService(keys_dir=str(keys_dir))
+        (keys_dir / "idp-cert.pem").unlink()
+        make = CryptoService._certificate_for
+        rotated = []
+
+        def while_a_peer_rotates(private_pem, public_pem):
+            mine = make(private_pem, public_pem)
+            if not rotated:
+                rotated.append(None)  # the peer's own certificates come through here as well
+                rotated[0] = CryptoService(keys_dir=str(keys_dir)).rotate_keys()["new_kid"]
+                (keys_dir / "idp-cert.pem").unlink()
+            return mine
+
+        monkeypatch.setattr(CryptoService, "_certificate_for", staticmethod(while_a_peer_rotates))
+
+        service = CryptoService(keys_dir=str(keys_dir))
+        monkeypatch.undo()
+
+        assert service.kid == rotated[0]
+        assert service._certificate_matches(service.cert_pem)
+        assert service.cert_pem == (keys_dir / "idp-cert.pem").read_bytes()
+        _whole(keys_dir)
+
+    def test_the_certificate_of_external_keys_is_written_under_the_lock_too(self, tmp_path, monkeypatch):
+        """It lives in the keys directory, whose temporary files whoever
+        takes the lock sweeps: written outside it, a peer's sweep could take
+        the file from under the writer."""
+        source = CryptoService(keys_dir=str(tmp_path / "source"))
+        keys_dir = tmp_path / "keys"
+        held = []
+        replace = key_directory._replace
+
+        def watching(path, data, mode):
+            held.append(key_directory._thread_lock.locked())
+            return replace(path, data, mode)
+
+        monkeypatch.setattr(key_directory, "_replace", watching)
+
+        service = CryptoService(
+            keys_dir=str(keys_dir),
+            external_private_key=str(tmp_path / "source" / "rsa_private.pem"),
+            external_public_key=str(tmp_path / "source" / "rsa_public.pem"),
+        )
+
+        assert held == [True]
+        assert service.priv_pem == source.priv_pem and service._certificate_matches(service.cert_pem)
+        assert len(list(keys_dir.glob("external-cert-*.pem"))) == 1
+
     def test_a_certificate_of_another_key_is_replaced_not_adopted(self, tmp_path):
         """Looking again under the lock adopts a certificate that belongs to
         the signing key, not whatever is in the file: one left behind by
@@ -382,13 +462,60 @@ class TestARotationCanDieAnywhere:
         def no_space(temporary, target):
             raise OSError(28, "No space left on device")
 
-        monkeypatch.setattr(key_directory, "_replace_with_retry", no_space)
+        monkeypatch.setattr(nanoidp_serialization, "_replace_with_retry", no_space)
         with pytest.raises(OSError):
             service.rotate_keys()
         monkeypatch.undo()
 
         assert [file.name for file in keys_dir.rglob(".writing-*")] == []
         _whole(keys_dir)
+
+    def test_a_rotation_that_cannot_tidy_up_is_a_rotation_all_the_same(self, tmp_path, monkeypatch):
+        """Past the commit nothing may fail the rotation: reported as failed,
+        it would be asked for again, over a key that is in use, while this
+        process went on signing with the one it had retired."""
+        import errno
+
+        keys_dir = tmp_path / "keys"
+        service = CryptoService(keys_dir=str(keys_dir))
+        original = service.kid
+
+        def cannot(directory):
+            raise OSError(errno.EIO, "Input/output error")
+
+        monkeypatch.setattr(key_directory, "_finish", cannot)
+        result = service.rotate_keys()
+        monkeypatch.undo()
+
+        assert result["old_kid"] == original and service.kid == result["new_kid"]
+        assert (keys_dir / "kid.txt").read_text() == service.kid
+        assert _whole(keys_dir).kid == service.kid, "and whoever next takes the lock finishes"
+
+    def test_litter_that_cannot_be_removed_is_never_restored(self, tmp_path, monkeypatch):
+        """What is left of an earlier attempt and cannot be removed (a file
+        held open on Windows) stays in the rollback directory. The journal
+        lists the files THIS rollback wrote, so a restore takes nothing
+        else: here a keys.json that the directory, one from before the
+        metadata existed, does not have."""
+        keys_dir = tmp_path / "keys"
+        service = CryptoService(keys_dir=str(keys_dir))
+        (keys_dir / "keys.json").unlink()
+        rmtree = key_directory.shutil.rmtree
+        (keys_dir / ".rotation" / "rollback").mkdir(parents=True)
+        (keys_dir / ".rotation" / "rollback" / "keys.json").write_text("of an earlier attempt")
+        monkeypatch.setattr(key_directory.shutil, "rmtree", lambda path, ignore_errors=False: None)
+
+        _die_at(monkeypatch, "live:rsa_public.pem")
+        with pytest.raises(Killed):
+            service.rotate_keys()
+        monkeypatch.setattr(key_directory, "_checkpoint", lambda step: None)
+        with key_directory.locked(keys_dir):
+            pass
+        monkeypatch.undo()
+        rmtree(keys_dir / ".rotation", ignore_errors=True)
+
+        assert not (keys_dir / "keys.json").exists()
+        assert CryptoService(keys_dir=str(keys_dir)).priv_pem == service.priv_pem
 
     def test_the_service_that_died_rotating_did_not_change_what_it_signs_with(self, tmp_path, monkeypatch):
         keys_dir = tmp_path / "keys"
@@ -497,6 +624,120 @@ class TestADirectoryThisProcessCannotWrite:
         finally:
             for directory in (keys_dir, keys_dir / "previous", keys_dir / ".rotation", keys_dir / ".rotation" / "rollback"):
                 directory.chmod(0o755)
+
+    def test_a_read_only_mount_answers_with_another_errno_and_is_the_same_thing(self, tmp_path, monkeypatch):
+        """``chmod`` makes EACCES, which is a PermissionError. A volume
+        mounted read-only makes EROFS, which is a plain OSError."""
+        import errno
+
+        from nanoidp.config_writer import LockNamespaceUnavailable
+
+        keys_dir = tmp_path / "keys"
+        service = CryptoService(keys_dir=str(keys_dir))
+        (keys_dir / ".writing-left-by-a-killed-writer").write_bytes(b"x")
+
+        def read_only_file_system(*args, **kwargs):
+            raise OSError(errno.EROFS, "Read-only file system")
+
+        monkeypatch.setattr(key_directory.tempfile, "mkstemp", read_only_file_system)
+        monkeypatch.setattr(Path, "unlink", read_only_file_system)
+
+        assert CryptoService(keys_dir=str(keys_dir)).kid == service.kid
+        with pytest.raises(LockNamespaceUnavailable, match="not writable"):
+            service.rotate_keys()
+
+    def test_an_error_that_is_not_about_writing_is_not_called_one(self, tmp_path, monkeypatch):
+        import errno
+
+        keys_dir = tmp_path / "keys"
+        service = CryptoService(keys_dir=str(keys_dir))
+
+        def input_output_error(*args, **kwargs):
+            raise OSError(errno.EIO, "Input/output error")
+
+        monkeypatch.setattr(key_directory.tempfile, "mkstemp", input_output_error)
+
+        with pytest.raises(OSError, match="Input/output error") as raised:
+            service.rotate_keys()
+        assert not isinstance(raised.value, key_directory.KeysDirectoryNotWritable)
+
+    def test_a_published_key_this_process_cannot_read_is_not_taken_for_none(self, tmp_path):
+        """The private key is 0600. Another user who shares the directory,
+        and can write it, must not conclude that nothing is published and
+        start cold over somebody's bundle."""
+        keys_dir = tmp_path / "keys"
+        CryptoService(keys_dir=str(keys_dir))
+        before = {name: (keys_dir / name).read_bytes() for name in ("rsa_public.pem", "kid.txt", "keys.json")}
+        (keys_dir / "rsa_private.pem").chmod(0o000)
+
+        try:
+            with pytest.raises(PermissionError):
+                CryptoService(keys_dir=str(keys_dir))
+        finally:
+            (keys_dir / "rsa_private.pem").chmod(0o600)
+
+        assert {name: (keys_dir / name).read_bytes() for name in before} == before
+        _whole(keys_dir)
+
+    def test_a_rotation_that_was_committed_does_not_keep_a_read_only_process_out(self, read_only_with_its_lock_file, monkeypatch):
+        """Killed after the commit and before the tidying up: every live file
+        is NEW's and the marker says so. A process that cannot settle the
+        leftovers need not wait for somebody who can."""
+        keys_dir, service = read_only_with_its_lock_file
+        keys_dir.chmod(0o755)
+        _die_at(monkeypatch, "marker:committed")
+        with pytest.raises(Killed):
+            service.rotate_keys()
+        monkeypatch.undo()
+        new_kid = (keys_dir / "kid.txt").read_text()
+        assert new_kid != service.kid and (keys_dir / ".rotation" / "journal.json").exists()
+        # No lock file, so the read is the one without the lock: with it
+        # there the lock would be had, and the load made under it.
+        (keys_dir / ".nanoidp-write.lock").unlink()
+        for directory in (keys_dir / ".rotation" / "rollback", keys_dir / ".rotation", keys_dir / "previous", keys_dir):
+            directory.chmod(0o555)
+
+        try:
+            loaded = CryptoService(keys_dir=str(keys_dir))
+        finally:
+            for directory in (keys_dir, keys_dir / "previous", keys_dir / ".rotation", keys_dir / ".rotation" / "rollback"):
+                directory.chmod(0o755)
+
+        assert loaded.kid == new_kid
+        assert [key.kid for key in loaded.previous_keys] == [service.kid]
+
+    def test_a_recovery_that_ends_while_the_files_are_read_is_noticed(self, read_only, monkeypatch):
+        """Without the lock, the files are read one after the other. A
+        rotation that died is there when the reading begins, and a peer that
+        can write settles it before the reading ends: no journal afterwards,
+        the marker as it was, and the files of two bundles in hand unless
+        the journal was looked at before the read as well."""
+        keys_dir, service = read_only
+        keys_dir.chmod(0o755)
+        _die_at(monkeypatch, "live:rsa_private.pem")
+        with pytest.raises(Killed):
+            service.rotate_keys()
+        monkeypatch.undo()
+        (keys_dir / ".nanoidp-write.lock").unlink(missing_ok=True)
+        keys_dir.chmod(0o555)
+        load, settled = key_directory.load, []
+
+        def while_a_peer_settles_it(directory):
+            half_new = load(directory)
+            if not settled:
+                settled.append(True)
+                keys_dir.chmod(0o755)
+                with key_directory.locked(keys_dir):
+                    pass
+                (keys_dir / ".nanoidp-write.lock").unlink(missing_ok=True)
+                keys_dir.chmod(0o555)
+            return half_new
+
+        monkeypatch.setattr(key_directory, "load", while_a_peer_settles_it)
+
+        loaded = CryptoService(keys_dir=str(keys_dir))
+
+        assert (loaded.kid, loaded.priv_pem) == (service.kid, service.priv_pem)
 
     def test_the_published_keys_are_loaded(self, read_only):
         keys_dir, service = read_only

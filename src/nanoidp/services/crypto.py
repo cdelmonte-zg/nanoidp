@@ -146,24 +146,21 @@ class CryptoService:
         # to the signing key (a certificate left behind by another key would
         # make every SAML signature fail verification against the metadata).
         if not self._certificate_matches(self.cert_pem):
-            # Made outside the lock, installed under it after looking again:
-            # a peer may have repaired it meanwhile, and then its certificate
-            # is the one. The marker does not move for a certificate, so two
-            # processes that each installed their own would never find out.
-            certificate = self._certificate_for(self.priv_pem, self.pub_pem)
-            try:
-                with key_directory.locked(self.keys_dir):
-                    published = key_directory.load(self.keys_dir)
-                    if published is not None and published.kid == self.kid:
-                        if self._certificate_matches(published.certificate_pem):
-                            certificate = published.certificate_pem
-                        else:
-                            key_directory.replace_certificate(self.keys_dir, certificate)
-            except key_directory.LockNamespaceUnavailable:
-                # A directory this process cannot write: the certificate is
-                # this process's own until somebody who can write repairs it.
-                logger.warning(f"{self.keys_dir} is not writable: the SAML certificate was not saved")
-            self.cert_pem = certificate
+            self.cert_pem = self._install_certificate(key_directory.CERTIFICATE, self._published_certificate)
+
+    def _published_certificate(self) -> bytes:
+        """The certificate of the bundle that is published, for
+        ``_install_certificate``: called under the lock. If a peer rotated
+        while this service was making a certificate for the key it had
+        loaded, the published bundle is the one to sign with, and it is
+        adopted here, with whatever certificate it has."""
+        published = key_directory.load(self.keys_dir)
+        if published is None:
+            return b""
+        if published.kid != self.kid:
+            logger.info(f"The signing keys were rotated to {published.kid} while this service started: adopting them")
+            self._adopt(published)
+        return published.certificate_pem
 
     def _adopt(self, bundle: "key_directory.Bundle") -> None:
         """Sign and verify with ``bundle`` from here on."""
@@ -250,14 +247,40 @@ class CryptoService:
         # pin it. Named by the public key's thumbprint, not the kid, which the
         # operator may reuse for another key.
         cert_path = self.keys_dir / f"external-cert-{self._jwk_thumbprint(self.pub_pem)}.pem"
+        self.cert_pem = self._read_certificate(cert_path)
+        if not self._certificate_matches(self.cert_pem):
+            self.cert_pem = self._install_certificate(cert_path.name, lambda: self._read_certificate(cert_path))
+
+    @staticmethod
+    def _read_certificate(cert_path: Path) -> bytes:
         try:
-            certificate = cert_path.read_bytes()
+            return cert_path.read_bytes()
         except OSError:
-            certificate = b""
-        if not self._certificate_matches(certificate):
-            certificate = self._certificate_for(self.priv_pem, self.pub_pem)
-            key_directory.write_beside_and_replace(cert_path, certificate, 0o644)  # a certificate is public
-        self.cert_pem = certificate
+            return b""
+
+    def _install_certificate(self, name: str, published: Callable[[], bytes]) -> bytes:
+        """A certificate for the signing key, under ``name`` in the keys
+        directory: made outside the directory's lock, installed under it
+        after looking again. A peer may have installed one meanwhile, and
+        then that is the one: no marker moves for a certificate, so two
+        processes that each installed their own would never find out. In a
+        directory this process cannot write it keeps its own, unsaved."""
+        certificate = self._certificate_for(self.priv_pem, self.pub_pem)
+        made_for = self.kid
+        try:
+            with key_directory.locked(self.keys_dir):
+                theirs = published()
+                if self._certificate_matches(theirs):
+                    return theirs
+                if self.kid != made_for:
+                    # Looking again adopted a bundle a peer had rotated to,
+                    # and its certificate is no good either: the one made
+                    # above is for a key that is no longer the signing key.
+                    certificate = self._certificate_for(self.priv_pem, self.pub_pem)
+                key_directory.replace_certificate(self.keys_dir, certificate, name)
+        except key_directory.LockNamespaceUnavailable:
+            logger.warning(f"{self.keys_dir} is not writable: the SAML certificate was not saved")
+        return certificate
 
     def _certificate_matches(self, certificate: bytes) -> bool:
         """Whether ``certificate`` is one for the signing key."""

@@ -42,6 +42,7 @@ Nothing here knows about JWT, SAML or the configuration: bytes in, bytes
 out. ``crypto`` decides what a bundle contains.
 """
 
+import errno
 import json
 import logging
 import os
@@ -55,7 +56,7 @@ from pathlib import Path
 from typing import Dict, Iterator, List, Optional, Tuple
 
 from ..config_writer import LockNamespaceUnavailable, directory_lock
-from ..serialization import _replace_with_retry
+from ..serialization import atomic_write_bytes
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +94,11 @@ class KeysDirectoryNotWritable(LockNamespaceUnavailable):
     file that is already there can be taken through a read-only view, as
     ``config_writer`` allows on purpose, so the lock is had and it is the
     writing that fails. A directory NanoIDP has used before has that file."""
+
+    # What a directory that is not this process's to write answers with:
+    # its mode bits, its owner, or the mount. The last is a plain OSError,
+    # not a PermissionError.
+    ERRNOS = (errno.EACCES, errno.EPERM, errno.EROFS)
 
     def __init__(self, keys_dir: Path, failure: OSError) -> None:
         super().__init__(
@@ -150,10 +156,12 @@ def locked(keys_dir: Path) -> Iterator[None]:
         try:
             _sweep_temporaries(keys_dir)
             _recover(keys_dir)
-        except PermissionError as failure:
+        except OSError as failure:
             # There is something to settle and this process cannot write
             # it down: said as what it is, not as whatever file it met.
-            raise KeysDirectoryNotWritable(keys_dir, failure) from failure
+            if failure.errno in KeysDirectoryNotWritable.ERRNOS:
+                raise KeysDirectoryNotWritable(keys_dir, failure) from failure
+            raise
         yield
 
 
@@ -166,7 +174,9 @@ def _require_writable(keys_dir: Path) -> None:
         os.close(fd)
         os.unlink(probe)
     except OSError as failure:
-        raise KeysDirectoryNotWritable(keys_dir, failure) from failure
+        if failure.errno in KeysDirectoryNotWritable.ERRNOS:
+            raise KeysDirectoryNotWritable(keys_dir, failure) from failure
+        raise
 
 
 def load_published(keys_dir: Path) -> Optional[Bundle]:
@@ -189,10 +199,13 @@ def _load_without_the_lock(keys_dir: Path) -> Optional[Bundle]:
     finding under way is an error that says what to do."""
     deadline = time.monotonic() + _READ_ONLY_PATIENCE_SECONDS
     while True:
-        before = active_kid(keys_dir)
+        # Looked at before the read and after it: a rotation, or the
+        # recovery of one, that began and ended while the files were being
+        # read would otherwise leave no trace, and the files of two bundles.
+        before = (active_kid(keys_dir), _rotation_under_way(keys_dir))
         bundle = load(keys_dir)
-        rotating = (keys_dir / _WORK / _JOURNAL).exists()
-        if not rotating and active_kid(keys_dir) == before:
+        after = (active_kid(keys_dir), _rotation_under_way(keys_dir))
+        if before == after and not after[1]:
             return bundle
         if time.monotonic() >= deadline:
             raise ValueError(
@@ -227,10 +240,29 @@ def load(keys_dir: Path) -> Optional[Bundle]:
             certificate_pem=_read_or_empty(keys_dir / CERTIFICATE),
             previous=_previous_keys(keys_dir),
         )
-    except OSError:
+    except FileNotFoundError:
         # A marker with no key behind it is a directory from before this
-        # protocol, or one somebody edited: not a bundle.
+        # protocol, or one somebody edited: not a bundle. ONLY a key that
+        # is not there: one that is there and cannot be read (it is 0600,
+        # and this may be another user) is somebody's published bundle, and
+        # taking it for nothing would have a cold start write over it.
         return None
+
+
+def _rotation_under_way(keys_dir: Path) -> bool:
+    """Whether the live files may be those of two bundles. A journal says a
+    rotation began; once the marker names its NEW kid the commit point is
+    past, every live file is NEW's, and what is left is tidying up, which a
+    reader need not wait for (and which, in a directory nobody can write,
+    nobody would ever do)."""
+    try:
+        journal = json.loads((keys_dir / _WORK / _JOURNAL).read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return False
+    except (OSError, ValueError):
+        return True
+    committed = isinstance(journal, dict) and journal.get("new_kid") == active_kid(keys_dir)
+    return not committed
 
 
 def publish_first(keys_dir: Path, bundle: Bundle) -> None:
@@ -252,13 +284,14 @@ def publish_first(keys_dir: Path, bundle: Bundle) -> None:
     _replace(keys_dir / MARKER, bundle.kid.encode("utf-8"), _MODES[MARKER])
 
 
-def replace_certificate(keys_dir: Path, certificate_pem: bytes) -> None:
-    """Repair the one file a bundle can be loaded without. Caller holds the
-    lock, and has looked again under it: the marker does not move for a
-    certificate, so nothing would ever tell two processes that they had each
-    installed their own."""
+def replace_certificate(keys_dir: Path, certificate_pem: bytes, name: str = CERTIFICATE) -> None:
+    """Repair the one file a bundle can be loaded without, or write the
+    certificate of external keys (#358), which has a name of its own and no
+    marker. Caller holds the lock, and has looked again under it: no marker
+    moves for a certificate, so nothing would ever tell two processes that
+    they had each installed their own."""
     _require_writable(keys_dir)
-    _replace(keys_dir / CERTIFICATE, certificate_pem, _MODES[CERTIFICATE])
+    _replace(keys_dir / name, certificate_pem, _MODES[CERTIFICATE])
 
 
 def rotate(keys_dir: Path, new: Bundle) -> None:
@@ -277,8 +310,12 @@ def rotate(keys_dir: Path, new: Bundle) -> None:
     # the live files as they are, not a reconstruction of them. The journal
     # goes last: until it is there the live files are untouched, and the
     # work directory is just litter.
+    # No journal is there (the lock's recovery saw to that), so whatever is
+    # left of an earlier attempt is litter. It goes if it can; if it cannot
+    # (a file held open on Windows), it does no harm: the journal lists the
+    # files THIS rollback wrote, and a restore takes nothing else from it.
     shutil.rmtree(work, ignore_errors=True)
-    rollback.mkdir(parents=True)
+    rollback.mkdir(parents=True, exist_ok=True)
     kept = []
     for name in _LIVE:
         try:
@@ -310,8 +347,11 @@ def rotate(keys_dir: Path, new: Bundle) -> None:
     _replace(keys_dir / MARKER, new.kid.encode("utf-8"), _MODES[MARKER])
     _checkpoint("marker:committed")
 
-    # What nothing refers to any more.
-    _finish(keys_dir)
+    # What nothing refers to any more. The rotation is committed: a failure
+    # to tidy up is not a failure of the rotation, and saying it were would
+    # have the caller rotate again over a key that is in use. The journal is
+    # still there, so whoever next takes the lock finishes.
+    _finish_or_leave_it(keys_dir)
 
 
 def _recover(keys_dir: Path) -> None:
@@ -329,7 +369,7 @@ def _recover(keys_dir: Path) -> None:
         return
     if active_kid(keys_dir) == new_kid:
         logger.warning("A key rotation to %s was committed and not finished: finishing it", new_kid)
-        _finish(keys_dir)
+        _finish_or_leave_it(keys_dir)
         return
     logger.warning("A key rotation from %s was interrupted before its commit: restoring it", old_kid)
     rollback = work / _ROLLBACK
@@ -344,14 +384,24 @@ def _recover(keys_dir: Path) -> None:
     if old_kid:
         _replace(keys_dir / MARKER, str(old_kid).encode("utf-8"), _MODES[MARKER])
     _checkpoint("restore:done")
-    # The previous key the rotation had added for NEW is nobody's now.
-    _finish(keys_dir)
+    # The previous key the rotation had added for NEW is nobody's now. If
+    # that cannot be tidied up the journal stays, and the next to take the
+    # lock restores again, which changes nothing.
+    _finish_or_leave_it(keys_dir)
+
+
+def _finish_or_leave_it(keys_dir: Path) -> None:
+    try:
+        _finish(keys_dir)
+    except OSError as failure:
+        logger.warning("The leftovers of a committed key rotation in %s could not be removed: %s", keys_dir, failure)
 
 
 def _sweep_temporaries(keys_dir: Path) -> None:
     """What a writer that was killed inside ``_replace`` left beside its
-    target. Every writer here holds the lock, so under it a temporary file
-    is nobody's, and one of them may hold a private key."""
+    target. Every writer in this directory holds the lock (``crypto`` takes
+    it for the external keys' certificate too), so under it a temporary
+    file is nobody's, and one of them may hold a private key."""
     for directory in (keys_dir, keys_dir / PREVIOUS, keys_dir / _WORK, keys_dir / _WORK / _ROLLBACK):
         if not directory.is_dir():
             continue
@@ -416,31 +466,7 @@ def _read_or_empty(path: Path) -> bytes:
         return b""
 
 
-def write_beside_and_replace(path: Path, data: bytes, mode: int) -> None:
-    """For the one file in the keys directory that is no part of a bundle:
-    the certificate of external keys (#358), which has a name of its own and
-    no marker. Atomic, and nothing more is claimed for it."""
-    _replace(path, data, mode)
-
-
 def _replace(path: Path, data: bytes, mode: int) -> None:
-    """Written beside the target and moved into place, so that a reader finds
-    the file as it was or as it is, never part of it. A write that fails
-    takes its temporary file with it: what it holds may be a private key.
-    The move is the configuration writers', with their patience for a reader
-    that has the target open on Windows (the marker is read without the
-    lock)."""
-    fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=_TEMPORARY)
-    try:
-        with os.fdopen(fd, "wb") as handle:
-            handle.write(data)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.chmod(temporary, mode)
-        _replace_with_retry(temporary, path)
-    except BaseException:
-        try:
-            os.unlink(temporary)
-        except OSError:
-            pass
-        raise
+    """One file, atomically: ``serialization.atomic_write_bytes``, under the
+    prefix this directory sweeps."""
+    atomic_write_bytes(path, data, mode, temp_prefix=_TEMPORARY)

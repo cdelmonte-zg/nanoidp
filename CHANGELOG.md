@@ -93,9 +93,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   /api/keys/rotate` answers `409`). That holds whether or not the
   directory already has its lock file: one that is there can be taken
   through a read-only view, so every mutation first finds out, by writing
-  under the lock, whether it can write at all. A missing SAML certificate
-  is repaired after looking again under the lock, so that processes
-  repairing it together end with one certificate and not one each. When
+  under the lock, whether it can write at all (a read-only mount answers
+  `EROFS`, which is not a `PermissionError`, and is the same thing). Read
+  without the lock, the journal is looked at before the files as well as
+  after them, so that a recovery that ended meanwhile is noticed, and a
+  rotation that was committed and not tidied up does not keep a read-only
+  process out. A published private key this process cannot read is an
+  error and never "no keys yet", which would have started cold over
+  somebody's bundle. Nothing fails a rotation past its commit: what could
+  not be tidied up is left to whoever next takes the lock. A missing SAML
+  certificate, of generated and of external keys alike, is installed under
+  the lock after looking again, so that processes repairing it together
+  end with one certificate and not one each, and a peer that rotated
+  meanwhile is followed. When
   the lock cannot be had in time, the endpoint answers `503` with
   `Retry-After` and the MCP `rotate_keys` tool answers `success: false`,
   naming the keys directory.
