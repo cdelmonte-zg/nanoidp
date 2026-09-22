@@ -217,6 +217,95 @@ class TestTheCheck:
         assert config.refresh_if_changed() is True
         assert config.get_user("carol") is not None
 
+    def test_a_keys_lock_the_activation_cannot_take_is_the_lock_too(self, shared, monkeypatch):
+        """Every load activates the signing service, which takes the keys
+        directory's lock; a peer holding it is reported two wrappings down
+        (a ValueError of the activation, then a ConfigurationRejected). It is
+        the lock, and it is not remembered."""
+        from nanoidp.services import activate_services
+
+        config_dir, config, store = shared
+        config._activate = activate_services
+        keys_dir = Path(config.settings.keys_dir).resolve()
+        _declare_user(config_dir, "carol")
+        _lock_fails_for(monkeypatch, keys_dir)
+
+        with pytest.raises(LockUnavailableError):
+            config.refresh_if_changed()
+        monkeypatch.undo()
+
+        assert config.refresh_if_changed() is True
+        assert config.get_user("carol") is not None
+
+    def test_a_failure_after_the_load_is_not_files_that_do_not_load(self, tmp_path, monkeypatch, caplog):
+        """What runs after the configuration is committed (the reconciliation
+        of the runtime store) can fail on its own: the files did load, and
+        saying they did not would be false, and would stop the check."""
+        config_dir = _config_dir(tmp_path)
+        runtime_store.publish_runtime_store(SqliteRuntimeStore(tmp_path / "runtime.db"), ("memory",))
+        failing = {"on": False}
+
+        def after_load(manager):
+            if failing["on"]:
+                raise RuntimeError("the store was busy")
+
+        config = ConfigManager(str(config_dir), after_load=after_load)
+        _declare_user(config_dir, "carol")
+        failing["on"] = True
+
+        with caplog.at_level("WARNING"), pytest.raises(RuntimeError, match="busy"):
+            config.refresh_if_changed()
+
+        assert config.get_user("carol") is not None
+        assert not any("could not be loaded" in record.getMessage() for record in caplog.records)
+        # Nothing remembered: the files are the loaded ones, the check is quiet.
+        assert config._refused is None
+        failing["on"] = False
+        assert config.refresh_if_changed() is False
+
+
+class TestTheLockBehindAFailedLoad:
+    @pytest.mark.parametrize("depth", [0, 1, 2, 3])
+    def test_a_lock_is_found_however_deep_it_was_wrapped(self, depth):
+        from nanoidp.config import ConfigurationRejected, _lock_behind
+
+        lock = LockUnavailableError("held by a peer", kind="lock_timeout")
+        failure: BaseException = lock
+        for level in range(depth):
+            try:
+                raise (ValueError("activation") if level % 2 == 0 else ConfigurationRejected("x", kind="activation")) from failure
+            except BaseException as wrapped:  # noqa: BLE001
+                failure = wrapped
+
+        assert _lock_behind(failure) is lock
+
+    def test_a_directory_with_no_lock_namespace_is_no_lock_held(self):
+        from nanoidp.config import ConfigurationRejected, _lock_behind
+        from nanoidp.services.key_directory import KeysDirectoryNotWritable
+
+        try:
+            raise ConfigurationRejected("x", kind="activation") from KeysDirectoryNotWritable(
+                Path("/keys"), OSError(30, "Read-only file system")
+            )
+        except ConfigurationRejected as failure:
+            assert _lock_behind(failure) is None
+
+    def test_a_chain_that_comes_back_on_itself_ends(self):
+        from nanoidp.config import _lock_behind
+
+        first, second = ValueError("a"), ValueError("b")
+        first.__cause__, second.__cause__ = second, first
+
+        assert _within(lambda: _lock_behind(first)) is None
+
+    def test_a_failure_that_is_no_lock_is_none(self):
+        from nanoidp.config import ConfigurationRejected, _lock_behind
+
+        try:
+            raise ConfigurationRejected("x", kind="invalid") from ValueError("not a mapping")
+        except ConfigurationRejected as failure:
+            assert _lock_behind(failure) is None
+
     def test_the_bytes_that_were_loaded_back_again_are_no_reload(self, shared, monkeypatch):
         """An editor's mistake undone: the files are the loaded ones again."""
         config_dir, config, store = shared
@@ -582,3 +671,29 @@ def _lock_fails_on(monkeypatch, attempts, successes=None):
         return real(*args, **kwargs)
 
     monkeypatch.setattr(config_writer, "_cross_process_lock", lock)
+
+
+def _lock_fails_for(monkeypatch, directory):
+    """The cross-process lock of one directory held by a peer past the
+    timeout; every other directory's lock as it is."""
+    from nanoidp import config_writer
+
+    real = config_writer._cross_process_lock
+
+    def lock(target, *args, **kwargs):
+        if Path(target).resolve() == directory:
+            raise LockUnavailableError("held by a peer", kind="lock_timeout")
+        return real(target, *args, **kwargs)
+
+    monkeypatch.setattr(config_writer, "_cross_process_lock", lock)
+
+
+def _within(action, seconds=5):
+    import threading
+
+    done = []
+    worker = threading.Thread(target=lambda: done.append(action()), daemon=True)
+    worker.start()
+    worker.join(seconds)
+    assert done, "stuck"
+    return done[0]

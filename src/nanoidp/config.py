@@ -27,6 +27,7 @@ from .config_documents import (
 )
 from .config_store import ConfigFileStore, FileSnapshot, Fingerprint
 from .config_writer import (
+    LockNamespaceUnavailable,
     LockUnavailableError,
     compare_and_replace,
     revision_of_bytes,
@@ -121,13 +122,19 @@ _T = TypeVar("_T")
 
 
 def _lock_behind(failure: BaseException) -> Optional[LockUnavailableError]:
-    """The directory lock a failed load could not take, if that is what
-    failed: a load reports it as a ConfigurationRejected of the lock's kind,
-    and it is temporary, not files that do not load (#354, step 4a, review)."""
-    if isinstance(failure, LockUnavailableError):
-        return failure
-    if isinstance(failure, ConfigurationRejected) and isinstance(failure.__cause__, LockUnavailableError):
-        return failure.__cause__
+    """The lock a failed load could not take, if that is what failed,
+    however deep a load wrapped it: the configuration directory's is a
+    ConfigurationRejected of the lock's kind, the keys directory's (taken by
+    the activation) a ValueError inside one. Temporary, not files that do not
+    load (#354, step 4a, review). A directory with no lock namespace at all
+    is no lock held by a peer: that one is left to be what it says."""
+    seen = set()
+    current: Optional[BaseException] = failure
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, LockUnavailableError) and not isinstance(current, LockNamespaceUnavailable):
+            return current
+        current = current.__cause__
     return None
 
 
@@ -646,6 +653,10 @@ class ConfigManager:
                 lock = _lock_behind(failure)
                 if lock is not None:
                     raise lock from failure
+                if (self.settings_revision, self.users_revision) == revisions:
+                    # The files loaded and were committed: what failed ran
+                    # after (the after_load step), and is not theirs to say.
+                    raise
                 self._refused = (revisions, fingerprints)
                 logger.warning(
                     "The configuration files in %s changed and could not be loaded (%s); the configuration "
