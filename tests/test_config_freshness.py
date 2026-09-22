@@ -787,6 +787,159 @@ class TestTheSixthReview:
         assert looks == [1, 1]
         assert config.get_user("carol") is not None
 
+    def test_the_others_take_a_check_made_after_they_came_though_the_stat_is_racy(self, shared, monkeypatch):
+        """A peer's save leaves files freshly written, whose stat is not
+        trusted for a while. The requests that waited for the check made
+        after they arrived take its result: none looks again."""
+        config_dir, config, store = shared
+        _declare_user(config_dir, "carol")
+        entered, release = threading.Event(), threading.Event()
+        real = config._store.read_snapshot
+        looks = []
+
+        def slow_look(names):
+            looks.append(1)
+            if len(looks) == 1:
+                entered.set()
+                release.wait(10)
+            return real(names)
+
+        monkeypatch.setattr(config._store, "read_snapshot", slow_look)
+        first = threading.Thread(target=config.refresh_if_changed, daemon=True)
+        first.start()
+        assert entered.wait(10)
+        outcomes = []
+        followers = [threading.Thread(target=lambda: outcomes.append(config.refresh_if_changed()), daemon=True) for _ in range(5)]
+        for thread in followers:
+            thread.start()
+        time.sleep(0.1)
+        release.set()
+        for thread in followers:
+            thread.join(5)
+        first.join(10)
+
+        assert config._loaded_racy
+        assert outcomes == [False] * 5
+        assert looks == [1, 1]
+
+    @pytest.mark.parametrize("seen_before", [False, True], ids=["refused-now", "refused-again"])
+    def test_the_others_take_a_refusal_the_check_made_after_they_came(self, shared, monkeypatch, seen_before):
+        """A refusal the bytes decided is an established state too: the
+        others take it, and neither look nor try to load."""
+        config_dir, config, store = shared
+        users = config_dir / "users.yaml"
+        users.write_text("users: [this is not a mapping\n")
+        if seen_before:
+            assert config.refresh_if_changed() is False
+            replacement = config_dir / "users.yaml.next"
+            replacement.write_bytes(users.read_bytes())
+            os.replace(replacement, users)
+        entered, release = threading.Event(), threading.Event()
+        real = config._store.read_snapshot
+        looks = []
+
+        def slow_look(names):
+            looks.append(1)
+            if len(looks) == 1:
+                entered.set()
+                release.wait(10)
+            return real(names)
+
+        monkeypatch.setattr(config._store, "read_snapshot", slow_look)
+        first = threading.Thread(target=config.refresh_if_changed, daemon=True)
+        first.start()
+        assert entered.wait(10)
+        outcomes = []
+        followers = [threading.Thread(target=lambda: outcomes.append(config.refresh_if_changed()), daemon=True) for _ in range(4)]
+        for thread in followers:
+            thread.start()
+        time.sleep(0.1)
+        release.set()
+        for thread in followers:
+            thread.join(5)
+        first.join(10)
+
+        assert outcomes == [False] * 4
+        # The first's look, and its reload's when the refusal is new.
+        assert looks == ([1] if seen_before else [1, 1])
+
+    @pytest.mark.parametrize("what", ["the same bytes rewritten", "a failure outside the bytes"])
+    def test_the_others_answer_from_what_the_check_left_without_reading(self, shared, monkeypatch, clock, what):
+        """The same bytes rewritten: the check establishes them, and the
+        others take it. A failure outside the bytes: nothing established, and
+        the others answer from the wait it left, by the stat."""
+        config_dir, config, store = shared
+        users = config_dir / "users.yaml"
+        if what == "the same bytes rewritten":
+            replacement = config_dir / "users.yaml.next"
+            replacement.write_bytes(users.read_bytes())
+            os.replace(replacement, users)
+        else:
+            _declare_user(config_dir, "carol")
+            _failing_activation(config, 1)
+        entered, release = threading.Event(), threading.Event()
+        real = config._store.read_snapshot
+        looks = []
+
+        def slow_look(names):
+            looks.append(1)
+            if len(looks) == 1:
+                entered.set()
+                release.wait(10)
+            return real(names)
+
+        monkeypatch.setattr(config._store, "read_snapshot", slow_look)
+        first = threading.Thread(target=config.refresh_if_changed, daemon=True)
+        first.start()
+        assert entered.wait(10)
+        outcomes = []
+        followers = [threading.Thread(target=lambda: outcomes.append(config.refresh_if_changed()), daemon=True) for _ in range(4)]
+        for thread in followers:
+            thread.start()
+        time.sleep(0.1)
+        release.set()
+        for thread in followers:
+            thread.join(5)
+        first.join(10)
+
+        assert outcomes == [False] * 4
+        # The first's look, and its reload's when it tried one.
+        assert looks == ([1] if what == "the same bytes rewritten" else [1, 1])
+
+    def test_a_check_that_failed_is_not_taken_by_the_others(self, shared, monkeypatch):
+        """Only a check that established the files is shared: when the one in
+        flight fails (the lock), the others look for themselves."""
+        config_dir, config, store = shared
+        _declare_user(config_dir, "carol")
+        entered, release = threading.Event(), threading.Event()
+        real = config._store.read_snapshot
+        looks = []
+
+        def failing_first_look(names):
+            looks.append(1)
+            if len(looks) == 1:
+                entered.set()
+                release.wait(10)
+                raise LockUnavailableError("held by a peer", kind="lock_timeout")
+            return real(names)
+
+        monkeypatch.setattr(config._store, "read_snapshot", failing_first_look)
+        first = threading.Thread(target=lambda: pytest.raises(LockUnavailableError, config.refresh_if_changed), daemon=True)
+        first.start()
+        assert entered.wait(10)
+        outcomes = []
+        followers = [threading.Thread(target=lambda: outcomes.append(config.refresh_if_changed()), daemon=True) for _ in range(3)]
+        for thread in followers:
+            thread.start()
+        time.sleep(0.1)
+        release.set()
+        for thread in followers:
+            thread.join(5)
+        first.join(10)
+
+        assert sorted(outcomes) == [False, False, True]
+        assert config.get_user("carol") is not None
+
     def test_a_request_that_cannot_wait_is_told_to_come_back_in_a_second(self, tmp_path, monkeypatch):
         from nanoidp.app import create_app
 

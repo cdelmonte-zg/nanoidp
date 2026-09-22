@@ -249,11 +249,16 @@ class ConfigManager:
         # The fingerprints of the files the loaded configuration was read
         # from, and of a pair of files a check could not load (#354, step
         # 4a): what refresh_if_changed compares a stat with.
-        self._loaded_fingerprints: Tuple[Optional[Fingerprint], ...] = (None, None)
+        # With it, whether they are too recent to be trusted: one observation,
+        # published as one, so that nobody reads the fingerprints of one look
+        # with the racy flag of another.
+        self._loaded_state: Tuple[Tuple[Optional[Fingerprint], ...], bool] = ((None, None), True)
         # The identity, fingerprints and racy flag of the files refused.
         self._refused: Optional[Tuple[_Identity, Tuple[Optional[Fingerprint], ...], bool]] = None
-        # Whether the loaded fingerprints are too recent to be trusted.
-        self._loaded_racy = True
+        # How many checks established what the files are (the same bytes,
+        # newer ones loaded, or bytes refused): a request that waited for the
+        # check in flight takes the result of one made after it arrived.
+        self._established = 0
         # How many loads were committed: whether a reload that raised had
         # committed first, whichever files it loaded.
         self._commits = 0
@@ -606,9 +611,8 @@ class ConfigManager:
         self.users_revision = staged["users_revision"]
         self.settings_revision = staged["settings_revision"]
         self.observed_at: float = staged["observed_at"]
-        self._loaded_fingerprints = staged["fingerprints"]
+        self._loaded_state = (staged["fingerprints"], _racy(staged["fingerprints"], staged["read_at_ns"]))
         self._loaded_identity = staged["identity"]
-        self._loaded_racy = _racy(staged["fingerprints"], staged["read_at_ns"])
         self._commits += 1
 
     def _configure_hooks_from(self, hooks: HooksSection, plugins: Dict[str, Dict[str, Any]]) -> None:
@@ -725,6 +729,14 @@ class ConfigManager:
         with self._load_lock:
             yield
 
+    @property
+    def _loaded_fingerprints(self) -> Tuple[Optional[Fingerprint], ...]:
+        return self._loaded_state[0]
+
+    @property
+    def _loaded_racy(self) -> bool:
+        return self._loaded_state[1]
+
     def refresh_if_changed(self) -> bool:
         """Adopt the files if another writer changed them since they were
         loaded: whether a reload happened (#354, step 4a).
@@ -746,6 +758,7 @@ class ConfigManager:
         be observed at all. And a failure after the load was committed (the
         after_load step) is raised as it is.
         """
+        arrived = self._established
         quick = self._quick_answer()
         if quick is not None:
             return quick
@@ -758,6 +771,10 @@ class ConfigManager:
                 kind="freshness_in_progress",
             )
         try:
+            if self._established != arrived:
+                # A check made since this request arrived established the
+                # files: its result is this request's too, racy stat or not.
+                return False
             quick = self._quick_answer()
             if quick is not None:
                 return quick
@@ -784,7 +801,8 @@ class ConfigManager:
             return None
         # A stat as recent as the read is not trusted (racily clean): a write
         # in place within the timestamp's tick leaves it as it was.
-        if current == self._loaded_fingerprints and not self._loaded_racy:
+        fingerprints, racy = self._loaded_state
+        if current == fingerprints and not racy:
             return False
         if self._refused is not None and current == self._refused[1] and not self._refused[2]:
             return False
@@ -804,13 +822,14 @@ class ConfigManager:
                 # The bytes this configuration was loaded from: their
                 # fingerprint is theirs too, trusted once it is older than
                 # this read by the margin.
-                self._loaded_fingerprints = fingerprints
-                self._loaded_racy = _racy(fingerprints, read_at)
+                self._loaded_state = (fingerprints, _racy(fingerprints, read_at))
                 self._pending = None
+                self._established += 1
                 return False
             if self._refused is not None and revisions == self._refused[0]:
                 self._refused = (revisions, fingerprints, _racy(fingerprints, read_at))
                 self._pending = None
+                self._established += 1
                 return False
             pending = self._pending
             if pending is not None and revisions == pending.revisions and _now() < pending.retry_after:
@@ -837,6 +856,7 @@ class ConfigManager:
                 if _decided_by_the_bytes(failure):
                     self._refused = (revisions, fingerprints, _racy(fingerprints, read_at))
                     self._pending = None
+                    self._established += 1
                     until = "until they change again"
                 else:
                     self._pending = _Pending(revisions, fingerprints, _now() + _TRANSIENT_RETRY_SECONDS)
@@ -851,6 +871,7 @@ class ConfigManager:
                 return False
             self._refused = None
             self._pending = None
+            self._established += 1
             return True
 
     def _unreadable(self, failure: OSError) -> bool:
