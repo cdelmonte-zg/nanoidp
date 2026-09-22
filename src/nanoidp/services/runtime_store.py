@@ -37,7 +37,7 @@ which the first activation adopts when it asks for memory.
 import threading
 from typing import Any, Callable, Dict, Optional, Protocol, Tuple, cast
 
-from ..config import OAuthClient, Settings, User
+from ..config import OAuthClient, Settings, User, get_config_if_loaded
 from .audit_store import AuditStore, MemoryAuditStore
 from .runtime_repository import (
     Codec,
@@ -82,6 +82,13 @@ class RuntimeStore(Protocol):
     @property
     def audit(self) -> AuditStore: ...
 
+    @property
+    def shared(self) -> bool:
+        """Whether other processes use this store too (#354, step 4a). They
+        then share the declared configuration's consequences, and each has
+        to see the files as they are, at the start of every operation."""
+        ...
+
     def repository(self, name: str, key_of: Callable[[T], str], codec: Codec[T]) -> RuntimeRepository[T]:
         """The repository a service keeps under ``name``, created once."""
 
@@ -103,6 +110,11 @@ class MemoryRuntimeStore:
             self._lock, lambda client: client.client_id, PydanticCodec(OAuthClient)
         )
         self._lent: Dict[str, MemoryRuntimeRepository[Any]] = {}
+
+    @property
+    def shared(self) -> bool:
+        # This process's alone.
+        return False
 
     def repository(
         self, name: str, key_of: Callable[[T], str], codec: Codec[T]
@@ -239,3 +251,16 @@ def get_runtime_store() -> RuntimeStore:
         if _runtime_store is None:
             _runtime_store = MemoryRuntimeStore()
         return _runtime_store
+
+
+def fresh_configuration() -> None:
+    """At the start of an operation: when the store is shared with other
+    processes, adopt the configuration files if one of them changed them
+    (#354, step 4a). Nothing with a store of this process's alone, nor before
+    a configuration is loaded. May raise LockUnavailableError, which is
+    temporary."""
+    if not get_runtime_store().shared:
+        return
+    config = get_config_if_loaded()
+    if config is not None:
+        config.refresh_if_changed()

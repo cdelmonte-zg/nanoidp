@@ -876,6 +876,11 @@ class SqliteRuntimeStore:
         return self._database.path
 
     @property
+    def shared(self) -> bool:
+        # Its files are for every process on the host that opens them.
+        return True
+
+    @property
     def users(self) -> RuntimeRepository[User]:
         return self._users
 

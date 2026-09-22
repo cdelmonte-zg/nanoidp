@@ -30,7 +30,7 @@ import logging
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Literal, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Literal, Optional, Set, Tuple, TypeVar
 
 from ..config import ConfigManager, ConfigurationRejected, OAuthClient, Settings, User, get_config
 from ..hooks import HookError
@@ -52,6 +52,9 @@ logger = logging.getLogger(__name__)
 # ResolvedUser(origin="cimd") expressible, which is not a state.
 UserOrigin = Literal["declared", "runtime"]
 ClientOrigin = Literal["declared", "runtime", "cimd"]
+
+
+_Created = TypeVar("_Created")
 
 
 @dataclass(frozen=True)
@@ -185,13 +188,28 @@ class IdentityResolver:
         return [(entry.user.username, entry.user.description) for entry in self.list_users()]
 
     def create_runtime_user(self, user: User) -> User:
-        # Check and insert with loads held off: a reload declaring the name in
-        # between would reconcile an empty store, then see this insert land
-        # under its declared name.
-        with self.config.holding_loads():
+        def create() -> User:
             if self.config.get_user(user.username) is not None:
                 raise DeclaredNameCollision(f"user {user.username!r} is declared in users.yaml")
             return self.store.users.create(user)
+
+        return self._checked_against_the_declaration(create)
+
+    def _checked_against_the_declaration(self, create: Callable[[], _Created]) -> _Created:
+        """A creation whose check against the declared names and whose insert
+        must not straddle a load of the declaration.
+
+        Within this process, with loads held off: a reload declaring the name
+        in between would reconcile an empty store, then see the insert land
+        under its declared name. With a store other processes share, a writer
+        of theirs is held off too (#354, step 4a): the check is made against
+        the files as they are, under the directory lock their writers take,
+        and the insert is committed before the lock is released.
+        """
+        with self.config.holding_loads():
+            if self.store.shared:
+                return self.config.act_on_current_files(create)
+            return create()
 
     # ---- clients --------------------------------------------------------
 
@@ -296,13 +314,14 @@ class IdentityResolver:
         caller that keeps a record about the client (#190) learns which
         instance it is about, so that a client created under the same id
         later is not taken for this one (#403, #404)."""
-        # See create_runtime_user.
-        with self.config.holding_loads():
+        def create() -> Entry[OAuthClient]:
             if _find_client(self.config.settings, client.client_id) is not None:
                 raise DeclaredNameCollision(
                     f"client {client.client_id!r} is declared in settings.yaml"
                 )
             return self.store.clients.create_entry(client)
+
+        return self._checked_against_the_declaration(create)
 
     # ---- lifecycle (#192) ------------------------------------------------
 

@@ -10,7 +10,7 @@ import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterator, Optional
+from typing import Any, Callable, Dict, Iterator, Optional, Tuple, TypeVar
 
 import yaml
 
@@ -25,7 +25,7 @@ from .config_documents import (
     load_users_document,
     reject_unloadable,
 )
-from .config_store import ConfigFileStore, FileSnapshot
+from .config_store import ConfigFileStore, FileSnapshot, Fingerprint
 from .config_writer import (
     LockUnavailableError,
     compare_and_replace,
@@ -83,6 +83,14 @@ class ConfigurationRejected(ValueError):
         self.kind = kind
 
 
+class DeclaredConfigurationUnloadable(RuntimeError):
+    """The configuration files changed and do not load, so nothing can be
+    checked against them (#354, step 4a): a mutation that depends on the
+    declaration, such as creating a runtime user or client under a name that
+    must not be declared, is refused. The configuration loaded before stays
+    in force for everything else. Fixing the files ends it."""
+
+
 class ReloadAfterSaveError(RuntimeError):
     """save() wrote both files successfully, but the runtime could not
     adopt them afterward (#229 review round on phase 2, blocking).
@@ -104,6 +112,12 @@ class ReloadAfterSaveError(RuntimeError):
         super().__init__(message)
         self.message = message
         self.kind = kind
+
+
+# The two files of the declared configuration, in the order they are observed.
+_FILES = ("settings.yaml", "users.yaml")
+
+_T = TypeVar("_T")
 
 
 class ConfigManager:
@@ -131,6 +145,11 @@ class ConfigManager:
         # lock, so a read is one consistent look rather than several
         # independent ones that can compose into a state never on disk.
         self._store = ConfigFileStore(self.config_dir)
+        # The fingerprints of the files the loaded configuration was read
+        # from, and of a pair of files a check could not load (#354, step
+        # 4a): what refresh_if_changed compares a stat with.
+        self._loaded_fingerprints: Tuple[Optional[Fingerprint], ...] = (None, None)
+        self._refused: Optional[Tuple[Tuple[str, str], Tuple[Optional[Fingerprint], ...]]] = None
         # A transient CLI/programmatic `--profile` (#172). Kept here, not on
         # Settings, because it must survive every reload() - which rebuilds
         # Settings from YAML - and must never be written back to the file.
@@ -356,9 +375,10 @@ class ConfigManager:
         # was read: whatever happened to the directory after this moment,
         # this configuration cannot speak about (#405).
         staged["observed_at"] = time.time()
-        observed = self._store.read_snapshot(("settings.yaml", "users.yaml"))
+        observed = self._store.read_snapshot(_FILES)
         settings_observed = observed["settings.yaml"]
         users_observed = observed["users.yaml"]
+        staged["fingerprints"] = (settings_observed.fingerprint, users_observed.fingerprint)
         settings_file = self.config_dir / "settings.yaml"
         if not settings_observed.exists:
             logger.warning(f"Settings file not found: {settings_file}, using defaults")
@@ -463,6 +483,7 @@ class ConfigManager:
         self.users_revision = staged["users_revision"]
         self.settings_revision = staged["settings_revision"]
         self.observed_at: float = staged["observed_at"]
+        self._loaded_fingerprints = staged["fingerprints"]
 
     def _configure_hooks_from(self, hooks: HooksSection, plugins: Dict[str, Dict[str, Any]]) -> None:
         """Replace the settings.yaml-sourced hooks/plugins with the file's
@@ -577,6 +598,82 @@ class ConfigManager:
         """
         with self._load_lock:
             yield
+
+    def refresh_if_changed(self) -> bool:
+        """Adopt the files if another writer changed them since they were
+        loaded: whether a reload happened (#354, step 4a).
+
+        For a process that shares its runtime store with others, at the start
+        of every operation. A stat of the two files is the fast negative; the
+        revision of their bytes is the answer, so the same bytes under a new
+        fingerprint are no reload. A pair of files that cannot be loaded (an
+        editor's mistake) leaves the loaded configuration in force, is said
+        once, and is not tried again until the bytes change. A lock that
+        cannot be taken is not that: LockUnavailableError, which may be
+        retried.
+        """
+        current = tuple(self._store.fingerprint_of(name) for name in _FILES)
+        if current == self._loaded_fingerprints:
+            return False
+        if self._refused is not None and current == self._refused[1]:
+            return False
+        with self._load_lock:
+            observed = self._store.read_snapshot(_FILES)
+            revisions = (observed["settings.yaml"].revision, observed["users.yaml"].revision)
+            fingerprints = tuple(observed[name].fingerprint for name in _FILES)
+            if revisions == (self.settings_revision, self.users_revision):
+                # The bytes this configuration was loaded from: their
+                # fingerprint is theirs too, and the next check is the fast one.
+                self._loaded_fingerprints = fingerprints
+                return False
+            if self._refused is not None and revisions == self._refused[0]:
+                self._refused = (revisions, fingerprints)
+                return False
+            try:
+                self.reload_local()
+            except LockUnavailableError:
+                raise
+            except Exception as failure:
+                self._refused = (revisions, fingerprints)
+                logger.warning(
+                    "The configuration files in %s changed and could not be loaded (%s); the configuration "
+                    "loaded before stays in force until they change again",
+                    self.config_dir,
+                    failure,
+                )
+                return False
+            self._refused = None
+            return True
+
+    def act_on_current_files(self, act: Callable[[], _T]) -> _T:
+        """``act()`` with the directory lock held and the loaded configuration
+        the files' (#354, step 4a).
+
+        For a mutation whose check against the declared configuration and
+        whose effect must not straddle a writer of another process: the
+        creation of a runtime user or client. The lock is not reentrant
+        (#246), so when the files moved it is released for the reload and
+        taken again, and the files looked at again, since they may move once
+        more in between: only the last pass, in which the loaded
+        configuration is the files', acts. A reload that fails refuses the
+        act. A writer that does not take the lock is not held off.
+        """
+        with self._load_lock:
+            while True:
+                with self._store.locked():
+                    observed = self._store.read_snapshot_within_lock(_FILES)
+                    if (observed["settings.yaml"].revision, observed["users.yaml"].revision) == (
+                        self.settings_revision,
+                        self.users_revision,
+                    ):
+                        return act()
+                try:
+                    self.reload_local()
+                except ConfigurationRejected as rejected:
+                    raise DeclaredConfigurationUnloadable(
+                        f"the configuration files in {self.config_dir} do not load, so this cannot be checked "
+                        f"against them: {rejected.message}"
+                    ) from rejected
 
     def reload(self) -> None:
         """Reload configuration from files: the EXTERNAL reload.

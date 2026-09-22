@@ -1,0 +1,522 @@
+"""The declared configuration across processes (#354, step 4a).
+
+Several processes share a SQLite runtime store and one configuration
+directory. The files are the truth: a process notices that they changed at
+the start of its next operation, and the creation of a runtime user or client
+checks the name against the disk, not against what this process last loaded,
+in the same critical section as the insert. With the in-memory store nothing
+changes: the store is this process's alone.
+"""
+
+import multiprocessing
+import os
+import shutil
+from pathlib import Path
+
+import pytest
+import yaml
+
+from nanoidp.config import ConfigManager, User
+from nanoidp.config_writer import LockUnavailableError
+from nanoidp.services import runtime_store
+from nanoidp.services.identities import DeclaredNameCollision, IdentityResolver
+from nanoidp.services.sqlite_runtime_store import SqliteRuntimeStore
+
+_REPO_CONFIG = Path(__file__).resolve().parent.parent / "config"
+_SPAWN = multiprocessing.get_context("spawn")
+_BOUND = 30
+
+
+def _config_dir(tmp_path):
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    for name in ("settings.yaml", "users.yaml"):
+        shutil.copy(_REPO_CONFIG / name, config_dir / name)
+    settings = config_dir / "settings.yaml"
+    document = yaml.safe_load(settings.read_text())
+    document["jwt"]["keys_dir"] = str(tmp_path / "keys")
+    settings.write_text(yaml.safe_dump(document))
+    return config_dir
+
+
+def _declare_user(config_dir, username):
+    """What another process's writer (or an editor) does: the file replaced
+    whole, as every nanoidp writer does."""
+    users = config_dir / "users.yaml"
+    document = yaml.safe_load(users.read_text())
+    document["users"][username] = {"password": "declared", "email": f"{username}@example.org"}
+    replacement = users.with_name("users.yaml.next")
+    replacement.write_text(yaml.safe_dump(document))
+    os.replace(replacement, users)
+
+
+def _set_setting(config_dir, section, key, value):
+    settings = config_dir / "settings.yaml"
+    document = yaml.safe_load(settings.read_text())
+    document.setdefault(section, {})[key] = value
+    replacement = settings.with_name("settings.yaml.next")
+    replacement.write_text(yaml.safe_dump(document))
+    os.replace(replacement, settings)
+
+
+@pytest.fixture
+def shared(tmp_path):
+    """A process's configuration over a directory, and a shared store
+    published as the process's (not selectable from YAML before 4c, so
+    published with the inputs the activation adopts)."""
+    config_dir = _config_dir(tmp_path)
+    store = SqliteRuntimeStore(tmp_path / "state" / "runtime.db")
+    runtime_store.publish_runtime_store(store, ("memory",))
+    config = ConfigManager(str(config_dir))
+    return config_dir, config, store
+
+
+class TestTheFingerprintIsOfTheBytesRead:
+    def test_a_snapshot_carries_the_fingerprint_of_the_file_it_was_read_from(self, tmp_path, monkeypatch):
+        """Taken from the handle the bytes came from: a file replaced right
+        after the read must not lend its fingerprint to the older bytes."""
+        from nanoidp import config_store
+
+        config_dir = _config_dir(tmp_path)
+        users = config_dir / "users.yaml"
+        before = os.stat(users)
+        real_open = open
+
+        def replacing_open(path, *args, **kwargs):
+            handle = real_open(path, *args, **kwargs)
+            if Path(path) == users:
+                real_read = handle.read
+
+                def read(*a, **k):
+                    data = real_read(*a, **k)
+                    replacement = users.with_name("users.yaml.next")
+                    replacement.write_text("users: {}\n")
+                    os.replace(replacement, users)
+                    return data
+
+                handle.read = read
+            return handle
+
+        monkeypatch.setattr(config_store, "open", replacing_open, raising=False)
+        snapshot = config_store.ConfigFileStore(config_dir).read("users.yaml")
+
+        assert snapshot.data != b"users: {}\n"
+        assert snapshot.fingerprint[0] == before.st_ino
+        assert snapshot.fingerprint != config_store.ConfigFileStore(config_dir).fingerprint_of("users.yaml")
+
+    def test_a_missing_file_has_no_fingerprint(self, tmp_path):
+        from nanoidp.config_store import ConfigFileStore
+
+        store = ConfigFileStore(tmp_path)
+
+        assert store.read("users.yaml").fingerprint is None
+        assert store.fingerprint_of("users.yaml") is None
+
+
+class TestTheCheck:
+    def test_nothing_changed_is_seen_without_reading_the_files(self, shared, monkeypatch):
+        config_dir, config, store = shared
+        reads = []
+        real = config._store.read_snapshot
+        monkeypatch.setattr(config._store, "read_snapshot", lambda names: reads.append(names) or real(names))
+
+        assert config.refresh_if_changed() is False
+        assert reads == []
+
+    def test_another_writer_is_seen_at_the_next_check(self, shared):
+        config_dir, config, store = shared
+        _declare_user(config_dir, "carol")
+        assert config.get_user("carol") is None
+
+        assert config.refresh_if_changed() is True
+        assert config.get_user("carol") is not None
+        assert config.refresh_if_changed() is False
+
+    def test_the_same_bytes_under_a_new_fingerprint_are_no_reload(self, shared, monkeypatch):
+        config_dir, config, store = shared
+        users = config_dir / "users.yaml"
+        replacement = users.with_name("users.yaml.next")
+        replacement.write_bytes(users.read_bytes())
+        os.replace(replacement, users)
+        loads = []
+        monkeypatch.setattr(config, "_load_config", lambda *a, **k: loads.append(1))
+
+        assert config.refresh_if_changed() is False
+        assert loads == []
+        # And the fingerprint of those same bytes is kept: the next check is
+        # the fast one again.
+        reads = []
+        real = config._store.read_snapshot
+        monkeypatch.setattr(config._store, "read_snapshot", lambda names: reads.append(names) or real(names))
+        assert config.refresh_if_changed() is False
+        assert reads == []
+
+    def test_an_invalid_configuration_keeps_the_loaded_one_and_is_tried_once(self, shared, monkeypatch, caplog):
+        config_dir, config, store = shared
+        (config_dir / "users.yaml").write_text("users: [this is not a mapping\n")
+        loads = []
+        real_load = config._load_config
+
+        def counting(*args, **kwargs):
+            loads.append(1)
+            return real_load(*args, **kwargs)
+
+        monkeypatch.setattr(config, "_load_config", counting)
+        with caplog.at_level("WARNING"):
+            assert config.refresh_if_changed() is False
+            assert config.refresh_if_changed() is False
+            assert config.refresh_if_changed() is False
+
+        assert loads == [1]
+        assert config.get_user("admin") is not None
+        assert sum("could not be loaded" in record.getMessage() for record in caplog.records) == 1
+        # Bytes that change again are tried again: valid ones, new.
+        shutil.copy(_REPO_CONFIG / "users.yaml", config_dir / "users.yaml")
+        _declare_user(config_dir, "dave")
+        assert config.refresh_if_changed() is True
+        assert loads == [1, 1]
+        assert config.get_user("dave") is not None
+
+    def test_after_a_refusal_the_check_is_the_fast_one_again(self, shared, monkeypatch):
+        config_dir, config, store = shared
+        (config_dir / "users.yaml").write_text("users: [this is not a mapping\n")
+        assert config.refresh_if_changed() is False
+        reads = []
+        real = config._store.read_snapshot
+        monkeypatch.setattr(config._store, "read_snapshot", lambda names: reads.append(names) or real(names))
+
+        assert config.refresh_if_changed() is False
+        assert reads == []
+
+    def test_the_refused_bytes_under_a_new_fingerprint_are_not_tried_again(self, shared, monkeypatch):
+        config_dir, config, store = shared
+        users = config_dir / "users.yaml"
+        users.write_text("users: [this is not a mapping\n")
+        assert config.refresh_if_changed() is False
+        replacement = users.with_name("users.yaml.next")
+        replacement.write_bytes(users.read_bytes())
+        os.replace(replacement, users)
+        loads = []
+        monkeypatch.setattr(config, "_load_config", lambda *a, **k: loads.append(1))
+
+        assert config.refresh_if_changed() is False
+        assert loads == []
+
+    def test_a_lock_the_reload_cannot_take_is_not_an_invalid_configuration_either(self, shared, monkeypatch):
+        config_dir, config, store = shared
+        _declare_user(config_dir, "carol")
+
+        def unavailable():
+            raise LockUnavailableError("held by a peer", kind="lock_timeout")
+
+        monkeypatch.setattr(config, "reload_local", unavailable)
+        with pytest.raises(LockUnavailableError):
+            config.refresh_if_changed()
+        monkeypatch.undo()
+
+        assert config.refresh_if_changed() is True
+        assert config.get_user("carol") is not None
+
+    def test_the_bytes_that_were_loaded_back_again_are_no_reload(self, shared, monkeypatch):
+        """An editor's mistake undone: the files are the loaded ones again."""
+        config_dir, config, store = shared
+        original = (config_dir / "users.yaml").read_bytes()
+        (config_dir / "users.yaml").write_text("users: [this is not a mapping\n")
+        assert config.refresh_if_changed() is False
+        (config_dir / "users.yaml").write_bytes(original)
+        loads = []
+        monkeypatch.setattr(config, "_load_config", lambda *a, **k: loads.append(1))
+
+        assert config.refresh_if_changed() is False
+        assert loads == []
+
+    def test_a_lock_that_cannot_be_taken_is_not_an_invalid_configuration(self, shared, monkeypatch):
+        config_dir, config, store = shared
+        _declare_user(config_dir, "carol")
+
+        def unavailable(names):
+            raise LockUnavailableError("held by a peer", kind="lock_timeout")
+
+        monkeypatch.setattr(config._store, "read_snapshot", unavailable)
+        with pytest.raises(LockUnavailableError):
+            config.refresh_if_changed()
+        monkeypatch.undo()
+
+        # Nothing was remembered as refused: the next check reloads.
+        assert config.refresh_if_changed() is True
+        assert config.get_user("carol") is not None
+
+
+class TestWhereTheCheckRuns:
+    def test_only_a_shared_store_asks_for_it(self, tmp_path, monkeypatch):
+        from nanoidp.services.runtime_store import MemoryRuntimeStore, fresh_configuration
+
+        config = ConfigManager(str(_config_dir(tmp_path)))
+        monkeypatch.setattr("nanoidp.services.runtime_store.get_config_if_loaded", lambda: config)
+        checks = []
+        monkeypatch.setattr(config, "refresh_if_changed", lambda: checks.append(1) or False)
+
+        runtime_store.publish_runtime_store(MemoryRuntimeStore(), ("memory",))
+        fresh_configuration()
+        assert checks == []
+
+        runtime_store.publish_runtime_store(SqliteRuntimeStore(tmp_path / "runtime.db"), ("memory",))
+        fresh_configuration()
+        assert checks == [1]
+
+    def test_a_request_sees_the_files_before_the_blueprints_guards(self, tmp_path):
+        from nanoidp.app import create_app
+
+        config_dir = _config_dir(tmp_path)
+        runtime_store.publish_runtime_store(SqliteRuntimeStore(tmp_path / "runtime.db"), ("memory",))
+        application = create_app(str(config_dir))
+        application.config["TESTING"] = True
+        client = application.test_client()
+        assert client.get("/").status_code == 200
+
+        _set_setting(config_dir, "session", "require_ui_login", True)
+        response = client.get("/")
+
+        assert response.status_code == 302
+        assert "/login" in response.headers["Location"]
+
+    def test_a_request_with_the_memory_store_does_not_look(self, tmp_path):
+        from nanoidp.app import create_app
+
+        config_dir = _config_dir(tmp_path)
+        application = create_app(str(config_dir))
+        application.config["TESTING"] = True
+        client = application.test_client()
+        _set_setting(config_dir, "session", "require_ui_login", True)
+
+        assert client.get("/").status_code == 200
+
+    async def test_an_mcp_tool_sees_the_files_before_the_admin_check(self, tmp_path, mcp_call_tool):
+        from nanoidp.config import init_config
+
+        config_dir = _config_dir(tmp_path)
+        runtime_store.publish_runtime_store(SqliteRuntimeStore(tmp_path / "runtime.db"), ("memory",))
+        init_config(str(config_dir))
+        _set_setting(config_dir, "session", "management_secret", "s" * 32)
+
+        result = _payload(await mcp_call_tool("create_user", {"username": "eve", "password": "pw"}))
+
+        assert result["code"] == "MCP_ADMIN_SECRET_REQUIRED"
+
+    async def test_an_mcp_tool_that_cannot_observe_the_files_may_retry(self, tmp_path, monkeypatch, mcp_call_tool):
+        from nanoidp.config import init_config
+
+        config_dir = _config_dir(tmp_path)
+        runtime_store.publish_runtime_store(SqliteRuntimeStore(tmp_path / "runtime.db"), ("memory",))
+        config = init_config(str(config_dir))
+
+        def unavailable():
+            raise LockUnavailableError("held by a peer", kind="lock_timeout")
+
+        monkeypatch.setattr(config, "refresh_if_changed", unavailable)
+        result = _payload(await mcp_call_tool("list_users", {}))
+
+        assert result["code"] == "MCP_CONFIGURATION_UNAVAILABLE"
+        assert result["retryable"] is True
+
+
+def _payload(result):
+    import json
+
+    return json.loads(result.content[0].text)
+
+
+class TestTheCriticalCreation:
+    def test_a_name_another_process_declared_is_refused_though_this_one_never_reloaded(self, shared):
+        """The census scenario: B's loaded configuration is stale, and B
+        checks the name against the disk, under the lock the writers take."""
+        config_dir, config, store = shared
+        b = IdentityResolver(config, store)
+        _declare_user(config_dir, "x")
+        assert config.get_user("x") is None
+
+        with pytest.raises(DeclaredNameCollision):
+            b.create_runtime_user(User(username="x", password="pw"))
+
+        assert store.users.get("x") is None
+        # And B now resolves x as the declared configuration says.
+        assert config.get_user("x") is not None
+
+    def test_the_insert_is_made_with_the_directory_lock_held(self, shared, monkeypatch):
+        import fcntl
+
+        config_dir, config, store = shared
+        b = IdentityResolver(config, store)
+        held = []
+        real_create = store.users.create
+
+        def create(user, *args, **kwargs):
+            probe = os.open(config_dir / ".nanoidp-write.lock", os.O_RDWR)
+            try:
+                fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                held.append(False)
+                fcntl.flock(probe, fcntl.LOCK_UN)
+            except BlockingIOError:
+                held.append(True)
+            finally:
+                os.close(probe)
+            return real_create(user, *args, **kwargs)
+
+        monkeypatch.setattr(store.users, "create", create)
+        b.create_runtime_user(User(username="fresh", password="pw"))
+
+        assert held == [True]
+
+    def test_a_disk_that_moves_again_after_the_reload_is_looked_at_again(self, shared, monkeypatch):
+        config_dir, config, store = shared
+        b = IdentityResolver(config, store)
+        _declare_user(config_dir, "first")
+        reloads = []
+        real_reload = config.reload_local
+
+        def reload_then_declare():
+            real_reload()
+            reloads.append(1)
+            if len(reloads) == 1:
+                # Another writer, between this reload and the next lock.
+                _declare_user(config_dir, "x")
+
+        monkeypatch.setattr(config, "reload_local", reload_then_declare)
+
+        with pytest.raises(DeclaredNameCollision):
+            b.create_runtime_user(User(username="x", password="pw"))
+        assert reloads == [1, 1]
+        assert store.users.get("x") is None
+
+    def test_a_disk_that_cannot_be_loaded_refuses_the_creation(self, shared):
+        """The name cannot be checked against a declaration that does not
+        load: refused, and said as that, not as a collision."""
+        from nanoidp.config import DeclaredConfigurationUnloadable
+
+        config_dir, config, store = shared
+        b = IdentityResolver(config, store)
+        (config_dir / "users.yaml").write_text("users: [this is not a mapping\n")
+
+        with pytest.raises(DeclaredConfigurationUnloadable):
+            b.create_runtime_user(User(username="x", password="pw"))
+
+        assert store.users.get("x") is None
+        assert config.get_user("admin") is not None
+
+    @pytest.mark.parametrize(
+        "path, body",
+        [
+            ("/api/runtime/users", {"username": "x", "password": "pw"}),
+            ("/api/runtime/clients", {"client_id": "x", "client_secret": "s" * 20}),
+            ("/register", {"redirect_uris": ["http://localhost:3000/callback"], "token_endpoint_auth_method": "none"}),
+        ],
+    )
+    def test_the_endpoints_say_the_declaration_does_not_load(self, tmp_path, path, body):
+        from nanoidp.app import create_app
+
+        config_dir = _config_dir(tmp_path)
+        _set_setting(config_dir, "oauth", "dynamic_registration", {"enabled": True})
+        runtime_store.publish_runtime_store(SqliteRuntimeStore(tmp_path / "runtime.db"), ("memory",))
+        application = create_app(str(config_dir))
+        application.config["TESTING"] = True
+        client = application.test_client()
+        (config_dir / "users.yaml").write_text("users: [this is not a mapping\n")
+
+        response = client.post(path, json=body)
+
+        assert response.status_code == 503
+        assert response.get_json()["error"] == "configuration_unloadable"
+
+    def test_a_lock_that_cannot_be_taken_creates_nothing(self, shared, monkeypatch):
+        from nanoidp import config_writer
+
+        config_dir, config, store = shared
+        b = IdentityResolver(config, store)
+
+        def unavailable(*args, **kwargs):
+            raise LockUnavailableError("held by a peer", kind="lock_timeout")
+
+        monkeypatch.setattr(config_writer, "_cross_process_lock", unavailable)
+        with pytest.raises(LockUnavailableError):
+            b.create_runtime_user(User(username="x", password="pw"))
+        monkeypatch.undo()
+
+        assert store.users.get("x") is None
+
+    def test_the_memory_store_does_not_take_the_directory_lock(self, tmp_path, monkeypatch):
+        from nanoidp import config_writer
+        from nanoidp.services.runtime_store import MemoryRuntimeStore
+
+        config = ConfigManager(str(_config_dir(tmp_path)))
+        store = MemoryRuntimeStore()
+        taken = []
+        real = config_writer._cross_process_lock
+
+        def recording(*args, **kwargs):
+            taken.append(1)
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(config_writer, "_cross_process_lock", recording)
+        IdentityResolver(config, store).create_runtime_user(User(username="fresh", password="pw"))
+
+        assert taken == []
+
+    def test_a_client_is_checked_against_the_disk_too(self, shared):
+        from nanoidp.config import OAuthClient
+
+        config_dir, config, store = shared
+        b = IdentityResolver(config, store)
+        settings = config_dir / "settings.yaml"
+        document = yaml.safe_load(settings.read_text())
+        document["oauth"]["clients"].append({"client_id": "x", "client_secret": "s" * 20})
+        settings.write_text(yaml.safe_dump(document))
+
+        with pytest.raises(DeclaredNameCollision):
+            b.create_runtime_client_entry(OAuthClient(client_id="x", client_secret="t" * 20))
+        assert store.clients.get("x") is None
+
+
+class TestAcrossProcesses:
+    def test_a_name_declared_by_one_process_is_refused_to_the_other(self, tmp_path):
+        """Real processes: B loads, A declares x and says so, B creates a
+        runtime x and is refused; then B resolves x as declared."""
+        config_dir = _config_dir(tmp_path)
+        store_path = tmp_path / "state" / "runtime.db"
+        SqliteRuntimeStore(store_path)
+        loaded, declared, out = _SPAWN.Event(), _SPAWN.Event(), _SPAWN.Queue()
+        b = _SPAWN.Process(target=_b_process, args=(str(config_dir), str(store_path), loaded, declared, out), daemon=True)
+        b.start()
+        try:
+            assert loaded.wait(_BOUND)
+            _declare_user(config_dir, "x")
+            declared.set()
+            result = out.get(timeout=_BOUND)
+        finally:
+            b.join(_BOUND)
+            if b.is_alive():
+                b.terminate()
+
+        assert result == {"create": "DeclaredNameCollision", "stored": False, "resolves_declared": True}
+
+
+def _b_process(config_dir, store_path, loaded, declared, out):
+    import logging
+
+    logging.disable(logging.CRITICAL)
+    from nanoidp.config import ConfigManager, User
+    from nanoidp.services import runtime_store
+    from nanoidp.services.identities import IdentityResolver
+    from nanoidp.services.sqlite_runtime_store import SqliteRuntimeStore
+
+    store = SqliteRuntimeStore(store_path)
+    runtime_store.publish_runtime_store(store, ("memory",))
+    config = ConfigManager(config_dir)
+    loaded.set()
+    declared.wait(60)
+    try:
+        IdentityResolver(config, store).create_runtime_user(User(username="x", password="pw"))
+        outcome = "created"
+    except Exception as failure:  # noqa: BLE001 - said to the parent
+        outcome = type(failure).__name__
+    user = config.get_user("x")
+    out.put({"create": outcome, "stored": store.users.get("x") is not None, "resolves_declared": user is not None})

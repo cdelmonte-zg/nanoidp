@@ -68,6 +68,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`record_registration(entry, ...)`) and dropped with
   `forget_registration_of(entry)`.
 
+- **Processes that share a runtime store see the configuration files as
+  they are** (#354, fourth step, first part). Nothing checked, per
+  operation, that the loaded configuration was still the files': a process
+  saw another's write only at its own reload, so a process could create a
+  runtime user under a name another had just declared (measured). Now, when
+  the runtime store is shared with other processes, every request (before
+  any blueprint's guard) and every MCP tool call (before the read-only and
+  admin checks) looks at the files first: a stat of the two files is the
+  fast negative, taken from the very files the loaded bytes came from, and
+  the revision of their bytes is the answer. Files that changed are
+  reloaded; files that changed and do not load (an editor's mistake) leave
+  the loaded configuration in force, are said once in the log, and are not
+  tried again until they change. The creation of a runtime user or client
+  checks its name against the files under the directory lock every writer
+  of nanoidp takes, and commits before it releases it: the lock is not
+  reentrant, so when the files moved it is released for the reload and
+  taken again. A creation against files that do not load is refused, `503`
+  with `configuration_unloadable`, for `/api/runtime` and dynamic
+  registration alike. A directory lock held by a peer is `503` over HTTP, as
+  before, and `MCP_CONFIGURATION_UNAVAILABLE` with `retryable` in MCP. With
+  the in-memory store nothing changes. An editor that does not take the
+  lock is noticed at the next operation, and nothing linearizable is
+  promised against it. Measured on the repository's configuration: the
+  stat of the two files costs 3.6 us, reading and hashing them 18 us.
 - **The SQLite runtime store keeps the audit too, in a file of its own**
   (#354, third step). A SQLite file has one writer, and the audit's contract
   says it does not wait for the repositories: an append on the store's file

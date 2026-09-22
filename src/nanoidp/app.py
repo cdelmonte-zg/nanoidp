@@ -13,13 +13,14 @@ from flask_limiter.util import get_remote_address
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 from . import __version__
-from .config import ConfigManager, get_config, init_config
+from .config import ConfigManager, DeclaredConfigurationUnloadable, get_config, init_config
 from .config_writer import LockUnavailableError
 from .routes import api_bp, oauth_bp, registration_bp, runtime_bp, saml_bp, ui_bp
 from .services import activate_services
 from .services.dynamic_registration import prune_stale_registrations
 from .services.identities import identities_for, reconcile_runtime_identities
 from .services.runtime_repository import RuntimeStoreUnavailable
+from .services.runtime_store import fresh_configuration
 
 # Global limiter instance (initialized in create_app)
 limiter: Optional[Limiter] = None
@@ -203,6 +204,17 @@ def create_app(
         response.status_code = 503
         return response
 
+    @app.errorhandler(DeclaredConfigurationUnloadable)
+    def _declaration_unloadable(exc: DeclaredConfigurationUnloadable) -> Response:
+        """503 for a mutation checked against configuration files that
+        changed and do not load (#354, step 4a): refused, not a fault of the
+        request, and nothing coming back resolves until the files are fixed,
+        so no Retry-After."""
+        app.logger.warning("Refused against a configuration that does not load: %s", exc)
+        response = jsonify({"error": "configuration_unloadable", "error_description": str(exc)})
+        response.status_code = 503
+        return response
+
     @app.errorhandler(RuntimeStoreUnavailable)
     def _runtime_store_unavailable(exc: RuntimeStoreUnavailable) -> Response:
         """503 with Retry-After for a runtime store held by another process
@@ -214,6 +226,12 @@ def create_app(
         response.status_code = 503
         response.headers["Retry-After"] = "1"
         return response
+
+    # Before any blueprint's guard, which reads the configuration: an app
+    # before_request runs first. With a store shared by other processes the
+    # files are looked at here, once per request, not in get_config() (#354,
+    # step 4a). LockUnavailableError is the 503 above.
+    app.before_request(fresh_configuration)
 
     app.register_blueprint(oauth_bp)
     app.register_blueprint(saml_bp)
