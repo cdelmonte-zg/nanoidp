@@ -68,6 +68,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`record_registration(entry, ...)`) and dropped with
   `forget_registration_of(entry)`.
 
+- **A promotion whose writer died is recovered, and only then** (#354,
+  fourth step, second part). A promotion claims its runtime object with a
+  `writing` hold that only its writing thread resolves; with a store several
+  processes share, that thread can die with its process, and the object
+  stayed claimed for ever, refused to every delete, reset and promotion. The
+  claim now names its owner: the process, which holds an exclusive OS lock
+  on a lease file (`runtime-owners/<id>.lock` next to the store, `0700` and
+  `0600`) for as long as it lives, made before any claim names it. A peer
+  that can take that lock, or finds the lease gone, has proved the owner
+  dead; nothing else is a proof, and a claim whose owner is alive is never
+  recovered, however old. The recovery runs with the files the loaded
+  configuration's, the proof outside any repository decision, then one
+  decision on that very claim, so of two peers one decides: declared, the
+  object goes; not declared, the claim is released and the object stays
+  runtime. It is audited as `runtime_identity_promotion_recovered` with its
+  outcome, never as a promotion, since nobody can tell whose the declaration
+  was. A delete, a promotion or a reset that meets such a claim recovers it
+  and goes on (a reset counts only what it removed itself); a load recovers
+  it too, only while the files are still the ones it read, and never loads
+  again from inside itself. The leases of owners proved dead are removed; a
+  forked child is an owner of its own. With the in-memory store claims have
+  no owner and nothing changes. A writing thread that dies in a process that
+  lives on is not recovered: its owner is alive, and restarting it is the
+  remedy.
 - **Processes that share a runtime store see the configuration files as
   they are** (#354, fourth step, first part). Nothing checked, per
   operation, that the loaded configuration was still the files': a process

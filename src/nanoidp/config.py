@@ -270,10 +270,10 @@ class ConfigManager:
         self._last_observed: Optional[Tuple[_Identity, Tuple[Optional[Fingerprint], ...], int]] = None
         # The identity of the files the loaded configuration came from.
         self._loaded_identity: Optional[_Identity] = None
-        # One automatic freshness check at a time (#354, step 4a, fifth
-        # review): the others are told at once that the configuration cannot
-        # be established now, instead of queueing behind one that waits for
-        # the directory lock.
+        # One automatic freshness check at a time (#354, step 4a): the others
+        # wait for it briefly (_FOLLOWER_WAIT_SECONDS) and take what it
+        # established, but never queue behind one that waits for the
+        # directory lock's timeout.
         self._freshness_lock = threading.Lock()
         # A transient CLI/programmatic `--profile` (#172). Kept here, not on
         # Settings, because it must survive every reload() - which rebuilds
@@ -929,6 +929,22 @@ class ConfigManager:
                         f"against them: {rejected.message}",
                         temporary=not _decided_by_the_bytes(rejected),
                     ) from rejected
+
+    def act_if_files_are_loaded(self, act: Callable[[], _T]) -> Tuple[bool, Optional[_T]]:
+        """``act()`` with the directory lock held, if the files are still the
+        loaded ones; ``(False, None)`` and nothing done, nothing loaded,
+        otherwise (#354, step 4b).
+
+        For a caller inside a load (the after_load step), where
+        act_on_current_files would reload and so load inside a load. Files
+        that moved since are the next load's to decide on: a destructive
+        decision is never made on a declaration known not to be the files'
+        any more."""
+        with self._load_lock:
+            with self._store.locked():
+                if _identity_of(self._store.read_snapshot_within_lock(_FILES)) != self._loaded_identity:
+                    return False, None
+                return True, act()
 
     def reload(self) -> None:
         """Reload configuration from files: the EXTERNAL reload.

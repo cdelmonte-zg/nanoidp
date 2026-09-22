@@ -688,10 +688,11 @@ class TestTheFifthReview:
 
         assert store.users.get("admin") is not None
 
-    def test_one_check_at_a_time_and_the_others_do_not_wait(self, shared, monkeypatch):
+    def test_the_others_wait_briefly_but_never_queue_behind_the_lock_timeout(self, shared, monkeypatch):
         """While one request waits for the directory lock to look at files
-        that changed, the others are told at once that the configuration
-        cannot be established now, instead of queueing behind it."""
+        that changed, the others wait for it only briefly, and are then told
+        that the configuration cannot be established now, instead of queueing
+        behind it for the lock's timeout."""
         config_dir, config, store = shared
         _declare_user(config_dir, "carol")
         entered, release = threading.Event(), threading.Event()

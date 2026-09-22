@@ -35,7 +35,8 @@ which the first activation adopts when it asks for memory.
 """
 
 import threading
-from typing import Any, Callable, Dict, Optional, Protocol, Tuple, cast
+from contextlib import contextmanager
+from typing import Any, Callable, ContextManager, Dict, Iterator, Optional, Protocol, Tuple, cast
 
 from ..config import OAuthClient, Settings, User, get_config_if_loaded
 from .audit_store import AuditStore, MemoryAuditStore
@@ -92,6 +93,15 @@ class RuntimeStore(Protocol):
     def repository(self, name: str, key_of: Callable[[T], str], codec: Codec[T]) -> RuntimeRepository[T]:
         """The repository a service keeps under ``name``, created once."""
 
+    def claim_owner(self) -> Optional[str]:
+        """Who a claim made now belongs to, when others may have to prove it
+        dead (#354, step 4b): this process, in a store it shares. None in a
+        store that dies with the process, where nobody ever has to."""
+
+    def prove_owner_dead(self, owner: Optional[str]) -> ContextManager[bool]:
+        """Whether the owner of a claim is proved dead, and, when it is by a
+        lock, held so until the block is done. Never by a timeout."""
+
 
 class MemoryRuntimeStore:
     """The runtime state of this process, in memory: two concurrency domains
@@ -115,6 +125,14 @@ class MemoryRuntimeStore:
     def shared(self) -> bool:
         # This process's alone.
         return False
+
+    def claim_owner(self) -> Optional[str]:
+        # A claim here dies with the process that made it and the store.
+        return None
+
+    @contextmanager
+    def prove_owner_dead(self, owner: Optional[str]) -> Iterator[bool]:
+        yield False
 
     def repository(
         self, name: str, key_of: Callable[[T], str], codec: Codec[T]

@@ -103,10 +103,15 @@ _WRITING = "writing"
 _WRITTEN = "written"
 
 
-def promotion_hold(context: Dict[str, Any], state: str = _WRITING) -> Dict[str, Any]:
+def promotion_hold(context: Dict[str, Any], state: str = _WRITING, owner: Optional[str] = None) -> Dict[str, Any]:
     """The payload of a promotion's hold. ``context`` is the promoting
-    request's, for the audit entry of whoever retires the object."""
-    return {"promotion": {"state": state, "context": dict(context)}}
+    request's, for the audit entry of whoever retires the object. ``owner``
+    is the process that made the claim, in a store others share, so that a
+    peer can prove it dead and recover the claim (#354, step 4b)."""
+    claim: Dict[str, Any] = {"state": state, "context": dict(context)}
+    if owner is not None:
+        claim["owner"] = owner
+    return {"promotion": claim}
 
 
 def _promotion_of(entry: Entry[Any]) -> Optional[Dict[str, Any]]:
@@ -120,7 +125,8 @@ def _promotion_of(entry: Entry[Any]) -> Optional[Dict[str, Any]]:
     if claim["state"] == _WRITTEN and not isinstance(claim.get("written_at"), (int, float)):
         return None  # written, and no saying when: not one of ours
     context = claim.get("context")
-    return {**claim, "context": context if isinstance(context, dict) else {}}
+    owner = claim.get("owner")
+    return {**claim, "context": context if isinstance(context, dict) else {}, "owner": owner if isinstance(owner, str) else None}
 
 
 # The hold this thread is writing the entry of, if it is in the middle of a
@@ -351,6 +357,15 @@ class IdentityResolver:
         for, since it holds loads off; one of another process sharing the
         store is not, and its object is simply not counted (#405).
         """
+        # A claim whose writer is proved dead is recovered first: released,
+        # its object is then removed and counted like any other; declared, it
+        # goes by the recovery, which says so, and is no removal of the
+        # reset's (#354, step 4b).
+        repositories: List[Tuple[Kind, RuntimeRepository[Any]]] = [("user", self.store.users), ("client", self.store.clients)]
+        for kind, repository in repositories:
+            for seen in repository.entries():
+                if _dead_writer_claim(seen) is not None:
+                    self._recover(repository, kind, seen.name)
         with self.config.holding_loads():
             return _delete_unheld(self.store.users), _delete_unheld(self.store.clients)
 
@@ -383,7 +398,40 @@ class IdentityResolver:
             view.delete(name)
             return current
 
-        return repository.transact(decide)
+        return self._recovering(repository, kind, name, lambda: repository.transact(decide))
+
+    def _recovering(self, repository: RuntimeRepository[Any], kind: Kind, name: str, operation: Callable[[], _Created]) -> _Created:
+        """``operation``, and once more if it met a claim whose writer is
+        proved dead and that claim was recovered (#354, step 4b); a claim
+        whose owner is alive answers PromotionInProgress, as before."""
+        try:
+            return operation()
+        except PromotionInProgress:
+            if not self._recover(repository, kind, name):
+                raise
+        return operation()
+
+    def _recover(self, repository: RuntimeRepository[Any], kind: Kind, name: str) -> bool:
+        """Recover the claim on ``name`` if its writer is proved dead, under
+        the critical protocol: the files the loaded configuration's, then the
+        proof, outside any decision, then one decision on that very claim.
+        Whether that claim is out of the way: recovered here, or decided by a
+        peer that recovered it first."""
+        seen = repository.entry(name)
+        if seen is None:
+            return True
+        claim = _dead_writer_claim(seen)
+        if claim is None:
+            return False
+        hold_id, owner, promotion = claim
+        outcome = self.config.act_on_current_files(
+            lambda: _recover_under_lock(self.store, self.config, repository, kind, name, hold_id, owner)
+        )
+        if outcome is not None:
+            _audit(_RECOVERED, kind, name, promotion["context"], {"outcome": outcome})
+            return True
+        current = repository.entry(name)
+        return current is None or current.hold is None or current.hold.hold_id != hold_id
 
     def _promote(
         self, kind: Kind, name: str, write: Callable[[Any], Any], context: Dict[str, Any]
@@ -417,6 +465,13 @@ class IdentityResolver:
            the entry is no longer declared by then, abandons the promotion
            with a warning and releases the claim.
         """
+        return self._recovering(
+            self._repository(kind), kind, name, lambda: self._promote_once(kind, name, write, context)
+        )
+
+    def _promote_once(
+        self, kind: Kind, name: str, write: Callable[[Any], Any], context: Dict[str, Any]
+    ) -> PromotionOutcome:
         repository = self._repository(kind)
         # Looked at before waiting for loads, so a second promotion of the
         # same object answers at once instead of queuing behind the first.
@@ -424,8 +479,11 @@ class IdentityResolver:
         seen = repository.entry(name)
         if seen is not None:
             _refuse_if_held(seen, kind)
+        # The lease first: an owner id is never in a claim before its lease
+        # exists and is held (#354, step 4b).
+        owner = self.store.claim_owner()
         with self.config.holding_loads():
-            claimed = _claim(repository, kind, name, context)
+            claimed = _claim(repository, kind, name, context, owner)
             _writing_here.hold_id = claimed.hold.hold_id if claimed.hold is not None else None
             try:
                 # The value that was claimed, not whatever goes by the name
@@ -583,7 +641,13 @@ def reconcile_runtime_identities(config: ConfigManager) -> None:
     ]
     for kind, repository in repositories:
         for seen in repository.entries():
-            if declared(kind, seen.name):
+            claim = _dead_writer_claim(seen)
+            if claim is not None:
+                # Another writer's claim, still writing: recovered if its
+                # owner is proved dead, and only while the files are the ones
+                # just loaded (no load inside this one); left otherwise.
+                _recover_in_a_load(config, store, repository, kind, seen.name, claim)
+            elif declared(kind, seen.name):
                 _retire(repository, kind, seen.name)
             else:
                 _abandon_if_written(repository, kind, seen, config.observed_at)
@@ -678,6 +742,86 @@ def _abandon_if_written(
     _audit("runtime_identity_promotion_abandoned", kind, seen.name, abandoned["context"])
 
 
+_RECOVERED = "runtime_identity_promotion_recovered"
+
+
+def _dead_writer_claim(entry: Entry[Any]) -> Optional[Tuple[str, str, Dict[str, Any]]]:
+    """``(hold_id, owner, promotion)`` of a claim that could be a dead
+    writer's (#354, step 4b): still writing, naming an owner, and not this
+    thread's own. Whether the owner is dead is for the proof to say."""
+    promotion = _promotion_of(entry)
+    if entry.hold is None or promotion is None or promotion["state"] != _WRITING or promotion["owner"] is None:
+        return None
+    if entry.hold.hold_id == getattr(_writing_here, "hold_id", None):
+        return None
+    return entry.hold.hold_id, promotion["owner"], promotion
+
+
+def _declares(config: ConfigManager, kind: Kind, name: str) -> bool:
+    if kind == "user":
+        return config.get_user(name) is not None
+    return _find_client(config.settings, name) is not None
+
+
+def _recover_under_lock(
+    store: RuntimeStore,
+    config: ConfigManager,
+    repository: RuntimeRepository[Any],
+    kind: Kind,
+    name: str,
+    hold_id: str,
+    owner: str,
+) -> Optional[str]:
+    """With the files the loaded configuration's: if ``owner`` is proved
+    dead, the claim ``hold_id`` it made on ``name`` is decided, as one
+    decision on that very claim, so that of two peers one decides. Declared
+    wins: the object goes (``"declared"``); not declared, the claim is
+    released and the object stays runtime (``"runtime"``). Nobody can say
+    whether the declaration was the dead writer's, so neither is recorded as
+    a promotion. None when nothing was decided."""
+    with store.prove_owner_dead(owner) as dead:
+        if not dead:
+            return None
+        declared = _declares(config, kind, name)
+
+        def decide(view: RepositoryTransaction[Any]) -> Optional[str]:
+            current = view.entry(name)
+            if current is None or current.hold is None or current.hold.hold_id != hold_id:
+                return None
+            promotion = _promotion_of(current)
+            if promotion is None or promotion["state"] != _WRITING or promotion["owner"] != owner:
+                return None
+            if declared:
+                view.delete(name)
+                return "declared"
+            view.release_hold(name, hold_id)
+            return "runtime"
+
+        return repository.transact(decide)
+
+
+def _recover_in_a_load(
+    config: ConfigManager,
+    store: RuntimeStore,
+    repository: RuntimeRepository[Any],
+    kind: Kind,
+    name: str,
+    claim: Tuple[str, str, Dict[str, Any]],
+) -> None:
+    """The recovery of the reconciliation: only if the files are still the
+    ones this load read, and never raising (AfterLoad)."""
+    hold_id, owner, promotion = claim
+    try:
+        acted, outcome = config.act_if_files_are_loaded(
+            lambda: _recover_under_lock(store, config, repository, kind, name, hold_id, owner)
+        )
+    except Exception:
+        logger.debug("recovery of the claim on runtime %s %r deferred", kind, name, exc_info=True)
+        return
+    if acted and outcome is not None:
+        _audit(_RECOVERED, kind, name, promotion["context"], {"outcome": outcome})
+
+
 def _refuse_if_held(entry: Entry[Any], kind: str) -> None:
     # Promotions are the only operation that holds a runtime object.
     if entry.hold is not None:
@@ -685,17 +829,18 @@ def _refuse_if_held(entry: Entry[Any], kind: str) -> None:
 
 
 def _claim(
-    repository: RuntimeRepository[T], kind: Kind, name: str, context: Dict[str, Any]
+    repository: RuntimeRepository[T], kind: Kind, name: str, context: Dict[str, Any], owner: Optional[str] = None
 ) -> Entry[T]:
     """Hold the object for a promotion and return the entry that is held:
-    its instance, its hold, and the value the promotion is of."""
+    its instance, its hold, and the value the promotion is of. ``owner``,
+    whose lease exists and is held already, is named in the hold."""
 
     def decide(view: RepositoryTransaction[T]) -> Entry[T]:
         current = view.entry(name)
         if current is None:
             raise RuntimeObjectNotFound(f"no runtime {kind} {name!r}")
         _refuse_if_held(current, kind)
-        held = view.hold(name, promotion_hold(context))
+        held = view.hold(name, promotion_hold(context, owner=owner))
         return dataclasses.replace(current, hold=held)
 
     return repository.transact(decide)
@@ -735,7 +880,9 @@ def _delete_unheld(repository: RuntimeRepository[T]) -> int:
     return repository.transact(decide)
 
 
-def _audit(event_type: str, kind: str, name: str, context: Dict[str, Any]) -> None:
+def _audit(
+    event_type: str, kind: str, name: str, context: Dict[str, Any], more: Optional[Dict[str, Any]] = None
+) -> None:
     """An audit event from inside a load, where no request context exists and
     nothing may raise (AfterLoad)."""
     try:
@@ -748,7 +895,7 @@ def _audit(event_type: str, kind: str, name: str, context: Dict[str, Any]) -> No
             client_id=name if kind == "client" else None,
             ip_address=context.get("ip_address", "unknown"),
             user_agent=context.get("user_agent", "unknown"),
-            details={"kind": kind, "name": name},
+            details={"kind": kind, "name": name, **(more or {})},
         )
     except Exception:  # pragma: no cover - the audit must not fail a load
         logger.exception("Could not record %s for runtime %s %r", event_type, kind, name)
