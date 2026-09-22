@@ -296,6 +296,13 @@ class RuntimeSection(BaseModel):
         if self.store == "sqlite":
             if self.path is None or not self.path.strip():
                 raise ValueError("runtime.path is required with runtime.store: sqlite, and may not be empty")
+            if self.path.strip().startswith("~"):
+                # What ~ is depends on each process's HOME, and so would the
+                # store: the identity of a shared store must not.
+                raise ValueError(
+                    "runtime.path may not start with ~: it would name a file of each process's HOME; "
+                    "give it relative to the configuration directory, or absolute"
+                )
         elif self.path is not None:
             raise ValueError(f"runtime.path is for runtime.store: sqlite, not {self.store}")
         return self

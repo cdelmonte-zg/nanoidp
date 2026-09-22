@@ -746,7 +746,8 @@ records that is not declared in these files.
 path is relative to the configuration directory, not to the working directory
 of the process: it is the identity of a store several processes share, and
 the same `settings.yaml` must name the same store however each process was
-started. None of the store's files may lie inside the configuration directory
+started. For the same reason a path starting with `~` is refused: it would
+name a file of each process's `HOME`. None of the store's files may lie inside the configuration directory
 (symlinks resolved): they are a secret, and the configuration directory is
 read, copied and committed as configuration. The files are created `0600`
 (the leases directory `0700`); delete all of them to start afresh.
@@ -756,7 +757,7 @@ reload that asks for another store or another file is refused (`422`, kind
 `activation`, with a message that says to restart), because processes that
 share one would otherwise disagree about what exists. `GET /api/config` and
 the MCP `get_settings` tool report the store in use as `runtime.store`, and
-for `sqlite` the file as `runtime.path`, resolved. The section is YAML-only:
+for `sqlite` the file the process opened as `runtime.path`. The section is YAML-only:
 the settings form and MCP do not write it. Audit events recorded before the
 store is activated (by a plugin's load hook) are kept in memory until then,
 and are not carried into a SQLite store: a warning says how many.

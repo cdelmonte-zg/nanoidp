@@ -217,7 +217,7 @@ def resolved_runtime_path(settings: Settings, config_dir: Optional[Path] = None)
     processes were started."""
     if settings.runtime_store != "sqlite" or settings.runtime_path is None:
         return None
-    path = Path(settings.runtime_path).expanduser()
+    path = Path(settings.runtime_path)
     if not path.is_absolute():
         if config_dir is None:
             raise ValueError(
@@ -240,6 +240,13 @@ def runtime_store_report(settings: Settings, config_dir: Optional[Path] = None) 
     for SQLite the file this process uses, resolved as the activation
     resolves it (the declared value is the settings')."""
     report: Dict[str, str] = {"store": settings.runtime_store}
+    with _runtime_store_lock:
+        inputs = _runtime_store_inputs
+    if inputs is not None and inputs[0] == settings.runtime_store == "sqlite":
+        # The file this process opened, not where the path points now (a
+        # symlink retargeted since would say another).
+        report["path"] = inputs[1]
+        return report
     path = resolved_runtime_path(settings, config_dir)
     if path is not None:
         report["path"] = str(path)

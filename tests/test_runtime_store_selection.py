@@ -82,6 +82,8 @@ class TestTheDocument:
             ({"store": "sqlite", "path": ""}, "may not be empty"),
             ({"store": "sqlite", "path": "   "}, "may not be empty"),
             ({"store": "sqlite", "path": 5}, "string"),
+            ({"store": "sqlite", "path": "~/nanoidp/runtime.db"}, "HOME"),
+            ({"store": "sqlite", "path": "~"}, "HOME"),
         ],
     )
     def test_a_path_without_its_store_or_a_store_without_its_path_is_an_invalid_file(self, tmp_path, runtime, why):
@@ -335,3 +337,68 @@ def _serve(config_dir, cwd, what, out):
     else:
         users = client.get("/api/runtime/users").get_json()["users"]
         out.put(("b", [user["username"] for user in users]))
+
+
+class TestTheReviewOf4c:
+    async def test_a_store_held_while_the_first_tool_opens_it_is_retryable_too(self, tmp_path, monkeypatch, mcp_call_tool):
+        """The first MCP tool call loads the configuration, and the load
+        opens the store: a store held by another process then is the same
+        contention as later, and is said as such."""
+        import json
+
+        from nanoidp.services.runtime_repository import RuntimeStoreUnavailable
+
+        config_dir = _config_dir(tmp_path, {"store": "sqlite", "path": "../state/runtime.db"})
+        monkeypatch.setenv("NANOIDP_CONFIG_DIR", str(config_dir))
+
+        def held(inputs):
+            raise RuntimeStoreUnavailable("the runtime store is held by another process for longer than 5000 ms")
+
+        monkeypatch.setitem(runtime_store._RUNTIME_STORE_FACTORIES, "sqlite", held)
+        result = json.loads((await mcp_call_tool("get_settings", {})).content[0].text)
+
+        assert result["code"] == "MCP_RUNTIME_STORE_UNAVAILABLE"
+        assert result["retryable"] is True
+
+    async def test_a_configuration_that_is_rejected_otherwise_is_no_store_contention(self, tmp_path, monkeypatch, mcp_call_tool):
+        import json
+
+        config_dir = _config_dir(tmp_path, {"store": "sqlite", "path": "runtime.db"})
+        monkeypatch.setenv("NANOIDP_CONFIG_DIR", str(config_dir))
+
+        result = json.loads((await mcp_call_tool("get_settings", {})).content[0].text)
+
+        assert result["code"] != "MCP_RUNTIME_STORE_UNAVAILABLE"
+        assert "retryable" not in result
+
+    def test_the_report_is_of_the_file_in_use_not_of_where_the_path_points_now(self, tmp_path):
+        """A path through a symlink retargeted after the start: the process
+        still uses the file it opened, and says that one."""
+        from nanoidp.app import create_app
+
+        (tmp_path / "first").mkdir()
+        (tmp_path / "second").mkdir()
+        (tmp_path / "state").symlink_to(tmp_path / "first", target_is_directory=True)
+        config_dir = _config_dir(tmp_path, {"store": "sqlite", "path": "../state/runtime.db"})
+        application = create_app(str(config_dir))
+        application.config["TESTING"] = True
+        (tmp_path / "state").unlink()
+        (tmp_path / "state").symlink_to(tmp_path / "second", target_is_directory=True)
+
+        runtime = application.test_client().get("/api/config").get_json()["runtime"]
+
+        assert runtime["path"] == str((tmp_path / "first" / "runtime.db").resolve())
+
+    def test_a_configuration_that_activated_nothing_reports_the_file_it_names(self, tmp_path):
+        """No store published yet (a manager built without the activation):
+        the report says the file the settings name, resolved as an
+        activation would."""
+        from nanoidp.services.runtime_store import runtime_store_report
+
+        config_dir = _config_dir(tmp_path, {"store": "sqlite", "path": "../state/runtime.db"})
+        settings = ConfigManager(str(config_dir)).settings
+
+        assert runtime_store_report(settings, config_dir) == {
+            "store": "sqlite",
+            "path": str((tmp_path / "state" / "runtime.db").resolve()),
+        }

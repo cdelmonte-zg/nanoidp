@@ -74,7 +74,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with `memory`, and a relative one is relative to the configuration
   directory, not to the working directory: it is the identity of a store the
   processes share, and the same `settings.yaml` must name the same store
-  however each was started. None of the store's files (the database, its
+  however each was started; a path starting with `~` is refused for the
+  same reason, since it would depend on each process's `HOME`. None of the
+  store's files (the database, its
   audit, its owners' leases) may lie in the configuration directory, symlinks
   resolved. The store is chosen when the process starts: a reload that asks
   for another store or another file is refused (`422`, kind `activation`),
@@ -82,9 +84,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the configuration directory for this. Audit events recorded before the
   activation are not carried into a SQLite store, and a warning says how
   many, once the load can no longer fail. `GET /api/config` and MCP
-  `get_settings` report the file in use, resolved. In MCP a store held by
+  `get_settings` report the file the process opened. In MCP a store held by
   another process past its wait is `MCP_RUNTIME_STORE_UNAVAILABLE` with
-  `retryable: true`, no longer an internal error. Measured with the Flask
+  `retryable: true`, no longer an internal error, the first call (which
+  opens the store) included. Measured with the Flask
   test client, median of 400 requests, memory -> SQLite: a login 0.27 ->
   0.34 ms, a password grant 73 -> 74 ms (the same signing work in both), a
   `/userinfo` 0.32 -> 0.43 ms.

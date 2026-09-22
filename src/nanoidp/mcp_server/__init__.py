@@ -306,6 +306,17 @@ def _reject(name: str, code: str, message: str, retryable: Optional[bool] = None
     return _text_result(payload, is_error=True)
 
 
+def _runtime_store_unavailable_behind(failure: BaseException) -> Optional[RuntimeStoreUnavailable]:
+    seen = set()
+    current: Optional[BaseException] = failure
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, RuntimeStoreUnavailable):
+            return current
+        current = current.__cause__
+    return None
+
+
 async def call_tool(ctx: ServerRequestContext, params: CallToolRequestParams) -> CallToolResult:
     """Handle tool calls with readonly and admin secret checks, plus audit logging.
 
@@ -373,11 +384,15 @@ async def call_tool(ctx: ServerRequestContext, params: CallToolRequestParams) ->
             details["error"] = result.get("error") or "tool reported failure"
         _log_mcp_tool(name, success=not failed, details=details)
         return _text_result(result, is_error=failed)
-    except RuntimeStoreUnavailable as exc:
-        # Contention past the store's wait, and nothing else (#354): coming
-        # back may help, and it is no internal error.
-        return _reject(name, "MCP_RUNTIME_STORE_UNAVAILABLE", str(exc), retryable=True)
     except Exception as e:
+        # A store held by another process past its wait (#354): coming back
+        # may help, and it is no internal error. Also on the first call,
+        # which loads the configuration and opens the store there: the
+        # contention then reaches here wrapped in the rejection of the
+        # activation, and is still contention.
+        held = _runtime_store_unavailable_behind(e)
+        if held is not None:
+            return _reject(name, "MCP_RUNTIME_STORE_UNAVAILABLE", str(held), retryable=True)
         logger.exception(f"Error executing tool {name}")
         _log_mcp_tool(name, success=False, details={"error": str(e), "tool": name})
         return _text_result(
