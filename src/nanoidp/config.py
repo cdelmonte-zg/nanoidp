@@ -120,6 +120,17 @@ _FILES = ("settings.yaml", "users.yaml")
 _T = TypeVar("_T")
 
 
+def _lock_behind(failure: BaseException) -> Optional[LockUnavailableError]:
+    """The directory lock a failed load could not take, if that is what
+    failed: a load reports it as a ConfigurationRejected of the lock's kind,
+    and it is temporary, not files that do not load (#354, step 4a, review)."""
+    if isinstance(failure, LockUnavailableError):
+        return failure
+    if isinstance(failure, ConfigurationRejected) and isinstance(failure.__cause__, LockUnavailableError):
+        return failure.__cause__
+    return None
+
+
 class ConfigManager:
     """Manages configuration loading and access."""
 
@@ -631,9 +642,10 @@ class ConfigManager:
                 return False
             try:
                 self.reload_local()
-            except LockUnavailableError:
-                raise
             except Exception as failure:
+                lock = _lock_behind(failure)
+                if lock is not None:
+                    raise lock from failure
                 self._refused = (revisions, fingerprints)
                 logger.warning(
                     "The configuration files in %s changed and could not be loaded (%s); the configuration "
@@ -670,6 +682,9 @@ class ConfigManager:
                 try:
                     self.reload_local()
                 except ConfigurationRejected as rejected:
+                    lock = _lock_behind(rejected)
+                    if lock is not None:
+                        raise lock from rejected
                     raise DeclaredConfigurationUnloadable(
                         f"the configuration files in {self.config_dir} do not load, so this cannot be checked "
                         f"against them: {rejected.message}"

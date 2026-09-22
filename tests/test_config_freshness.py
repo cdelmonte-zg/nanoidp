@@ -203,13 +203,13 @@ class TestTheCheck:
         assert loads == []
 
     def test_a_lock_the_reload_cannot_take_is_not_an_invalid_configuration_either(self, shared, monkeypatch):
+        """At the lock itself: the check's own look succeeds, the reload's
+        does not, and a load reports that as a ConfigurationRejected of the
+        lock's kind. It is still the lock, and it is not remembered."""
         config_dir, config, store = shared
         _declare_user(config_dir, "carol")
+        _lock_fails_after(monkeypatch, 1)
 
-        def unavailable():
-            raise LockUnavailableError("held by a peer", kind="lock_timeout")
-
-        monkeypatch.setattr(config, "reload_local", unavailable)
         with pytest.raises(LockUnavailableError):
             config.refresh_if_changed()
         monkeypatch.undo()
@@ -443,6 +443,44 @@ class TestTheCriticalCreation:
 
         assert store.users.get("x") is None
 
+    def test_a_lock_the_reload_cannot_take_is_not_a_declaration_that_does_not_load(self, shared, monkeypatch):
+        """The files moved, the creation releases the lock to reload, and the
+        reload cannot take it: temporary, said as the lock, not as files that
+        do not load (which would say nothing helps until they are fixed)."""
+        from nanoidp.config import DeclaredConfigurationUnloadable
+
+        config_dir, config, store = shared
+        b = IdentityResolver(config, store)
+        _declare_user(config_dir, "someone")
+        _lock_fails_after(monkeypatch, 1)
+
+        with pytest.raises(LockUnavailableError) as refused:
+            b.create_runtime_user(User(username="x", password="pw"))
+
+        assert not isinstance(refused.value, DeclaredConfigurationUnloadable)
+        assert store.users.get("x") is None
+
+    def test_the_endpoint_says_a_lock_held_by_a_peer_is_temporary(self, tmp_path, monkeypatch):
+        from nanoidp.app import create_app
+
+        config_dir = _config_dir(tmp_path)
+        runtime_store.publish_runtime_store(SqliteRuntimeStore(tmp_path / "runtime.db"), ("memory",))
+        application = create_app(str(config_dir))
+        application.config["TESTING"] = True
+        client = application.test_client()
+        _declare_user(config_dir, "someone")
+        # The request's check looks (1) and its reload is refused the lock
+        # (2). Remembered as files that do not load, the check would let the
+        # request through to a creation whose look succeeds (3) and whose
+        # reload is refused (4), and which would then say the files do not
+        # load; the lock is what it is, at the check.
+        _lock_fails_on(monkeypatch, {2, 4})
+
+        response = client.post("/api/runtime/users", json={"username": "x", "password": "pw"})
+
+        assert response.status_code == 503
+        assert response.get_json()["error"] == "configuration_unavailable"
+
     def test_the_memory_store_does_not_take_the_directory_lock(self, tmp_path, monkeypatch):
         from nanoidp import config_writer
         from nanoidp.services.runtime_store import MemoryRuntimeStore
@@ -520,3 +558,27 @@ def _b_process(config_dir, store_path, loaded, declared, out):
         outcome = type(failure).__name__
     user = config.get_user("x")
     out.put({"create": outcome, "stored": store.users.get("x") is not None, "resolves_declared": user is not None})
+
+
+def _lock_fails_after(monkeypatch, successes):
+    """The directory's cross-process lock is taken ``successes`` times, then
+    held by a peer past the timeout."""
+    _lock_fails_on(monkeypatch, None, successes)
+
+
+def _lock_fails_on(monkeypatch, attempts, successes=None):
+    """The directory's cross-process lock held by a peer past the timeout at
+    the numbered attempts (from 1), or at every attempt after ``successes``."""
+    from nanoidp import config_writer
+
+    real = config_writer._cross_process_lock
+    taken = []
+
+    def lock(*args, **kwargs):
+        taken.append(1)
+        refused = len(taken) in attempts if attempts is not None else len(taken) > successes
+        if refused:
+            raise LockUnavailableError("held by a peer", kind="lock_timeout")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(config_writer, "_cross_process_lock", lock)
