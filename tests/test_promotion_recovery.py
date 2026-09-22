@@ -651,6 +651,30 @@ class TestTheProofThatDecides:
         assert store.users.entry("x").hold is not None
 
 
+def test_a_lease_that_cannot_be_looked_at_does_not_fail_a_load(tmp_path, monkeypatch):
+    """The after_load step never raises: a lease that cannot even be opened
+    (out of descriptors, an I/O error) defers that recovery, and the load and
+    the rest of its reconciliation go on."""
+    from nanoidp.services import identities as identities_module
+
+    config_dir = _config_dir(tmp_path)
+    store = SqliteRuntimeStore(tmp_path / "runtime.db")
+    runtime_store.publish_runtime_store(store, ("memory",))
+    for name in ("x", "admin"):
+        store.users.create(User(username=name, password="pw"))
+    identities_module._claim(store.users, "user", "x", {}, "a" * 32)
+
+    def cannot_look(owner):
+        raise OSError(24, "Too many open files")
+
+    monkeypatch.setattr(store, "owner_may_be_dead", cannot_look)
+    ConfigManager(str(config_dir), after_load=reconcile_runtime_identities)
+
+    # x waits; admin, declared, was retired by the same pass.
+    assert store.users.entry("x").hold is not None
+    assert store.users.get("admin") is None
+
+
 class TestTheCurrentFilesWithoutAReload:
     def test_an_action_runs_when_the_files_are_the_loaded_ones(self, tmp_path):
         config = ConfigManager(str(_config_dir(tmp_path)))

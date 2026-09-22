@@ -651,8 +651,7 @@ def reconcile_runtime_identities(config: ConfigManager) -> None:
                 # owner is proved dead, and only while the files are the ones
                 # just loaded (no load inside this one); left otherwise, and
                 # without the directory lock when the owner is plainly alive.
-                if store.owner_may_be_dead(claim[1]):
-                    _recover_in_a_load(config, store, repository, kind, seen.name, claim)
+                _recover_in_a_load(config, store, repository, kind, seen.name, claim)
             elif declared(kind, seen.name):
                 _retire(repository, kind, seen.name)
             else:
@@ -818,6 +817,10 @@ def _recover_in_a_load(
     ones this load read, and never raising (AfterLoad)."""
     hold_id, owner, promotion = claim
     try:
+        # Inside the guard: looking at a lease can fail too (EMFILE, EIO),
+        # and nothing here may raise.
+        if not store.owner_may_be_dead(owner):
+            return
         acted, outcome = config.act_if_files_are_loaded(
             lambda: _recover_under_lock(store, config, repository, kind, name, hold_id, owner)
         )
