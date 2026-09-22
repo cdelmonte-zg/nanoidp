@@ -739,8 +739,8 @@ records that is not declared in these files.
   has.
 - `sqlite` keeps it in files that several NanoIDP processes **on one host**
   share: `path` names the database, and the store is that file, an audit file
-  next to it (`<name>-audit.db`) and a directory of owner leases
-  (`<name>-owners/`).
+  next to it and a directory of owner leases, named after it
+  (`runtime.db` has `runtime-audit.db` and `runtime-owners/`).
 
 **`path`.** It is required with `sqlite` and refused with `memory`. A relative
 path is relative to the configuration directory, not to the working directory
