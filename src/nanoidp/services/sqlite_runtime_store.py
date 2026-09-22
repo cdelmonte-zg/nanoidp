@@ -389,10 +389,16 @@ class RuntimeStoreFileRefused(ValueError):
     changed. It is disposable: delete it, or choose another."""
 
 
+def _spelling_of(mode: object) -> str:
+    """A journal mode as this module compares it: SQLite's answer, however
+    it is spelled."""
+    return str(mode).lower()
+
+
 def _journal_mode(connection: sqlite3.Connection) -> str:
     """The journal the file is in, which is the file's and not this
     connection's: a peer that put it in WAL put it there for everyone."""
-    return str(connection.execute("PRAGMA journal_mode").fetchone()[0]).lower()
+    return _spelling_of(connection.execute("PRAGMA journal_mode").fetchone()[0])
 
 
 def _is_busy(failure: sqlite3.Error) -> bool:
@@ -602,24 +608,37 @@ class _Database:
         (#354), which is why the waiting is done here and not left to the
         handler: attempts until the file is this process's for a moment,
         within the same budget as any other contention. Held past it, it is
-        the store being held, as anywhere else.
+        the store being held, as anywhere else; a file that never answered
+        busy and never turned is a file that cannot be put in WAL, which is
+        the file's own refusal and is said as one.
         """
         if _journal_mode(connection) == _WAL:
             return
         deadline = time.monotonic() + _BUSY_TIMEOUT_MS / 1000
+        contended: Optional[sqlite3.Error] = None
+        answered = ""
         while True:
             try:
                 # The switch answers with the mode it ended in, so a refusal
                 # need not be an exception.
-                if connection.execute(f"PRAGMA journal_mode = {_WAL}").fetchone()[0] == _WAL:
+                answered = _spelling_of(connection.execute(f"PRAGMA journal_mode = {_WAL}").fetchone()[0])
+                if answered == _WAL:
                     return
-                failure: sqlite3.Error = sqlite3.OperationalError("database is locked")
             except sqlite3.OperationalError as refused:
                 if not _is_busy(refused):
                     raise
-                failure = refused
+                contended = refused
             if time.monotonic() >= deadline:
-                raise _unavailable(failure) from failure
+                if contended is not None:
+                    raise _unavailable(contended) from contended
+                # Nobody ever answered busy: the file stayed in its journal
+                # because it cannot be put in WAL, which is not a peer's
+                # doing and must not be reported as one.
+                raise RuntimeStoreFileRefused(
+                    f"{self.path} cannot be used as a {self._kind.noun}: it stays in journal mode "
+                    f"{answered!r} and the store needs WAL; a filesystem that cannot do WAL, such as "
+                    "a network share, is not a place for it"
+                )
             time.sleep(_WAL_ATTEMPT_INTERVAL)
 
     def _check(self, connection: sqlite3.Connection, tables: set) -> None:

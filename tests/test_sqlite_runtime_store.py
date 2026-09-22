@@ -256,7 +256,7 @@ class TestWalActivationUnderContention:
         database = self._database_of(path)
         self._in_rollback_journal(path)
         held = threading.Event()
-        holder = self._holding_it_reserved(str(path), 0.7, held)
+        holder = self._holding_it_reserved(str(path), 1.2, held)
         holder.start()
         assert held.wait(5)
 
@@ -328,9 +328,10 @@ class TestWalActivationUnderContention:
         which SQLite documents as a refusal too: the conversion did not
         happen and the file is in the mode it names."""
 
-        def __init__(self, answers, failing=None):
+        def __init__(self, answers, failing=None, busy_first=False):
             self.answers = list(answers)
             self.failing = failing
+            self.busy_first = busy_first
             self.switches = 0
 
         def execute(self, statement):
@@ -338,6 +339,8 @@ class TestWalActivationUnderContention:
                 self.switches += 1
                 if self.failing is not None:
                     raise self.failing
+                if self.busy_first and self.switches == 1:
+                    raise sqlite3.OperationalError("database is locked")
                 answer = self.answers.pop(0) if self.answers else "delete"
             else:
                 answer = "delete"
@@ -351,16 +354,42 @@ class TestWalActivationUnderContention:
 
         assert connection.switches == 3
 
-    def test_a_switch_that_never_answers_wal_is_the_store_held(self, monkeypatch):
+    def test_an_answer_is_read_however_it_is_spelled(self, tmp_path, monkeypatch):
+        """The mode is SQLite's word, and this store compares it as one
+        spelling, here and where the file's mode is read."""
         monkeypatch.setattr(sqlite_module, "_BUSY_TIMEOUT_MS", 200)
+        database = self._database_of(tmp_path / "runtime.db")
+        connection = self._AnsweringTheSwitch(["WAL"])
+
+        database._activate_wal(connection)
+
+        assert connection.switches == 1
+
+    def test_a_file_that_never_turns_is_refused_as_the_file_it_is(self, tmp_path, monkeypatch):
+        """Nobody ever answered busy, so no peer is holding anything: the
+        file cannot be put in WAL, and that is what is said."""
+        monkeypatch.setattr(sqlite_module, "_BUSY_TIMEOUT_MS", 200)
+        database = self._database_of(tmp_path / "runtime.db")
         connection = self._AnsweringTheSwitch([])
 
         began = time.monotonic()
-        with pytest.raises(RuntimeStoreUnavailable, match="held by another process"):
-            sqlite_module._Database._activate_wal(None, connection)
+        with pytest.raises(RuntimeStoreFileRefused, match="stays in journal mode 'delete'") as raised:
+            database._activate_wal(connection)
 
         assert time.monotonic() - began >= 0.2, "it gave up before its budget was spent"
         assert connection.switches > 1, "it tried only once"
+        assert not isinstance(raised.value, RuntimeStoreUnavailable)
+        assert "held by another process" not in str(raised.value)
+
+    def test_a_switch_that_was_busy_once_is_the_store_held(self, tmp_path, monkeypatch):
+        """Busy at least once, and never WAL afterwards: a peer had it, so
+        the answer is the one contention always gets."""
+        monkeypatch.setattr(sqlite_module, "_BUSY_TIMEOUT_MS", 200)
+        database = self._database_of(tmp_path / "runtime.db")
+        connection = self._AnsweringTheSwitch([], busy_first=True)
+
+        with pytest.raises(RuntimeStoreUnavailable, match="held by another process"):
+            database._activate_wal(connection)
 
     @pytest.mark.skipif(not _POSIX, reason="the read-only open is POSIX here")
     def test_a_failure_that_is_not_contention_is_itself(self, tmp_path):
