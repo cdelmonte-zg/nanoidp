@@ -303,7 +303,8 @@ class RuntimeSection(BaseModel):
                     "runtime.path may not start with ~: it would name a file of each process's HOME; "
                     "give it relative to the configuration directory, or absolute"
                 )
-        elif self.path is not None:
+        elif "path" in self.model_fields_set:
+            # Present at all, null included: a setting that does nothing.
             raise ValueError(f"runtime.path is for runtime.store: sqlite, not {self.store}")
         return self
 

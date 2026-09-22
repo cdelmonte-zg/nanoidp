@@ -78,6 +78,8 @@ class TestTheDocument:
         "runtime, why",
         [
             ({"store": "memory", "path": "../x.db"}, "is for runtime.store: sqlite"),
+            ({"store": "memory", "path": None}, "is for runtime.store: sqlite"),
+            ({"store": "memory", "path": ""}, "is for runtime.store: sqlite"),
             ({"store": "sqlite"}, "required"),
             ({"store": "sqlite", "path": ""}, "may not be empty"),
             ({"store": "sqlite", "path": "   "}, "may not be empty"),
@@ -125,7 +127,13 @@ class TestThePath:
 
     @pytest.mark.parametrize(
         "layout",
-        ["the database in it", "a symlink to it", "the owners' leases as it", "the owners' leases a symlink into it"],
+        [
+            "the database in it",
+            "a symlink to it",
+            "the owners' leases as it",
+            "the owners' leases a symlink into it",
+            "the audit a symlink into it",
+        ],
     )
     def test_no_file_of_the_store_lies_in_the_configuration_directory(self, tmp_path, layout):
         if layout == "the database in it":
@@ -138,10 +146,15 @@ class TestThePath:
             # runtime.db next to a configuration directory named as its
             # owners' directory would be.
             config_dir = _config_dir(tmp_path, {"store": "sqlite", "path": "../runtime.db"}, name="runtime-owners")
-        else:
+        elif layout == "the owners' leases a symlink into it":
             # The database outside, its owners' directory a symlink into it.
             config_dir = _config_dir(tmp_path)
             (tmp_path / "runtime-owners").symlink_to(config_dir, target_is_directory=True)
+            _set_runtime(config_dir, {"store": "sqlite", "path": "../runtime.db"})
+        else:
+            # The database outside, its audit a symlink to a file inside.
+            config_dir = _config_dir(tmp_path)
+            (tmp_path / "runtime-audit.db").symlink_to(config_dir / "audit.db")
             _set_runtime(config_dir, {"store": "sqlite", "path": "../runtime.db"})
 
         with pytest.raises(ConfigurationRejected) as refused:
@@ -402,3 +415,13 @@ class TestTheReviewOf4c:
             "store": "sqlite",
             "path": str((tmp_path / "state" / "runtime.db").resolve()),
         }
+
+    def test_settings_made_in_code_with_sqlite_and_no_path_are_said_so(self, tmp_path):
+        """The document cannot say it; settings built in code can, and the
+        store's layer does not take it for memory."""
+        from nanoidp.config import Settings
+
+        settings = Settings(runtime_store="sqlite", runtime_path=None)
+
+        with pytest.raises(ValueError, match="runtime.path"):
+            resolved_runtime_path(settings, tmp_path)

@@ -215,8 +215,12 @@ def resolved_runtime_path(settings: Settings, config_dir: Optional[Path] = None)
     the identity of a store several processes share, and the same
     settings.yaml in the same directory must name the same store however the
     processes were started."""
-    if settings.runtime_store != "sqlite" or settings.runtime_path is None:
+    if settings.runtime_store != "sqlite":
         return None
+    if settings.runtime_path is None:
+        # The document cannot say it; settings made in code can, and this is
+        # no store without a file.
+        raise ValueError("runtime.store: sqlite needs runtime.path, and these settings have none")
     path = Path(settings.runtime_path)
     if not path.is_absolute():
         if config_dir is None:
