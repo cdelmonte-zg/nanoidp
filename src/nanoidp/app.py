@@ -208,11 +208,17 @@ def create_app(
     def _declaration_unloadable(exc: DeclaredConfigurationUnloadable) -> Response:
         """503 for a mutation checked against configuration files that
         changed and do not load (#354, step 4a): refused, not a fault of the
-        request, and nothing coming back resolves until the files are fixed,
-        so no Retry-After."""
+        request. When what failed is outside the bytes (an I/O error, an
+        activation, a plugin), coming back may help: configuration_unavailable
+        with Retry-After, like a lock held by a peer. When the bytes do not
+        parse or validate nothing helps until they are fixed:
+        configuration_unloadable, and no Retry-After."""
         app.logger.warning("Refused against a configuration that does not load: %s", exc)
-        response = jsonify({"error": "configuration_unloadable", "error_description": str(exc)})
+        error = "configuration_unavailable" if exc.temporary else "configuration_unloadable"
+        response = jsonify({"error": error, "error_description": str(exc)})
         response.status_code = 503
+        if exc.temporary:
+            response.headers["Retry-After"] = "5"
         return response
 
     @app.errorhandler(RuntimeStoreUnavailable)

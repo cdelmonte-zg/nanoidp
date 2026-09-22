@@ -85,16 +85,11 @@ class TestTheFingerprintIsOfTheBytesRead:
         def replacing_open(path, *args, **kwargs):
             handle = real_open(path, *args, **kwargs)
             if Path(path) == users:
-                real_read = handle.read
-
-                def read(*a, **k):
-                    data = real_read(*a, **k)
-                    replacement = users.with_name("users.yaml.next")
-                    replacement.write_text("users: {}\n")
-                    os.replace(replacement, users)
-                    return data
-
-                handle.read = read
+                # Replaced the moment it is open, before anything else is
+                # asked of it: the path now names another file.
+                replacement = users.with_name("users.yaml.next")
+                replacement.write_text("users: {}\n")
+                os.replace(replacement, users)
             return handle
 
         monkeypatch.setattr(config_store, "open", replacing_open, raising=False)
@@ -408,6 +403,193 @@ class TestWhatIsRememberedAndWhatIsTriedAgain:
         assert config.refresh_if_changed() is False
         assert loads == []
         assert config._pending is None
+
+
+class TestTheFourthReview:
+    """#354, step 4a, fourth review: what a failure was about, and what it
+    is recorded under."""
+
+    def test_a_creation_against_a_transient_failure_may_come_back(self, shared, monkeypatch):
+        from nanoidp.config import DeclaredConfigurationUnloadable
+
+        config_dir, config, store = shared
+        _declare_user(config_dir, "carol")
+        _failing_activation(config, 1)
+
+        with pytest.raises(DeclaredConfigurationUnloadable) as refused:
+            IdentityResolver(config, store).create_runtime_user(User(username="x", password="pw"))
+
+        assert refused.value.temporary is True
+        assert store.users.get("x") is None
+
+    def test_a_creation_against_bytes_that_do_not_parse_may_not(self, shared):
+        from nanoidp.config import DeclaredConfigurationUnloadable
+
+        config_dir, config, store = shared
+        (config_dir / "users.yaml").write_text("users: [this is not a mapping\n")
+
+        with pytest.raises(DeclaredConfigurationUnloadable) as refused:
+            IdentityResolver(config, store).create_runtime_user(User(username="x", password="pw"))
+
+        assert refused.value.temporary is False
+
+    def test_a_plugin_that_fails_during_a_creation_is_temporary_too(self, shared, monkeypatch):
+        from nanoidp.config import DeclaredConfigurationUnloadable
+        from nanoidp.hooks import HookError
+
+        config_dir, config, store = shared
+        _declare_user(config_dir, "carol")
+        real_reload = config.reload_local
+
+        def plugin_fails():
+            raise HookError("a strict plugin failed", kind="plugin_load")
+
+        monkeypatch.setattr(config, "reload_local", plugin_fails)
+        with pytest.raises(DeclaredConfigurationUnloadable) as refused:
+            IdentityResolver(config, store).create_runtime_user(User(username="x", password="pw"))
+        monkeypatch.setattr(config, "reload_local", real_reload)
+
+        assert refused.value.temporary is True
+
+    def test_the_endpoint_says_come_back_to_a_transient_failure(self, tmp_path):
+        from nanoidp.app import create_app
+        from nanoidp.config import get_config
+
+        config_dir = _config_dir(tmp_path)
+        runtime_store.publish_runtime_store(SqliteRuntimeStore(tmp_path / "runtime.db"), ("memory",))
+        application = create_app(str(config_dir))
+        application.config["TESTING"] = True
+        client = application.test_client()
+        config = get_config()
+        real_activate = config._activate
+        _declare_user(config_dir, "carol")
+        # The request's check fails transiently, then the creation's reload.
+        left = {"n": 2}
+
+        def activate(settings):
+            if left["n"] > 0:
+                left["n"] -= 1
+                raise ValueError("the external key is not there yet")
+            return real_activate(settings)
+
+        config._activate = activate
+        response = client.post("/api/runtime/users", json={"username": "x", "password": "pw"})
+
+        assert response.status_code == 503
+        assert response.get_json()["error"] == "configuration_unavailable"
+        assert response.headers["Retry-After"]
+
+    @pytest.mark.parametrize("where", ["stat", "read"])
+    def test_files_that_cannot_be_read_keep_the_configuration_and_wait(self, shared, monkeypatch, clock, caplog, where):
+        config_dir, config, store = shared
+        _declare_user(config_dir, "carol")
+        real_stat, real_read = config._store.fingerprint_of, config._store.read_snapshot
+        broken = {"on": True}
+
+        def stat(name):
+            if broken["on"] and where == "stat":
+                raise PermissionError(13, "Permission denied")
+            return real_stat(name)
+
+        def read(names):
+            if broken["on"] and where == "read":
+                raise PermissionError(13, "Permission denied")
+            return real_read(names)
+
+        monkeypatch.setattr(config._store, "fingerprint_of", stat)
+        monkeypatch.setattr(config._store, "read_snapshot", read)
+        with caplog.at_level("WARNING"):
+            assert config.refresh_if_changed() is False
+            assert config.refresh_if_changed() is False
+        assert config.get_user("admin") is not None
+        assert sum("could not be read" in record.getMessage() for record in caplog.records) == 1
+
+        # Still broken when looked at again: said once for as long as it lasts.
+        clock.now += 6
+        with caplog.at_level("WARNING"):
+            assert config.refresh_if_changed() is False
+        assert sum("could not be read" in record.getMessage() for record in caplog.records) == 1
+
+        broken["on"] = False
+        assert config.refresh_if_changed() is False  # still waiting
+        clock.now += 6
+        assert config.refresh_if_changed() is True
+        assert config.get_user("carol") is not None
+
+    def test_a_refusal_is_of_the_bytes_the_load_read(self, shared, monkeypatch):
+        """The check looks at valid bytes A; a peer writes invalid B before
+        the reload reads; B is refused, not A, and A when it comes back is
+        adopted."""
+        config_dir, config, store = shared
+        _declare_user(config_dir, "carol")
+        a_bytes = (config_dir / "users.yaml").read_bytes()
+        real_reload = config.reload_local
+
+        def peer_breaks_then_reload():
+            (config_dir / "users.yaml").write_text("users: [this is not a mapping\n")
+            real_reload()
+
+        monkeypatch.setattr(config, "reload_local", peer_breaks_then_reload)
+        assert config.refresh_if_changed() is False
+        monkeypatch.setattr(config, "reload_local", real_reload)
+        replacement = config_dir / "users.yaml.next"
+        replacement.write_bytes(a_bytes)
+        os.replace(replacement, config_dir / "users.yaml")
+
+        assert config.refresh_if_changed() is True
+        assert config.get_user("carol") is not None
+
+    def test_a_refused_pair_ends_a_wait_that_came_after_it(self, shared, monkeypatch, clock):
+        config_dir, config, store = shared
+        users = config_dir / "users.yaml"
+        users.write_text("users: [this is not a mapping\n")
+        refused_bytes = users.read_bytes()
+        assert config.refresh_if_changed() is False
+        shutil.copy(_REPO_CONFIG / "users.yaml", users)
+        _declare_user(config_dir, "carol")
+        _failing_activation(config, 1)
+        assert config.refresh_if_changed() is False
+        assert config._pending is not None
+        replacement = config_dir / "users.yaml.next"
+        replacement.write_bytes(refused_bytes)
+        os.replace(replacement, users)
+        assert config.refresh_if_changed() is False
+        reads = []
+        real = config._store.read_snapshot
+        monkeypatch.setattr(config._store, "read_snapshot", lambda names: reads.append(names) or real(names))
+
+        assert config.refresh_if_changed() is False
+        assert reads == []
+        assert config._pending is None
+
+    def test_a_change_in_place_after_the_read_is_seen(self, tmp_path, monkeypatch):
+        """The fingerprint is taken before the read: a write in place that
+        lands after it makes the next stat differ, never the other way."""
+        from nanoidp import config_store
+
+        config_dir = _config_dir(tmp_path)
+        users = config_dir / "users.yaml"
+        real_open = open
+
+        def writing_in_place_after_the_read(path, *args, **kwargs):
+            handle = real_open(path, *args, **kwargs)
+            if Path(path) == users:
+                real_read = handle.read
+
+                def read(*a, **k):
+                    data = real_read(*a, **k)
+                    with real_open(users, "a") as appending:
+                        appending.write("# edited in place\n")
+                    return data
+
+                handle.read = read
+            return handle
+
+        monkeypatch.setattr(config_store, "open", writing_in_place_after_the_read, raising=False)
+        store = config_store.ConfigFileStore(config_dir)
+        snapshot = store.read("users.yaml")
+
+        assert snapshot.fingerprint != store.fingerprint_of("users.yaml")
 
 
 class TestAFailureAfterAPeersWrite:

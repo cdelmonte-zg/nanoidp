@@ -84,14 +84,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   until they change; when it failed on something outside them (an I/O
   error, an activation whose external key is not there yet, a plugin) they
   are tried again, not sooner than 5 s later, and at once if the bytes
-  change. A directory lock that cannot be taken is neither, and a failure
-  after the load was committed is raised as it is. The creation of a runtime user or client
+  change. Files that cannot even be read (a permission, an I/O error)
+  leave the loaded configuration in force too, and are looked at again in
+  5 s. A directory lock that cannot be taken is neither, and a failure after
+  the load was committed is raised as it is. The creation of a runtime user or client
   checks its name against the files under the directory lock every writer
   of nanoidp takes, and commits before it releases it: the lock is not
   reentrant, so when the files moved it is released for the reload and
-  taken again. A creation against files that do not load is refused, `503`
-  with `configuration_unloadable`, for `/api/runtime` and dynamic
-  registration alike. A directory lock held by a peer is `503` over HTTP, as
+  taken again. A creation against files that do not load is refused, for
+  `/api/runtime` and dynamic registration alike: `503`
+  `configuration_unloadable` when the bytes do not parse or validate, `503`
+  `configuration_unavailable` with `Retry-After` when what failed is outside
+  them. A directory lock held by a peer is `503` over HTTP, as
   before, and `MCP_CONFIGURATION_UNAVAILABLE` with `retryable` in MCP. With
   the in-memory store nothing changes. An editor that does not take the
   lock is noticed at the next operation, and nothing linearizable is

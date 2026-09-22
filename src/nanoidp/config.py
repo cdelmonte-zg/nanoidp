@@ -90,7 +90,15 @@ class DeclaredConfigurationUnloadable(RuntimeError):
     checked against them (#354, step 4a): a mutation that depends on the
     declaration, such as creating a runtime user or client under a name that
     must not be declared, is refused. The configuration loaded before stays
-    in force for everything else. Fixing the files ends it."""
+    in force for everything else.
+
+    ``temporary`` when what failed is outside the bytes (an I/O error, an
+    activation, a plugin), which coming back may resolve; otherwise the
+    files do not parse or validate, and only fixing them ends it."""
+
+    def __init__(self, message: str, temporary: bool) -> None:
+        super().__init__(message)
+        self.temporary = temporary
 
 
 class ReloadAfterSaveError(RuntimeError):
@@ -133,8 +141,9 @@ _now = time.monotonic
 
 @dataclass(frozen=True)
 class _Pending:
-    revisions: Tuple[str, str]
-    fingerprints: Tuple[Optional[Fingerprint], ...]
+    # None when the files could not be read at all.
+    revisions: Optional[Tuple[str, str]]
+    fingerprints: Optional[Tuple[Optional[Fingerprint], ...]]
     retry_after: float
 
 
@@ -216,6 +225,9 @@ class ConfigManager:
         # A pair of files whose load failed for a reason outside them, and
         # when it may be tried again.
         self._pending: Optional[_Pending] = None
+        # What the last load read, set as soon as it has read: what a load
+        # that then failed is to be remembered by.
+        self._last_observed: Optional[Tuple[Tuple[str, str], Tuple[Optional[Fingerprint], ...]]] = None
         # A transient CLI/programmatic `--profile` (#172). Kept here, not on
         # Settings, because it must survive every reload() - which rebuilds
         # Settings from YAML - and must never be written back to the file.
@@ -445,6 +457,7 @@ class ConfigManager:
         settings_observed = observed["settings.yaml"]
         users_observed = observed["users.yaml"]
         staged["fingerprints"] = (settings_observed.fingerprint, users_observed.fingerprint)
+        self._last_observed = ((settings_observed.revision, users_observed.revision), staged["fingerprints"])
         settings_file = self.config_dir / "settings.yaml"
         if not settings_observed.exists:
             logger.warning(f"Settings file not found: {settings_file}, using defaults")
@@ -687,8 +700,14 @@ class ConfigManager:
         be observed at all. And a failure after the load was committed (the
         after_load step) is raised as it is.
         """
-        current = tuple(self._store.fingerprint_of(name) for name in _FILES)
         pending = self._pending
+        if pending is not None and pending.revisions is None and _now() < pending.retry_after:
+            # The files could not be read a moment ago: not at request rate.
+            return False
+        try:
+            current = tuple(self._store.fingerprint_of(name) for name in _FILES)
+        except OSError as failure:
+            return self._unreadable(failure)
         if pending is not None:
             # The fast negative is not "the loaded files" while a failure is
             # waiting to be tried again, or the wait would never end.
@@ -700,7 +719,10 @@ class ConfigManager:
             if self._refused is not None and current == self._refused[1]:
                 return False
         with self._load_lock:
-            observed = self._store.read_snapshot(_FILES)
+            try:
+                observed = self._store.read_snapshot(_FILES)
+            except OSError as failure:
+                return self._unreadable(failure)
             revisions = (observed["settings.yaml"].revision, observed["users.yaml"].revision)
             fingerprints = tuple(observed[name].fingerprint for name in _FILES)
             if revisions == (self.settings_revision, self.users_revision):
@@ -711,12 +733,14 @@ class ConfigManager:
                 return False
             if self._refused is not None and revisions == self._refused[0]:
                 self._refused = (revisions, fingerprints)
+                self._pending = None
                 return False
             pending = self._pending
             if pending is not None and revisions == pending.revisions and _now() < pending.retry_after:
                 self._pending = _Pending(revisions, fingerprints, pending.retry_after)
                 return False
             commits = self._commits
+            self._last_observed = None
             try:
                 self.reload_local()
             except Exception as failure:
@@ -728,6 +752,10 @@ class ConfigManager:
                     # peer wrote in between): what failed ran after, in the
                     # after_load step, and is not the files' to say.
                     raise
+                # What is refused is what the load read, which a peer may
+                # have changed since the look above.
+                if self._last_observed is not None:
+                    revisions, fingerprints = self._last_observed
                 said = pending is not None and pending.revisions == revisions
                 if _decided_by_the_bytes(failure):
                     self._refused = (revisions, fingerprints)
@@ -747,6 +775,22 @@ class ConfigManager:
             self._refused = None
             self._pending = None
             return True
+
+    def _unreadable(self, failure: OSError) -> bool:
+        """The files could not even be looked at (a permission, an I/O
+        error): the configuration loaded stays in force, and they are looked
+        at again in a while. Said once for as long as it lasts."""
+        pending = self._pending
+        said = pending is not None and pending.revisions is None
+        self._pending = _Pending(None, None, _now() + _TRANSIENT_RETRY_SECONDS)
+        (logger.debug if said else logger.warning)(
+            "The configuration files in %s could not be read (%s); the configuration loaded before stays in "
+            "force, and they are looked at again in %g s",
+            self.config_dir,
+            failure,
+            _TRANSIENT_RETRY_SECONDS,
+        )
+        return False
 
     def act_on_current_files(self, act: Callable[[], _T]) -> _T:
         """``act()`` with the directory lock held and the loaded configuration
@@ -772,13 +816,14 @@ class ConfigManager:
                         return act()
                 try:
                     self.reload_local()
-                except ConfigurationRejected as rejected:
+                except (ConfigurationRejected, HookError) as rejected:
                     lock = _lock_behind(rejected)
                     if lock is not None:
                         raise lock from rejected
                     raise DeclaredConfigurationUnloadable(
                         f"the configuration files in {self.config_dir} do not load, so this cannot be checked "
-                        f"against them: {rejected.message}"
+                        f"against them: {rejected.message}",
+                        temporary=not _decided_by_the_bytes(rejected),
                     ) from rejected
 
     def reload(self) -> None:

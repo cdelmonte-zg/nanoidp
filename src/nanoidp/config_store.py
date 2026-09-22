@@ -234,9 +234,11 @@ class ConfigFileStore:
         path = self._directory / name
         try:
             with open(path, "rb") as handle:
-                data = handle.read()
-                # Of this handle, the file the bytes came from.
+                # Of this handle, the file the bytes come from, and before
+                # they are read: a write in place landing after it makes the
+                # next stat differ, so it is never missed.
                 fingerprint = _fingerprint(os.fstat(handle.fileno()))
+                data = handle.read()
         except FileNotFoundError:
             # A missing file has a well-defined revision, the hash of empty
             # bytes, so "create this only if it still does not exist" keeps
