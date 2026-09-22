@@ -323,7 +323,7 @@ jobs:
         # proves what it is about.
         run: |
           cp -r config e2e-shared-config
-          mkdir -p e2e-shared-state e2e-shared-keys e2e-shared-cwd
+          mkdir -p e2e-shared-state e2e-shared-keys e2e-shared-cwd/deeper
           python - <<'EOF'
           import os
           import yaml
@@ -345,7 +345,7 @@ jobs:
         run: |
           PORT=8007 NANOIDP_CONFIG_DIR=${{ github.workspace }}/e2e-shared-config \
             python -m nanoidp > server-shared-a.log 2>&1 &
-          cd e2e-shared-cwd
+          cd e2e-shared-cwd/deeper
           PORT=8008 NANOIDP_CONFIG_DIR=${{ github.workspace }}/e2e-shared-config \
             python -m nanoidp > ${{ github.workspace }}/server-shared-b.log 2>&1 &
           cd ${{ github.workspace }}
@@ -366,7 +366,9 @@ jobs:
         run: |
           test -f e2e-shared-state/runtime.db
           test -f e2e-shared-state/runtime-audit.db
-          test ! -e e2e-shared-cwd/runtime.db
+          test -d e2e-shared-state/runtime-owners
+          test ! -e e2e-shared-cwd/e2e-shared-state
+          test ! -e e2e-shared-cwd/deeper/e2e-shared-state
           test ! -e e2e-shared-config/runtime.db
 
       - name: Server logs on failure

@@ -50,9 +50,16 @@ Shared, because it lives in the store:
 - refresh token families and revocations;
 - the audit, which reads as one from either process.
 
-Not shared, and process-local on purpose: the login session cookie, the rate
-limiter's counters, the client metadata fetch budget, and `on_audit_event`
-dispatch to plugins, which each process makes for its own events.
+Not shared, and process-local on purpose: the rate limiter's counters, the
+client metadata fetch budget, and `on_audit_event` dispatch to plugins,
+which each process makes for its own events.
+
+The browser leg follows the store too. The login session is a cookie the
+process signs with `secret_key`, which both read from the same
+`settings.yaml`, and the transaction behind `/authorize` lives in the store,
+so a login begun at one process can be finished at the other and the code
+comes out the same. Two instances behind a proxy therefore need no sticky
+sessions for it.
 
 The declared configuration is shared because the files are: a process
 notices a change another one wrote, and a promotion made through one is

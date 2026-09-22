@@ -9,8 +9,12 @@ process records, the other serves, and it is consumed once for both.
     1. a runtime user created at A logs in at B;
     2. an authorization code issued at A is redeemed at B, once;
     3. a token revoked at A is refused at B;
-    4. a user promoted at A is declared for B;
-    5. the audit of both reads as one.
+    4. a login begun at A is finished at B;
+    5. a user promoted at A is declared for B;
+    6. the audit of both reads as one.
+
+Scenario 5 writes `users.yaml` and removes the user again, so a run leaves
+the configuration directory as it found it.
 
 The servers are started by the caller (the `shared-store-e2e` job, or by
 hand as e2e/README.md says), as with the other suites here.
@@ -46,9 +50,10 @@ def check(condition: bool, what: str) -> None:
         raise Failure(what)
 
 
-def code_from(server: str, username: str, password: str) -> Tuple[str, str]:
-    """An authorization code issued by ``server``, with its PKCE verifier:
-    the browser leg is that server's, the redemption need not be."""
+def code_from(server: str, username: str, password: str, finish_at: Optional[str] = None) -> Tuple[str, str]:
+    """An authorization code, with its PKCE verifier: the browser asks
+    ``server`` and logs in at ``finish_at`` when the two are to be different
+    processes; the redemption need not be either's."""
     verifier = secrets.token_urlsafe(32)
     challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
     browser = requests.Session()
@@ -67,15 +72,16 @@ def code_from(server: str, username: str, password: str) -> Tuple[str, str]:
         timeout=TIMEOUT,
     )
     check(page.status_code == 200, f"GET /authorize at {server} answered {page.status_code}")
+    where = finish_at or server
     login = browser.post(
-        f"{server}/authorize",
+        f"{where}/authorize",
         data={"username": username, "password": password},
         allow_redirects=False,
         timeout=TIMEOUT,
     )
-    check(login.status_code in (302, 303), f"the login at {server} answered {login.status_code}")
+    check(login.status_code in (302, 303), f"the login at {where} answered {login.status_code}")
     code = parse_qs(urlparse(login.headers.get("Location", "")).query).get("code", [None])[0]
-    check(code is not None, f"no authorization code in the redirect from {server}")
+    check(code is not None, f"no authorization code in the redirect from {where}")
     return str(code), verifier
 
 
@@ -168,6 +174,15 @@ def a_token_revoked_at_one_is_refused_by_the_other(a: str, b: str, username: str
     check(introspected.json().get("active") is False, "B introspects a revoked token as active")
 
 
+def a_login_begun_at_one_is_finished_at_the_other(a: str, b: str, username: str) -> None:
+    """What the guide says about the browser leg: the session cookie is
+    signed with a `secret_key` both processes read from one settings.yaml,
+    and the transaction behind /authorize lives in the store."""
+    code, verifier = code_from(a, username, "pw", finish_at=b)
+    token = redeem(a, code, verifier)
+    check(token.status_code == 200, f"the code of a login split over both is refused ({token.status_code})")
+
+
 def a_promotion_at_one_is_declared_for_the_other(a: str, b: str, username: str) -> None:
     promoted = requests.post(f"{a}/api/runtime/users/{username}/promote", timeout=TIMEOUT)
     check(promoted.status_code == 200, f"the promotion at A answered {promoted.status_code}: {promoted.text[:200]}")
@@ -183,6 +198,12 @@ def a_promotion_at_one_is_declared_for_the_other(a: str, b: str, username: str) 
     code, verifier = code_from(b, username, "pw")
     check(redeem(b, code, verifier).status_code == 200, "the promoted user cannot log in at B")
 
+    # A promotion writes users.yaml, which is the only thing this suite
+    # leaves behind: remove it, so a run by hand ends with the configuration
+    # directory as it found it.
+    removed = requests.post(f"{a}/users/{username}/delete", timeout=TIMEOUT)
+    check(removed.status_code in (200, 302), f"the promoted user could not be removed ({removed.status_code})")
+
 
 def the_audit_of_both_reads_as_one(a: str, b: str) -> None:
     at_a = f"audit-a-{secrets.token_hex(4)}"
@@ -197,6 +218,9 @@ def the_audit_of_both_reads_as_one(a: str, b: str) -> None:
         recorded = [entry.get("details", {}).get("name") for entry in audit_events(reader, "runtime_identity_created")]
         check(at_a in recorded, f"{which} does not read the event the other process recorded ({at_a})")
         check(at_b in recorded, f"{which} does not read its own event ({at_b})")
+
+    for name in (at_a, at_b):
+        requests.delete(f"{a}/api/runtime/users/{name}", timeout=TIMEOUT)
 
 
 # ---- the run ----------------------------------------------------------------
@@ -218,16 +242,25 @@ def main() -> int:
         nonlocal username
         username = a_runtime_user_of_one_logs_in_at_the_other(a, b)
 
-    scenarios: List[Tuple[str, Callable[[], None]]] = [
-        ("a runtime user created at A logs in at B", first),
-        ("an authorization code issued at A is redeemed at B, once", lambda: a_code_of_one_is_redeemed_once_at_the_other(a, b, str(username))),
-        ("a token revoked at A is refused at B", lambda: a_token_revoked_at_one_is_refused_by_the_other(a, b, str(username))),
-        ("a user promoted at A is declared for B", lambda: a_promotion_at_one_is_declared_for_the_other(a, b, str(username))),
-        ("the audit of both reads as one", lambda: the_audit_of_both_reads_as_one(a, b)),
+    # The four after the first need the user it creates. Without it they
+    # would fail on assertions of their own, which says nothing and hides
+    # the one failure that happened.
+    scenarios: List[Tuple[str, Callable[[], None], bool]] = [
+        ("a runtime user created at A logs in at B", first, False),
+        ("an authorization code issued at A is redeemed at B, once", lambda: a_code_of_one_is_redeemed_once_at_the_other(a, b, str(username)), True),
+        ("a token revoked at A is refused at B", lambda: a_token_revoked_at_one_is_refused_by_the_other(a, b, str(username)), True),
+        ("a login begun at A is finished at B", lambda: a_login_begun_at_one_is_finished_at_the_other(a, b, str(username)), True),
+        ("a user promoted at A is declared for B", lambda: a_promotion_at_one_is_declared_for_the_other(a, b, str(username)), True),
+        ("the audit of both reads as one", lambda: the_audit_of_both_reads_as_one(a, b), False),
     ]
 
     failures = 0
-    for what, scenario in scenarios:
+    skipped = 0
+    for what, scenario, needs_the_user in scenarios:
+        if needs_the_user and username is None:
+            skipped += 1
+            print(f"[SKIP] {what}: the user the first scenario creates is not there")
+            continue
         try:
             scenario()
         except (Failure, requests.RequestException, KeyError, ValueError) as failure:
@@ -236,8 +269,9 @@ def main() -> int:
         else:
             print(f"[OK] {what}")
 
-    print(f"\n{len(scenarios) - failures}/{len(scenarios)} scenarios passed")
-    return 1 if failures else 0
+    passed = len(scenarios) - failures - skipped
+    print(f"\n{passed}/{len(scenarios)} scenarios passed" + (f", {skipped} skipped" if skipped else ""))
+    return 1 if failures or skipped else 0
 
 
 if __name__ == "__main__":
