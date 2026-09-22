@@ -61,9 +61,11 @@ with no access to the lock namespace. Strong consistency holds between
 participants able to use the same lock.
 """
 
+import os
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, Tuple
 
 from .config_writer import (
     LockNamespaceUnavailable,
@@ -77,6 +79,15 @@ from .config_writer import (
 #: A write item named the way a store addresses its own directory: by file
 #: NAME, not by path. Otherwise identical to ``config_writer.WriteItem``.
 StoreWriteItem = Tuple[str, Optional[Revision], Callable[[Dict[str, Any]], Any]]
+
+#: What a file looks like without reading it: ``(inode, size, mtime_ns,
+#: ctime_ns)``. A fast negative for "has this file changed since I read it"
+#: (#354, step 4a), never the answer: the revision of the bytes is.
+Fingerprint = Tuple[int, int, int, int]
+
+
+def _fingerprint(status: os.stat_result) -> Fingerprint:
+    return (status.st_ino, status.st_size, status.st_mtime_ns, status.st_ctime_ns)
 
 
 @dataclass(frozen=True)
@@ -98,6 +109,11 @@ class FileSnapshot:
     #: at the directory, and an absent file and an empty one are not the
     #: same thing to a loader even when both parse to nothing.
     exists: bool
+    #: The fingerprint of the file these bytes were read from, taken on the
+    #: handle they were read through, so it belongs to them and never to a
+    #: file that replaced it a moment later (#354, step 4a). None when the
+    #: file was not there.
+    fingerprint: Optional[Fingerprint] = None
 
 
 #: What every file of a directory that is not there looks like. A constant,
@@ -139,6 +155,35 @@ class ConfigFileStore:
         snapshot that never existed.
         """
         return self._observe(names)
+
+    def fingerprint_of(self, name: str) -> Optional[Fingerprint]:
+        """The file's fingerprint now, without the lock and without reading
+        it: None when it is not there. Only ever compared with a snapshot's."""
+        try:
+            return _fingerprint(os.stat(self._directory / name))
+        except FileNotFoundError:
+            return None
+
+    @contextmanager
+    def locked(self) -> Iterator[None]:
+        """The directory lock, for a caller that observes and then acts with
+        no writer of the protocol in between (#354, step 4a); inside it the
+        files are read with ``read_snapshot_within_lock``, since the lock is
+        not reentrant (#246). The same exceptions as a read: a directory that
+        is not there and a view with no lock namespace hold nothing."""
+        with ExitStack() as held:
+            if self._directory.is_dir():
+                # Decided before the section, so that nothing the section
+                # raises is taken for the lock's.
+                try:
+                    held.enter_context(directory_lock(self._directory))
+                except LockNamespaceUnavailable:
+                    pass
+            yield
+
+    def read_snapshot_within_lock(self, names: Sequence[str]) -> Dict[str, FileSnapshot]:
+        """``read_snapshot`` for a caller inside ``locked()``."""
+        return {name: self._read_unlocked(name) for name in names}
 
     def current_revision(self, name: str) -> Revision:
         """The revision a caller hands back later as ``expected_revision``."""
@@ -189,13 +234,17 @@ class ConfigFileStore:
         path = self._directory / name
         try:
             with open(path, "rb") as handle:
+                # Of this handle, the file the bytes come from, and before
+                # they are read: a write in place landing after it makes the
+                # next stat differ, so it is never missed.
+                fingerprint = _fingerprint(os.fstat(handle.fileno()))
                 data = handle.read()
         except FileNotFoundError:
             # A missing file has a well-defined revision, the hash of empty
             # bytes, so "create this only if it still does not exist" keeps
             # working (#229 phase 5).
             return FileSnapshot(data=b"", revision=revision_of_bytes(b""), exists=False)
-        return FileSnapshot(data=data, revision=revision_of_bytes(data), exists=True)
+        return FileSnapshot(data=data, revision=revision_of_bytes(data), exists=True, fingerprint=fingerprint)
 
     # -- writes ------------------------------------------------------
 

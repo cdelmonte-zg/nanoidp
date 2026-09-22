@@ -58,8 +58,10 @@ from mcp.types import (
 
 from .. import __version__
 from ..config import ConfigManager, ConfigurationRejected, get_config_if_loaded, init_config
+from ..config_writer import LockUnavailableError
 from ..security import verify_secret
 from ..services import activate_services, get_audit_log
+from ..services.runtime_store import fresh_configuration
 
 # Split into a package (#286); these re-imports keep the EXPLICITLY listed
 # names importable as before: `from nanoidp.mcp_server import <name>` and
@@ -264,7 +266,7 @@ def _text_result(payload: dict[str, Any], *, is_error: bool = False) -> CallTool
     )
 
 
-def _reject(name: str, code: str, message: str) -> CallToolResult:
+def _reject(name: str, code: str, message: str, retryable: Optional[bool] = None) -> CallToolResult:
     """Build a rejection result and its matching audit entry.
 
     Pins the shape shared by call_tool's early-exit branches (readonly mode,
@@ -276,7 +278,8 @@ def _reject(name: str, code: str, message: str) -> CallToolResult:
 
     - DISPATCH refusals (this function): the call never reached a tool -
       ``{"error", "code", "tool"}`` with ``is_error=True``. The ``code``
-      taxonomy (MCP_READONLY_MODE, MCP_ADMIN_SECRET_REQUIRED, MCP_UNKNOWN_TOOL,
+      taxonomy (MCP_CONFIGURATION_UNAVAILABLE, with ``retryable``, MCP_READONLY_MODE,
+      MCP_ADMIN_SECRET_REQUIRED, MCP_UNKNOWN_TOOL,
       MCP_INVALID_ARGUMENTS, MCP_INTERNAL_ERROR) is transport-level.
     - DOMAIN results (the handlers): the tool ran and answered -
       ``{"success": False, "error", ...}`` (plus ``kind`` where a typed
@@ -294,7 +297,11 @@ def _reject(name: str, code: str, message: str) -> CallToolResult:
     module-docstring table keep true. See CONTRIBUTING, "Error surfaces".
     """
     _log_mcp_tool(name, success=False, details={"error": code, "tool": name})
-    return _text_result({"error": message, "code": code, "tool": name}, is_error=True)
+    payload: dict = {"error": message, "code": code, "tool": name}
+    if retryable is not None:
+        # Said only where coming back can help or cannot, never guessed.
+        payload["retryable"] = retryable
+    return _text_result(payload, is_error=True)
 
 
 async def call_tool(ctx: ServerRequestContext, params: CallToolRequestParams) -> CallToolResult:
@@ -309,6 +316,21 @@ async def call_tool(ctx: ServerRequestContext, params: CallToolRequestParams) ->
     name = params.name
     try:
         config = _ensure_config()
+        # Before the read-only and admin checks: the management secret is
+        # configuration too. With a store shared by other processes the files
+        # are looked at here, once per call (#354, step 4a).
+        try:
+            fresh_configuration()
+        except LockUnavailableError as exc:
+            return _reject(
+                name,
+                "MCP_CONFIGURATION_UNAVAILABLE",
+                f"The configuration could not be observed: {exc.message}",
+                # A lock held past the timeout, or another call establishing
+                # the configuration right now: both pass. A filesystem with
+                # no advisory locking does not.
+                retryable=exc.kind in ("lock_timeout", "freshness_in_progress"),
+            )
         # Copied because _check_admin_secret pops admin_secret off it, and params
         # is a validated protocol model. `arguments` is None when the call
         # carried none.

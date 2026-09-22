@@ -9,8 +9,9 @@ import os
 import threading
 import time
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterator, Optional
+from typing import Any, Callable, Dict, Iterator, Optional, Tuple, TypeVar
 
 import yaml
 
@@ -25,8 +26,9 @@ from .config_documents import (
     load_users_document,
     reject_unloadable,
 )
-from .config_store import ConfigFileStore, FileSnapshot
+from .config_store import ConfigFileStore, FileSnapshot, Fingerprint
 from .config_writer import (
+    LockNamespaceUnavailable,
     LockUnavailableError,
     compare_and_replace,
     revision_of_bytes,
@@ -83,6 +85,22 @@ class ConfigurationRejected(ValueError):
         self.kind = kind
 
 
+class DeclaredConfigurationUnloadable(RuntimeError):
+    """The configuration files changed and do not load, so nothing can be
+    checked against them (#354, step 4a): a mutation that depends on the
+    declaration, such as creating a runtime user or client under a name that
+    must not be declared, is refused. The configuration loaded before stays
+    in force for everything else.
+
+    ``temporary`` when what failed is outside the bytes (an I/O error, an
+    activation, a plugin), which coming back may resolve; otherwise the
+    files do not parse or validate, and only fixing them ends it."""
+
+    def __init__(self, message: str, temporary: bool) -> None:
+        super().__init__(message)
+        self.temporary = temporary
+
+
 class ReloadAfterSaveError(RuntimeError):
     """save() wrote both files successfully, but the runtime could not
     adopt them afterward (#229 review round on phase 2, blocking).
@@ -104,6 +122,103 @@ class ReloadAfterSaveError(RuntimeError):
         super().__init__(message)
         self.message = message
         self.kind = kind
+
+
+# The two files of the declared configuration, in the order they are observed.
+_FILES = ("settings.yaml", "users.yaml")
+
+_T = TypeVar("_T")
+
+
+# How long a pair of files whose load failed for a reason outside them waits
+# before it is tried again: an external resource briefly missing must not be
+# tried at request rate. Its own constant, of the order of #420's.
+_TRANSIENT_RETRY_SECONDS = 5.0
+
+# The clock of those waits, a seam of the tests.
+_now = time.monotonic
+
+# How long the other requests wait for the one check in flight before they
+# are told to come back (#354, step 4a, sixth review).
+_FOLLOWER_WAIT_SECONDS = 0.5
+
+# How much older than the read a file's times must be for its stat to be
+# trusted: a write in place within the timestamp's tick (1 to 4 ms on ext4,
+# coarser on some filesystems, 2 s on FAT) leaves the stat unchanged. What
+# git calls racily clean. The wall clock, since the file's times are.
+_RACY_MARGIN_NS = 2 * 10**9
+_wall_ns = time.time_ns
+
+
+def _racy(fingerprints: Tuple[Optional[Fingerprint], ...], read_at_ns: int) -> bool:
+    """By the modification time, as git: it is what a write of the content
+    sets. The change time stays in the fingerprint, for what it detects."""
+    return any(
+        fingerprint is not None and fingerprint[2] >= read_at_ns - _RACY_MARGIN_NS for fingerprint in fingerprints
+    )
+
+
+# What a pair of files is, for freshness (#354, step 4a, fifth review): for
+# each, whether it is there and the revision of its bytes. A missing file and
+# an empty one have the same revision and do not load the same, so the
+# revision alone is not the file's identity here; it stays the public
+# revision of the write preconditions (#229).
+_Identity = Tuple[Tuple[bool, str], Tuple[bool, str]]
+
+
+def _identity_of(observed: Dict[str, FileSnapshot]) -> _Identity:
+    settings, users = observed["settings.yaml"], observed["users.yaml"]
+    return ((settings.exists, settings.revision), (users.exists, users.revision))
+
+
+@dataclass(frozen=True)
+class _Pending:
+    # None when the files could not be read at all.
+    revisions: Optional[_Identity]
+    fingerprints: Optional[Tuple[Optional[Fingerprint], ...]]
+    retry_after: float
+
+
+def _causes(failure: BaseException) -> Iterator[BaseException]:
+    """The failure and what it was raised from or while, once each."""
+    seen = set()
+    stack = [failure]
+    while stack:
+        current = stack.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        yield current
+        stack.extend(link for link in (current.__cause__, current.__context__) if link is not None)
+
+
+def _decided_by_the_bytes(failure: BaseException) -> bool:
+    """Whether the bytes alone refused the load: files that do not parse or
+    validate. Not an I/O error on the way, which a load reports under the
+    same kind, nor an activation or a plugin, which depend on what is outside
+    the two files."""
+    return (
+        isinstance(failure, ConfigurationRejected)
+        and failure.kind == "invalid"
+        and not any(isinstance(cause, OSError) for cause in _causes(failure))
+    )
+
+
+def _lock_behind(failure: BaseException) -> Optional[LockUnavailableError]:
+    """The lock a failed load could not take, if that is what failed,
+    however deep a load wrapped it: the configuration directory's is a
+    ConfigurationRejected of the lock's kind, the keys directory's (taken by
+    the activation) a ValueError inside one. Temporary, not files that do not
+    load (#354, step 4a, review). A directory with no lock namespace at all
+    is no lock held by a peer: that one is left to be what it says."""
+    seen = set()
+    current: Optional[BaseException] = failure
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, LockUnavailableError) and not isinstance(current, LockNamespaceUnavailable):
+            return current
+        current = current.__cause__
+    return None
 
 
 class ConfigManager:
@@ -131,6 +246,35 @@ class ConfigManager:
         # lock, so a read is one consistent look rather than several
         # independent ones that can compose into a state never on disk.
         self._store = ConfigFileStore(self.config_dir)
+        # The fingerprints of the files the loaded configuration was read
+        # from, and of a pair of files a check could not load (#354, step
+        # 4a): what refresh_if_changed compares a stat with.
+        # With it, whether they are too recent to be trusted: one observation,
+        # published as one, so that nobody reads the fingerprints of one look
+        # with the racy flag of another.
+        self._loaded_state: Tuple[Tuple[Optional[Fingerprint], ...], bool] = ((None, None), True)
+        # The identity, fingerprints and racy flag of the files refused.
+        self._refused: Optional[Tuple[_Identity, Tuple[Optional[Fingerprint], ...], bool]] = None
+        # How many checks established what the files are (the same bytes,
+        # newer ones loaded, or bytes refused): a request that waited for the
+        # check in flight takes the result of one made after it arrived.
+        self._established = 0
+        # How many loads were committed: whether a reload that raised had
+        # committed first, whichever files it loaded.
+        self._commits = 0
+        # A pair of files whose load failed for a reason outside them, and
+        # when it may be tried again.
+        self._pending: Optional[_Pending] = None
+        # What the last load read, set as soon as it has read: what a load
+        # that then failed is to be remembered by.
+        self._last_observed: Optional[Tuple[_Identity, Tuple[Optional[Fingerprint], ...], int]] = None
+        # The identity of the files the loaded configuration came from.
+        self._loaded_identity: Optional[_Identity] = None
+        # One automatic freshness check at a time (#354, step 4a, fifth
+        # review): the others are told at once that the configuration cannot
+        # be established now, instead of queueing behind one that waits for
+        # the directory lock.
+        self._freshness_lock = threading.Lock()
         # A transient CLI/programmatic `--profile` (#172). Kept here, not on
         # Settings, because it must survive every reload() - which rebuilds
         # Settings from YAML - and must never be written back to the file.
@@ -356,9 +500,13 @@ class ConfigManager:
         # was read: whatever happened to the directory after this moment,
         # this configuration cannot speak about (#405).
         staged["observed_at"] = time.time()
-        observed = self._store.read_snapshot(("settings.yaml", "users.yaml"))
+        staged["read_at_ns"] = _wall_ns()
+        observed = self._store.read_snapshot(_FILES)
         settings_observed = observed["settings.yaml"]
         users_observed = observed["users.yaml"]
+        staged["fingerprints"] = (settings_observed.fingerprint, users_observed.fingerprint)
+        staged["identity"] = _identity_of(observed)
+        self._last_observed = (staged["identity"], staged["fingerprints"], staged["read_at_ns"])
         settings_file = self.config_dir / "settings.yaml"
         if not settings_observed.exists:
             logger.warning(f"Settings file not found: {settings_file}, using defaults")
@@ -463,6 +611,9 @@ class ConfigManager:
         self.users_revision = staged["users_revision"]
         self.settings_revision = staged["settings_revision"]
         self.observed_at: float = staged["observed_at"]
+        self._loaded_state = (staged["fingerprints"], _racy(staged["fingerprints"], staged["read_at_ns"]))
+        self._loaded_identity = staged["identity"]
+        self._commits += 1
 
     def _configure_hooks_from(self, hooks: HooksSection, plugins: Dict[str, Dict[str, Any]]) -> None:
         """Replace the settings.yaml-sourced hooks/plugins with the file's
@@ -577,6 +728,207 @@ class ConfigManager:
         """
         with self._load_lock:
             yield
+
+    @property
+    def _loaded_fingerprints(self) -> Tuple[Optional[Fingerprint], ...]:
+        return self._loaded_state[0]
+
+    @property
+    def _loaded_racy(self) -> bool:
+        return self._loaded_state[1]
+
+    def refresh_if_changed(self) -> bool:
+        """Adopt the files if another writer changed them since they were
+        loaded: whether a reload happened (#354, step 4a).
+
+        For a process that shares its runtime store with others, at the start
+        of every operation. A stat of the two files is the fast negative; the
+        revision of their bytes is the answer, so the same bytes under a new
+        fingerprint are no reload.
+
+        A reload that fails leaves the loaded configuration in force and is
+        said once for that pair of files. What happens next depends on what
+        failed. Files the bytes alone refuse (they do not parse or validate)
+        are remembered and not tried again until the bytes change. A failure
+        that depends on something outside them (an I/O error, an activation
+        whose external key is not there yet, a plugin) is tried again, not
+        sooner than ``_TRANSIENT_RETRY_SECONDS`` later, the same files
+        included; bytes that change end any wait at once. A lock that cannot
+        be taken is neither: LockUnavailableError, since the files could not
+        be observed at all. And a failure after the load was committed (the
+        after_load step) is raised as it is.
+        """
+        arrived = self._established
+        quick = self._quick_answer()
+        if quick is not None:
+            return quick
+        # One check at a time. The others wait for it a moment (an ordinary
+        # reload is quick) and then answer from what it established; one
+        # that waits for a peer's lock does not hold them past the moment.
+        if not self._freshness_lock.acquire(timeout=_FOLLOWER_WAIT_SECONDS):
+            raise LockUnavailableError(
+                f"the configuration in {self.config_dir} is being looked at by another request; try again",
+                kind="freshness_in_progress",
+            )
+        try:
+            if self._established != arrived:
+                # A check made since this request arrived established the
+                # files: its result is this request's too, racy stat or not.
+                return False
+            quick = self._quick_answer()
+            if quick is not None:
+                return quick
+            return self._refresh_now(self._pending)
+        finally:
+            self._freshness_lock.release()
+
+    def _quick_answer(self) -> Optional[bool]:
+        """What the stat alone can say: False, nothing to do; None, the
+        files have to be looked at."""
+        pending = self._pending
+        if pending is not None and pending.revisions is None and _now() < pending.retry_after:
+            # The files could not be read a moment ago: not at request rate.
+            return False
+        try:
+            current = tuple(self._store.fingerprint_of(name) for name in _FILES)
+        except OSError as failure:
+            return self._unreadable(failure)
+        if pending is not None:
+            # The fast negative is not "the loaded files" while a failure is
+            # waiting to be tried again, or the wait would never end.
+            if current == pending.fingerprints and _now() < pending.retry_after:
+                return False
+            return None
+        # A stat as recent as the read is not trusted (racily clean): a write
+        # in place within the timestamp's tick leaves it as it was.
+        fingerprints, racy = self._loaded_state
+        if current == fingerprints and not racy:
+            return False
+        if self._refused is not None and current == self._refused[1] and not self._refused[2]:
+            return False
+        return None
+
+    def _refresh_now(self, pending: Optional[_Pending]) -> bool:
+        """The slow path of refresh_if_changed, one caller at a time."""
+        with self._load_lock:
+            read_at = _wall_ns()
+            try:
+                observed = self._store.read_snapshot(_FILES)
+            except OSError as failure:
+                return self._unreadable(failure)
+            revisions = _identity_of(observed)
+            fingerprints = tuple(observed[name].fingerprint for name in _FILES)
+            if revisions == self._loaded_identity:
+                # The bytes this configuration was loaded from: their
+                # fingerprint is theirs too, trusted once it is older than
+                # this read by the margin.
+                self._loaded_state = (fingerprints, _racy(fingerprints, read_at))
+                self._pending = None
+                self._established += 1
+                return False
+            if self._refused is not None and revisions == self._refused[0]:
+                self._refused = (revisions, fingerprints, _racy(fingerprints, read_at))
+                self._pending = None
+                self._established += 1
+                return False
+            pending = self._pending
+            if pending is not None and revisions == pending.revisions and _now() < pending.retry_after:
+                self._pending = _Pending(revisions, fingerprints, pending.retry_after)
+                return False
+            commits = self._commits
+            self._last_observed = None
+            try:
+                self.reload_local()
+            except Exception as failure:
+                lock = _lock_behind(failure)
+                if lock is not None:
+                    raise lock from failure
+                if self._commits != commits:
+                    # Files loaded and were committed (these, or newer ones a
+                    # peer wrote in between): what failed ran after, in the
+                    # after_load step, and is not the files' to say.
+                    raise
+                # What is refused is what the load read, which a peer may
+                # have changed since the look above.
+                if self._last_observed is not None:
+                    revisions, fingerprints, read_at = self._last_observed
+                said = pending is not None and pending.revisions == revisions
+                if _decided_by_the_bytes(failure):
+                    self._refused = (revisions, fingerprints, _racy(fingerprints, read_at))
+                    self._pending = None
+                    self._established += 1
+                    until = "until they change again"
+                else:
+                    self._pending = _Pending(revisions, fingerprints, _now() + _TRANSIENT_RETRY_SECONDS)
+                    until = f"and they are tried again in {_TRANSIENT_RETRY_SECONDS:g} s"
+                (logger.debug if said else logger.warning)(
+                    "The configuration files in %s changed and could not be loaded (%s); the configuration "
+                    "loaded before stays in force, %s",
+                    self.config_dir,
+                    failure,
+                    until,
+                )
+                return False
+            self._refused = None
+            self._pending = None
+            self._established += 1
+            return True
+
+    def _unreadable(self, failure: OSError) -> bool:
+        """The files could not even be looked at (a permission, an I/O
+        error): the configuration loaded stays in force, and they are looked
+        at again in a while. Said once for as long as it lasts."""
+        pending = self._pending
+        said = pending is not None and pending.revisions is None
+        self._pending = _Pending(None, None, _now() + _TRANSIENT_RETRY_SECONDS)
+        (logger.debug if said else logger.warning)(
+            "The configuration files in %s could not be read (%s); the configuration loaded before stays in "
+            "force, and they are looked at again in %g s",
+            self.config_dir,
+            failure,
+            _TRANSIENT_RETRY_SECONDS,
+        )
+        return False
+
+    def act_on_current_files(self, act: Callable[[], _T]) -> _T:
+        """``act()`` with the directory lock held and the loaded configuration
+        the files' (#354, step 4a).
+
+        For a mutation whose check against the declared configuration and
+        whose effect must not straddle a writer of another process: the
+        creation of a runtime user or client. The lock is not reentrant
+        (#246), so when the files moved it is released for the reload and
+        taken again, and the files looked at again, since they may move once
+        more in between: only the last pass, in which the loaded
+        configuration is the files', acts. A reload that fails refuses the
+        act. A writer that does not take the lock is not held off.
+        """
+        with self._load_lock:
+            while True:
+                with self._store.locked():
+                    try:
+                        observed = self._store.read_snapshot_within_lock(_FILES)
+                    except OSError as unreadable:
+                        # Not observed at all: nothing to check against, and
+                        # coming back may help.
+                        raise DeclaredConfigurationUnloadable(
+                            f"the configuration files in {self.config_dir} could not be read, so this cannot be "
+                            f"checked against them: {unreadable}",
+                            temporary=True,
+                        ) from unreadable
+                    if _identity_of(observed) == self._loaded_identity:
+                        return act()
+                try:
+                    self.reload_local()
+                except (ConfigurationRejected, HookError) as rejected:
+                    lock = _lock_behind(rejected)
+                    if lock is not None:
+                        raise lock from rejected
+                    raise DeclaredConfigurationUnloadable(
+                        f"the configuration files in {self.config_dir} do not load, so this cannot be checked "
+                        f"against them: {rejected.message}",
+                        temporary=not _decided_by_the_bytes(rejected),
+                    ) from rejected
 
     def reload(self) -> None:
         """Reload configuration from files: the EXTERNAL reload.

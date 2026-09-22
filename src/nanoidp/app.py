@@ -13,13 +13,14 @@ from flask_limiter.util import get_remote_address
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 from . import __version__
-from .config import ConfigManager, get_config, init_config
+from .config import ConfigManager, DeclaredConfigurationUnloadable, get_config, init_config
 from .config_writer import LockUnavailableError
 from .routes import api_bp, oauth_bp, registration_bp, runtime_bp, saml_bp, ui_bp
 from .services import activate_services
 from .services.dynamic_registration import prune_stale_registrations
 from .services.identities import identities_for, reconcile_runtime_identities
 from .services.runtime_repository import RuntimeStoreUnavailable
+from .services.runtime_store import fresh_configuration
 
 # Global limiter instance (initialized in create_app)
 limiter: Optional[Limiter] = None
@@ -57,6 +58,18 @@ def _after_load(config: ConfigManager) -> None:
         logging.getLogger(__name__).exception(
             "Could not sweep dynamic registration records after a config load"
         )
+
+
+# What says the process is alive, or serves a file, and reads no
+# configuration: a probe must not fail because a peer holds the directory
+# lock, and restart a healthy pod (#354, step 4a, sixth review).
+_READS_NO_CONFIGURATION = frozenset({"health", "api.health", "static"})
+
+
+def _fresh_configuration_unless_it_is_not_read() -> None:
+    if request.endpoint in _READS_NO_CONFIGURATION:
+        return
+    fresh_configuration()
 
 
 def create_app(
@@ -189,9 +202,11 @@ def create_app(
         here is that no surface answers it with a stack trace.
         """
         app.logger.warning("Configuration observation unavailable: %s", exc)
-        wants_json = request.path.startswith("/api/") or "application/json" in (
-            request.headers.get("Accept", "")
-        )
+        # A page for the UI's pages; every other surface (the protocol
+        # endpoints above all, since the freshness check runs before every
+        # request, #354) answers JSON a client can classify. Not an OAuth
+        # error: the request was not at fault.
+        wants_json = request.blueprint != "ui" or "application/json" in request.headers.get("Accept", "")
         if wants_json:
             response = jsonify({"error": "configuration_unavailable", "kind": exc.kind})
         else:
@@ -201,6 +216,27 @@ def create_app(
                 "right now. Another process may be writing it. Try again.</p>"
             )
         response.status_code = 503
+        if exc.kind in ("lock_timeout", "freshness_in_progress"):
+            # When one request may be tried again; not the configuration's
+            # own retry interval.
+            response.headers["Retry-After"] = "1"
+        return response
+
+    @app.errorhandler(DeclaredConfigurationUnloadable)
+    def _declaration_unloadable(exc: DeclaredConfigurationUnloadable) -> Response:
+        """503 for a mutation checked against configuration files that
+        changed and do not load (#354, step 4a): refused, not a fault of the
+        request. When what failed is outside the bytes (an I/O error, an
+        activation, a plugin), coming back may help: configuration_unavailable
+        with Retry-After, like a lock held by a peer. When the bytes do not
+        parse or validate nothing helps until they are fixed:
+        configuration_unloadable, and no Retry-After."""
+        app.logger.warning("Refused against a configuration that does not load: %s", exc)
+        error = "configuration_unavailable" if exc.temporary else "configuration_unloadable"
+        response = jsonify({"error": error, "error_description": str(exc)})
+        response.status_code = 503
+        if exc.temporary:
+            response.headers["Retry-After"] = "5"
         return response
 
     @app.errorhandler(RuntimeStoreUnavailable)
@@ -214,6 +250,12 @@ def create_app(
         response.status_code = 503
         response.headers["Retry-After"] = "1"
         return response
+
+    # Before any blueprint's guard, which reads the configuration: an app
+    # before_request runs first. With a store shared by other processes the
+    # files are looked at here, once per request, not in get_config() (#354,
+    # step 4a). LockUnavailableError is the 503 above.
+    app.before_request(_fresh_configuration_unless_it_is_not_read)
 
     app.register_blueprint(oauth_bp)
     app.register_blueprint(saml_bp)

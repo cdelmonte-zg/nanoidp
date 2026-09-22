@@ -68,6 +68,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`record_registration(entry, ...)`) and dropped with
   `forget_registration_of(entry)`.
 
+- **Processes that share a runtime store see the configuration files as
+  they are** (#354, fourth step, first part). Nothing checked, per
+  operation, that the loaded configuration was still the files': a process
+  saw another's write only at its own reload, so a process could create a
+  runtime user under a name another had just declared (measured). Now, when
+  the runtime store is shared with other processes, every request (before
+  any blueprint's guard; `/health`, `/api/health` and static files excepted,
+  since they read no configuration and a probe must not fail because a peer
+  holds a lock) and every MCP tool call (before the read-only and
+  admin checks) looks at the files first: a stat of the two files is the
+  fast negative, taken from the very files the loaded bytes came from and
+  not trusted while their modification time is within 2 s of the read (a
+  write in place within the timestamp's tick leaves the stat unchanged:
+  what git calls racily clean), and the revision of their bytes is the
+  answer, with whether the file is there
+  at all (a missing `users.yaml` and an empty one have the same revision and
+  do not load the same). Files that changed are reloaded. One check at a
+  time does that: the others wait for it up to 0.5 s and then answer from
+  what it established, reloading nothing again; while it waits for a peer's
+  lock they are answered `503` `configuration_unavailable` of kind
+  `freshness_in_progress` (retryable in MCP), instead of queueing behind
+  it. A `503` for the configuration is JSON everywhere but the UI's pages,
+  and carries `Retry-After: 1` when trying again can help. Files that changed and do not load leave the loaded
+  configuration in force and are said once in the log: when the bytes alone
+  refuse the load (they do not parse or validate) they are not tried again
+  until they change; when it failed on something outside them (an I/O
+  error, an activation whose external key is not there yet, a plugin) they
+  are tried again, not sooner than 5 s later, and at once if the bytes
+  change. Files that cannot even be read (a permission, an I/O error)
+  leave the loaded configuration in force too, and are looked at again in
+  5 s. A directory lock that cannot be taken is neither, and a failure after
+  the load was committed is raised as it is. The creation of a runtime user or client
+  checks its name against the files under the directory lock every writer
+  of nanoidp takes, and commits before it releases it: the lock is not
+  reentrant, so when the files moved it is released for the reload and
+  taken again. A creation against files that do not load is refused, for
+  `/api/runtime` and dynamic registration alike: `503`
+  `configuration_unloadable` when the bytes do not parse or validate, `503`
+  `configuration_unavailable` with `Retry-After` when what failed is outside
+  them, or when the files could not be read at all. A directory lock held by a peer is `503` over HTTP, as
+  before, and `MCP_CONFIGURATION_UNAVAILABLE` with `retryable` in MCP. With
+  the in-memory store nothing changes. An editor that does not take the
+  lock is noticed at the next operation, and nothing linearizable is
+  promised against it. Measured on the repository's configuration: the
+  stat of the two files costs 3.6 us, reading and hashing them 18 us.
 - **The SQLite runtime store keeps the audit too, in a file of its own**
   (#354, third step). A SQLite file has one writer, and the audit's contract
   says it does not wait for the repositories: an append on the store's file
