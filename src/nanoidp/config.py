@@ -9,6 +9,7 @@ import os
 import threading
 import time
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, Optional, Tuple, TypeVar
 
@@ -121,6 +122,47 @@ _FILES = ("settings.yaml", "users.yaml")
 _T = TypeVar("_T")
 
 
+# How long a pair of files whose load failed for a reason outside them waits
+# before it is tried again: an external resource briefly missing must not be
+# tried at request rate. Its own constant, of the order of #420's.
+_TRANSIENT_RETRY_SECONDS = 5.0
+
+# The clock of those waits, a seam of the tests.
+_now = time.monotonic
+
+
+@dataclass(frozen=True)
+class _Pending:
+    revisions: Tuple[str, str]
+    fingerprints: Tuple[Optional[Fingerprint], ...]
+    retry_after: float
+
+
+def _causes(failure: BaseException) -> Iterator[BaseException]:
+    """The failure and what it was raised from or while, once each."""
+    seen = set()
+    stack = [failure]
+    while stack:
+        current = stack.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        yield current
+        stack.extend(link for link in (current.__cause__, current.__context__) if link is not None)
+
+
+def _decided_by_the_bytes(failure: BaseException) -> bool:
+    """Whether the bytes alone refused the load: files that do not parse or
+    validate. Not an I/O error on the way, which a load reports under the
+    same kind, nor an activation or a plugin, which depend on what is outside
+    the two files."""
+    return (
+        isinstance(failure, ConfigurationRejected)
+        and failure.kind == "invalid"
+        and not any(isinstance(cause, OSError) for cause in _causes(failure))
+    )
+
+
 def _lock_behind(failure: BaseException) -> Optional[LockUnavailableError]:
     """The lock a failed load could not take, if that is what failed,
     however deep a load wrapped it: the configuration directory's is a
@@ -168,6 +210,12 @@ class ConfigManager:
         # 4a): what refresh_if_changed compares a stat with.
         self._loaded_fingerprints: Tuple[Optional[Fingerprint], ...] = (None, None)
         self._refused: Optional[Tuple[Tuple[str, str], Tuple[Optional[Fingerprint], ...]]] = None
+        # How many loads were committed: whether a reload that raised had
+        # committed first, whichever files it loaded.
+        self._commits = 0
+        # A pair of files whose load failed for a reason outside them, and
+        # when it may be tried again.
+        self._pending: Optional[_Pending] = None
         # A transient CLI/programmatic `--profile` (#172). Kept here, not on
         # Settings, because it must survive every reload() - which rebuilds
         # Settings from YAML - and must never be written back to the file.
@@ -502,6 +550,7 @@ class ConfigManager:
         self.settings_revision = staged["settings_revision"]
         self.observed_at: float = staged["observed_at"]
         self._loaded_fingerprints = staged["fingerprints"]
+        self._commits += 1
 
     def _configure_hooks_from(self, hooks: HooksSection, plugins: Dict[str, Dict[str, Any]]) -> None:
         """Replace the settings.yaml-sourced hooks/plugins with the file's
@@ -624,17 +673,32 @@ class ConfigManager:
         For a process that shares its runtime store with others, at the start
         of every operation. A stat of the two files is the fast negative; the
         revision of their bytes is the answer, so the same bytes under a new
-        fingerprint are no reload. A pair of files that cannot be loaded (an
-        editor's mistake) leaves the loaded configuration in force, is said
-        once, and is not tried again until the bytes change. A lock that
-        cannot be taken is not that: LockUnavailableError, which may be
-        retried.
+        fingerprint are no reload.
+
+        A reload that fails leaves the loaded configuration in force and is
+        said once for that pair of files. What happens next depends on what
+        failed. Files the bytes alone refuse (they do not parse or validate)
+        are remembered and not tried again until the bytes change. A failure
+        that depends on something outside them (an I/O error, an activation
+        whose external key is not there yet, a plugin) is tried again, not
+        sooner than ``_TRANSIENT_RETRY_SECONDS`` later, the same files
+        included; bytes that change end any wait at once. A lock that cannot
+        be taken is neither: LockUnavailableError, since the files could not
+        be observed at all. And a failure after the load was committed (the
+        after_load step) is raised as it is.
         """
         current = tuple(self._store.fingerprint_of(name) for name in _FILES)
-        if current == self._loaded_fingerprints:
-            return False
-        if self._refused is not None and current == self._refused[1]:
-            return False
+        pending = self._pending
+        if pending is not None:
+            # The fast negative is not "the loaded files" while a failure is
+            # waiting to be tried again, or the wait would never end.
+            if current == pending.fingerprints and _now() < pending.retry_after:
+                return False
+        else:
+            if current == self._loaded_fingerprints:
+                return False
+            if self._refused is not None and current == self._refused[1]:
+                return False
         with self._load_lock:
             observed = self._store.read_snapshot(_FILES)
             revisions = (observed["settings.yaml"].revision, observed["users.yaml"].revision)
@@ -643,29 +707,45 @@ class ConfigManager:
                 # The bytes this configuration was loaded from: their
                 # fingerprint is theirs too, and the next check is the fast one.
                 self._loaded_fingerprints = fingerprints
+                self._pending = None
                 return False
             if self._refused is not None and revisions == self._refused[0]:
                 self._refused = (revisions, fingerprints)
                 return False
+            pending = self._pending
+            if pending is not None and revisions == pending.revisions and _now() < pending.retry_after:
+                self._pending = _Pending(revisions, fingerprints, pending.retry_after)
+                return False
+            commits = self._commits
             try:
                 self.reload_local()
             except Exception as failure:
                 lock = _lock_behind(failure)
                 if lock is not None:
                     raise lock from failure
-                if (self.settings_revision, self.users_revision) == revisions:
-                    # The files loaded and were committed: what failed ran
-                    # after (the after_load step), and is not theirs to say.
+                if self._commits != commits:
+                    # Files loaded and were committed (these, or newer ones a
+                    # peer wrote in between): what failed ran after, in the
+                    # after_load step, and is not the files' to say.
                     raise
-                self._refused = (revisions, fingerprints)
-                logger.warning(
+                said = pending is not None and pending.revisions == revisions
+                if _decided_by_the_bytes(failure):
+                    self._refused = (revisions, fingerprints)
+                    self._pending = None
+                    until = "until they change again"
+                else:
+                    self._pending = _Pending(revisions, fingerprints, _now() + _TRANSIENT_RETRY_SECONDS)
+                    until = f"and they are tried again in {_TRANSIENT_RETRY_SECONDS:g} s"
+                (logger.debug if said else logger.warning)(
                     "The configuration files in %s changed and could not be loaded (%s); the configuration "
-                    "loaded before stays in force until they change again",
+                    "loaded before stays in force, %s",
                     self.config_dir,
                     failure,
+                    until,
                 )
                 return False
             self._refused = None
+            self._pending = None
             return True
 
     def act_on_current_files(self, act: Callable[[], _T]) -> _T:

@@ -78,9 +78,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   admin checks) looks at the files first: a stat of the two files is the
   fast negative, taken from the very files the loaded bytes came from, and
   the revision of their bytes is the answer. Files that changed are
-  reloaded; files that changed and do not load (an editor's mistake) leave
-  the loaded configuration in force, are said once in the log, and are not
-  tried again until they change. The creation of a runtime user or client
+  reloaded. Files that changed and do not load leave the loaded
+  configuration in force and are said once in the log: when the bytes alone
+  refuse the load (they do not parse or validate) they are not tried again
+  until they change; when it failed on something outside them (an I/O
+  error, an activation whose external key is not there yet, a plugin) they
+  are tried again, not sooner than 5 s later, and at once if the bytes
+  change. A directory lock that cannot be taken is neither, and a failure
+  after the load was committed is raised as it is. The creation of a runtime user or client
   checks its name against the files under the directory lock every writer
   of nanoidp takes, and commits before it releases it: the lock is not
   reentrant, so when the files moved it is released for the reload and

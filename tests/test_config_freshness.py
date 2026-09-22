@@ -264,6 +264,198 @@ class TestTheCheck:
         assert config.refresh_if_changed() is False
 
 
+class _Clock:
+    def __init__(self):
+        self.now = 1000.0
+
+    def __call__(self):
+        return self.now
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    from nanoidp import config as config_module
+
+    fake = _Clock()
+    monkeypatch.setattr(config_module, "_now", fake)
+    return fake
+
+
+def _counting_loads(monkeypatch, config):
+    loads = []
+    real = config._load_config
+
+    def counting(*args, **kwargs):
+        loads.append(1)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(config, "_load_config", counting)
+    return loads
+
+
+def _failing_activation(config, times):
+    """The activation of the next ``times`` loads fails, as a resource
+    outside the two files would (an external key not there yet)."""
+    left = {"n": times}
+
+    def activate(settings):
+        if left["n"] > 0:
+            left["n"] -= 1
+            raise ValueError("the external key is not there yet")
+        return lambda: None
+
+    config._activate = activate
+
+
+class TestWhatIsRememberedAndWhatIsTriedAgain:
+    """Only a refusal the bytes decide is remembered until they change.
+    One that depends on what is outside them leaves the loaded configuration
+    in force and is tried again, not before a while, and at once when the
+    bytes change. A lock that cannot be taken is neither (#354, step 4a)."""
+
+    def test_bytes_that_do_not_parse_are_tried_once_however_long(self, shared, monkeypatch, clock):
+        config_dir, config, store = shared
+        (config_dir / "users.yaml").write_text("users: [this is not a mapping\n")
+        loads = _counting_loads(monkeypatch, config)
+
+        assert config.refresh_if_changed() is False
+        clock.now += 60
+        assert config.refresh_if_changed() is False
+
+        assert loads == [1]
+
+    def test_an_activation_that_fails_is_tried_again_after_a_while_and_adopted(self, shared, monkeypatch, clock, caplog):
+        config_dir, config, store = shared
+        _declare_user(config_dir, "carol")
+        _failing_activation(config, 2)
+        loads = _counting_loads(monkeypatch, config)
+
+        with caplog.at_level("WARNING"):
+            assert config.refresh_if_changed() is False
+            clock.now += 4
+            assert config.refresh_if_changed() is False
+            assert loads == [1]
+            clock.now += 2
+            assert config.refresh_if_changed() is False  # tried, and still failing
+            assert loads == [1, 1]
+            clock.now += 6
+            assert config.refresh_if_changed() is True  # the same files, adopted
+
+        assert config.get_user("carol") is not None
+        assert sum("could not be loaded" in record.getMessage() for record in caplog.records) == 1
+
+    def test_the_same_bytes_rewritten_while_waiting_wait_on(self, shared, monkeypatch, clock):
+        config_dir, config, store = shared
+        _declare_user(config_dir, "carol")
+        _failing_activation(config, 1)
+        assert config.refresh_if_changed() is False
+        users = config_dir / "users.yaml"
+        replacement = users.with_name("users.yaml.next")
+        replacement.write_bytes(users.read_bytes())
+        os.replace(replacement, users)
+        loads = _counting_loads(monkeypatch, config)
+        clock.now += 1
+
+        assert config.refresh_if_changed() is False
+        assert loads == []
+
+    def test_bytes_that_change_while_waiting_are_tried_at_once(self, shared, monkeypatch, clock):
+        config_dir, config, store = shared
+        _declare_user(config_dir, "carol")
+        _failing_activation(config, 1)
+        assert config.refresh_if_changed() is False
+        loads = _counting_loads(monkeypatch, config)
+
+        _declare_user(config_dir, "dave")
+        assert config.refresh_if_changed() is True
+
+        assert loads == [1]
+        assert config.get_user("dave") is not None
+
+    def test_a_read_that_fails_is_tried_again_after_a_while(self, shared, monkeypatch, clock):
+        config_dir, config, store = shared
+        _declare_user(config_dir, "carol")
+        real_read = config._store.read_snapshot
+        reads = []
+
+        def failing_second_read(names):
+            reads.append(1)
+            if len(reads) == 2:
+                raise OSError(5, "Input/output error")
+            return real_read(names)
+
+        monkeypatch.setattr(config._store, "read_snapshot", failing_second_read)
+        assert config.refresh_if_changed() is False
+        clock.now += 6
+
+        assert config.refresh_if_changed() is True
+        assert config.get_user("carol") is not None
+
+    def test_a_creation_that_loads_the_files_ends_the_wait_for_the_reads_too(self, shared, monkeypatch, clock):
+        """Reads and the critical creation are never in two configurations:
+        the creation reloads the same files the check could not, and the
+        check, once its wait is over, finds them loaded."""
+        config_dir, config, store = shared
+        _declare_user(config_dir, "carol")
+        _failing_activation(config, 1)
+        assert config.refresh_if_changed() is False
+
+        IdentityResolver(config, store).create_runtime_user(User(username="fresh", password="pw"))
+        assert config.get_user("carol") is not None
+        loads = _counting_loads(monkeypatch, config)
+        clock.now += 6
+
+        assert config.refresh_if_changed() is False
+        assert loads == []
+        assert config._pending is None
+
+
+class TestAFailureAfterAPeersWrite:
+    def test_a_failure_after_a_load_of_newer_files_is_still_not_the_files(self, tmp_path, monkeypatch, caplog):
+        """A peer writes again between the check's look and its reload: the
+        reload loads the newer files and commits them, then its after_load
+        fails. What was committed is not the pair the check looked at, and
+        the failure is still not theirs."""
+        config_dir = _config_dir(tmp_path)
+        runtime_store.publish_runtime_store(SqliteRuntimeStore(tmp_path / "runtime.db"), ("memory",))
+        failing = {"on": False}
+
+        def after_load(manager):
+            if failing["on"]:
+                raise RuntimeError("the store was busy")
+
+        config = ConfigManager(str(config_dir), after_load=after_load)
+        _declare_user(config_dir, "carol")
+        real_reload = config.reload_local
+
+        def peer_writes_then_reload():
+            _declare_user(config_dir, "dave")
+            failing["on"] = True
+            real_reload()
+
+        monkeypatch.setattr(config, "reload_local", peer_writes_then_reload)
+        with caplog.at_level("WARNING"), pytest.raises(RuntimeError, match="busy"):
+            config.refresh_if_changed()
+
+        assert config.get_user("dave") is not None
+        assert config._refused is None
+        assert not any("could not be loaded" in record.getMessage() for record in caplog.records)
+
+
+class TestTheLockedSection:
+    def test_what_the_section_raises_is_what_the_caller_gets(self, tmp_path):
+        from nanoidp.config_store import ConfigFileStore
+        from nanoidp.services.key_directory import KeysDirectoryNotWritable
+
+        store = ConfigFileStore(_config_dir(tmp_path))
+        raised = KeysDirectoryNotWritable(Path("/keys"), OSError(30, "Read-only file system"))
+
+        with pytest.raises(KeysDirectoryNotWritable) as seen:
+            with store.locked():
+                raise raised
+        assert seen.value is raised
+
+
 class TestTheLockBehindAFailedLoad:
     @pytest.mark.parametrize("depth", [0, 1, 2, 3])
     def test_a_lock_is_found_however_deep_it_was_wrapped(self, depth):
@@ -297,6 +489,28 @@ class TestTheLockBehindAFailedLoad:
         first.__cause__, second.__cause__ = second, first
 
         assert _within(lambda: _lock_behind(first)) is None
+
+    def test_an_io_error_anywhere_behind_a_rejection_is_not_the_bytes(self):
+        from nanoidp.config import ConfigurationRejected, _decided_by_the_bytes
+
+        def raised_while(error):
+            try:
+                try:
+                    raise error
+                except OSError:
+                    raise ValueError("while reading")  # noqa: B904 - a context, on purpose
+            except ValueError as middle:
+                try:
+                    raise ConfigurationRejected("x", kind="invalid") from middle
+                except ConfigurationRejected as rejected:
+                    return rejected
+
+        assert _decided_by_the_bytes(raised_while(OSError(5, "Input/output error"))) is False
+        try:
+            raise ConfigurationRejected("x", kind="invalid") from ValueError("not a mapping")
+        except ConfigurationRejected as rejected:
+            assert _decided_by_the_bytes(rejected) is True
+        assert _decided_by_the_bytes(ConfigurationRejected("x", kind="activation")) is False
 
     def test_a_failure_that_is_no_lock_is_none(self):
         from nanoidp.config import ConfigurationRejected, _lock_behind

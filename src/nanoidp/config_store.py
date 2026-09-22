@@ -62,7 +62,7 @@ participants able to use the same lock.
 """
 
 import os
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, Tuple
@@ -171,13 +171,14 @@ class ConfigFileStore:
         files are read with ``read_snapshot_within_lock``, since the lock is
         not reentrant (#246). The same exceptions as a read: a directory that
         is not there and a view with no lock namespace hold nothing."""
-        if not self._directory.is_dir():
-            yield
-            return
-        try:
-            with directory_lock(self._directory):
-                yield
-        except LockNamespaceUnavailable:
+        with ExitStack() as held:
+            if self._directory.is_dir():
+                # Decided before the section, so that nothing the section
+                # raises is taken for the lock's.
+                try:
+                    held.enter_context(directory_lock(self._directory))
+                except LockNamespaceUnavailable:
+                    pass
             yield
 
     def read_snapshot_within_lock(self, names: Sequence[str]) -> Dict[str, FileSnapshot]:
