@@ -50,6 +50,7 @@ which are brought to ``0600`` all the same), an existing one brought to
 
 import json
 import os
+import re
 import sqlite3
 import stat
 import threading
@@ -72,6 +73,7 @@ from typing import (
     cast,
 )
 
+from .. import config_writer
 from ..config import OAuthClient, User
 from .audit_store import (
     AuditEntry,
@@ -193,6 +195,182 @@ def _require_upsert() -> None:
         )
 
 
+def owners_path_of(path: Path) -> Path:
+    """The directory of the owner leases, named after the store's file:
+    ``runtime.db`` has them in ``runtime-owners`` (#354, step 4b)."""
+    return path.with_name(f"{path.stem}-owners")
+
+
+# An owner id: 128 random bits, as hex. Anything else found in a claim names
+# no lease this store can look at, and proves nothing.
+_OWNER_ID = re.compile(r"[0-9a-f]{32}")
+
+
+def _try_lock(fd: int) -> bool:
+    """An exclusive lock on the file, without waiting: whether it was had.
+    The primitive of the configuration directory's lock, and its
+    classification: only contention is "not had"; a filesystem that cannot
+    lock at all is LockUnavailableError(kind="lock_unsupported"), never an
+    owner that lives. The lock of the open file, so a descriptor inherited
+    by a fork and closed there does not release it."""
+    try:
+        return config_writer._try_lock_exclusive(fd)
+    except OSError as failure:
+        raise config_writer.LockUnavailableError(
+            f"the owner leases cannot be locked: {failure}", kind="lock_unsupported"
+        ) from failure
+
+
+def _names(path: Path, fd: int) -> bool:
+    """Whether ``path`` still names the file open as ``fd``."""
+    try:
+        named = os.stat(path)
+    except FileNotFoundError:
+        return False
+    held = os.fstat(fd)
+    return (named.st_dev, named.st_ino) == (held.st_dev, held.st_ino)
+
+
+def _remove_lease(lease: Path) -> None:
+    """Remove a lease whose owner is proved dead, if it can be: a peer may
+    hold it open for a moment, which Windows refuses a removal for. A lease
+    left behind is unlocked, and proves its owner dead all the same; a later
+    proof or sweep removes it."""
+    try:
+        lease.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+class _OwnerLeases:
+    """This process as an owner of the claims it makes in one store (#354,
+    step 4b): a lease file in the store's owners directory, held under an
+    exclusive lock for as long as the process lives, made the first time a
+    claim needs it. A peer that can take the lock has proved the owner dead;
+    a peer that finds the file gone too, since only a proof of death removes
+    it. No timeout is a proof."""
+
+    def __init__(self, directory: Path) -> None:
+        self._directory = directory
+        self._lock = threading.Lock()
+        self._owner: Optional[str] = None
+        self._fd: Optional[int] = None
+
+    def owner(self) -> str:
+        # An activity of the fork gate: a lease being made holds a
+        # descriptor not recorded yet, which a fork would hand to the child.
+        with _FORK_GATE.activity(), self._lock:
+            if self._owner is None:
+                self._directory.mkdir(mode=0o700, exist_ok=True)
+                _Database._make_private_directory(self._directory)
+                self._remove_the_dead()
+                self._fd, self._owner = self._new_lease()
+            return self._owner
+
+    def _new_lease(self) -> Tuple[int, str]:
+        """A lease made and held, and still the one its name names. Between
+        its creation and its lock, a peer's sweep can take it for a dead
+        one and remove it; the lock then held would be on a file nobody can
+        find, and this process would look dead for as long as it lives. So
+        the name is looked at again once the lock is held, and a lease that
+        is not there any more is made anew, under another id (nobody knows
+        this one yet: it is in no claim)."""
+        for _ in range(8):
+            owner = uuid.uuid4().hex
+            path = self._directory / f"{owner}.lock"
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
+            if _try_lock(fd) and _names(path, fd):
+                return fd, owner
+            os.close(fd)
+        raise RuntimeError(f"no owner lease could be made in {self._directory}")
+
+    def may_be_dead(self, owner: Optional[str]) -> bool:
+        """Whether ``owner`` could be proved dead now: its lease gone or its
+        lock free. No lock is kept and nothing removed; for a caller that
+        would otherwise go through the files for a claim nobody can recover
+        (#354, step 4b, review). The proof that decides is prove_dead's."""
+        if owner is None or not isinstance(owner, str) or not _OWNER_ID.fullmatch(owner):
+            return False
+        with self._lock:
+            if owner == self._owner:
+                return False
+        with _FORK_GATE.activity():
+            try:
+                fd = os.open(self._directory / f"{owner}.lock", os.O_RDWR)
+            except FileNotFoundError:
+                return True
+            try:
+                return _try_lock(fd)
+            finally:
+                os.close(fd)
+
+    def _remove_the_dead(self) -> None:
+        """The leases of owners that are gone, and that no claim may still
+        name: removed once each is proved dead. A claim that names one later
+        finds it missing, which is death too."""
+        for lease in self._directory.glob("*.lock"):
+            if not _OWNER_ID.fullmatch(lease.stem):
+                continue
+            try:
+                fd = os.open(lease, os.O_RDWR)
+            except FileNotFoundError:
+                continue
+            try:
+                dead = _try_lock(fd)
+            finally:
+                os.close(fd)
+            if dead:
+                _remove_lease(lease)
+
+    @contextmanager
+    def prove_dead(self, owner: Optional[str]) -> Iterator[bool]:
+        """Whether ``owner`` is proved dead: its lease is gone, or its lock
+        can be taken, and is then held until the caller is done, and the
+        lease removed after. False for no owner, for this process, for an id
+        that names no lease, and for a lease whose lock is held."""
+        if owner is None or not isinstance(owner, str) or not _OWNER_ID.fullmatch(owner):
+            yield False
+            return
+        with self._lock:
+            mine = owner == self._owner
+        if mine:
+            yield False
+            return
+        lease = self._directory / f"{owner}.lock"
+        # An activity for as long as the proof is held: its descriptor is
+        # the lock, and a fork must not hand it to a child.
+        with _FORK_GATE.activity():
+            try:
+                fd = os.open(lease, os.O_RDWR)
+            except FileNotFoundError:
+                yield True
+                return
+            try:
+                if not _try_lock(fd):
+                    yield False
+                    return
+                yield True
+            finally:
+                os.close(fd)
+            # Reached only when the block ended, the entry decided, and once
+            # the proof's descriptor is closed: Windows removes no file that
+            # is open. A decision that raised leaves the lease where it is.
+            _remove_lease(lease)
+
+    def _forget_inherited(self) -> None:
+        # In a forked child: not this process's lease.
+        fd, self._fd, self._owner = self._fd, None, None
+        self._lock = threading.Lock()
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
+_LEASES: "weakref.WeakSet[_OwnerLeases]" = weakref.WeakSet()
+
+
 def audit_path_of(path: Path) -> Path:
     """The audit's file, named after the store's: ``runtime.db`` has its
     audit in ``runtime-audit.db``. The two are the store."""
@@ -242,16 +420,30 @@ class _ForkGate:
         self._condition = threading.Condition(threading.Lock())
         self._active = 0
         self._forking = False
+        self._depth = threading.local()
 
     @contextmanager
     def activity(self) -> Iterator[None]:
+        # Within an activity of this thread's the thread is counted already:
+        # waiting for a pending fork there would wait for a fork that waits
+        # for this very thread (a proof held while its decision's
+        # transaction runs, #354, step 4b).
+        if getattr(self._depth, "n", 0):
+            self._depth.n += 1
+            try:
+                yield
+            finally:
+                self._depth.n -= 1
+            return
         with self._condition:
             while self._forking:
                 self._condition.wait()
             self._active += 1
+        self._depth.n = 1
         try:
             yield
         finally:
+            self._depth.n = 0
             with self._condition:
                 self._active -= 1
                 if self._active == 0:
@@ -273,6 +465,12 @@ class _ForkGate:
     def after_in_child(self) -> None:
         # The other threads are gone, and with them whatever they held.
         self._reset()
+        # The parent's owner leases are the parent's: the child closes its
+        # copy of each descriptor (the parent's lease holds, since the lock is
+        # the open file's, not this descriptor's) and becomes an owner of its
+        # own when it first needs to (#354, step 4b). No filesystem work here.
+        for leases in list(_LEASES):
+            leases._forget_inherited()
 
 
 _FORK_GATE = _ForkGate()
@@ -317,6 +515,11 @@ class _Database:
             return False
         os.close(fd)
         return True
+
+    @staticmethod
+    def _make_private_directory(path: Path) -> None:
+        if os.name == "posix" and stat.S_IMODE(path.stat().st_mode) != 0o700:
+            os.chmod(path, 0o700)
 
     @staticmethod
     def _make_private(path: Path) -> None:
@@ -870,10 +1073,27 @@ class SqliteRuntimeStore:
         )
         self._lent: Dict[str, SqliteRuntimeRepository[Any]] = {}
         self._lock = threading.Lock()
+        self._leases = _OwnerLeases(owners_path_of(self._database.path))
+        _LEASES.add(self._leases)
 
     @property
     def path(self) -> Path:
         return self._database.path
+
+    def claim_owner(self) -> Optional[str]:
+        """This process as the owner of a claim it is about to make: its
+        lease, made and held before the id is returned (#354, step 4b)."""
+        return self._leases.owner()
+
+    def owner_may_be_dead(self, owner: Optional[str]) -> bool:
+        """Whether the owner of a claim could be proved dead now."""
+        return self._leases.may_be_dead(owner)
+
+    @contextmanager
+    def prove_owner_dead(self, owner: Optional[str]) -> Iterator[bool]:
+        """Whether the owner of a claim is proved dead; see _OwnerLeases."""
+        with self._leases.prove_dead(owner) as dead:
+            yield dead
 
     @property
     def shared(self) -> bool:
