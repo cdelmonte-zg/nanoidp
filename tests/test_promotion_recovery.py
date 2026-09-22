@@ -548,6 +548,109 @@ def test_a_child_that_lives_on_does_not_keep_its_dead_parents_lease(tmp_path):
             pass
 
 
+class TestTheReviewOf4b:
+    def test_a_lease_being_made_is_never_swept_away(self, tmp_path):
+        """A peer's sweep of dead leases runs while this process is making
+        its own: the lease it is making is not a dead one, and this process
+        is never proved dead while it lives."""
+        from unittest import mock
+
+        from nanoidp.services import sqlite_runtime_store as module
+
+        owners = tmp_path / "runtime-owners"
+        owners.mkdir(mode=0o700)
+        first, second = module._OwnerLeases(owners), module._OwnerLeases(owners)
+        real_lock = module._try_lock
+        calls = []
+
+        def a_peer_sweeps_in_between(fd):
+            calls.append(fd)
+            if len(calls) == 1:
+                with mock.patch.object(module, "_try_lock", real_lock):
+                    first.owner()
+            return real_lock(fd)
+
+        with mock.patch.object(module, "_try_lock", a_peer_sweeps_in_between):
+            alive = second.owner()
+
+        assert (owners / f"{alive}.lock").exists()
+        with first.prove_dead(alive) as dead:
+            assert dead is False
+
+    @_POSIX
+    def test_a_live_peers_claim_does_not_make_the_files_matter(self, tmp_path):
+        """Nothing is recoverable while its owner lives: a delete answers
+        PromotionInProgress and a reset removes the rest, whatever the files
+        say, broken ones included, and no load asks for the directory lock
+        for it."""
+        from nanoidp import config_writer
+
+        config_dir, store_path, owner, process = _promotion_stopped(tmp_path, when="before")
+        try:
+            store = SqliteRuntimeStore(store_path)
+            config, identities = _peer(config_dir, store, reconciling=False)
+            store.users.create(User(username="z", password="pw"))
+            (config_dir / "users.yaml").write_text("users: [this is not a mapping\n")
+
+            with pytest.raises(PromotionInProgress):
+                identities.delete_runtime_user("x")
+            assert identities.reset_runtime_identities() == (1, 0)
+
+            (config_dir / "users.yaml").unlink()
+            shutil.copy(_REPO_CONFIG / "users.yaml", config_dir / "users.yaml")
+            loading = ConfigManager(str(config_dir), after_load=reconcile_runtime_identities)
+            taken = []
+            real = config_writer._cross_process_lock
+
+            def counting(*args, **kwargs):
+                taken.append(1)
+                return real(*args, **kwargs)
+
+            config_writer._cross_process_lock = counting
+            try:
+                loading.reload_local()
+            finally:
+                config_writer._cross_process_lock = real
+            # The load's own look at the files, and nothing for the claim.
+            assert len(taken) == 1
+            assert store.users.entry("x").hold is not None
+        finally:
+            _kill(process)
+
+
+@_POSIX
+class TestTheProofThatDecides:
+    def test_a_wrong_first_look_does_not_recover_a_live_owners_claim(self, tmp_path, monkeypatch):
+        """The quick look only spares the files; what decides is the proof
+        under the lock, whatever the look said."""
+        config_dir, store_path, owner, process = _promotion_stopped(tmp_path, when="before")
+        try:
+            store = SqliteRuntimeStore(store_path)
+            config, identities = _peer(config_dir, store, reconciling=False)
+            monkeypatch.setattr(store, "owner_may_be_dead", lambda owner: True)
+
+            with pytest.raises(PromotionInProgress):
+                identities.delete_runtime_user("x")
+            assert store.users.entry("x").hold is not None
+            assert _recovered(store) == []
+        finally:
+            _kill(process)
+
+    def test_a_claim_naming_no_owner_id_is_left_without_the_files(self, tmp_path):
+        from nanoidp.services import identities as identities_module
+
+        config_dir = _config_dir(tmp_path)
+        store = SqliteRuntimeStore(tmp_path / "runtime.db")
+        config, identities = _peer(config_dir, store, reconciling=False)
+        store.users.create(User(username="x", password="pw"))
+        store.users.create(User(username="z", password="pw"))
+        identities_module._claim(store.users, "user", "x", {}, "../../not-an-owner")
+        (config_dir / "users.yaml").write_text("users: [this is not a mapping\n")
+
+        assert identities.reset_runtime_identities() == (1, 0)
+        assert store.users.entry("x").hold is not None
+
+
 class TestTheCurrentFilesWithoutAReload:
     def test_an_action_runs_when_the_files_are_the_loaded_ones(self, tmp_path):
         config = ConfigManager(str(_config_dir(tmp_path)))

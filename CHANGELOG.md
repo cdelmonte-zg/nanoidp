@@ -78,7 +78,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `0600`) for as long as it lives, made before any claim names it. A peer
   that can take that lock, or finds the lease gone, has proved the owner
   dead; nothing else is a proof, and a claim whose owner is alive is never
-  recovered, however old. The recovery runs with the files the loaded
+  recovered, however old, and while it lives an operation that meets its
+  claim answers as it always did, without going through the files. A lease
+  is looked at again once its lock is held, so that a peer's removal of the
+  dead ones never takes a lease being made. The recovery runs with the files the loaded
   configuration's, the proof outside any repository decision, then one
   decision on that very claim, so of two peers one decides: declared, the
   object goes; not declared, the claim is released and the object stays

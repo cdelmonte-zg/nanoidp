@@ -102,6 +102,11 @@ class RuntimeStore(Protocol):
         """Whether the owner of a claim is proved dead, and, when it is by a
         lock, held so until the block is done. Never by a timeout."""
 
+    def owner_may_be_dead(self, owner: Optional[str]) -> bool:
+        """Whether the owner of a claim could be proved dead now; nothing is
+        held or removed. False means nothing about the claim is recoverable
+        now, whatever the configuration says."""
+
 
 class MemoryRuntimeStore:
     """The runtime state of this process, in memory: two concurrency domains
@@ -133,6 +138,9 @@ class MemoryRuntimeStore:
     @contextmanager
     def prove_owner_dead(self, owner: Optional[str]) -> Iterator[bool]:
         yield False
+
+    def owner_may_be_dead(self, owner: Optional[str]) -> bool:
+        return False
 
     def repository(
         self, name: str, key_of: Callable[[T], str], codec: Codec[T]

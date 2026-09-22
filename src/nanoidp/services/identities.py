@@ -424,6 +424,10 @@ class IdentityResolver:
         if claim is None:
             return False
         hold_id, owner, promotion = claim
+        if not self.store.owner_may_be_dead(owner):
+            # Nothing to recover while the owner lives, and nothing that
+            # depends on the files: the operation answers as it always did.
+            return False
         outcome = self.config.act_on_current_files(
             lambda: _recover_under_lock(self.store, self.config, repository, kind, name, hold_id, owner)
         )
@@ -645,8 +649,10 @@ def reconcile_runtime_identities(config: ConfigManager) -> None:
             if claim is not None:
                 # Another writer's claim, still writing: recovered if its
                 # owner is proved dead, and only while the files are the ones
-                # just loaded (no load inside this one); left otherwise.
-                _recover_in_a_load(config, store, repository, kind, seen.name, claim)
+                # just loaded (no load inside this one); left otherwise, and
+                # without the directory lock when the owner is plainly alive.
+                if store.owner_may_be_dead(claim[1]):
+                    _recover_in_a_load(config, store, repository, kind, seen.name, claim)
             elif declared(kind, seen.name):
                 _retire(repository, kind, seen.name)
             else:

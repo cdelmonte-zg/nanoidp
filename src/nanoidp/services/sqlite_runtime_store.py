@@ -226,6 +226,16 @@ def _try_lock(fd: int) -> bool:
     return True  # pragma: no cover - Windows
 
 
+def _names(path: Path, fd: int) -> bool:
+    """Whether ``path`` still names the file open as ``fd``."""
+    try:
+        named = os.stat(path)
+    except FileNotFoundError:
+        return False
+    held = os.fstat(fd)
+    return (named.st_dev, named.st_ino) == (held.st_dev, held.st_ino)
+
+
 class _OwnerLeases:
     """This process as an owner of the claims it makes in one store (#354,
     step 4b): a lease file in the store's owners directory, held under an
@@ -246,15 +256,44 @@ class _OwnerLeases:
                 self._directory.mkdir(mode=0o700, exist_ok=True)
                 _Database._make_private_directory(self._directory)
                 self._remove_the_dead()
-                owner = uuid.uuid4().hex
-                fd = os.open(self._directory / f"{owner}.lock", os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
-                if not _try_lock(fd):  # pragma: no cover - a new file nobody else opened
-                    os.close(fd)
-                    raise RuntimeError(f"the owner lease {owner} could not be taken")
-                # The lease exists and is held before the id is handed to any
-                # claim.
-                self._fd, self._owner = fd, owner
+                self._fd, self._owner = self._new_lease()
             return self._owner
+
+    def _new_lease(self) -> Tuple[int, str]:
+        """A lease made and held, and still the one its name names. Between
+        its creation and its lock, a peer's sweep can take it for a dead
+        one and remove it; the lock then held would be on a file nobody can
+        find, and this process would look dead for as long as it lives. So
+        the name is looked at again once the lock is held, and a lease that
+        is not there any more is made anew, under another id (nobody knows
+        this one yet: it is in no claim)."""
+        for _ in range(8):
+            owner = uuid.uuid4().hex
+            path = self._directory / f"{owner}.lock"
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
+            if _try_lock(fd) and _names(path, fd):
+                return fd, owner
+            os.close(fd)
+        raise RuntimeError(f"no owner lease could be made in {self._directory}")
+
+    def may_be_dead(self, owner: Optional[str]) -> bool:
+        """Whether ``owner`` could be proved dead now: its lease gone or its
+        lock free. No lock is kept and nothing removed; for a caller that
+        would otherwise go through the files for a claim nobody can recover
+        (#354, step 4b, review). The proof that decides is prove_dead's."""
+        if owner is None or not isinstance(owner, str) or not _OWNER_ID.fullmatch(owner):
+            return False
+        with self._lock:
+            if owner == self._owner:
+                return False
+        try:
+            fd = os.open(self._directory / f"{owner}.lock", os.O_RDWR)
+        except FileNotFoundError:
+            return True
+        try:
+            return _try_lock(fd)
+        finally:
+            os.close(fd)
 
     def _remove_the_dead(self) -> None:
         """The leases of owners that are gone, and that no claim may still
@@ -1015,6 +1054,10 @@ class SqliteRuntimeStore:
         """This process as the owner of a claim it is about to make: its
         lease, made and held before the id is returned (#354, step 4b)."""
         return self._leases.owner()
+
+    def owner_may_be_dead(self, owner: Optional[str]) -> bool:
+        """Whether the owner of a claim could be proved dead now."""
+        return self._leases.may_be_dead(owner)
 
     @contextmanager
     def prove_owner_dead(self, owner: Optional[str]) -> Iterator[bool]:
