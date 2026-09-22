@@ -121,8 +121,14 @@ __all__ = [
 SCHEMA_VERSION = 1
 _MARKER = "nanoidp-runtime-store"
 
-# How long a process waits for another's transaction, in milliseconds.
+# How long a process waits for another's transaction, in milliseconds. It is
+# also the whole budget for putting a new file in WAL (_activate_wal).
 _BUSY_TIMEOUT_MS = 5000
+
+# The journal this store keeps, and how often it tries again for it while
+# another process has the file. Short: the file is theirs for a moment.
+_WAL = "wal"
+_WAL_ATTEMPT_INTERVAL = 0.02
 
 # The primary result codes of contention (sqlite3.h), spelled out: the module
 # constants are not there before Python 3.11.
@@ -383,6 +389,12 @@ class RuntimeStoreFileRefused(ValueError):
     changed. It is disposable: delete it, or choose another."""
 
 
+def _journal_mode(connection: sqlite3.Connection) -> str:
+    """The journal the file is in, which is the file's and not this
+    connection's: a peer that put it in WAL put it there for everyone."""
+    return str(connection.execute("PRAGMA journal_mode").fetchone()[0]).lower()
+
+
 def _is_busy(failure: sqlite3.Error) -> bool:
     """SQLITE_BUSY or SQLITE_LOCKED, and nothing else: contention, not a
     fault. By code where Python gives it (3.11), by message before."""
@@ -567,7 +579,7 @@ class _Database:
                 connection.execute("ROLLBACK")
                 raise
             # Persistent in the file, and set outside a transaction.
-            connection.execute("PRAGMA journal_mode = WAL")
+            self._activate_wal(connection)
         except sqlite3.DatabaseError as failure:
             raise self._refused(failure) from failure
         finally:
@@ -576,6 +588,39 @@ class _Database:
         # left as it was, its mode included.
         for part in ("", "-wal", "-shm"):
             self._make_private(Path(f"{self.path}{part}"))
+
+    def _activate_wal(self, connection: sqlite3.Connection) -> None:
+        """Put the file in WAL, which needs it to itself for a moment.
+
+        The journal mode is the file's, not this connection's, so a file a
+        peer already put in WAL needs nothing. Otherwise SQLite answers
+        contention here in two ways, and neither is a wait this store can
+        rely on: against a plain reader the busy handler waits, and one
+        attempt can spend the whole timeout; against a connection that has
+        written, and so holds the file reserved, the switch fails at once.
+        Several processes creating one store together are the second shape
+        (#354), which is why the waiting is done here and not left to the
+        handler: attempts until the file is this process's for a moment,
+        within the same budget as any other contention. Held past it, it is
+        the store being held, as anywhere else.
+        """
+        if _journal_mode(connection) == _WAL:
+            return
+        deadline = time.monotonic() + _BUSY_TIMEOUT_MS / 1000
+        while True:
+            try:
+                # The switch answers with the mode it ended in, so a refusal
+                # need not be an exception.
+                if connection.execute(f"PRAGMA journal_mode = {_WAL}").fetchone()[0] == _WAL:
+                    return
+                failure: sqlite3.Error = sqlite3.OperationalError("database is locked")
+            except sqlite3.OperationalError as refused:
+                if not _is_busy(refused):
+                    raise
+                failure = refused
+            if time.monotonic() >= deadline:
+                raise _unavailable(failure) from failure
+            time.sleep(_WAL_ATTEMPT_INTERVAL)
 
     def _check(self, connection: sqlite3.Connection, tables: set) -> None:
         if "meta" not in tables:

@@ -8,6 +8,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **Processes creating one SQLite runtime store together all get it**
+  (#354, found in CI). The store puts a new file in WAL, which needs the file
+  to itself for a moment, and SQLite answers contention there in two ways:
+  against a plain reader the busy handler waits, and a single attempt can
+  spend the whole timeout; against a connection that has written, and so
+  holds the file reserved, the switch fails at once, with no waiting at all.
+  Several processes creating one store together are the second shape, so one
+  of them could fail to start with "the runtime store is held by another
+  process", although the store was there and nothing was wrong with it. The
+  switch is now waited for where the rest of the contention is: a file a peer
+  already put in WAL needs nothing, and otherwise the store tries again until
+  the file is briefly its own, within the same budget as any other wait
+  (`busy_timeout`). Past that budget the answer is what it always was, the
+  store held; a failure that is not contention is still itself, at once.
+
 - **The runtime repository has a contract for operations that must be whole**
   (#404, first of four steps). Until now a repository offered create, get,
   list and delete, and every operation that needed more than one of them
