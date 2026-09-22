@@ -335,7 +335,7 @@ class TestConcurrentLoads:
         active = []
         overlap = []
 
-        def slow_activation(settings):
+        def slow_activation(settings, config_dir=None):
             active.append(1)
             overlap.append(len(active))
             time.sleep(0.05)

@@ -25,7 +25,7 @@ LoginMode = Literal["password", "persona"]
 SamlC14nAlgorithm = Literal["exc_c14n", "c14n", "c14n11"]
 # The kinds of runtime store a configuration can ask for (#354). Only the ones
 # nanoidp has: the schema offers no backend that is not there.
-RuntimeStoreKind = Literal["memory"]
+RuntimeStoreKind = Literal["memory", "sqlite"]
 SAML_C14N_DEFAULT: SamlC14nAlgorithm = "exc_c14n"
 
 
@@ -722,6 +722,13 @@ class Settings(BaseModel):
         default="memory",
         description="Where runtime state is kept (runtime.store). Chosen when the process starts: "
         "a reload that changes it is refused (#354)",
+    )
+    runtime_path: Optional[str] = Field(
+        default=None,
+        description=(
+            "The file of the SQLite runtime store (runtime.path), as declared: relative to the "
+            "configuration directory, or absolute. None with the in-memory store (#354)."
+        ),
     )
 
     @field_validator("saml_roles_attr_name", "saml_groups_attr_name", mode="before")

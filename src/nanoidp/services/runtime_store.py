@@ -34,8 +34,11 @@ provisional memory store for whoever asks (the audit of a plugin's load hook),
 which the first activation adopts when it asks for memory.
 """
 
+import logging
+import sys
 import threading
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Any, Callable, ContextManager, Dict, Iterator, Optional, Protocol, Tuple, cast
 
 from ..config import OAuthClient, Settings, User, get_config_if_loaded
@@ -49,6 +52,8 @@ from .runtime_repository import (
     T,
     refuse_inside_a_decision,
 )
+
+logger = logging.getLogger(__name__)
 
 # The repository itself, its contract and its in-memory backend live in
 # ``runtime_repository`` (#404); they are named here because this is where
@@ -171,11 +176,19 @@ class MemoryRuntimeStore:
 # configurations with equal inputs share one store.
 RuntimeStoreInputs = Tuple[str, ...]
 
-# How each kind is built, from the settings. Internal, not a plugin API: a
-# kind is added with its backend, and a kind is named in the schema
-# (models.RuntimeStoreKind) only once it is here.
-_RUNTIME_STORE_FACTORIES: Dict[str, Callable[[Settings], RuntimeStore]] = {
-    "memory": lambda settings: MemoryRuntimeStore(),
+def _sqlite_store(inputs: RuntimeStoreInputs) -> RuntimeStore:
+    from .sqlite_runtime_store import SqliteRuntimeStore
+
+    return SqliteRuntimeStore(Path(inputs[1]))
+
+
+# How each kind is built, from its inputs (already resolved: a factory never
+# looks at a path of its own). Internal, not a plugin API: a kind is added
+# with its backend, and a kind is named in the schema (models.RuntimeStoreKind)
+# only once it is here.
+_RUNTIME_STORE_FACTORIES: Dict[str, Callable[[RuntimeStoreInputs], RuntimeStore]] = {
+    "memory": lambda inputs: MemoryRuntimeStore(),
+    "sqlite": _sqlite_store,
 }
 
 # The store of this process, and the inputs it was activated with. Kept apart:
@@ -191,12 +204,70 @@ class RuntimeStoreRestartRequired(ValueError):
     """A configuration asked for another runtime store than the one in use."""
 
 
-def runtime_store_inputs(settings: Settings) -> RuntimeStoreInputs:
-    """What the store these settings ask for is built from."""
-    return (settings.runtime_store,)
+def resolved_runtime_path(settings: Settings, config_dir: Optional[Path] = None) -> Optional[Path]:
+    """The file of the SQLite runtime store these settings name, as the
+    process uses it; None for a store that has no file (#354, step 4c).
+
+    The one place it is resolved: the inputs, the check against the
+    configuration directory and what /api/config and MCP report all go
+    through here. A relative ``runtime.path`` is relative to the
+    configuration directory, not to the process's working directory: it is
+    the identity of a store several processes share, and the same
+    settings.yaml in the same directory must name the same store however the
+    processes were started."""
+    if settings.runtime_store != "sqlite" or settings.runtime_path is None:
+        return None
+    path = Path(settings.runtime_path).expanduser()
+    if not path.is_absolute():
+        if config_dir is None:
+            raise ValueError(
+                f"runtime.path {settings.runtime_path!r} is relative to the configuration directory, "
+                "and none was given"
+            )
+        path = Path(config_dir) / path
+    return path.resolve()
 
 
-def prepare_runtime_store(settings: Settings) -> Tuple[RuntimeStore, RuntimeStoreInputs]:
+def runtime_store_inputs(settings: Settings, config_dir: Optional[Path] = None) -> RuntimeStoreInputs:
+    """What the store these settings ask for is built from: the kind, and
+    for SQLite the file, resolved."""
+    path = resolved_runtime_path(settings, config_dir)
+    return (settings.runtime_store,) if path is None else (settings.runtime_store, str(path))
+
+
+def runtime_store_report(settings: Settings, config_dir: Optional[Path] = None) -> Dict[str, str]:
+    """What /api/config and MCP say about the runtime store: its kind, and
+    for SQLite the file this process uses, resolved as the activation
+    resolves it (the declared value is the settings')."""
+    report: Dict[str, str] = {"store": settings.runtime_store}
+    path = resolved_runtime_path(settings, config_dir)
+    if path is not None:
+        report["path"] = str(path)
+    return report
+
+
+def _outside_the_configuration(path: Path, config_dir: Optional[Path]) -> None:
+    """The store's files are a secret of the processes that share it: none
+    of them (the database, its audit, its owners' leases) may lie in the
+    configuration directory, which is read, copied and committed as
+    configuration. Resolved, so that a symlink does not hide it."""
+    from .sqlite_runtime_store import audit_path_of, owners_path_of
+
+    if config_dir is None:
+        raise ValueError("the SQLite runtime store is activated with its configuration directory")
+    configuration = Path(config_dir).resolve()
+    for part in (path, audit_path_of(path), owners_path_of(path)):
+        resolved = part.resolve()
+        if resolved == configuration or configuration in resolved.parents:
+            raise ValueError(
+                f"runtime.path: {resolved} is inside the configuration directory {configuration}; "
+                "the runtime store's files are a secret, and must lie outside it"
+            )
+
+
+def prepare_runtime_store(
+    settings: Settings, config_dir: Optional[Path] = None
+) -> Tuple[RuntimeStore, RuntimeStoreInputs]:
     """The store the candidate settings need, and its inputs, prepared
     and not activated: only ``publish_runtime_store`` makes a store the
     process's configured choice, by recording the inputs it was chosen
@@ -215,7 +286,7 @@ def prepare_runtime_store(settings: Settings) -> Tuple[RuntimeStore, RuntimeStor
     most a provisional store, which is what there was before or what the
     next reader would have made.
     """
-    wanted = runtime_store_inputs(settings)
+    wanted = runtime_store_inputs(settings, config_dir)
     with _runtime_store_lock:
         store, inputs = _runtime_store, _runtime_store_inputs
     if store is not None and inputs is not None:
@@ -237,7 +308,9 @@ def prepare_runtime_store(settings: Settings) -> Tuple[RuntimeStore, RuntimeStor
     factory = _RUNTIME_STORE_FACTORIES.get(wanted[0])
     if factory is None:
         raise ValueError(f"runtime.store: {wanted[0]} is not a runtime store nanoidp has")
-    return factory(settings), wanted
+    if wanted[0] == "sqlite":
+        _outside_the_configuration(Path(wanted[1]), config_dir)
+    return factory(wanted), wanted
 
 
 def publish_runtime_store(store: RuntimeStore, inputs: RuntimeStoreInputs) -> None:
@@ -245,14 +318,35 @@ def publish_runtime_store(store: RuntimeStore, inputs: RuntimeStoreInputs) -> No
     chosen by a configuration."""
     global _runtime_store, _runtime_store_inputs
     with _runtime_store_lock:
+        replaced, replaced_inputs = _runtime_store, _runtime_store_inputs
         _runtime_store, _runtime_store_inputs = store, inputs
+    if replaced is not None and replaced is not store and replaced_inputs is None:
+        _say_what_the_provisional_store_loses(replaced)
 
 
-def activate_runtime_store(settings: Settings) -> Callable[[], None]:
+def _say_what_the_provisional_store_loses(provisional: RuntimeStore) -> None:
+    """Before the first activation the audit is kept in a provisional store
+    in memory; a configuration that asks for another store replaces it, and
+    what was recorded there is not carried over (#354, step 2). Said, once,
+    here where it happens: at the publication, when nothing can fail any
+    more. Never raises."""
+    try:
+        lost = len(provisional.audit.entries(sys.maxsize))
+    except Exception:  # pragma: no cover - a publication must not fail
+        return
+    if lost:
+        logger.warning(
+            "%d audit event(s) recorded before the runtime store was activated are not kept: "
+            "they were in the provisional store in memory, which the configured store replaces",
+            lost,
+        )
+
+
+def activate_runtime_store(settings: Settings, config_dir: Optional[Path] = None) -> Callable[[], None]:
     """The configuration activation step for the runtime store (#354): the
     store is prepared now, and the returned function publishes it once the
     load can no longer fail."""
-    store, inputs = prepare_runtime_store(settings)
+    store, inputs = prepare_runtime_store(settings, config_dir)
     return lambda: publish_runtime_store(store, inputs)
 
 

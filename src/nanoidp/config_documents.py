@@ -278,11 +278,27 @@ class JwtSection(BaseModel):
 
 class RuntimeSection(BaseModel):
     """Where runtime state is kept (#354). Read at activation, and a change
-    needs a restart: never written by the settings form or MCP."""
+    needs a restart: never written by the settings form or MCP.
+
+    ``path`` is the SQLite store's file, relative to the configuration
+    directory (the identity of a store several processes share must not
+    depend on where each was started), or absolute. Required with ``sqlite``
+    and refused with ``memory``: a document carries no setting that does
+    nothing."""
 
     model_config = _FORBID
 
     store: RuntimeStoreKind = "memory"
+    path: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _a_path_for_the_store_that_has_one(self) -> "RuntimeSection":
+        if self.store == "sqlite":
+            if self.path is None or not self.path.strip():
+                raise ValueError("runtime.path is required with runtime.store: sqlite, and may not be empty")
+        elif self.path is not None:
+            raise ValueError(f"runtime.path is for runtime.store: sqlite, not {self.store}")
+        return self
 
 
 class SessionSection(BaseModel):
@@ -510,6 +526,7 @@ class SettingsDocument(BaseModel):
             external_key_id=self.jwt.external_keys.kid if self.jwt.external_keys else None,
             max_previous_keys=self.jwt.max_previous_keys,
             runtime_store=self.runtime.store,
+            runtime_path=self.runtime.path,
             login_mode=self.login.mode,
             auto_login=self.login.auto_login,
             two_step=self.login.two_step,

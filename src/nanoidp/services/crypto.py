@@ -713,7 +713,7 @@ def publish_crypto_service(service: CryptoService) -> None:
         _crypto_service = service
 
 
-def activate_crypto_service(settings: Settings) -> Callable[[], None]:
+def activate_crypto_service(settings: Settings, config_dir: Optional[Path] = None) -> Callable[[], None]:
     """The configuration activation step for the signing service (#359).
 
     Handed to ``init_config(activate=...)`` by the process composition: the

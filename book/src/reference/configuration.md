@@ -722,24 +722,48 @@ for why that one matters here too).
 
 ```yaml
 runtime:
-  store: memory     # the default, and in this version the one value
+  store: memory     # the default
+```
+
+```yaml
+runtime:
+  store: sqlite
+  path: ../state/nanoidp-runtime.db   # relative to this configuration directory
 ```
 
 Where runtime state is kept: runtime users and clients, authorization codes,
 device codes, revocations, the audit, and the rest of what a running IdP
-records that is not declared in these files. `memory` keeps it in the process
-and loses it on restart, as NanoIDP always has.
+records that is not declared in these files.
 
-The store is chosen when the process starts. A reload that asks for another
-store is refused (`422`, kind `activation`, with a message that says to
-restart), because processes that share one would otherwise disagree about
-what exists. `GET /api/config` and the MCP `get_settings` tool report the
-store in use as `runtime.store`. The section is YAML-only: the settings form
-and MCP do not write it.
+- `memory` keeps it in the process and loses it on restart, as NanoIDP always
+  has.
+- `sqlite` keeps it in files that several NanoIDP processes **on one host**
+  share: `path` names the database, and the store is that file, an audit file
+  next to it (`<name>-audit.db`) and a directory of owner leases
+  (`<name>-owners/`).
 
-A store that several NanoIDP processes on one host share is in the works
-([#354](https://github.com/cdelmonte-zg/nanoidp/issues/354)); the schema will
-name it when it is there.
+**`path`.** It is required with `sqlite` and refused with `memory`. A relative
+path is relative to the configuration directory, not to the working directory
+of the process: it is the identity of a store several processes share, and
+the same `settings.yaml` must name the same store however each process was
+started. None of the store's files may lie inside the configuration directory
+(symlinks resolved): they are a secret, and the configuration directory is
+read, copied and committed as configuration. The files are created `0600`
+(the leases directory `0700`); delete all of them to start afresh.
+
+**Choosing and changing it.** The store is chosen when the process starts. A
+reload that asks for another store or another file is refused (`422`, kind
+`activation`, with a message that says to restart), because processes that
+share one would otherwise disagree about what exists. `GET /api/config` and
+the MCP `get_settings` tool report the store in use as `runtime.store`, and
+for `sqlite` the file as `runtime.path`, resolved. The section is YAML-only:
+the settings form and MCP do not write it. Audit events recorded before the
+store is activated (by a plugin's load hook) are kept in memory until then,
+and are not carried into a SQLite store: a warning says how many.
+
+**When it is held.** A store held by another process for longer than it waits
+is `503` with `Retry-After` over HTTP, and `MCP_RUNTIME_STORE_UNAVAILABLE`
+with `retryable: true` in MCP.
 
 ## Logging
 

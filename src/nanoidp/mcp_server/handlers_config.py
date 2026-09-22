@@ -19,6 +19,7 @@ from ..services import (
     get_audit_log,
     get_crypto_service,
 )
+from ..services.runtime_store import runtime_store_report
 from .normalize import _UPDATE_SETTINGS_FIELDS, _UPDATE_SETTINGS_NORMALIZERS
 
 
@@ -33,7 +34,7 @@ def _tool_get_settings(arguments: dict[str, Any], config: ConfigManager) -> dict
         # phase 5), for save_config's expected_settings_revision.
         "settings_revision": config.settings_revision,
         # Same as GET /api/config (#354): where runtime state is kept.
-        "runtime": {"store": settings.runtime_store},
+        "runtime": runtime_store_report(settings, config.config_dir),
         "issuer": settings.issuer,
         "issuer_from_request": settings.issuer_from_request,
         "issuer_allowlist": settings.issuer_allowlist,
