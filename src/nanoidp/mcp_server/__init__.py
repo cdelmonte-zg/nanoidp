@@ -326,7 +326,10 @@ async def call_tool(ctx: ServerRequestContext, params: CallToolRequestParams) ->
                 name,
                 "MCP_CONFIGURATION_UNAVAILABLE",
                 f"The configuration could not be observed: {exc.message}",
-                retryable=exc.kind == "lock_timeout",
+                # A lock held past the timeout, or another call establishing
+                # the configuration right now: both pass. A filesystem with
+                # no advisory locking does not.
+                retryable=exc.kind in ("lock_timeout", "freshness_in_progress"),
             )
         # Copied because _check_admin_secret pops admin_secret off it, and params
         # is a validated protocol model. `arguments` is None when the call

@@ -11,6 +11,8 @@ changes: the store is this process's alone.
 import multiprocessing
 import os
 import shutil
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -592,6 +594,118 @@ class TestTheFourthReview:
         assert snapshot.fingerprint != store.fingerprint_of("users.yaml")
 
 
+class TestTheFifthReview:
+    """#354, step 4a, fifth review."""
+
+    def test_a_creation_that_cannot_read_the_files_may_come_back(self, shared, monkeypatch):
+        from nanoidp.config import DeclaredConfigurationUnloadable
+
+        config_dir, config, store = shared
+
+        def unreadable(names):
+            raise PermissionError(13, "Permission denied")
+
+        monkeypatch.setattr(config._store, "read_snapshot_within_lock", unreadable)
+        with pytest.raises(DeclaredConfigurationUnloadable) as refused:
+            IdentityResolver(config, store).create_runtime_user(User(username="x", password="pw"))
+
+        assert refused.value.temporary is True
+        assert isinstance(refused.value.__cause__, PermissionError)
+        assert store.users.get("x") is None
+
+    def test_the_endpoint_says_come_back_to_files_it_cannot_read(self, tmp_path, monkeypatch):
+        from nanoidp.app import create_app
+        from nanoidp.config import get_config
+
+        config_dir = _config_dir(tmp_path)
+        runtime_store.publish_runtime_store(SqliteRuntimeStore(tmp_path / "runtime.db"), ("memory",))
+        application = create_app(str(config_dir))
+        application.config["TESTING"] = True
+        client = application.test_client()
+
+        def unreadable(names):
+            raise PermissionError(13, "Permission denied")
+
+        monkeypatch.setattr(get_config()._store, "read_snapshot_within_lock", unreadable)
+        response = client.post("/api/runtime/users", json={"username": "x", "password": "pw"})
+
+        assert response.status_code == 503
+        assert response.get_json()["error"] == "configuration_unavailable"
+        assert response.headers["Retry-After"]
+
+    def test_an_empty_file_where_there_was_none_is_a_change(self, tmp_path):
+        """No users.yaml loads the default user; an empty one loads none.
+        The same revision, the hash of no bytes, and not the same files."""
+        config_dir = _config_dir(tmp_path)
+        (config_dir / "users.yaml").unlink()
+        runtime_store.publish_runtime_store(SqliteRuntimeStore(tmp_path / "runtime.db"), ("memory",))
+        config = ConfigManager(str(config_dir))
+        assert config.get_user("admin") is not None
+
+        (config_dir / "users.yaml").write_text("")
+
+        assert config.refresh_if_changed() is True
+        assert config.get_user("admin") is None
+
+    def test_a_creation_sees_an_empty_file_where_there_was_none(self, tmp_path):
+        config_dir = _config_dir(tmp_path)
+        (config_dir / "users.yaml").unlink()
+        store = SqliteRuntimeStore(tmp_path / "runtime.db")
+        runtime_store.publish_runtime_store(store, ("memory",))
+        config = ConfigManager(str(config_dir))
+        (config_dir / "users.yaml").write_text("")
+
+        IdentityResolver(config, store).create_runtime_user(User(username="admin", password="pw"))
+
+        assert store.users.get("admin") is not None
+
+    def test_one_check_at_a_time_and_the_others_do_not_wait(self, shared, monkeypatch):
+        """While one request waits for the directory lock to look at files
+        that changed, the others are told at once that the configuration
+        cannot be established now, instead of queueing behind it."""
+        config_dir, config, store = shared
+        _declare_user(config_dir, "carol")
+        entered, release = threading.Event(), threading.Event()
+        real = config._store.read_snapshot
+        looks = []
+
+        def slow_look(names):
+            looks.append(1)
+            entered.set()
+            release.wait(10)
+            return real(names)
+
+        monkeypatch.setattr(config._store, "read_snapshot", slow_look)
+        first = threading.Thread(target=config.refresh_if_changed, daemon=True)
+        first.start()
+        assert entered.wait(10)
+        outcomes, started = [], time.monotonic()
+
+        def follower():
+            try:
+                config.refresh_if_changed()
+                outcomes.append("proceeded")
+            except LockUnavailableError as refused:
+                outcomes.append(refused.kind)
+
+        followers = [threading.Thread(target=follower, daemon=True) for _ in range(5)]
+        for thread in followers:
+            thread.start()
+        for thread in followers:
+            thread.join(5)
+        elapsed = time.monotonic() - started
+        # Only the first looked while the others came and went (its reload
+        # looks again after, to load).
+        looks_meanwhile = list(looks)
+        release.set()
+        first.join(10)
+
+        assert outcomes == ["freshness_in_progress"] * 5
+        assert elapsed < 3
+        assert looks_meanwhile == [1]
+        assert config.get_user("carol") is not None
+
+
 class TestAFailureAfterAPeersWrite:
     def test_a_failure_after_a_load_of_newer_files_is_still_not_the_files(self, tmp_path, monkeypatch, caplog):
         """A peer writes again between the check's look and its reload: the
@@ -787,6 +901,23 @@ class TestWhereTheCheckRuns:
         result = _payload(await mcp_call_tool("create_user", {"username": "eve", "password": "pw"}))
 
         assert result["code"] == "MCP_ADMIN_SECRET_REQUIRED"
+
+    @pytest.mark.parametrize("kind, retryable", [("freshness_in_progress", True), ("lock_unsupported", False)])
+    async def test_an_mcp_tool_says_whether_coming_back_helps(self, tmp_path, monkeypatch, mcp_call_tool, kind, retryable):
+        from nanoidp.config import init_config
+
+        config_dir = _config_dir(tmp_path)
+        runtime_store.publish_runtime_store(SqliteRuntimeStore(tmp_path / "runtime.db"), ("memory",))
+        config = init_config(str(config_dir))
+
+        def unavailable():
+            raise LockUnavailableError("not now", kind=kind)
+
+        monkeypatch.setattr(config, "refresh_if_changed", unavailable)
+        result = _payload(await mcp_call_tool("list_users", {}))
+
+        assert result["code"] == "MCP_CONFIGURATION_UNAVAILABLE"
+        assert result["retryable"] is retryable
 
     async def test_an_mcp_tool_that_cannot_observe_the_files_may_retry(self, tmp_path, monkeypatch, mcp_call_tool):
         from nanoidp.config import init_config

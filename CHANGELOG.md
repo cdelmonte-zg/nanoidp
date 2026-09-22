@@ -77,8 +77,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   any blueprint's guard) and every MCP tool call (before the read-only and
   admin checks) looks at the files first: a stat of the two files is the
   fast negative, taken from the very files the loaded bytes came from, and
-  the revision of their bytes is the answer. Files that changed are
-  reloaded. Files that changed and do not load leave the loaded
+  the revision of their bytes is the answer, with whether the file is there
+  at all (a missing `users.yaml` and an empty one have the same revision and
+  do not load the same). Files that changed are reloaded. One check at a
+  time does that: while one waits for the directory lock, the others are
+  answered at once, `503` `configuration_unavailable` of kind
+  `freshness_in_progress` (retryable in MCP), instead of queueing behind
+  it. Files that changed and do not load leave the loaded
   configuration in force and are said once in the log: when the bytes alone
   refuse the load (they do not parse or validate) they are not tried again
   until they change; when it failed on something outside them (an I/O
@@ -95,7 +100,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `/api/runtime` and dynamic registration alike: `503`
   `configuration_unloadable` when the bytes do not parse or validate, `503`
   `configuration_unavailable` with `Retry-After` when what failed is outside
-  them. A directory lock held by a peer is `503` over HTTP, as
+  them, or when the files could not be read at all. A directory lock held by a peer is `503` over HTTP, as
   before, and `MCP_CONFIGURATION_UNAVAILABLE` with `retryable` in MCP. With
   the in-memory store nothing changes. An editor that does not take the
   lock is noticed at the next operation, and nothing linearizable is

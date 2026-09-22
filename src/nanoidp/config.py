@@ -139,10 +139,23 @@ _TRANSIENT_RETRY_SECONDS = 5.0
 _now = time.monotonic
 
 
+# What a pair of files is, for freshness (#354, step 4a, fifth review): for
+# each, whether it is there and the revision of its bytes. A missing file and
+# an empty one have the same revision and do not load the same, so the
+# revision alone is not the file's identity here; it stays the public
+# revision of the write preconditions (#229).
+_Identity = Tuple[Tuple[bool, str], Tuple[bool, str]]
+
+
+def _identity_of(observed: Dict[str, FileSnapshot]) -> _Identity:
+    settings, users = observed["settings.yaml"], observed["users.yaml"]
+    return ((settings.exists, settings.revision), (users.exists, users.revision))
+
+
 @dataclass(frozen=True)
 class _Pending:
     # None when the files could not be read at all.
-    revisions: Optional[Tuple[str, str]]
+    revisions: Optional[_Identity]
     fingerprints: Optional[Tuple[Optional[Fingerprint], ...]]
     retry_after: float
 
@@ -218,7 +231,7 @@ class ConfigManager:
         # from, and of a pair of files a check could not load (#354, step
         # 4a): what refresh_if_changed compares a stat with.
         self._loaded_fingerprints: Tuple[Optional[Fingerprint], ...] = (None, None)
-        self._refused: Optional[Tuple[Tuple[str, str], Tuple[Optional[Fingerprint], ...]]] = None
+        self._refused: Optional[Tuple[_Identity, Tuple[Optional[Fingerprint], ...]]] = None
         # How many loads were committed: whether a reload that raised had
         # committed first, whichever files it loaded.
         self._commits = 0
@@ -227,7 +240,14 @@ class ConfigManager:
         self._pending: Optional[_Pending] = None
         # What the last load read, set as soon as it has read: what a load
         # that then failed is to be remembered by.
-        self._last_observed: Optional[Tuple[Tuple[str, str], Tuple[Optional[Fingerprint], ...]]] = None
+        self._last_observed: Optional[Tuple[_Identity, Tuple[Optional[Fingerprint], ...]]] = None
+        # The identity of the files the loaded configuration came from.
+        self._loaded_identity: Optional[_Identity] = None
+        # One automatic freshness check at a time (#354, step 4a, fifth
+        # review): the others are told at once that the configuration cannot
+        # be established now, instead of queueing behind one that waits for
+        # the directory lock.
+        self._freshness_lock = threading.Lock()
         # A transient CLI/programmatic `--profile` (#172). Kept here, not on
         # Settings, because it must survive every reload() - which rebuilds
         # Settings from YAML - and must never be written back to the file.
@@ -457,7 +477,8 @@ class ConfigManager:
         settings_observed = observed["settings.yaml"]
         users_observed = observed["users.yaml"]
         staged["fingerprints"] = (settings_observed.fingerprint, users_observed.fingerprint)
-        self._last_observed = ((settings_observed.revision, users_observed.revision), staged["fingerprints"])
+        staged["identity"] = _identity_of(observed)
+        self._last_observed = (staged["identity"], staged["fingerprints"])
         settings_file = self.config_dir / "settings.yaml"
         if not settings_observed.exists:
             logger.warning(f"Settings file not found: {settings_file}, using defaults")
@@ -563,6 +584,7 @@ class ConfigManager:
         self.settings_revision = staged["settings_revision"]
         self.observed_at: float = staged["observed_at"]
         self._loaded_fingerprints = staged["fingerprints"]
+        self._loaded_identity = staged["identity"]
         self._commits += 1
 
     def _configure_hooks_from(self, hooks: HooksSection, plugins: Dict[str, Dict[str, Any]]) -> None:
@@ -718,14 +740,26 @@ class ConfigManager:
                 return False
             if self._refused is not None and current == self._refused[1]:
                 return False
+        if not self._freshness_lock.acquire(blocking=False):
+            raise LockUnavailableError(
+                f"the configuration in {self.config_dir} is being looked at by another request; try again",
+                kind="freshness_in_progress",
+            )
+        try:
+            return self._refresh_now(pending)
+        finally:
+            self._freshness_lock.release()
+
+    def _refresh_now(self, pending: Optional[_Pending]) -> bool:
+        """The slow path of refresh_if_changed, one caller at a time."""
         with self._load_lock:
             try:
                 observed = self._store.read_snapshot(_FILES)
             except OSError as failure:
                 return self._unreadable(failure)
-            revisions = (observed["settings.yaml"].revision, observed["users.yaml"].revision)
+            revisions = _identity_of(observed)
             fingerprints = tuple(observed[name].fingerprint for name in _FILES)
-            if revisions == (self.settings_revision, self.users_revision):
+            if revisions == self._loaded_identity:
                 # The bytes this configuration was loaded from: their
                 # fingerprint is theirs too, and the next check is the fast one.
                 self._loaded_fingerprints = fingerprints
@@ -808,11 +842,17 @@ class ConfigManager:
         with self._load_lock:
             while True:
                 with self._store.locked():
-                    observed = self._store.read_snapshot_within_lock(_FILES)
-                    if (observed["settings.yaml"].revision, observed["users.yaml"].revision) == (
-                        self.settings_revision,
-                        self.users_revision,
-                    ):
+                    try:
+                        observed = self._store.read_snapshot_within_lock(_FILES)
+                    except OSError as unreadable:
+                        # Not observed at all: nothing to check against, and
+                        # coming back may help.
+                        raise DeclaredConfigurationUnloadable(
+                            f"the configuration files in {self.config_dir} could not be read, so this cannot be "
+                            f"checked against them: {unreadable}",
+                            temporary=True,
+                        ) from unreadable
+                    if _identity_of(observed) == self._loaded_identity:
                         return act()
                 try:
                     self.reload_local()
