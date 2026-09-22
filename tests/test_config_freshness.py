@@ -38,7 +38,18 @@ def _config_dir(tmp_path):
     document = yaml.safe_load(settings.read_text())
     document["jwt"]["keys_dir"] = str(tmp_path / "keys")
     settings.write_text(yaml.safe_dump(document))
+    _age(config_dir)
     return config_dir
+
+
+def _age(config_dir, seconds=60):
+    """The files as an operator's are: written a while before they are read,
+    so that their stat is trusted (see the racily clean tests)."""
+    for name in ("settings.yaml", "users.yaml"):
+        path = config_dir / name
+        if path.exists():
+            then = time.time() - seconds
+            os.utime(path, (then, then))
 
 
 def _declare_user(config_dir, username):
@@ -135,6 +146,7 @@ class TestTheCheck:
         replacement = users.with_name("users.yaml.next")
         replacement.write_bytes(users.read_bytes())
         os.replace(replacement, users)
+        _age(config_dir)
         loads = []
         monkeypatch.setattr(config, "_load_config", lambda *a, **k: loads.append(1))
 
@@ -177,6 +189,7 @@ class TestTheCheck:
     def test_after_a_refusal_the_check_is_the_fast_one_again(self, shared, monkeypatch):
         config_dir, config, store = shared
         (config_dir / "users.yaml").write_text("users: [this is not a mapping\n")
+        _age(config_dir)
         assert config.refresh_if_changed() is False
         reads = []
         real = config._store.read_snapshot
@@ -340,6 +353,21 @@ class TestWhatIsRememberedAndWhatIsTriedAgain:
 
         assert config.get_user("carol") is not None
         assert sum("could not be loaded" in record.getMessage() for record in caplog.records) == 1
+
+    def test_while_waiting_a_check_reads_nothing(self, shared, monkeypatch, clock):
+        """The wait is kept by the stat, as the fast negative is: a failure
+        pending is not a reason to read the files at every request."""
+        config_dir, config, store = shared
+        _declare_user(config_dir, "carol")
+        _failing_activation(config, 1)
+        assert config.refresh_if_changed() is False
+        reads = []
+        real = config._store.read_snapshot
+        monkeypatch.setattr(config._store, "read_snapshot", lambda names: reads.append(names) or real(names))
+        clock.now += 1
+
+        assert config.refresh_if_changed() is False
+        assert reads == []
 
     def test_the_same_bytes_rewritten_while_waiting_wait_on(self, shared, monkeypatch, clock):
         config_dir, config, store = shared
@@ -555,6 +583,7 @@ class TestTheFourthReview:
         replacement = config_dir / "users.yaml.next"
         replacement.write_bytes(refused_bytes)
         os.replace(replacement, users)
+        _age(config_dir)
         assert config.refresh_if_changed() is False
         reads = []
         real = config._store.read_snapshot
@@ -704,6 +733,190 @@ class TestTheFifthReview:
         assert elapsed < 3
         assert looks_meanwhile == [1]
         assert config.get_user("carol") is not None
+
+
+class TestTheSixthReview:
+    """#354, step 4a, sixth review: the check's cost to the requests around
+    it, and what its fast negative may conclude."""
+
+    def test_the_others_wait_a_moment_for_a_check_that_is_quick(self, shared, monkeypatch):
+        """An ordinary reload after a peer's save: the others wait for it,
+        briefly, find the files loaded, and go on; none reloads again."""
+        config_dir, config, store = shared
+        _declare_user(config_dir, "carol")
+        # An operator's file, whose stat is trusted once it is loaded: the
+        # others then answer from the stat alone and look at nothing.
+        _age(config_dir)
+        entered, release = threading.Event(), threading.Event()
+        real = config._store.read_snapshot
+        looks = []
+
+        def slow_look(names):
+            looks.append(1)
+            if len(looks) == 1:
+                entered.set()
+                release.wait(10)
+            return real(names)
+
+        monkeypatch.setattr(config._store, "read_snapshot", slow_look)
+        first = threading.Thread(target=config.refresh_if_changed, daemon=True)
+        first.start()
+        assert entered.wait(10)
+        outcomes = []
+
+        def follower():
+            try:
+                outcomes.append(config.refresh_if_changed())
+            except LockUnavailableError as refused:
+                outcomes.append(refused.kind)
+
+        loads = _counting_loads(monkeypatch, config)
+        followers = [threading.Thread(target=follower, daemon=True) for _ in range(5)]
+        for thread in followers:
+            thread.start()
+        time.sleep(0.1)
+        release.set()
+        for thread in followers:
+            thread.join(5)
+        first.join(10)
+
+        assert outcomes == [False] * 5
+        # The first looked and reloaded; the others found the files loaded
+        # and did neither.
+        assert loads == [1]
+        assert looks == [1, 1]
+        assert config.get_user("carol") is not None
+
+    def test_a_request_that_cannot_wait_is_told_to_come_back_in_a_second(self, tmp_path, monkeypatch):
+        from nanoidp.app import create_app
+
+        config_dir = _config_dir(tmp_path)
+        runtime_store.publish_runtime_store(SqliteRuntimeStore(tmp_path / "runtime.db"), ("memory",))
+        application = create_app(str(config_dir))
+        application.config["TESTING"] = True
+        client = application.test_client()
+        from nanoidp.config import get_config
+
+        def busy():
+            raise LockUnavailableError("another request is looking", kind="freshness_in_progress")
+
+        monkeypatch.setattr(get_config(), "refresh_if_changed", busy)
+        token = client.post("/token", data={"grant_type": "client_credentials"})
+        page = client.get("/", headers={"Accept": "text/html"})
+
+        assert token.status_code == 503
+        assert token.get_json() == {"error": "configuration_unavailable", "kind": "freshness_in_progress"}
+        assert token.headers["Retry-After"] == "1"
+        assert page.status_code == 503
+        assert page.headers["Retry-After"] == "1"
+        assert "text/html" in page.headers["Content-Type"]
+
+    def test_a_lock_that_will_never_be_had_has_no_retry_after(self, tmp_path, monkeypatch):
+        from nanoidp.app import create_app
+        from nanoidp.config import get_config
+
+        config_dir = _config_dir(tmp_path)
+        runtime_store.publish_runtime_store(SqliteRuntimeStore(tmp_path / "runtime.db"), ("memory",))
+        application = create_app(str(config_dir))
+        application.config["TESTING"] = True
+
+        def unsupported():
+            raise LockUnavailableError("no advisory locking here", kind="lock_unsupported")
+
+        monkeypatch.setattr(get_config(), "refresh_if_changed", unsupported)
+        response = application.test_client().post("/token", data={"grant_type": "client_credentials"})
+
+        assert response.status_code == 503
+        assert "Retry-After" not in response.headers
+
+    @pytest.mark.parametrize("path", ["/health", "/api/health", "/static/does-not-matter.css"])
+    def test_health_and_static_do_not_look_at_the_files(self, tmp_path, monkeypatch, path):
+        """They say the process is alive, not that it can establish its
+        configuration right now: a probe must not restart a healthy pod
+        because a peer holds the directory lock."""
+        from nanoidp.app import create_app
+        from nanoidp.config import get_config
+
+        config_dir = _config_dir(tmp_path)
+        runtime_store.publish_runtime_store(SqliteRuntimeStore(tmp_path / "runtime.db"), ("memory",))
+        application = create_app(str(config_dir))
+        application.config["TESTING"] = True
+        looked = []
+
+        def looking():
+            looked.append(path)
+            raise LockUnavailableError("held by a peer", kind="lock_timeout")
+
+        monkeypatch.setattr(get_config(), "refresh_if_changed", looking)
+        response = application.test_client().get(path)
+
+        assert looked == []
+        assert response.status_code in (200, 404)
+
+    def test_a_stat_as_recent_as_the_read_is_not_trusted(self, shared, monkeypatch):
+        """Racily clean, as git calls it: a write in place of the same size
+        within the timestamp's tick leaves the stat as it was. A fingerprint
+        whose times are not older than the read, by a margin, does not
+        conclude; the bytes are hashed."""
+        config_dir, config, store = shared
+        # Files written just before they are read: the load happens now.
+        for name in ("settings.yaml", "users.yaml"):
+            os.utime(config_dir / name)
+        config.reload_local()
+        loaded = config._loaded_fingerprints
+        assert config._loaded_racy
+        _declare_user(config_dir, "carol")
+        monkeypatch.setattr(config._store, "fingerprint_of", lambda name: loaded[["settings.yaml", "users.yaml"].index(name)])
+
+        assert config.refresh_if_changed() is True
+        assert config.get_user("carol") is not None
+
+    def test_a_refused_file_as_recent_as_the_read_is_not_trusted_either(self, shared, monkeypatch):
+        config_dir, config, store = shared
+        (config_dir / "users.yaml").write_text("users: [this is not a mapping\n")
+        assert config.refresh_if_changed() is False
+        assert config._refused[2]
+        refused = config._refused[1]
+        shutil.copy(_REPO_CONFIG / "users.yaml", config_dir / "users.yaml")
+        _declare_user(config_dir, "carol")
+        monkeypatch.setattr(config._store, "fingerprint_of", lambda name: refused[["settings.yaml", "users.yaml"].index(name)])
+
+        assert config.refresh_if_changed() is True
+        assert config.get_user("carol") is not None
+
+    def test_a_stat_well_older_than_the_read_is_trusted(self, shared, monkeypatch):
+        from nanoidp import config as config_module
+
+        config_dir, config, store = shared
+        real_wall = config_module._wall_ns
+        monkeypatch.setattr(config_module, "_wall_ns", lambda: real_wall() + 10 * 10**9)
+        config.reload_local()
+        assert not config._loaded_racy
+        reads = []
+        real = config._store.read_snapshot
+        monkeypatch.setattr(config._store, "read_snapshot", lambda names: reads.append(names) or real(names))
+
+        assert config.refresh_if_changed() is False
+        assert reads == []
+
+    def test_a_racy_stat_becomes_trusted_once_the_same_bytes_are_seen_later(self, shared, monkeypatch):
+        from nanoidp import config as config_module
+
+        config_dir, config, store = shared
+        for name in ("settings.yaml", "users.yaml"):
+            os.utime(config_dir / name)
+        config.reload_local()
+        assert config._loaded_racy
+        real_wall = config_module._wall_ns
+        monkeypatch.setattr(config_module, "_wall_ns", lambda: real_wall() + 10 * 10**9)
+
+        assert config.refresh_if_changed() is False  # hashed: the same bytes
+        assert not config._loaded_racy
+        reads = []
+        real = config._store.read_snapshot
+        monkeypatch.setattr(config._store, "read_snapshot", lambda names: reads.append(names) or real(names))
+        assert config.refresh_if_changed() is False
+        assert reads == []
 
 
 class TestAFailureAfterAPeersWrite:

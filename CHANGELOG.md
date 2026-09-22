@@ -74,16 +74,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   saw another's write only at its own reload, so a process could create a
   runtime user under a name another had just declared (measured). Now, when
   the runtime store is shared with other processes, every request (before
-  any blueprint's guard) and every MCP tool call (before the read-only and
+  any blueprint's guard; `/health`, `/api/health` and static files excepted,
+  since they read no configuration and a probe must not fail because a peer
+  holds a lock) and every MCP tool call (before the read-only and
   admin checks) looks at the files first: a stat of the two files is the
-  fast negative, taken from the very files the loaded bytes came from, and
-  the revision of their bytes is the answer, with whether the file is there
+  fast negative, taken from the very files the loaded bytes came from and
+  not trusted while their modification time is within 2 s of the read (a
+  write in place within the timestamp's tick leaves the stat unchanged:
+  what git calls racily clean), and the revision of their bytes is the
+  answer, with whether the file is there
   at all (a missing `users.yaml` and an empty one have the same revision and
   do not load the same). Files that changed are reloaded. One check at a
-  time does that: while one waits for the directory lock, the others are
-  answered at once, `503` `configuration_unavailable` of kind
+  time does that: the others wait for it up to 0.5 s and then answer from
+  what it established, reloading nothing again; while it waits for a peer's
+  lock they are answered `503` `configuration_unavailable` of kind
   `freshness_in_progress` (retryable in MCP), instead of queueing behind
-  it. Files that changed and do not load leave the loaded
+  it. A `503` for the configuration is JSON everywhere but the UI's pages,
+  and carries `Retry-After: 1` when trying again can help. Files that changed and do not load leave the loaded
   configuration in force and are said once in the log: when the bytes alone
   refuse the load (they do not parse or validate) they are not tried again
   until they change; when it failed on something outside them (an I/O

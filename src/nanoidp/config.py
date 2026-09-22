@@ -138,6 +138,25 @@ _TRANSIENT_RETRY_SECONDS = 5.0
 # The clock of those waits, a seam of the tests.
 _now = time.monotonic
 
+# How long the other requests wait for the one check in flight before they
+# are told to come back (#354, step 4a, sixth review).
+_FOLLOWER_WAIT_SECONDS = 0.5
+
+# How much older than the read a file's times must be for its stat to be
+# trusted: a write in place within the timestamp's tick (1 to 4 ms on ext4,
+# coarser on some filesystems, 2 s on FAT) leaves the stat unchanged. What
+# git calls racily clean. The wall clock, since the file's times are.
+_RACY_MARGIN_NS = 2 * 10**9
+_wall_ns = time.time_ns
+
+
+def _racy(fingerprints: Tuple[Optional[Fingerprint], ...], read_at_ns: int) -> bool:
+    """By the modification time, as git: it is what a write of the content
+    sets. The change time stays in the fingerprint, for what it detects."""
+    return any(
+        fingerprint is not None and fingerprint[2] >= read_at_ns - _RACY_MARGIN_NS for fingerprint in fingerprints
+    )
+
 
 # What a pair of files is, for freshness (#354, step 4a, fifth review): for
 # each, whether it is there and the revision of its bytes. A missing file and
@@ -231,7 +250,10 @@ class ConfigManager:
         # from, and of a pair of files a check could not load (#354, step
         # 4a): what refresh_if_changed compares a stat with.
         self._loaded_fingerprints: Tuple[Optional[Fingerprint], ...] = (None, None)
-        self._refused: Optional[Tuple[_Identity, Tuple[Optional[Fingerprint], ...]]] = None
+        # The identity, fingerprints and racy flag of the files refused.
+        self._refused: Optional[Tuple[_Identity, Tuple[Optional[Fingerprint], ...], bool]] = None
+        # Whether the loaded fingerprints are too recent to be trusted.
+        self._loaded_racy = True
         # How many loads were committed: whether a reload that raised had
         # committed first, whichever files it loaded.
         self._commits = 0
@@ -240,7 +262,7 @@ class ConfigManager:
         self._pending: Optional[_Pending] = None
         # What the last load read, set as soon as it has read: what a load
         # that then failed is to be remembered by.
-        self._last_observed: Optional[Tuple[_Identity, Tuple[Optional[Fingerprint], ...]]] = None
+        self._last_observed: Optional[Tuple[_Identity, Tuple[Optional[Fingerprint], ...], int]] = None
         # The identity of the files the loaded configuration came from.
         self._loaded_identity: Optional[_Identity] = None
         # One automatic freshness check at a time (#354, step 4a, fifth
@@ -473,12 +495,13 @@ class ConfigManager:
         # was read: whatever happened to the directory after this moment,
         # this configuration cannot speak about (#405).
         staged["observed_at"] = time.time()
+        staged["read_at_ns"] = _wall_ns()
         observed = self._store.read_snapshot(_FILES)
         settings_observed = observed["settings.yaml"]
         users_observed = observed["users.yaml"]
         staged["fingerprints"] = (settings_observed.fingerprint, users_observed.fingerprint)
         staged["identity"] = _identity_of(observed)
-        self._last_observed = (staged["identity"], staged["fingerprints"])
+        self._last_observed = (staged["identity"], staged["fingerprints"], staged["read_at_ns"])
         settings_file = self.config_dir / "settings.yaml"
         if not settings_observed.exists:
             logger.warning(f"Settings file not found: {settings_file}, using defaults")
@@ -585,6 +608,7 @@ class ConfigManager:
         self.observed_at: float = staged["observed_at"]
         self._loaded_fingerprints = staged["fingerprints"]
         self._loaded_identity = staged["identity"]
+        self._loaded_racy = _racy(staged["fingerprints"], staged["read_at_ns"])
         self._commits += 1
 
     def _configure_hooks_from(self, hooks: HooksSection, plugins: Dict[str, Dict[str, Any]]) -> None:
@@ -722,6 +746,28 @@ class ConfigManager:
         be observed at all. And a failure after the load was committed (the
         after_load step) is raised as it is.
         """
+        quick = self._quick_answer()
+        if quick is not None:
+            return quick
+        # One check at a time. The others wait for it a moment (an ordinary
+        # reload is quick) and then answer from what it established; one
+        # that waits for a peer's lock does not hold them past the moment.
+        if not self._freshness_lock.acquire(timeout=_FOLLOWER_WAIT_SECONDS):
+            raise LockUnavailableError(
+                f"the configuration in {self.config_dir} is being looked at by another request; try again",
+                kind="freshness_in_progress",
+            )
+        try:
+            quick = self._quick_answer()
+            if quick is not None:
+                return quick
+            return self._refresh_now(self._pending)
+        finally:
+            self._freshness_lock.release()
+
+    def _quick_answer(self) -> Optional[bool]:
+        """What the stat alone can say: False, nothing to do; None, the
+        files have to be looked at."""
         pending = self._pending
         if pending is not None and pending.revisions is None and _now() < pending.retry_after:
             # The files could not be read a moment ago: not at request rate.
@@ -735,24 +781,19 @@ class ConfigManager:
             # waiting to be tried again, or the wait would never end.
             if current == pending.fingerprints and _now() < pending.retry_after:
                 return False
-        else:
-            if current == self._loaded_fingerprints:
-                return False
-            if self._refused is not None and current == self._refused[1]:
-                return False
-        if not self._freshness_lock.acquire(blocking=False):
-            raise LockUnavailableError(
-                f"the configuration in {self.config_dir} is being looked at by another request; try again",
-                kind="freshness_in_progress",
-            )
-        try:
-            return self._refresh_now(pending)
-        finally:
-            self._freshness_lock.release()
+            return None
+        # A stat as recent as the read is not trusted (racily clean): a write
+        # in place within the timestamp's tick leaves it as it was.
+        if current == self._loaded_fingerprints and not self._loaded_racy:
+            return False
+        if self._refused is not None and current == self._refused[1] and not self._refused[2]:
+            return False
+        return None
 
     def _refresh_now(self, pending: Optional[_Pending]) -> bool:
         """The slow path of refresh_if_changed, one caller at a time."""
         with self._load_lock:
+            read_at = _wall_ns()
             try:
                 observed = self._store.read_snapshot(_FILES)
             except OSError as failure:
@@ -761,12 +802,14 @@ class ConfigManager:
             fingerprints = tuple(observed[name].fingerprint for name in _FILES)
             if revisions == self._loaded_identity:
                 # The bytes this configuration was loaded from: their
-                # fingerprint is theirs too, and the next check is the fast one.
+                # fingerprint is theirs too, trusted once it is older than
+                # this read by the margin.
                 self._loaded_fingerprints = fingerprints
+                self._loaded_racy = _racy(fingerprints, read_at)
                 self._pending = None
                 return False
             if self._refused is not None and revisions == self._refused[0]:
-                self._refused = (revisions, fingerprints)
+                self._refused = (revisions, fingerprints, _racy(fingerprints, read_at))
                 self._pending = None
                 return False
             pending = self._pending
@@ -789,10 +832,10 @@ class ConfigManager:
                 # What is refused is what the load read, which a peer may
                 # have changed since the look above.
                 if self._last_observed is not None:
-                    revisions, fingerprints = self._last_observed
+                    revisions, fingerprints, read_at = self._last_observed
                 said = pending is not None and pending.revisions == revisions
                 if _decided_by_the_bytes(failure):
-                    self._refused = (revisions, fingerprints)
+                    self._refused = (revisions, fingerprints, _racy(fingerprints, read_at))
                     self._pending = None
                     until = "until they change again"
                 else:
