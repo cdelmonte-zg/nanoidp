@@ -132,3 +132,10 @@ secret, any host that can reach the IdP can already mint tokens for existing
 users through `/api`, so a runtime identity adds no new capability; keep the
 IdP on loopback or behind the secret when it is reachable from a network
 (see [Network Binding](SECURITY.md#network-binding)).
+
+## Several processes
+
+Runtime identities live in the runtime store, which is the process's own by
+default: a second NanoIDP process does not see them. When a test setup needs
+two processes on one machine to share them, see [Two processes, one runtime
+state](shared-runtime-store.md).

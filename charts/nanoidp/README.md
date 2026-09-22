@@ -22,11 +22,15 @@ defaults.
 ### Single replica only
 
 nanoidp keeps authorization codes, refresh-token families, revocations and
-the audit log in-process, with no coordination between instances. Running
-more than one pod means a code minted by one pod is unknown to another.
-There is no `replicaCount` value, the Deployment always runs exactly one
-replica with `strategy: Recreate`, so a rollout never runs two pods at
-once. This is not planned to change.
+the audit log in its runtime store, which this chart leaves as the default:
+in the process. Running more than one pod means a code minted by one pod is
+unknown to another. The SQLite runtime store coordinates several nanoidp
+processes only when they share one local store on one host, and this chart
+configures neither the pod co-location nor the shared local storage that
+topology needs, so `replicaCount: 2` would not buy it. There is no
+`replicaCount` value, the Deployment always runs exactly one replica with
+`strategy: Recreate`, so a rollout never runs two pods at once. This is not
+planned to change.
 
 ### Read-only config mount
 

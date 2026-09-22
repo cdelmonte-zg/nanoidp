@@ -297,3 +297,80 @@ jobs:
           NANOIDP_PLUGIN_ECHO_RECORD: ${{ github.workspace }}/echo-record-mcp.jsonl
           NANOIDP_E2E_PLUGIN: echo
         run: python e2e/mcp_smoke_test.py --config ./config
+
+  shared-store-e2e:
+    runs-on: ubuntu-latest
+    # Two processes over one store: a hang here is a lock nobody releases,
+    # so the job timeout is the only thing that ends it.
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Configure one shared store for two processes
+        # The store is named relative to the configuration directory, so both
+        # processes name the same one however they were started; keys_dir is
+        # still relative to the working directory, and is made absolute here
+        # so that the two servers share the signing keys as well and the job
+        # proves what it is about.
+        run: |
+          cp -r config e2e-shared-config
+          mkdir -p e2e-shared-state e2e-shared-keys e2e-shared-cwd
+          python - <<'EOF'
+          import os
+          import yaml
+
+          workspace = os.environ["GITHUB_WORKSPACE"]
+          path = os.path.join(workspace, "e2e-shared-config", "settings.yaml")
+          with open(path) as handle:
+              settings = yaml.safe_load(handle)
+          # One issuer for both: the default names the port, and a token of
+          # one process would then be a token of another issuer.
+          settings["oauth"]["issuer"] = "http://localhost:8007"
+          settings["jwt"]["keys_dir"] = os.path.join(workspace, "e2e-shared-keys")
+          settings["runtime"] = {"store": "sqlite", "path": "../e2e-shared-state/runtime.db"}
+          with open(path, "w") as handle:
+              yaml.safe_dump(settings, handle, sort_keys=False)
+          EOF
+
+      - name: Start both servers, from different working directories
+        run: |
+          PORT=8007 NANOIDP_CONFIG_DIR=${{ github.workspace }}/e2e-shared-config \
+            python -m nanoidp > server-shared-a.log 2>&1 &
+          cd e2e-shared-cwd
+          PORT=8008 NANOIDP_CONFIG_DIR=${{ github.workspace }}/e2e-shared-config \
+            python -m nanoidp > ${{ github.workspace }}/server-shared-b.log 2>&1 &
+          cd ${{ github.workspace }}
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:8007/api/health > /dev/null \
+              && curl -sf http://localhost:8008/api/health > /dev/null \
+              && exit 0
+            sleep 1
+          done
+          echo "the two servers did not both become healthy" >&2
+          cat server-shared-a.log server-shared-b.log >&2
+          exit 1
+
+      - name: Two processes, one runtime state
+        run: python e2e/shared_store_e2e.py --a http://localhost:8007 --b http://localhost:8008
+
+      - name: The store is where it was asked for, and nowhere else
+        run: |
+          test -f e2e-shared-state/runtime.db
+          test -f e2e-shared-state/runtime-audit.db
+          test ! -e e2e-shared-cwd/runtime.db
+          test ! -e e2e-shared-config/runtime.db
+
+      - name: Server logs on failure
+        if: failure()
+        run: |
+          echo "=== server A ==="; cat server-shared-a.log || true
+          echo "=== server B ==="; cat server-shared-b.log || true
