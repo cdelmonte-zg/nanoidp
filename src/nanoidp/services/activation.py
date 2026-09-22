@@ -17,16 +17,19 @@ it is where a restart can be required: a configuration asking for another
 store is refused before a signing service is built for it.
 """
 
-from typing import Callable
+from pathlib import Path
+from typing import Callable, Optional
 
 from ..config import Settings
 from .crypto import activate_crypto_service
 from .runtime_store import activate_runtime_store
 
 
-def activate_services(settings: Settings) -> Callable[[], None]:
-    publish_store = activate_runtime_store(settings)
-    publish_signing = activate_crypto_service(settings)
+def activate_services(settings: Settings, config_dir: Optional[Path] = None) -> Callable[[], None]:
+    # The configuration directory: a SQLite store's file is resolved against
+    # it, and must lie outside it (#354, step 4c).
+    publish_store = activate_runtime_store(settings, config_dir)
+    publish_signing = activate_crypto_service(settings, config_dir)
 
     def publish() -> None:
         publish_store()

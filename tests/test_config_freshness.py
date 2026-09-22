@@ -308,7 +308,7 @@ def _failing_activation(config, times):
     outside the two files would (an external key not there yet)."""
     left = {"n": times}
 
-    def activate(settings):
+    def activate(settings, config_dir=None):
         if left["n"] > 0:
             left["n"] -= 1
             raise ValueError("the external key is not there yet")
@@ -496,7 +496,7 @@ class TestTheFourthReview:
         # The request's check fails transiently, then the creation's reload.
         left = {"n": 2}
 
-        def activate(settings):
+        def activate(settings, config_dir=None):
             if left["n"] > 0:
                 left["n"] -= 1
                 raise ValueError("the external key is not there yet")

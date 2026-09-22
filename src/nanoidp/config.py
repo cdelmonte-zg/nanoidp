@@ -58,7 +58,7 @@ logger = logging.getLogger(__name__)
 # the configuration) and return the function that publishes it once nothing
 # can fail any more. Supplied by the process composition, because config
 # must not import services.
-Activation = Callable[[Settings], Callable[[], None]]
+Activation = Callable[[Settings, Path], Callable[[], None]]
 
 # Called with the manager after every successful load, inside the load, once
 # the new configuration is assigned (#235: the runtime identity store drops
@@ -429,7 +429,7 @@ class ConfigManager:
         publish: Optional[Callable[[], None]] = None
         if self._activate is not None:
             try:
-                publish = self._activate(staged["settings"])
+                publish = self._activate(staged["settings"], self.config_dir)
             except Exception as exc:
                 raise ConfigurationRejected(
                     f"{self.config_dir / 'settings.yaml'}: {exc}", kind="activation"

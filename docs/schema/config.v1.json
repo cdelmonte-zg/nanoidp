@@ -537,11 +537,26 @@
       },
       "RuntimeSection": {
         "additionalProperties": false,
-        "description": "Where runtime state is kept (#354). Read at activation, and a change\nneeds a restart: never written by the settings form or MCP.",
+        "description": "Where runtime state is kept (#354). Read at activation, and a change\nneeds a restart: never written by the settings form or MCP.\n\n``path`` is the SQLite store's file, relative to the configuration\ndirectory (the identity of a store several processes share must not\ndepend on where each was started), or absolute. Required with ``sqlite``\nand refused with ``memory``: a document carries no setting that does\nnothing.",
         "properties": {
+          "path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Path"
+          },
           "store": {
-            "const": "memory",
             "default": "memory",
+            "enum": [
+              "memory",
+              "sqlite"
+            ],
             "title": "Store",
             "type": "string"
           }

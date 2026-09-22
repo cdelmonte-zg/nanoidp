@@ -18,6 +18,7 @@ from ..services import (
     get_token_service,
     identities_for,
 )
+from ..services.runtime_store import runtime_store_report
 from ._auth import management_secret_required_for_api
 from ._identity_views import user_summary
 from ._issuer import effective_issuer, effective_saml_entity_id, effective_saml_sso_url
@@ -153,7 +154,7 @@ def get_configuration() -> ResponseReturnValue:
         "config_validation": "strict" if config.strict_config else "warn",
         # Where runtime state is kept (#354): chosen when the process starts,
         # reported so that a client knows which store it is talking to.
-        "runtime": {"store": settings.runtime_store},
+        "runtime": runtime_store_report(settings, config.config_dir),
         "server": {
             "host": settings.host,
             "port": settings.port,

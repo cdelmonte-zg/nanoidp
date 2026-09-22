@@ -61,6 +61,7 @@ from ..config import ConfigManager, ConfigurationRejected, get_config_if_loaded,
 from ..config_writer import LockUnavailableError
 from ..security import verify_secret
 from ..services import activate_services, get_audit_log
+from ..services.runtime_repository import RuntimeStoreUnavailable
 from ..services.runtime_store import fresh_configuration
 
 # Split into a package (#286); these re-imports keep the EXPLICITLY listed
@@ -278,7 +279,8 @@ def _reject(name: str, code: str, message: str, retryable: Optional[bool] = None
 
     - DISPATCH refusals (this function): the call never reached a tool -
       ``{"error", "code", "tool"}`` with ``is_error=True``. The ``code``
-      taxonomy (MCP_CONFIGURATION_UNAVAILABLE, with ``retryable``, MCP_READONLY_MODE,
+      taxonomy (MCP_CONFIGURATION_UNAVAILABLE and MCP_RUNTIME_STORE_UNAVAILABLE, with
+      ``retryable``, MCP_READONLY_MODE,
       MCP_ADMIN_SECRET_REQUIRED, MCP_UNKNOWN_TOOL,
       MCP_INVALID_ARGUMENTS, MCP_INTERNAL_ERROR) is transport-level.
     - DOMAIN results (the handlers): the tool ran and answered -
@@ -302,6 +304,17 @@ def _reject(name: str, code: str, message: str, retryable: Optional[bool] = None
         # Said only where coming back can help or cannot, never guessed.
         payload["retryable"] = retryable
     return _text_result(payload, is_error=True)
+
+
+def _runtime_store_unavailable_behind(failure: BaseException) -> Optional[RuntimeStoreUnavailable]:
+    seen = set()
+    current: Optional[BaseException] = failure
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, RuntimeStoreUnavailable):
+            return current
+        current = current.__cause__
+    return None
 
 
 async def call_tool(ctx: ServerRequestContext, params: CallToolRequestParams) -> CallToolResult:
@@ -372,6 +385,14 @@ async def call_tool(ctx: ServerRequestContext, params: CallToolRequestParams) ->
         _log_mcp_tool(name, success=not failed, details=details)
         return _text_result(result, is_error=failed)
     except Exception as e:
+        # A store held by another process past its wait (#354): coming back
+        # may help, and it is no internal error. Also on the first call,
+        # which loads the configuration and opens the store there: the
+        # contention then reaches here wrapped in the rejection of the
+        # activation, and is still contention.
+        held = _runtime_store_unavailable_behind(e)
+        if held is not None:
+            return _reject(name, "MCP_RUNTIME_STORE_UNAVAILABLE", str(held), retryable=True)
         logger.exception(f"Error executing tool {name}")
         _log_mcp_tool(name, success=False, details={"error": str(e), "tool": name})
         return _text_result(

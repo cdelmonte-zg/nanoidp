@@ -293,8 +293,11 @@ class TestADeadWriter:
         assert sorted(name for name, details in _recovered(store)) == ["x", "y"]
 
     def test_two_peers_recovering_together_decide_once(self, tmp_path):
-        """One outcome and one audit event, and neither peer is told the
-        object is still being promoted once it is not."""
+        """At most one of them decides, and the claim is decided once. The
+        protocol does not wait (#354, step 4b, L2): a peer that finds the
+        lease's lock taken, by the other peer's proof or its look at the
+        lease, cannot tell it from a live owner and answers
+        PromotionInProgress. Both can, and the next operation recovers."""
         import threading
 
         config_dir, store_path, owner, process = _promotion_stopped(tmp_path, when="before")
@@ -320,7 +323,14 @@ class TestADeadWriter:
         for thread in threads:
             thread.join(_BOUND)
 
-        assert sorted(outcomes) == ["deleted", "not found"]
+        assert len(outcomes) == 2
+        assert set(outcomes) <= {"deleted", "not found", "in progress"}
+        assert outcomes.count("deleted") <= 1
+        assert len(_recovered(store)) == outcomes.count("deleted")
+
+        # Whatever the scheduling was, the claim is out of the way now.
+        if "deleted" not in outcomes:
+            peers[0].delete_runtime_user("x")
         assert [(name, details["outcome"]) for name, details in _recovered(store)] == [("x", "runtime")]
         assert store.users.get("x") is None
 

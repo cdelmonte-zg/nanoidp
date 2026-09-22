@@ -5,9 +5,10 @@ Before this, ``get_runtime_store()`` built an in-memory store on first use,
 took no settings and was published by nobody, so no backend could ever be
 chosen and nothing said which store a process was using. Now:
 
-- ``runtime.store`` is read from ``settings.yaml``. In this step the one value
-  is ``memory``, the default: the schema offers no backend that nanoidp does
-  not have (``sqlite`` and its path arrive with the backend, in the next step);
+- ``runtime.store`` is read from ``settings.yaml``: ``memory``, the default,
+  or ``sqlite`` with its ``runtime.path`` (#354, step 4c; see
+  tests/test_runtime_store_selection.py). The schema offers no backend that
+  nanoidp does not have;
 - the store is **activated** in the configuration's activation step, next to
   the signing service (#359): prepared from the candidate settings before
   anything is committed, and published once nothing can fail. Preparing does
@@ -125,10 +126,10 @@ class TestTheStoreIsChosenByTheConfiguration:
 
         assert get_runtime_store() is store and inputs == ("memory",)
 
-    @pytest.mark.parametrize("runtime", [{"store": "sqlite"}, {"store": "redis"}, {"store": ""}, "memory"])
+    @pytest.mark.parametrize("runtime", [{"store": "postgres"}, {"store": "redis"}, {"store": ""}, "memory"])
     def test_a_store_the_schema_does_not_offer_is_an_invalid_file(self, tmp_path, runtime):
-        """No backend nanoidp does not have: sqlite is refused like any
-        value that is not one, until the backend is there."""
+        """No backend nanoidp does not have: a value that is not one is
+        refused."""
         with pytest.raises(ConfigurationRejected) as refused:
             create_app(str(_config_dir(tmp_path, runtime)))
 
@@ -236,7 +237,7 @@ class TestARestartIsRequiredToChangeIt:
         _, client = _app(config_dir)
         store = get_runtime_store()
         expiry = get_config().settings.token_expiry_minutes
-        monkeypatch.setattr(runtime_store_module, "runtime_store_inputs", lambda settings: ("another",))
+        monkeypatch.setattr(runtime_store_module, "runtime_store_inputs", lambda settings, config_dir=None: ("another",))
 
         _set(config_dir, lambda doc: doc["oauth"].update(token_expiry_minutes=expiry + 1))
         response = client.post("/api/config/reload")
@@ -255,7 +256,7 @@ class TestARestartIsRequiredToChangeIt:
         from nanoidp.services.activation import activate_services
 
         _app(_config_dir(tmp_path))
-        monkeypatch.setattr(runtime_store_module, "runtime_store_inputs", lambda settings: ("another",))
+        monkeypatch.setattr(runtime_store_module, "runtime_store_inputs", lambda settings, config_dir=None: ("another",))
         monkeypatch.setattr(
             crypto_module, "prepare_crypto_service", lambda settings: pytest.fail("a signing service was prepared")
         )
