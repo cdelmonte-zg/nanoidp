@@ -73,6 +73,7 @@ from typing import (
     cast,
 )
 
+from .. import config_writer
 from ..config import OAuthClient, User
 from .audit_store import (
     AuditEntry,
@@ -206,24 +207,18 @@ _OWNER_ID = re.compile(r"[0-9a-f]{32}")
 
 
 def _try_lock(fd: int) -> bool:
-    """An exclusive lock on the whole file, without waiting: whether it was
-    had. The lock of the open file, so a descriptor inherited by a fork and
-    closed there does not release it."""
-    if os.name == "posix":
-        import fcntl
-
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            return False
-        return True
-    import msvcrt  # pragma: no cover - Windows
-
-    try:  # pragma: no cover - Windows
-        msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)  # type: ignore[attr-defined]
-    except OSError:  # pragma: no cover - Windows
-        return False
-    return True  # pragma: no cover - Windows
+    """An exclusive lock on the file, without waiting: whether it was had.
+    The primitive of the configuration directory's lock, and its
+    classification: only contention is "not had"; a filesystem that cannot
+    lock at all is LockUnavailableError(kind="lock_unsupported"), never an
+    owner that lives. The lock of the open file, so a descriptor inherited
+    by a fork and closed there does not release it."""
+    try:
+        return config_writer._try_lock_exclusive(fd)
+    except OSError as failure:
+        raise config_writer.LockUnavailableError(
+            f"the owner leases cannot be locked: {failure}", kind="lock_unsupported"
+        ) from failure
 
 
 def _names(path: Path, fd: int) -> bool:
@@ -251,7 +246,9 @@ class _OwnerLeases:
         self._fd: Optional[int] = None
 
     def owner(self) -> str:
-        with self._lock:
+        # An activity of the fork gate: a lease being made holds a
+        # descriptor not recorded yet, which a fork would hand to the child.
+        with _FORK_GATE.activity(), self._lock:
             if self._owner is None:
                 self._directory.mkdir(mode=0o700, exist_ok=True)
                 _Database._make_private_directory(self._directory)
@@ -286,14 +283,15 @@ class _OwnerLeases:
         with self._lock:
             if owner == self._owner:
                 return False
-        try:
-            fd = os.open(self._directory / f"{owner}.lock", os.O_RDWR)
-        except FileNotFoundError:
-            return True
-        try:
-            return _try_lock(fd)
-        finally:
-            os.close(fd)
+        with _FORK_GATE.activity():
+            try:
+                fd = os.open(self._directory / f"{owner}.lock", os.O_RDWR)
+            except FileNotFoundError:
+                return True
+            try:
+                return _try_lock(fd)
+            finally:
+                os.close(fd)
 
     def _remove_the_dead(self) -> None:
         """The leases of owners that are gone, and that no claim may still
@@ -327,19 +325,22 @@ class _OwnerLeases:
             yield False
             return
         lease = self._directory / f"{owner}.lock"
-        try:
-            fd = os.open(lease, os.O_RDWR)
-        except FileNotFoundError:
-            yield True
-            return
-        try:
-            if not _try_lock(fd):
-                yield False
+        # An activity for as long as the proof is held: its descriptor is
+        # the lock, and a fork must not hand it to a child.
+        with _FORK_GATE.activity():
+            try:
+                fd = os.open(lease, os.O_RDWR)
+            except FileNotFoundError:
+                yield True
                 return
-            yield True
-            lease.unlink(missing_ok=True)
-        finally:
-            os.close(fd)
+            try:
+                if not _try_lock(fd):
+                    yield False
+                    return
+                yield True
+                lease.unlink(missing_ok=True)
+            finally:
+                os.close(fd)
 
     def _forget_inherited(self) -> None:
         # In a forked child: not this process's lease.
@@ -404,16 +405,30 @@ class _ForkGate:
         self._condition = threading.Condition(threading.Lock())
         self._active = 0
         self._forking = False
+        self._depth = threading.local()
 
     @contextmanager
     def activity(self) -> Iterator[None]:
+        # Within an activity of this thread's the thread is counted already:
+        # waiting for a pending fork there would wait for a fork that waits
+        # for this very thread (a proof held while its decision's
+        # transaction runs, #354, step 4b).
+        if getattr(self._depth, "n", 0):
+            self._depth.n += 1
+            try:
+                yield
+            finally:
+                self._depth.n -= 1
+            return
         with self._condition:
             while self._forking:
                 self._condition.wait()
             self._active += 1
+        self._depth.n = 1
         try:
             yield
         finally:
+            self._depth.n = 0
             with self._condition:
                 self._active -= 1
                 if self._active == 0:

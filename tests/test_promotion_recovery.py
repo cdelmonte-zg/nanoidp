@@ -675,6 +675,155 @@ def test_a_lease_that_cannot_be_looked_at_does_not_fail_a_load(tmp_path, monkeyp
     assert store.users.get("admin") is None
 
 
+class TestTheLeasesAndTheForkGate:
+    """A lease operation can hold a descriptor it has not recorded yet (a
+    lease being made, a proof in progress, a quick look). A fork in the
+    middle would hand the child a copy, which it would not know to close,
+    and which keeps the lock for as long as the child lives. So every lease
+    operation is an activity of the fork gate, the proof for as long as it
+    is held (#354, step 4b, review)."""
+
+    @staticmethod
+    def _fork_waits_for(started, release):
+        import threading
+
+        from nanoidp.services import sqlite_runtime_store as module
+
+        forked = threading.Event()
+
+        def hook():
+            module._FORK_GATE.before_fork()
+            forked.set()
+
+        thread = threading.Thread(target=hook, daemon=True)
+        thread.start()
+        try:
+            assert not forked.wait(0.3), "the fork did not wait for the lease operation"
+            release.set()
+            assert forked.wait(10)
+        finally:
+            thread.join(10)
+            module._FORK_GATE.after_in_parent()
+
+    def test_a_lease_being_made_is_waited_for(self, tmp_path, monkeypatch):
+        import threading
+
+        from nanoidp.services import sqlite_runtime_store as module
+
+        store = SqliteRuntimeStore(tmp_path / "runtime.db")
+        inside, release = threading.Event(), threading.Event()
+        real_names = module._names
+
+        def held_not_yet_recorded(path, fd):
+            inside.set()
+            release.wait(10)
+            return real_names(path, fd)
+
+        monkeypatch.setattr(module, "_names", held_not_yet_recorded)
+        maker = threading.Thread(target=store.claim_owner, daemon=True)
+        maker.start()
+        assert inside.wait(10)
+        self._fork_waits_for(inside, release)
+        maker.join(10)
+        assert store.claim_owner() is not None
+
+    def test_a_proof_in_progress_is_waited_for(self, tmp_path):
+        import threading
+
+        store = SqliteRuntimeStore(tmp_path / "runtime.db")
+        dead = "c" * 32
+        (tmp_path / "runtime-owners").mkdir(mode=0o700, exist_ok=True)
+        (tmp_path / "runtime-owners" / f"{dead}.lock").write_text("")
+        inside, release = threading.Event(), threading.Event()
+
+        def proving():
+            with store.prove_owner_dead(dead) as proved:
+                assert proved is True
+                inside.set()
+                release.wait(10)
+
+        prover = threading.Thread(target=proving, daemon=True)
+        prover.start()
+        assert inside.wait(10)
+        self._fork_waits_for(inside, release)
+        prover.join(10)
+
+    def test_a_quick_look_in_progress_is_waited_for(self, tmp_path, monkeypatch):
+        import threading
+
+        from nanoidp.services import sqlite_runtime_store as module
+
+        store = SqliteRuntimeStore(tmp_path / "runtime.db")
+        dead = "d" * 32
+        (tmp_path / "runtime-owners").mkdir(mode=0o700, exist_ok=True)
+        (tmp_path / "runtime-owners" / f"{dead}.lock").write_text("")
+        inside, release = threading.Event(), threading.Event()
+        real_lock = module._try_lock
+
+        def slow_lock(fd):
+            inside.set()
+            release.wait(10)
+            return real_lock(fd)
+
+        monkeypatch.setattr(module, "_try_lock", slow_lock)
+        looker = threading.Thread(target=store.owner_may_be_dead, args=(dead,), daemon=True)
+        looker.start()
+        assert inside.wait(10)
+        self._fork_waits_for(inside, release)
+        looker.join(10)
+
+    def test_an_activity_within_an_activity_does_not_wait_for_a_pending_fork(self, tmp_path):
+        """A proof holds its activity while the decision's transaction enters
+        another: the thread already counted goes on, and the fork, waiting
+        for it, is not waited for in turn."""
+        import threading
+
+        from nanoidp.services import sqlite_runtime_store as module
+
+        forked, entered_inner = threading.Event(), threading.Event()
+        gate = module._FORK_GATE
+
+        def outer_then_inner():
+            with gate.activity():
+                hook.start()
+                time.sleep(0.3)  # the fork is pending by now
+                with gate.activity():
+                    entered_inner.set()
+
+        def fork_hook():
+            gate.before_fork()
+            forked.set()
+
+        hook = threading.Thread(target=fork_hook, daemon=True)
+        worker = threading.Thread(target=outer_then_inner, daemon=True)
+        worker.start()
+        try:
+            assert entered_inner.wait(5), "the inner activity waited for the fork that waits for it"
+            worker.join(5)
+            assert forked.wait(5)
+        finally:
+            hook.join(5)
+            gate.after_in_parent()
+
+    def test_a_lock_that_is_not_a_contention_is_not_taken_for_a_live_owner(self, tmp_path, monkeypatch):
+        """The same classification as the configuration directory's lock:
+        only contention says "held"; a filesystem that cannot lock at all is
+        said as such, not as an owner that is alive."""
+        import errno
+
+        from nanoidp import config_writer
+        from nanoidp.config_writer import LockUnavailableError
+        from nanoidp.services import sqlite_runtime_store as module
+
+        def unsupported(fd):
+            raise OSError(errno.ENOLCK, "No locks available")
+
+        monkeypatch.setattr(config_writer, "_try_lock_exclusive", unsupported)
+        with pytest.raises(LockUnavailableError) as raised:
+            module._try_lock(0)
+        assert raised.value.kind == "lock_unsupported"
+
+
 class TestTheCurrentFilesWithoutAReload:
     def test_an_action_runs_when_the_files_are_the_loaded_ones(self, tmp_path):
         config = ConfigManager(str(_config_dir(tmp_path)))

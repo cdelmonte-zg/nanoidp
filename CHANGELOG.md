@@ -91,7 +91,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and goes on (a reset counts only what it removed itself); a load recovers
   it too, only while the files are still the ones it read, and never loads
   again from inside itself. The leases of owners proved dead are removed; a
-  forked child is an owner of its own. With the in-memory store claims have
+  forked child is an owner of its own, and every lease operation (making a
+  lease, looking at one, a proof for as long as it is held) is an activity
+  of the fork gate, so no fork hands a child a lock it does not know it
+  holds; a lease that cannot be locked at all is said as such, as the
+  configuration directory's is. With the in-memory store claims have
   no owner and nothing changes. A writing thread that dies in a process that
   lives on is not recovered: its owner is alive, and restarting it is the
   remedy.
