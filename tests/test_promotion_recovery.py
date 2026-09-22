@@ -824,6 +824,71 @@ class TestTheLeasesAndTheForkGate:
         assert raised.value.kind == "lock_unsupported"
 
 
+class TestALeaseThatCannotBeRemovedYet:
+    """Windows removes no file that is open, and a peer may have it open for
+    a moment: the lease is removed after the proof's descriptor is closed,
+    once the entry is decided, and a removal that fails leaves a lease that
+    is unlocked, which proves the owner dead all the same (#354, step 4b,
+    review)."""
+
+    @staticmethod
+    def _unlink_refused(monkeypatch):
+        refused = []
+        real_unlink = Path.unlink
+
+        def unlink(self, *args, **kwargs):
+            if self.parent.name == "runtime-owners":
+                refused.append(self.name)
+                raise PermissionError(13, "The process cannot access the file because it is being used")
+            return real_unlink(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "unlink", unlink)
+        return refused
+
+    @_POSIX
+    def test_the_recovery_stands_when_its_lease_cannot_be_removed(self, tmp_path, monkeypatch):
+        config_dir, store_path, owner, process = _promotion_stopped(tmp_path, names=("x", "y"), when="before")
+        _kill(process)
+        store = SqliteRuntimeStore(store_path)
+        config, identities = _peer(config_dir, store, reconciling=False)
+        refused = self._unlink_refused(monkeypatch)
+
+        identities.delete_runtime_user("x")
+
+        assert refused == [f"{owner}.lock"]
+        assert store.users.get("x") is None
+        assert [(name, details["outcome"]) for name, details in _recovered(store)] == [("x", "runtime")]
+        # The lease left behind is unlocked: the next claim of that owner is
+        # recovered as well.
+        identities.delete_runtime_user("y")
+        assert store.users.get("y") is None
+
+    def test_the_lease_is_removed_only_once_the_entry_is_decided(self, tmp_path):
+        store = SqliteRuntimeStore(tmp_path / "runtime.db")
+        dead = "e" * 32
+        owners = tmp_path / "runtime-owners"
+        owners.mkdir(mode=0o700, exist_ok=True)
+        (owners / f"{dead}.lock").write_text("")
+
+        with pytest.raises(RuntimeError, match="the decision failed"):
+            with store.prove_owner_dead(dead) as proved:
+                assert proved is True
+                raise RuntimeError("the decision failed")
+
+        assert (owners / f"{dead}.lock").exists()
+
+    def test_a_sweep_that_cannot_remove_a_dead_lease_still_makes_an_owner(self, tmp_path, monkeypatch):
+        owners = tmp_path / "runtime-owners"
+        owners.mkdir(mode=0o700)
+        (owners / f"{'f' * 32}.lock").write_text("")
+        refused = self._unlink_refused(monkeypatch)
+
+        owner = SqliteRuntimeStore(tmp_path / "runtime.db").claim_owner()
+
+        assert refused == [f"{'f' * 32}.lock"]
+        assert owner is not None and (owners / f"{owner}.lock").exists()
+
+
 class TestTheCurrentFilesWithoutAReload:
     def test_an_action_runs_when_the_files_are_the_loaded_ones(self, tmp_path):
         config = ConfigManager(str(_config_dir(tmp_path)))

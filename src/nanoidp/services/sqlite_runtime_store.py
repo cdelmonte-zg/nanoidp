@@ -231,6 +231,17 @@ def _names(path: Path, fd: int) -> bool:
     return (named.st_dev, named.st_ino) == (held.st_dev, held.st_ino)
 
 
+def _remove_lease(lease: Path) -> None:
+    """Remove a lease whose owner is proved dead, if it can be: a peer may
+    hold it open for a moment, which Windows refuses a removal for. A lease
+    left behind is unlocked, and proves its owner dead all the same; a later
+    proof or sweep removes it."""
+    try:
+        lease.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 class _OwnerLeases:
     """This process as an owner of the claims it makes in one store (#354,
     step 4b): a lease file in the store's owners directory, held under an
@@ -305,10 +316,11 @@ class _OwnerLeases:
             except FileNotFoundError:
                 continue
             try:
-                if _try_lock(fd):
-                    lease.unlink(missing_ok=True)
+                dead = _try_lock(fd)
             finally:
                 os.close(fd)
+            if dead:
+                _remove_lease(lease)
 
     @contextmanager
     def prove_dead(self, owner: Optional[str]) -> Iterator[bool]:
@@ -338,9 +350,12 @@ class _OwnerLeases:
                     yield False
                     return
                 yield True
-                lease.unlink(missing_ok=True)
             finally:
                 os.close(fd)
+            # Reached only when the block ended, the entry decided, and once
+            # the proof's descriptor is closed: Windows removes no file that
+            # is open. A decision that raised leaves the lease where it is.
+            _remove_lease(lease)
 
     def _forget_inherited(self) -> None:
         # In a forked child: not this process's lease.

@@ -95,7 +95,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lease, looking at one, a proof for as long as it is held) is an activity
   of the fork gate, so no fork hands a child a lock it does not know it
   holds; a lease that cannot be locked at all is said as such, as the
-  configuration directory's is. With the in-memory store claims have
+  configuration directory's is. A lease is removed once the entry is
+  decided and its descriptor closed (Windows removes no open file), and a
+  removal that fails leaves it unlocked, proving its owner dead all the
+  same. With the in-memory store claims have
   no owner and nothing changes. A writing thread that dies in a process that
   lives on is not recovered: its owner is alive, and restarting it is the
   remedy.
