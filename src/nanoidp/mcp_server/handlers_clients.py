@@ -6,7 +6,7 @@ the pre-validate-before-any-assignment ordering comments.
 
 from typing import Any
 
-from ..config import ConfigManager, OAuthClient
+from ..config import ConfigManager, ConfigSnapshot, OAuthClient
 from ..services.client_policy import (
     UNSET,
     ClientSecretRequired,
@@ -24,7 +24,7 @@ from .serializers import _client_to_dict
 
 
 # Client Management
-def _tool_list_clients(arguments: dict[str, Any], config: ConfigManager) -> dict[str, Any]:
+def _tool_list_clients(arguments: dict[str, Any], config: ConfigManager, loaded: ConfigSnapshot) -> dict[str, Any]:
     clients = [_client_to_dict(c) for c in config.settings.clients]
     # Clients live in settings.yaml, so their precondition is the
     # settings revision (#229 phase 5).
@@ -35,7 +35,7 @@ def _tool_list_clients(arguments: dict[str, Any], config: ConfigManager) -> dict
     }
 
 
-def _tool_get_client(arguments: dict[str, Any], config: ConfigManager) -> dict[str, Any]:
+def _tool_get_client(arguments: dict[str, Any], config: ConfigManager, loaded: ConfigSnapshot) -> dict[str, Any]:
     client_id = arguments["client_id"]
     client = config.get_client(client_id)
     if client:
@@ -47,7 +47,7 @@ def _tool_get_client(arguments: dict[str, Any], config: ConfigManager) -> dict[s
     return {"found": False, "client_id": client_id, "settings_revision": config.settings_revision}
 
 
-def _tool_create_client(arguments: dict[str, Any], config: ConfigManager) -> dict[str, Any]:
+def _tool_create_client(arguments: dict[str, Any], config: ConfigManager, loaded: ConfigSnapshot) -> dict[str, Any]:
     client_id = arguments["client_id"]
     # Check if client already exists
     if config.get_client(client_id):
@@ -89,7 +89,7 @@ def _tool_create_client(arguments: dict[str, Any], config: ConfigManager) -> dic
     return {"success": True, "client": _client_to_dict(new_client)}
 
 
-def _tool_update_client(arguments: dict[str, Any], config: ConfigManager) -> dict[str, Any]:
+def _tool_update_client(arguments: dict[str, Any], config: ConfigManager, loaded: ConfigSnapshot) -> dict[str, Any]:
     client_id = arguments["client_id"]
     client = config.get_client(client_id)
     if not client:
@@ -186,7 +186,7 @@ def _tool_update_client(arguments: dict[str, Any], config: ConfigManager) -> dic
     return {"success": True, "client": _client_to_dict(client)}
 
 
-def _tool_delete_client(arguments: dict[str, Any], config: ConfigManager) -> dict[str, Any]:
+def _tool_delete_client(arguments: dict[str, Any], config: ConfigManager, loaded: ConfigSnapshot) -> dict[str, Any]:
     client_id = arguments["client_id"]
     client = config.get_client(client_id)
     if not client:

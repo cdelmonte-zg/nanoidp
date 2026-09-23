@@ -7,7 +7,7 @@ normalizer table contract (tests/test_settings_plumbing_parity.py).
 
 from typing import Any, Optional
 
-from ..config import ConfigManager, ConfigurationRejected, ReloadAfterSaveError
+from ..config import ConfigManager, ConfigSnapshot, ConfigurationRejected, ReloadAfterSaveError
 from ..config_documents import DocumentRejected
 from ..config_validation import UNAVAILABLE, validate_config_result
 from ..config_writer import ConflictError, LockUnavailableError
@@ -24,15 +24,18 @@ from .normalize import _UPDATE_SETTINGS_FIELDS, _UPDATE_SETTINGS_NORMALIZERS
 
 
 # Configuration
-def _tool_get_settings(arguments: dict[str, Any], config: ConfigManager) -> dict[str, Any]:
-    settings = config.settings
+def _tool_get_settings(arguments: dict[str, Any], config: ConfigManager, loaded: ConfigSnapshot) -> dict[str, Any]:
+    # One configuration, not four reads of the manager (#406): the settings
+    # and the revision a caller passes back as expected_settings_revision
+    # must be of the same load.
+    settings = loaded.settings
     return {
         # Same key as GET /api/config (#175): the contract an agent targets.
-        "config_version": config.config_version,
-        "config_validation": "strict" if config.strict_config else "warn",
+        "config_version": loaded.config_version,
+        "config_validation": "strict" if loaded.strict_config else "warn",
         # The settings.yaml revision this runtime was loaded from (#229
         # phase 5), for save_config's expected_settings_revision.
-        "settings_revision": config.settings_revision,
+        "settings_revision": loaded.settings_revision,
         # Same as GET /api/config (#354): where runtime state is kept.
         "runtime": runtime_store_report(settings, config.config_dir),
         "issuer": settings.issuer,
@@ -94,7 +97,7 @@ def _tool_get_settings(arguments: dict[str, Any], config: ConfigManager) -> dict
     }
 
 
-def _tool_reload_config(arguments: dict[str, Any], config: ConfigManager) -> dict[str, Any]:
+def _tool_reload_config(arguments: dict[str, Any], config: ConfigManager, loaded: ConfigSnapshot) -> dict[str, Any]:
     try:
         config.reload()
     except HookError as exc:
@@ -113,7 +116,7 @@ def _tool_reload_config(arguments: dict[str, Any], config: ConfigManager) -> dic
     }
 
 
-def _tool_validate_config(arguments: dict[str, Any], config: ConfigManager) -> dict[str, Any]:
+def _tool_validate_config(arguments: dict[str, Any], config: ConfigManager, loaded: ConfigSnapshot) -> dict[str, Any]:
     # The CLI's code path exactly (nanoidp.config_validation): no
     # ConfigManager is built, no hook runs, no plugin is imported, and
     # the running configuration is not touched or reloaded.
@@ -144,7 +147,7 @@ def _tool_validate_config(arguments: dict[str, Any], config: ConfigManager) -> d
 
 
 
-def _tool_update_settings(arguments: dict[str, Any], config: ConfigManager) -> dict[str, Any]:
+def _tool_update_settings(arguments: dict[str, Any], config: ConfigManager, loaded: ConfigSnapshot) -> dict[str, Any]:
     settings = config.settings
 
     # Settings (unlike OAuthClient) has no validate_assignment, so this
@@ -196,7 +199,7 @@ def _tool_update_settings(arguments: dict[str, Any], config: ConfigManager) -> d
     }
 
 
-def _tool_save_config(arguments: dict[str, Any], config: ConfigManager) -> dict[str, Any]:
+def _tool_save_config(arguments: dict[str, Any], config: ConfigManager, loaded: ConfigSnapshot) -> dict[str, Any]:
     try:
         # Optional preconditions (#229 phase 5): the revisions a read tool
         # (list_users/get_user, list_clients/get_client/get_settings) or
@@ -265,19 +268,19 @@ def _tool_save_config(arguments: dict[str, Any], config: ConfigManager) -> dict[
 
 
 # Discovery
-def _tool_get_oidc_discovery(arguments: dict[str, Any], config: ConfigManager) -> dict[str, Any]:
+def _tool_get_oidc_discovery(arguments: dict[str, Any], config: ConfigManager, loaded: ConfigSnapshot) -> dict[str, Any]:
     # Shared with the HTTP /.well-known/openid-configuration endpoint so
     # the two documents can never drift apart (issue #40).
     return build_discovery_document(config.settings)
 
 
-def _tool_get_jwks(arguments: dict[str, Any], config: ConfigManager) -> dict[str, Any]:
+def _tool_get_jwks(arguments: dict[str, Any], config: ConfigManager, loaded: ConfigSnapshot) -> dict[str, Any]:
     crypto = get_crypto_service()
     return crypto.get_jwks()
 
 
 # Audit log (mirrors /api/audit*, issue #48)
-def _tool_get_audit_log(arguments: dict[str, Any], config: ConfigManager) -> dict[str, Any]:
+def _tool_get_audit_log(arguments: dict[str, Any], config: ConfigManager, loaded: ConfigSnapshot) -> dict[str, Any]:
     audit = get_audit_log()
     entries = audit.get_entries(
         limit=arguments.get("limit", 100),
@@ -287,17 +290,17 @@ def _tool_get_audit_log(arguments: dict[str, Any], config: ConfigManager) -> dic
     return {"entries": entries, "count": len(entries)}
 
 
-def _tool_get_audit_stats(arguments: dict[str, Any], config: ConfigManager) -> dict[str, Any]:
+def _tool_get_audit_stats(arguments: dict[str, Any], config: ConfigManager, loaded: ConfigSnapshot) -> dict[str, Any]:
     return get_audit_log().get_stats()
 
 
-def _tool_clear_audit_log(arguments: dict[str, Any], config: ConfigManager) -> dict[str, Any]:
+def _tool_clear_audit_log(arguments: dict[str, Any], config: ConfigManager, loaded: ConfigSnapshot) -> dict[str, Any]:
     get_audit_log().clear()
     return {"success": True, "message": "Audit log cleared"}
 
 
 # Key management (mirrors /api/keys*, issue #48)
-def _tool_get_keys_info(arguments: dict[str, Any], config: ConfigManager) -> dict[str, Any]:
+def _tool_get_keys_info(arguments: dict[str, Any], config: ConfigManager, loaded: ConfigSnapshot) -> dict[str, Any]:
     crypto = get_crypto_service()
     keys = crypto.keys  # one reading (#420)
     return {
@@ -308,7 +311,7 @@ def _tool_get_keys_info(arguments: dict[str, Any], config: ConfigManager) -> dic
     }
 
 
-def _tool_rotate_keys(arguments: dict[str, Any], config: ConfigManager) -> dict[str, Any]:
+def _tool_rotate_keys(arguments: dict[str, Any], config: ConfigManager, loaded: ConfigSnapshot) -> dict[str, Any]:
     crypto = get_crypto_service()
     try:
         result = crypto.rotate_keys()

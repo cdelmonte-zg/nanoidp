@@ -98,7 +98,7 @@ def _access_token(app, user):
     with app.app_context():
         config = get_config()
         config.users[user.username] = user
-        response = TokenService(config).create_token(
+        response = TokenService(config, config.snapshot).create_token(
             user, scope="openid email profile", client_id="demo-client"
         )
     return pyjwt.decode(response["access_token"], options={"verify_signature": False}), response
@@ -251,7 +251,7 @@ class TestWhatAuthoritiesFlattens:
         with app.app_context():
             config = get_config()
             config.settings.authority_prefixes["department"] = "DEPT_"
-            authorities = TokenService(config).build_authorities(user)
+            authorities = TokenService(config, config.snapshot).build_authorities(user)
 
         assert "DEPT_IT" in authorities
         assert "ROLE_DEV" in authorities
@@ -260,7 +260,7 @@ class TestWhatAuthoritiesFlattens:
         with app.app_context():
             config = get_config()
             config.settings.authority_prefixes.pop("department", None)
-            authorities = TokenService(config).build_authorities(user)
+            authorities = TokenService(config, config.snapshot).build_authorities(user)
 
         assert not [a for a in authorities if a.endswith("IT")]
 
@@ -296,7 +296,7 @@ class TestTheTwoShapesOfACustomAttribute:
         with app.app_context():
             config = get_config()
             config.users[owner.username] = owner
-            response = TokenService(config).create_token(
+            response = TokenService(config, config.snapshot).create_token(
                 owner, scope="openid", client_id="demo-client", id_token_claims=["attributes"]
             )
         id_token = pyjwt.decode(response["id_token"], options={"verify_signature": False})
@@ -368,7 +368,7 @@ class TestAnEmptyValueIsKeptByCompositesAndDroppedByProjections:
             config = get_config()
             for name in {**EMPTY_SHAPES, "real": None}:
                 config.settings.authority_prefixes[name] = name.upper() + "_"
-            authorities = TokenService(config).build_authorities(user_with_empties)
+            authorities = TokenService(config, config.snapshot).build_authorities(user_with_empties)
 
         assert "REAL_IT" in authorities
         for name in EMPTY_SHAPES:

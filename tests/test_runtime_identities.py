@@ -819,13 +819,17 @@ class TestReloadReconciliation:
         _, config_dir = app_client
         manager = get_config()
         get_identities().create_runtime_user(_user("ci-alice"))
-        real_get_user = manager.get_user
+        repository = get_runtime_store().users
+        real_get = repository.get
         reloaded = []
 
-        def get_user_then_reload(name):
-            found = real_get_user(name)
+        # The seam is after the store is read: the declared side is the
+        # operation's configuration now (#406), so the reload that declares
+        # the name and reconciles the runtime object away lands between the
+        # two reads here.
+        def get_then_reload(name):
+            found = real_get(name)
             if not reloaded:
-                # The reload lands right after this read, from another thread.
                 reloaded.append(True)
                 self._declare(config_dir, "ci-alice", "ci-alice-app")
                 worker = threading.Thread(target=manager.reload)
@@ -833,9 +837,9 @@ class TestReloadReconciliation:
                 worker.join()
             return found
 
-        monkeypatch.setattr(manager, "get_user", get_user_then_reload)
+        monkeypatch.setattr(repository, "get", get_then_reload)
         resolved = get_identities().resolve_user("ci-alice")
-        monkeypatch.setattr(manager, "get_user", real_get_user)
+        monkeypatch.setattr(repository, "get", real_get)
 
         assert reloaded
         assert resolved is not None

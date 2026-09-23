@@ -32,7 +32,15 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Literal, Optional, Set, Tuple, TypeVar
 
-from ..config import ConfigManager, ConfigurationRejected, OAuthClient, Settings, User, get_config
+from ..config import (
+    ConfigManager,
+    ConfigSnapshot,
+    ConfigurationRejected,
+    OAuthClient,
+    Settings,
+    User,
+    get_config,
+)
 from ..hooks import HookError
 from .audit import get_audit_log
 from .client_metadata import cached_client, cached_entries, looks_like_client_id_url
@@ -151,10 +159,21 @@ def _find_client(settings: Settings, client_id: str) -> Optional[OAuthClient]:
 
 
 class IdentityResolver:
-    """Declared configuration composed with the runtime store's identities."""
+    """Declared configuration composed with the runtime store's identities.
 
-    def __init__(self, config: ConfigManager, store: RuntimeStore) -> None:
+    It holds both the configuration this operation reads (``loaded``, one
+    published value, #406) and the manager, because a few decisions are the
+    server's and not the operation's: the CIMD switch, and the fallback of
+    resolve_client. Those read ``self.config.settings`` on purpose and say
+    so where they do; everything else reads ``self.loaded``.
+
+    ``loaded`` is not optional. A call site that forgot it would read the
+    current configuration silently, which is the defect #406 closes.
+    """
+
+    def __init__(self, config: ConfigManager, loaded: ConfigSnapshot, store: RuntimeStore) -> None:
         self.config = config
+        self.loaded = loaded
         self.store = store
 
     # ---- users ----------------------------------------------------------
@@ -164,7 +183,15 @@ class IdentityResolver:
         # declared users before it removes a runtime object they now shadow,
         # so a lookup spanning that reload finds one of the two, never neither.
         runtime = self.store.users.get(username)
-        declared = self.config.get_user(username)
+        declared = self.loaded.users.get(username)
+        if declared is None and runtime is None:
+            # The store is live and the declaration is this operation's, so a
+            # reload that declared the name and reconciled the runtime object
+            # away would otherwise be observed as neither: the rule above says
+            # a lookup spanning that reload finds one of the two. The current
+            # declaration is consulted for that case alone, as resolve_client
+            # does for the same reason.
+            declared = self.config.get_user(username)
         if declared is not None:
             return ResolvedUser(declared, "declared")
         return ResolvedUser(runtime, "runtime") if runtime is not None else None
@@ -176,6 +203,13 @@ class IdentityResolver:
     def list_users(self) -> List[ResolvedUser]:
         # Store first, as in resolve_user: a listing spanning a reload that
         # declares a runtime object's name shows one of the two.
+        #
+        # Both sides are read live here, deliberately (#406, first slice): a
+        # lookup can consult the current declaration for the one name it was
+        # asked about, and a listing cannot, so composing this operation's
+        # declaration with the live store would drop a name a reload has just
+        # declared and reconciled away. The composition rule a request-
+        # consistent listing needs is the second slice's.
         runtime_users = self.store.users.list()
         declared_users = self.config.users
         declared = [ResolvedUser(user, "declared") for user in declared_users.values()]
@@ -284,6 +318,7 @@ class IdentityResolver:
         return resolved.client if resolved is not None else None
 
     def list_clients(self) -> List[ResolvedClient]:
+        # Live on both sides, for the reason given in list_users.
         runtime_clients = self.store.clients.list()  # store first, see list_users
         declared_clients = self.config.settings.clients
         declared_ids = {client.client_id for client in declared_clients}
@@ -595,15 +630,18 @@ class IdentityResolver:
         return client.client_secret == client_secret
 
 
-def identities_for(config: ConfigManager) -> IdentityResolver:
+def identities_for(config: ConfigManager, loaded: ConfigSnapshot) -> IdentityResolver:
     """The effective identities over ``config`` (the process's one manager,
     #230) and the runtime store."""
-    return IdentityResolver(config, get_runtime_store())
+    return IdentityResolver(config, loaded, get_runtime_store())
 
 
 def get_identities() -> IdentityResolver:
-    """The effective identities over the process's one ConfigManager."""
-    return identities_for(get_config())
+    """The effective identities over the process's one ConfigManager, on the
+    configuration it has now. A caller inside an operation passes the one
+    that operation began with instead (#406)."""
+    config = get_config()
+    return identities_for(config, config.snapshot)
 
 
 def reconcile_runtime_identities(config: ConfigManager) -> None:

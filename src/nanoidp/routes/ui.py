@@ -62,6 +62,7 @@ from ._auth import (
     ui_login_required,
     verify_management_secret,
 )
+from ._config import request_config
 from ._issuer import effective_saml_entity_id, effective_saml_sso_url
 
 logger = logging.getLogger(__name__)
@@ -95,7 +96,7 @@ def index() -> ResponseReturnValue:
     """Dashboard home page."""
     config = get_config()
     audit = get_audit_log()
-    users = identities_for(config).list_users()
+    users = identities_for(config, request_config()).list_users()
     runtime_users = sum(1 for entry in users if entry.origin == "runtime")
 
     return render_template(
@@ -137,7 +138,7 @@ def login() -> ResponseReturnValue:
         response = render_template(
             "login.html",
             error=error,
-            users=identities_for(config).persona_picker_entries(),
+            users=identities_for(config, request_config()).persona_picker_entries(),
             persona_mode=persona_mode,
             two_step_login=two_step_login,
             login_username=login_username,
@@ -201,7 +202,7 @@ def login() -> ResponseReturnValue:
     # the login is complete, so the failure branch below cannot be reached
     # with a code still outstanding. A POST carrying the password and the
     # code together completes both here, statelessly, as before.
-    login = authenticate_interactively(config, username=username, password=password)
+    login = authenticate_interactively(config, request_config(), username=username, password=password)
 
     if login.phase.pending:
         if login.phase is SecondFactorPhase.CODE_INVALID:
@@ -247,7 +248,7 @@ def _login_code_screen_submission(
     config: ConfigManager, render_login: Callable[..., ResponseReturnValue]
 ) -> ResponseReturnValue:
     """The code screen's POST on its pending second factor (#373)."""
-    continuation = continue_second_factor(config, purpose="login", context={})
+    continuation = continue_second_factor(config, request_config(), purpose="login", context={})
     if continuation.error is not None:
         audit_event(
             "login",
@@ -332,7 +333,7 @@ def users() -> ResponseReturnValue:
     config = get_config()
     return render_template(
         "users.html",
-        users=identities_for(config).list_users(),
+        users=identities_for(config, request_config()).list_users(),
         current_user=session.get("user"),
     )
 
@@ -403,7 +404,7 @@ def user_detail(username: str) -> ResponseReturnValue:
         flash(f"User '{username}' not found", "error")
         return redirect(url_for("ui.users"))
 
-    token_service = get_token_service()
+    token_service = get_token_service(request_config())
     authorities = token_service.build_authorities(user)
 
     return render_template(
@@ -494,7 +495,7 @@ def clients() -> ResponseReturnValue:
     config = get_config()
     return render_template(
         "clients.html",
-        clients=identities_for(config).list_clients(),
+        clients=identities_for(config, request_config()).list_clients(),
         current_user=session.get("user"),
         revision=get_yaml_writer().current_revision("settings.yaml"),
     )
@@ -1210,7 +1211,7 @@ def claims_preview(username: str) -> ResponseReturnValue:
     if not user:
         return {"error": "User not found"}, 404
 
-    token_service = get_token_service()
+    token_service = get_token_service(request_config())
     authorities = token_service.build_authorities(user)
 
     return {

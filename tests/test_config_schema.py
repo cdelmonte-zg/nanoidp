@@ -391,7 +391,7 @@ class TestRegressionRound2:
         (tmp_path / "users.yaml").write_text(_yaml.safe_dump({"users": {}}))
         manager = ConfigManager(str(tmp_path))
         assert [c.client_id for c in manager.settings.clients] == ["demo-client"]
-        assert identities_for(manager).check_client("demo-client", "demo-secret")
+        assert identities_for(manager, manager.snapshot).check_client("demo-client", "demo-secret")
 
     def test_bootstrap_config_version_is_an_unknown_key_not_an_error(self, tmp_path):
         """validate-config must mirror the startup semantics: the bootstrap

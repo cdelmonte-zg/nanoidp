@@ -67,7 +67,7 @@ class TestWizardHappyPath:
         assert manager.settings.token_expiry_minutes == 60
         client = manager.get_client("demo-client")
         assert client is not None and client.client_secret == "demo-secret"
-        assert identities_for(manager).authenticate("admin", "admin") is not None
+        assert identities_for(manager, manager.snapshot).authenticate("admin", "admin") is not None
         assert manager.default_user == "admin"
         assert (tmp_path / "wizard-config" / "keys").is_dir()
 
@@ -99,7 +99,7 @@ class TestWizardHappyPath:
         assert manager.settings.audience == "custom-app"
         assert manager.settings.token_expiry_minutes == 120
         assert manager.get_client("my-client").description == "My client"
-        assert identities_for(manager).authenticate("alice", "wonder") is not None
+        assert identities_for(manager, manager.snapshot).authenticate("alice", "wonder") is not None
         user = manager.get_user("alice")
         assert user.email == "alice@example.org"
 

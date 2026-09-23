@@ -48,7 +48,7 @@ class OtherProcess:
         self._marks = {}
         with self.acting():
             self.config = ConfigManager(str(config_dir), after_load=app_module._after_load)
-        self.resolver = IdentityResolver(self.config, get_runtime_store())
+        self.resolver = IdentityResolver(self.config, self.config.snapshot, get_runtime_store())
 
     @contextlib.contextmanager
     def acting(self):
@@ -402,7 +402,7 @@ class TestWhatAClaimDoesNotSay:
             raise SystemExit("the worker is going away")
 
         monkeypatch.setattr(writer, "save_client", torn_down)
-        resolver = IdentityResolver(get_config(), get_runtime_store())
+        resolver = IdentityResolver(get_config(), get_config().snapshot, get_runtime_store())
         with pytest.raises(SystemExit):
             resolver.promote_runtime_client("shared", {"endpoint": PROMOTE})
         monkeypatch.undo()

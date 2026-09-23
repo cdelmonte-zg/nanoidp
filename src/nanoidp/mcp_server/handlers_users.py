@@ -5,7 +5,7 @@ Split out of the monolithic mcp_server module; bodies unchanged.
 
 from typing import Any, Optional
 
-from ..config import ConfigManager, User
+from ..config import ConfigManager, ConfigSnapshot, User
 from .serializers import _user_to_dict
 
 
@@ -35,7 +35,7 @@ def _build_user_from_arguments(
 
 
 # User Management
-def _tool_list_users(arguments: dict[str, Any], config: ConfigManager) -> dict[str, Any]:
+def _tool_list_users(arguments: dict[str, Any], config: ConfigManager, loaded: ConfigSnapshot) -> dict[str, Any]:
     users = [_user_to_dict(user) for user in config.users.values()]
     return {
         "count": len(users),
@@ -48,7 +48,7 @@ def _tool_list_users(arguments: dict[str, Any], config: ConfigManager) -> dict[s
     }
 
 
-def _tool_get_user(arguments: dict[str, Any], config: ConfigManager) -> dict[str, Any]:
+def _tool_get_user(arguments: dict[str, Any], config: ConfigManager, loaded: ConfigSnapshot) -> dict[str, Any]:
     username = arguments["username"]
     user = config.get_user(username)
     if user:
@@ -59,7 +59,7 @@ def _tool_get_user(arguments: dict[str, Any], config: ConfigManager) -> dict[str
     return {"found": False, "username": username, "users_revision": config.users_revision}
 
 
-def _tool_create_user(arguments: dict[str, Any], config: ConfigManager) -> dict[str, Any]:
+def _tool_create_user(arguments: dict[str, Any], config: ConfigManager, loaded: ConfigSnapshot) -> dict[str, Any]:
     username = arguments["username"]
     if username in config.users:
         return {"success": False, "error": f"User '{username}' already exists"}
@@ -69,7 +69,7 @@ def _tool_create_user(arguments: dict[str, Any], config: ConfigManager) -> dict[
     return {"success": True, "user": _user_to_dict(user)}
 
 
-def _tool_create_persona_user(arguments: dict[str, Any], config: ConfigManager) -> dict[str, Any]:
+def _tool_create_persona_user(arguments: dict[str, Any], config: ConfigManager, loaded: ConfigSnapshot) -> dict[str, Any]:
     username = arguments["username"]
     if username in config.users:
         return {"success": False, "error": f"User '{username}' already exists"}
@@ -79,7 +79,7 @@ def _tool_create_persona_user(arguments: dict[str, Any], config: ConfigManager) 
     return {"success": True, "user": _user_to_dict(user)}
 
 
-def _tool_delete_user(arguments: dict[str, Any], config: ConfigManager) -> dict[str, Any]:
+def _tool_delete_user(arguments: dict[str, Any], config: ConfigManager, loaded: ConfigSnapshot) -> dict[str, Any]:
     username = arguments["username"]
     if username not in config.users:
         return {"success": False, "error": f"User '{username}' not found"}
@@ -87,7 +87,7 @@ def _tool_delete_user(arguments: dict[str, Any], config: ConfigManager) -> dict[
     return {"success": True, "deleted": username}
 
 
-def _tool_update_user(arguments: dict[str, Any], config: ConfigManager) -> dict[str, Any]:
+def _tool_update_user(arguments: dict[str, Any], config: ConfigManager, loaded: ConfigSnapshot) -> dict[str, Any]:
     username = arguments["username"]
     if username not in config.users:
         return {"success": False, "error": f"User '{username}' not found"}

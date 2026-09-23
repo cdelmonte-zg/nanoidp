@@ -8,13 +8,13 @@ from typing import Any
 
 import jwt as pyjwt
 
-from ..config import ConfigManager
+from ..config import ConfigManager, ConfigSnapshot
 from ..services import TokenService, get_crypto_service
 from .normalize import _normalize_str_list
 
 
 # Token Operations
-def _tool_generate_token(arguments: dict[str, Any], config: ConfigManager) -> dict[str, Any]:
+def _tool_generate_token(arguments: dict[str, Any], config: ConfigManager, loaded: ConfigSnapshot) -> dict[str, Any]:
     username = arguments["username"]
     user = config.get_user(username)
     if not user:
@@ -28,7 +28,7 @@ def _tool_generate_token(arguments: dict[str, Any], config: ConfigManager) -> di
     if client_id is not None and config.get_client(client_id) is None:
         return {"success": False, "error": f"Client '{client_id}' not found"}
 
-    token_service = TokenService(config)
+    token_service = TokenService(config, loaded)
     token_response = token_service.create_token(
         user=user,
         exp_minutes=arguments.get("expires_in_minutes", config.settings.token_expiry_minutes),
@@ -84,7 +84,7 @@ def _tool_generate_token(arguments: dict[str, Any], config: ConfigManager) -> di
     return result
 
 
-def _tool_decode_token(arguments: dict[str, Any], config: ConfigManager) -> dict[str, Any]:
+def _tool_decode_token(arguments: dict[str, Any], config: ConfigManager, loaded: ConfigSnapshot) -> dict[str, Any]:
     token = arguments["token"]
     try:
         payload = pyjwt.decode(token, options={"verify_signature": False})
@@ -93,7 +93,7 @@ def _tool_decode_token(arguments: dict[str, Any], config: ConfigManager) -> dict
         return {"success": False, "error": f"Failed to decode token: {str(e)}"}
 
 
-def _tool_verify_token(arguments: dict[str, Any], config: ConfigManager) -> dict[str, Any]:
+def _tool_verify_token(arguments: dict[str, Any], config: ConfigManager, loaded: ConfigSnapshot) -> dict[str, Any]:
     token = arguments["token"]
     crypto = get_crypto_service()
     # audience: optional (#187). Omitted -> verify signature and expiry only

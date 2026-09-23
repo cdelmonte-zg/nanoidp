@@ -117,7 +117,7 @@ class TestGroupsAuthorities:
     @pytest.fixture
     def token_service(self, app):
         with app.app_context():
-            return get_token_service()
+            return get_token_service(get_config().snapshot)
 
     def test_groups_get_group_prefix(self, token_service, app):
         user = User(username="u", password="p", groups=["engineering", "ONCALL"])
@@ -149,7 +149,7 @@ class TestGroupsClaim:
     @pytest.fixture
     def token_service(self, app):
         with app.app_context():
-            return get_token_service()
+            return get_token_service(get_config().snapshot)
 
     def test_access_token_contains_groups(self, token_service, app):
         user = User(username="u", password="p", groups=["ENGINEERING"])

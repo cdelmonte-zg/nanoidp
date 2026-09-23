@@ -142,7 +142,7 @@ class TestTheImperativeLegsCarryEveryField:
         from nanoidp.mcp_server.handlers_users import _tool_update_user
         arguments = recording_arguments({"username": "admin"})
         with app.app_context():
-            result = _tool_update_user(arguments, get_config())
+            result = _tool_update_user(arguments, get_config(), get_config().snapshot)
 
         assert result["success"] is True
         assert arguments.asked == _MODEL_FIELDS - {"username", "totp_secret"}

@@ -20,6 +20,7 @@ from ..services import (
 )
 from ..services.runtime_store import runtime_store_report
 from ._auth import management_secret_required_for_api
+from ._config import request_config
 from ._identity_views import user_summary
 from ._issuer import effective_issuer, effective_saml_entity_id, effective_saml_sso_url
 
@@ -39,7 +40,7 @@ def health() -> ResponseReturnValue:
 def list_users() -> ResponseReturnValue:
     """List the effective users (without passwords): declared and runtime
     (#192), each with its ``origin``."""
-    resolved = identities_for(get_config()).list_users()
+    resolved = identities_for(get_config(), request_config()).list_users()
     users = [user_summary(entry.user, entry.origin) for entry in resolved]
     return jsonify({"users": users, "count": len(users)})
 
@@ -48,12 +49,12 @@ def list_users() -> ResponseReturnValue:
 def get_user(username: str) -> ResponseReturnValue:
     """Get details for an effective user, declared or runtime (#192)."""
     config = get_config()
-    resolved = identities_for(config).resolve_user(username)
+    resolved = identities_for(config, request_config()).resolve_user(username)
     if resolved is None:
         return jsonify({"error": "User not found"}), 404
     user = resolved.user
 
-    token_service = get_token_service()
+    token_service = get_token_service(request_config())
     authorities = token_service.build_authorities(user)
 
     return jsonify({
@@ -77,7 +78,7 @@ def generate_token(username: str) -> ResponseReturnValue:
     """Generate a token for a user (for testing). The user and the optional
     client resolve like any protocol lookup, runtime ones included (#192)."""
     config = get_config()
-    identities = identities_for(config)
+    identities = identities_for(config, request_config())
     user = identities.get_user(username)
     if not user:
         return jsonify({"error": "User not found"}), 404
@@ -93,7 +94,7 @@ def generate_token(username: str) -> ResponseReturnValue:
     if client_id is not None and identities.get_client(client_id) is None:
         return jsonify({"error": f"Client '{client_id}' not found"}), 400
 
-    token_service = get_token_service()
+    token_service = get_token_service(request_config())
     # Same effective-issuer resolution as /token and discovery (#133): a
     # token minted here must verify against the discovery document that the
     # requesting hostname was just served.
@@ -143,15 +144,19 @@ def clear_audit() -> ResponseReturnValue:
 def get_configuration() -> ResponseReturnValue:
     """Get current configuration (excluding secrets)."""
     config = get_config()
-    settings = config.settings
+    # One configuration for the whole document (#406): reading the manager
+    # field by field reported a version, a strictness, a set of settings and
+    # a user count that no single load ever had together.
+    loaded = request_config()
+    settings = loaded.settings
 
     return jsonify({
         # Config schema version the loaded files follow (#175); absent = 1.
-        "config_version": config.config_version,
+        "config_version": loaded.config_version,
         # Effective validation mode (#175 piece 4): strict from the CLI flag
         # or settings.yaml's config_validation; reported like security_profile
         # so the contract is observable.
-        "config_validation": "strict" if config.strict_config else "warn",
+        "config_validation": "strict" if loaded.strict_config else "warn",
         # Where runtime state is kept (#354): chosen when the process starts,
         # reported so that a client knows which store it is talking to.
         "runtime": runtime_store_report(settings, config.config_dir),
@@ -232,7 +237,7 @@ def get_configuration() -> ResponseReturnValue:
         # Hooks and plugins (#185): what is loaded, from which surface, and
         # the failure counters. YAML-only; reported, never settable here.
         "hooks": config.hooks.describe(),
-        "users_count": len(config.users),
+        "users_count": len(loaded.users),
     })
 
 
@@ -254,8 +259,10 @@ def reload_config() -> ResponseReturnValue:
         # the running configuration stays in effect.
         return jsonify({"status": "error", "error": exc.message, "kind": exc.kind}), 422
     return jsonify({
+        # The load this call just committed, not the configuration the
+        # request began with (#406): what a reload reports is its own result.
         "status": "reloaded",
-        "users_count": len(config.users),
+        "users_count": len(config.snapshot.users),
     })
 
 

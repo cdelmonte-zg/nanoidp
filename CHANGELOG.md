@@ -8,6 +8,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **An operation reads one configuration, the one it began with** (#406,
+  second of two steps). A request read the manager again at each use, so a
+  load landing between two of those reads gave it a configuration that never
+  existed: measured at `/token`, where a load between the read of
+  `default_user` and the lookup of that user made the grant mint for the
+  synthetic `service-account`, a subject neither configuration named, in a
+  token that verifies. An externally visible operation now chooses one
+  published configuration, right after freshness is established, and carries
+  that reference through: an HTTP request in the hook that establishes
+  freshness, an MCP tool call at the start of the call, which are the two
+  implementations of one rule rather than two rules. The identity resolver
+  and the token service take it, so nothing resolves a user or builds a
+  response from a load the rest of the operation never read, and the
+  management gate reads it too, rather than deciding on one load while the
+  handler it guards works from another. `GET /api/config` and the MCP
+  `get_settings` tool serialise that one reference instead of four separate
+  reads. What stays deliberately current is unchanged and says so where it
+  is: whether the client-metadata capability is offered at all, the check
+  that refuses a runtime name the files declare right now, and the lookup
+  that consults the current declaration when neither this operation's
+  configuration nor the store has the name, so that a load declaring a name
+  and reconciling its runtime object away is never observed as neither.
+
 - **A loaded configuration is published as one value** (#406, first of two
   steps). A load was transactional on the way in and not on the way out: it
   validated both files before changing anything, and then published what it

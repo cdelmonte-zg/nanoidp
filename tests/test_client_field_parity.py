@@ -101,7 +101,7 @@ class TestTheImperativeLegsCarryEveryField:
 
         arguments = recording_arguments({"client_id": "demo-client"})
         with app.app_context():
-            result = _tool_update_client(arguments, get_config())
+            result = _tool_update_client(arguments, get_config(), get_config().snapshot)
 
         assert result["success"] is True
         assert arguments.asked == _MODEL_FIELDS - {"client_id"}

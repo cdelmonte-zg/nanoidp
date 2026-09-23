@@ -463,11 +463,11 @@ class TestSecondFactor:
             binding = session["authorize_binding"]
         original = oauth_routes.authenticate_interactively
 
-        def first_submission_wins(config, *, username, password):
+        def first_submission_wins(config, loaded, *, username, password):
             get_authorization_transaction_store().mark_primary_verified(
                 transaction_id, binding, username=concurrent_user, amr=["pwd"]
             )
-            return original(config, username=username, password=password)
+            return original(config, loaded, username=username, password=password)
 
         monkeypatch.setattr(oauth_routes, "authenticate_interactively", first_submission_wins)
 

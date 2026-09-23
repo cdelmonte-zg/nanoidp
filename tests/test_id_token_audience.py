@@ -37,7 +37,7 @@ def token_service(app):
     """Token service bound to the active (file-backed) config singleton."""
     with app.app_context():
         get_config()  # ensure the config singleton is initialised first
-        return get_token_service()
+        return get_token_service(get_config().snapshot)
 
 
 @pytest.fixture

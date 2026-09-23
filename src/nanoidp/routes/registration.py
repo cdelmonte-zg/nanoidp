@@ -51,6 +51,7 @@ from ..services.runtime_repository import delete_if
 from ..services.runtime_store import RuntimeObjectExists
 from ._audit import audit_event
 from ._auth import no_store
+from ._config import request_config
 from ._issuer import effective_issuer
 
 registration_bp = Blueprint("registration", __name__)
@@ -155,7 +156,7 @@ def _audit(event_type: str, status: str, client_id: str, **details: Any) -> None
 def register() -> ResponseReturnValue:
     """RFC 7591 client registration."""
     settings = get_config().settings
-    identities = identities_for(get_config())
+    identities = identities_for(get_config(), request_config())
 
     body = request.get_json(silent=True)
     try:
@@ -257,7 +258,7 @@ def read_registration(client_id: str) -> ResponseReturnValue:
     The response carries the registration access token again. It is the one
     the caller has just presented, which is why nothing has to keep it.
     """
-    identities = identities_for(get_config())
+    identities = identities_for(get_config(), request_config())
     authenticated = _authenticated(client_id, identities)
     if authenticated is None:
         # Not audited: the audit is a bounded deque, and anyone can reach
@@ -279,7 +280,7 @@ def read_registration(client_id: str) -> ResponseReturnValue:
 @registration_bp.route("/register/<client_id>", methods=["DELETE"])
 def delete_registration(client_id: str) -> ResponseReturnValue:
     """RFC 7592 delete: the client goes with the registration."""
-    identities = identities_for(get_config())
+    identities = identities_for(get_config(), request_config())
     authenticated = _authenticated(client_id, identities)
     if authenticated is None:
         return _unauthorized()

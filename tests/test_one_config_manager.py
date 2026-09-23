@@ -49,10 +49,10 @@ def _password_grant(client) -> str:
 class TestTokenService:
     def test_token_service_follows_the_current_manager(self, tmp_path):
         first = init_config(str(_config_dir(tmp_path / "a", tmp_path / "keys-a")))
-        assert get_token_service().config is first
+        assert get_token_service(get_config().snapshot).config is first
 
         second = init_config(str(_config_dir(tmp_path / "b", tmp_path / "keys-b")))
-        assert get_token_service().config is second
+        assert get_token_service(get_config().snapshot).config is second
 
     def test_tokens_are_signed_with_the_key_the_jwks_serves_after_keys_dir_changes(
         self, tmp_path
@@ -87,7 +87,7 @@ class TestTokenService:
         # after the first would see the other key.
         monkeypatch.setattr(token_module, "get_crypto_service", lambda: next(services))
 
-        response = get_token_service().create_token(
+        response = get_token_service(get_config().snapshot).create_token(
             config.get_user("admin"), scope="openid", client_id="demo-client", issue_refresh_token=True
         )
 

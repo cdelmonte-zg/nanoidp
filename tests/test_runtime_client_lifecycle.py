@@ -488,7 +488,7 @@ class TestTheManagementViewDescribesOneInstance:
         from nanoidp.services.identities import identities_for
 
         def swap():
-            identities = identities_for(get_config())
+            identities = identities_for(get_config(), get_config().snapshot)
             application.test_client().delete(f"/api/runtime/clients/{client_id}")
             created = identities.create_runtime_client_entry(
                 OAuthClient(

@@ -123,7 +123,7 @@ class TestTokenServiceFlag:
 
     def test_flag_false_omits_the_refresh_token(self, app, user):
         with app.app_context():
-            result = get_token_service().create_token(user, issue_refresh_token=False)
+            result = get_token_service(get_config().snapshot).create_token(user, issue_refresh_token=False)
 
         assert "refresh_token" not in result
         assert "access_token" in result
@@ -132,7 +132,7 @@ class TestTokenServiceFlag:
         """#278: the default follows the binding - a bound token gets a
         refresh token without the caller asking, an unbound one gets none."""
         with app.app_context():
-            result = get_token_service().create_token(user, client_id="demo-client")
+            result = get_token_service(get_config().snapshot).create_token(user, client_id="demo-client")
 
         payload = pyjwt.decode(result["refresh_token"], options={"verify_signature": False})
         assert payload["token_use"] == "refresh"
@@ -141,7 +141,7 @@ class TestTokenServiceFlag:
     def test_flag_false_leaves_the_id_token_alone(self, app, user):
         """The refresh decision is independent of the ID Token decision."""
         with app.app_context():
-            result = get_token_service().create_token(
+            result = get_token_service(get_config().snapshot).create_token(
                 user, scope="openid", client_id="demo-client", issue_refresh_token=False
             )
 

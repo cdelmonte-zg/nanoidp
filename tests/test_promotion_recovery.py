@@ -61,13 +61,17 @@ def _declare(config_dir, username):
     os.replace(replacement, users)
 
 
+def _a_peer(manager, store):
+    return IdentityResolver(manager, manager.snapshot, store)
+
+
 def _peer(config_dir, store, reconciling=True):
     """This process, as a peer of the one that died: its own configuration
     over the directory, reconciling after its loads unless told not to (so
     that what an operation recovers is the operation's), and the store."""
     runtime_store.publish_runtime_store(store, ("memory",))
     config = ConfigManager(str(config_dir), after_load=reconcile_runtime_identities if reconciling else None)
-    return config, IdentityResolver(config, store)
+    return config, IdentityResolver(config, config.snapshot, store)
 
 
 def _recovered(store):
@@ -95,7 +99,7 @@ def _promoter(config_dir, store_path, names, when, ready, out):
     store = SqliteRuntimeStore(store_path)
     runtime_store.publish_runtime_store(store, ("memory",))
     config = init_config(config_dir)
-    identities = IdentityResolver(config, store)
+    identities = IdentityResolver(config, config.snapshot, store)
     for name in names:
         identities.create_runtime_user(User(username=name, password="pw"))
     for name in names:
@@ -122,7 +126,8 @@ def _promoting(config_dir, store_path, ready, out):
 
     store = SqliteRuntimeStore(store_path)
     runtime_store.publish_runtime_store(store, ("memory",))
-    identities = IdentityResolver(init_config(config_dir), store)
+    config = init_config(config_dir)
+    identities = IdentityResolver(config, config.snapshot, store)
     identities.create_runtime_user(User(username="x", password="pw"))
     stopped = threading.Event()
 
@@ -304,7 +309,7 @@ class TestADeadWriter:
         _kill(process)
         store = SqliteRuntimeStore(store_path)
         runtime_store.publish_runtime_store(store, ("memory",))
-        peers = [IdentityResolver(ConfigManager(str(config_dir)), store) for _ in range(2)]
+        peers = [_a_peer(ConfigManager(str(config_dir)), store) for _ in range(2)]
         start, outcomes = threading.Barrier(2), []
 
         def delete(identities):

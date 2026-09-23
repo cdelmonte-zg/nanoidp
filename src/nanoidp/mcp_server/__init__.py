@@ -57,7 +57,13 @@ from mcp.types import (
 )
 
 from .. import __version__
-from ..config import ConfigManager, ConfigurationRejected, get_config_if_loaded, init_config
+from ..config import (
+    ConfigManager,
+    ConfigSnapshot,
+    ConfigurationRejected,
+    get_config_if_loaded,
+    init_config,
+)
 from ..config_writer import LockUnavailableError
 from ..security import verify_secret
 from ..services import activate_services, get_audit_log
@@ -158,24 +164,25 @@ MUTATING_TOOLS = {
 
 
 def _check_admin_secret(
-    config: ConfigManager, tool_name: str, arguments: dict[str, Any]
+    loaded: ConfigSnapshot, tool_name: str, arguments: dict[str, Any]
 ) -> Tuple[bool, str]:
     """Check if the management secret is required and valid for this tool.
 
-    Reads the ConfigManager it is given (callers pass _ensure_config()'s
-    return value) rather than looking one up, like every tool handler. Only
+    Reads the configuration this call began with (#406), like every tool
+    handler: the gate and the tool must not disagree about which
+    configuration is in force. Only
     gates MUTATING_TOOLS, and pops 'admin_secret' off arguments so downstream
     tool schemas never see it.
 
     Args:
-        config: The ConfigManager serving this request (from _ensure_config())
+        loaded: The configuration this call began with
         tool_name: Name of the tool being called
         arguments: Tool arguments (admin_secret will be removed if present)
 
     Returns:
         Tuple of (allowed: bool, error_message: str)
     """
-    secret = config.settings.management_secret
+    secret = loaded.settings.management_secret
     if not secret:
         return True, ""  # No secret configured = allow all (dev mode)
 
@@ -334,6 +341,10 @@ async def call_tool(ctx: ServerRequestContext, params: CallToolRequestParams) ->
         # are looked at here, once per call (#354, step 4a).
         try:
             fresh_configuration()
+            # The configuration this call reads, chosen once freshness is
+            # established and carried through it (#406): the same invariant
+            # as an HTTP request, in the other implementation of it.
+            loaded = config.snapshot
         except LockUnavailableError as exc:
             return _reject(
                 name,
@@ -355,7 +366,7 @@ async def call_tool(ctx: ServerRequestContext, params: CallToolRequestParams) ->
             return _reject(name, "MCP_READONLY_MODE", error_msg)
 
         # Check admin secret for mutating operations
-        allowed, error_msg = _check_admin_secret(config, name, arguments)
+        allowed, error_msg = _check_admin_secret(loaded, name, arguments)
         if not allowed:
             return _reject(name, "MCP_ADMIN_SECRET_REQUIRED", error_msg)
 
@@ -372,7 +383,7 @@ async def call_tool(ctx: ServerRequestContext, params: CallToolRequestParams) ->
             message = f"{field}: {error.message}" if field else error.message
             return _reject(name, "MCP_INVALID_ARGUMENTS", f"Input validation error: {message}")
 
-        result = await _execute_tool(name, arguments, config)
+        result = await _execute_tool(name, arguments, config, loaded)
         # Domain-level failures ({"success": False, ...} or an "error" key,
         # e.g. "user not found") are results, not exceptions, so they don't
         # go through the except branch below - but they still failed and must
@@ -413,7 +424,7 @@ server = Server(
 
 # One handler per tool, dispatched by _execute_tool. tests/test_mcp.py
 # asserts this table and _TOOLS declare exactly the same names.
-_TOOL_HANDLERS: dict[str, Callable[[dict[str, Any], ConfigManager], dict[str, Any]]] = {
+_TOOL_HANDLERS: dict[str, Callable[[dict[str, Any], ConfigManager, ConfigSnapshot], dict[str, Any]]] = {
     "list_users": _tool_list_users,
     "get_user": _tool_get_user,
     "create_user": _tool_create_user,
@@ -444,9 +455,14 @@ _TOOL_HANDLERS: dict[str, Callable[[dict[str, Any], ConfigManager], dict[str, An
 
 
 async def _execute_tool(
-    name: str, arguments: dict[str, Any], config: ConfigManager
+    name: str, arguments: dict[str, Any], config: ConfigManager, loaded: Optional[ConfigSnapshot] = None
 ) -> dict[str, Any]:
-    """Execute a tool by dispatching to its handler in _TOOL_HANDLERS."""
+    """Execute a tool by dispatching to its handler in _TOOL_HANDLERS.
+
+    ``loaded`` is the configuration this call began with (#406); call_tool
+    takes it after establishing freshness and passes it. A caller that
+    dispatches directly gets the current one, which is one configuration
+    too, just chosen here rather than at the start of the call."""
     handler = _TOOL_HANDLERS.get(name)
     if handler is None:
         # Unreachable on the protocol path: call_tool rejects an unknown name
@@ -454,7 +470,7 @@ async def _execute_tool(
         # returning a divergent {"error": ...} shape) makes a direct mis-call
         # a clear bug.
         raise ValueError(f"Unknown tool: {name}")
-    return handler(arguments, config)
+    return handler(arguments, config, loaded if loaded is not None else config.snapshot)
 
 
 # =============================================================================
