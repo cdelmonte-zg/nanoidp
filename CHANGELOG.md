@@ -16,7 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   one load's users with another's settings. They are published as one frozen
   value now, assigned once, and the manager's attributes read through to it,
   so nothing outside changes. `persistable_settings()`, which composed the
-  settings with the values the file declared from two reads, takes one. What
+  settings with the values the file declared from two reads, takes one, and
+  so do the writers: a coordinated save cannot write the users of one load
+  with the settings of another. What
   is immutable is the value, not the objects it refers to: a load builds new
   ones, while the surfaces that edit a configuration in memory before saving
   it still change those in place, and where that boundary lies belongs to the
