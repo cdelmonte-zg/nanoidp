@@ -1255,7 +1255,10 @@ class TestAnOperationReadsOneConfiguration:
         answer = app.test_client().post("/token", data={"grant_type": "client_credentials"}, headers=header)
 
         assert loaded_again, "the load was never placed in the window"
-        assert answer.status_code in (400, 401), answer.data
+        # Basic credentials that this request's configuration does not know:
+        # the authentication refusal, not some other error.
+        assert answer.status_code == 401, answer.data
+        assert answer.get_json()["error"] == "invalid_client"
         # The request after it authenticates:
         assert app.test_client().post(
             "/token", data={"grant_type": "client_credentials"}, headers=header

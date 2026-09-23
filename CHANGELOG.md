@@ -28,10 +28,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to. `GET /api/config` and the MCP
   `get_settings` tool serialise that one reference instead of four separate
   reads. What stays deliberately current is unchanged and says so where it
-  is: whether the client-metadata capability is offered at all, the check
-  that refuses a runtime name the files declare right now, and the lookup
-  that consults the current declaration when neither this operation's
-  configuration nor the store has the name. **A contract changes with it:** a
+  is: whether the client-metadata and dynamic-registration capabilities are
+  offered at all, and the check that refuses a runtime name the files declare
+  right now. **A contract changes with it:** a
   lookup that spans a load which declares a name and reconciles its runtime
   object away could once find one of the two, because both sides were read
   live; the declared side is now the operation's, with no fallback, because

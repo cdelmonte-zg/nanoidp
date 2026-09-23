@@ -163,9 +163,10 @@ class IdentityResolver:
 
     It holds both the configuration this operation reads (``loaded``, one
     published value, #406) and the manager, because a few decisions are the
-    server's and not the operation's: the CIMD switch, and the fallback of
-    resolve_client. Those read ``self.config.settings`` on purpose and say
-    so where they do; everything else reads ``self.loaded``.
+    server's and not the operation's: the CIMD switch, and the check that
+    refuses a runtime name the files declare right now. Those read the
+    manager on purpose and say so where they do; everything else reads
+    ``self.loaded``.
 
     ``loaded`` is not optional. A call site that forgot it would read the
     current configuration silently, which is the defect #406 closes.
@@ -179,9 +180,11 @@ class IdentityResolver:
     # ---- users ----------------------------------------------------------
 
     def resolve_user(self, username: str) -> Optional[ResolvedUser]:
-        # The store is read before the declared users: a reload assigns the
-        # declared users before it removes a runtime object they now shadow,
-        # so a lookup spanning that reload finds one of the two, never neither.
+        # The store first, then the declaration. Both were once read live,
+        # and the order was the guarantee: a reload assigned the declared
+        # users before it removed a runtime object they now shadow, so a
+        # lookup spanning it found one of the two. The declaration is this
+        # operation's now, so that guarantee is gone with the fallback below.
         runtime = self.store.users.get(username)
         # The declaration is this operation's, with no fallback to the current
         # one (#406): "neither the snapshot nor the store has it" does not
@@ -205,12 +208,13 @@ class IdentityResolver:
         # Store first, as in resolve_user: a listing spanning a reload that
         # declares a runtime object's name shows one of the two.
         #
-        # Both sides are read live here, deliberately (#406, first slice): a
-        # lookup can consult the current declaration for the one name it was
-        # asked about, and a listing cannot, so composing this operation's
-        # declaration with the live store would drop a name a reload has just
-        # declared and reconciled away. The composition rule a request-
-        # consistent listing needs is the second slice's.
+        # Both sides are read live here, deliberately (#406, first slice):
+        # what a request-consistent listing should show when a load lands
+        # under it is a rule of its own, not settled by this step, and a
+        # listing composed from this operation's declaration and the live
+        # store would answer with neither half of a name that load declared
+        # and reconciled away. The rule belongs to the work that closes
+        # #406, with the continuity question.
         runtime_users = self.store.users.list()
         declared_users = self.config.users
         declared = [ResolvedUser(user, "declared") for user in declared_users.values()]
