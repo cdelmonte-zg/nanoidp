@@ -19,6 +19,7 @@ import os
 import sqlite3
 import stat
 import threading
+import time
 
 import pytest
 
@@ -190,6 +191,299 @@ class TestTheFile:
 
         assert [kind for kind, _ in results] == ["ok"] * 4, results
         assert sorted(user.username for user in _store(path).users.list()) == ["u0", "u1", "u2", "u3"]
+
+
+class _Answer:
+    """What sqlite3 hands back from execute(): something with fetchone()."""
+
+    def __init__(self, value):
+        self.value = value
+
+    def fetchone(self):
+        return (self.value,)
+
+
+class TestWalActivationUnderContention:
+    """Putting a file in WAL needs it to itself for a moment, and SQLite
+    answers contention there in two ways (measured): against a plain reader
+    the busy handler waits, and one attempt can spend the whole timeout;
+    against a connection that has written, and so holds the file reserved,
+    it fails at once. Several processes creating one store are the second
+    shape, and that is what CI met (#354).
+
+    These go at the switch itself rather than through the constructor: a
+    constructor's own BEGIN IMMEDIATE waits for whoever holds the file, so
+    by the time it reaches the switch the contention it was given is over.
+    The composition of real processes is pinned by
+    TestTheFile::test_processes_opening_a_new_file_together_all_get_one_store.
+    """
+
+    @staticmethod
+    def _database_of(path):
+        return _store(path)._database
+
+    @staticmethod
+    def _in_rollback_journal(path):
+        connection = sqlite3.connect(path, isolation_level=None)
+        connection.execute("PRAGMA journal_mode = delete")
+        connection.close()
+
+    @staticmethod
+    def _holding_it_reserved(path, seconds, held):
+        def hold():
+            connection = sqlite3.connect(path, timeout=10, isolation_level=None)
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute("UPDATE meta SET value = value")
+            held.set()
+            time.sleep(seconds)
+            connection.execute("COMMIT")
+            connection.close()
+
+        return threading.Thread(target=hold, daemon=True)
+
+    def _switch(self, path, database):
+        connection = sqlite3.connect(path, timeout=10, isolation_level=None)
+        connection.execute(f"PRAGMA busy_timeout = {sqlite_module._BUSY_TIMEOUT_MS}")
+        try:
+            began = time.monotonic()
+            database._activate_wal(connection)
+            return time.monotonic() - began
+        finally:
+            connection.close()
+
+    def test_a_file_another_process_holds_is_waited_for(self, tmp_path):
+        path = tmp_path / "runtime.db"
+        database = self._database_of(path)
+        self._in_rollback_journal(path)
+        held = threading.Event()
+        holder = self._holding_it_reserved(str(path), 1.2, held)
+        holder.start()
+        assert held.wait(5)
+
+        waited = self._switch(path, database)
+
+        holder.join(10)
+        assert sqlite3.connect(path).execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+        assert waited >= 0.5, "the switch did not wait for the other side"
+
+    def test_a_file_held_past_the_budget_is_the_store_held(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(sqlite_module, "_BUSY_TIMEOUT_MS", 400)
+        path = tmp_path / "runtime.db"
+        database = self._database_of(path)
+        self._in_rollback_journal(path)
+        held = threading.Event()
+        holder = self._holding_it_reserved(str(path), 3, held)
+        holder.start()
+        assert held.wait(5)
+
+        began = time.monotonic()
+        with pytest.raises(RuntimeStoreUnavailable, match="held by another process"):
+            self._switch(path, database)
+        waited = time.monotonic() - began
+
+        holder.join(10)
+        assert waited >= 0.4, "it gave up before its budget was spent"
+        assert waited < 3, "it waited for the other side instead of its budget"
+        assert sqlite3.connect(path).execute("PRAGMA journal_mode").fetchone()[0] == "delete"
+
+    @staticmethod
+    def _reading_it(path, seconds, held):
+        """The other shape: a reader, which the busy handler does wait for,
+        long enough to spend a whole budget inside one attempt."""
+
+        def read():
+            connection = sqlite3.connect(path, timeout=10, isolation_level=None)
+            connection.execute("BEGIN")
+            connection.execute("SELECT count(*) FROM meta").fetchall()
+            held.set()
+            time.sleep(seconds)
+            connection.execute("COMMIT")
+            connection.close()
+
+        return threading.Thread(target=read, daemon=True)
+
+    def test_a_reader_does_not_stretch_the_budget(self, tmp_path, monkeypatch):
+        """The budget is the whole wait, not one attempt's: an attempt that
+        waited for the reader itself would answer when the reader is done,
+        however long that is."""
+        monkeypatch.setattr(sqlite_module, "_BUSY_TIMEOUT_MS", 400)
+        path = tmp_path / "runtime.db"
+        database = self._database_of(path)
+        self._in_rollback_journal(path)
+        held = threading.Event()
+        reader = self._reading_it(str(path), 2.5, held)
+        reader.start()
+        assert held.wait(5)
+
+        began = time.monotonic()
+        with pytest.raises(RuntimeStoreUnavailable, match="held by another process"):
+            self._switch(path, database)
+        waited = time.monotonic() - began
+
+        reader.join(10)
+        assert 0.4 <= waited < 2, f"the budget was not the whole wait ({waited:.2f}s)"
+
+    class _AnsweringTheSwitch:
+        """A connection whose switch answers with a mode instead of raising,
+        which SQLite documents as a refusal too: the conversion did not
+        happen and the file is in the mode it names."""
+
+        def __init__(self, answers, failing=None, busy_first=False, busy_always=False):
+            self.answers = list(answers)
+            self.failing = failing
+            self.busy_first = busy_first
+            self.busy_always = busy_always
+            self.switches = 0
+            self.timeouts = []
+
+        def execute(self, statement):
+            if statement.startswith("PRAGMA busy_timeout ="):
+                self.timeouts.append(int(statement.split("=")[1]))
+                return _Answer("0")
+            if statement.startswith("PRAGMA journal_mode ="):
+                self.switches += 1
+                if self.failing is not None:
+                    raise self.failing
+                if self.busy_always or (self.busy_first and self.switches == 1):
+                    raise sqlite3.OperationalError("database is locked")
+                answer = self.answers.pop(0) if self.answers else "delete"
+            else:
+                answer = "delete"
+            return _Answer(answer)
+
+    def test_a_switch_that_answers_another_mode_is_tried_again(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(sqlite_module, "_BUSY_TIMEOUT_MS", 400)
+        database = self._database_of(tmp_path / "runtime.db")
+        connection = self._AnsweringTheSwitch(["delete", "delete", "wal"])
+
+        database._activate_wal(connection)
+
+        assert connection.switches == 3
+
+    def test_an_answer_is_read_however_it_is_spelled(self, tmp_path, monkeypatch):
+        """The mode is SQLite's word, and this store compares it as one
+        spelling, here and where the file's mode is read."""
+        monkeypatch.setattr(sqlite_module, "_BUSY_TIMEOUT_MS", 200)
+        database = self._database_of(tmp_path / "runtime.db")
+        connection = self._AnsweringTheSwitch(["WAL"])
+
+        database._activate_wal(connection)
+
+        assert connection.switches == 1
+
+    def test_no_attempt_is_given_more_than_what_is_left(self, tmp_path, monkeypatch):
+        """The budget is the whole wait even when the contention changes
+        shape: SQLite waits inside an attempt, so an attempt begun late must
+        be given what is left, not a budget of its own. Otherwise a run of
+        immediate refusals followed by one the handler waits out spends
+        twice what was promised."""
+        monkeypatch.setattr(sqlite_module, "_BUSY_TIMEOUT_MS", 300)
+        database = self._database_of(tmp_path / "runtime.db")
+        connection = self._AnsweringTheSwitch([], busy_always=True)
+
+        with pytest.raises(RuntimeStoreUnavailable):
+            database._activate_wal(connection)
+
+        attempts = connection.timeouts[:-1]  # the last one restores the store's own
+        assert attempts, "no attempt was given a timeout at all"
+        assert attempts[0] <= 300, f"the first attempt was given more than the budget ({attempts[0]})"
+        assert attempts[-1] < attempts[0], "a later attempt was given as much as the first"
+        assert connection.timeouts[-1] == 300, "the connection was left without its own timeout"
+
+    def test_no_attempt_begins_past_the_budget(self, tmp_path, monkeypatch):
+        """The pause between attempts is time too: a loop that looked at the
+        clock only after an attempt would begin one with nothing left, and
+        could even turn the file at a budget already spent. On a clock this
+        test moves itself, so the window is not a matter of luck."""
+
+        class _Clock:
+            def __init__(self):
+                self.now = 0.0
+
+            def monotonic(self):
+                return self.now
+
+            def sleep(self, seconds):
+                self.now += seconds
+
+        clock = _Clock()
+        monkeypatch.setattr(sqlite_module, "time", clock)
+        monkeypatch.setattr(sqlite_module, "_BUSY_TIMEOUT_MS", 300)
+        monkeypatch.setattr(sqlite_module, "_WAL_ATTEMPT_INTERVAL", 10)
+        database = self._database_of(tmp_path / "runtime.db")
+        connection = self._AnsweringTheSwitch([], busy_always=True)
+
+        with pytest.raises(RuntimeStoreUnavailable):
+            database._activate_wal(connection)
+
+        assert connection.switches == 1, "an attempt began with nothing left of the budget"
+
+    def test_a_file_that_never_turns_is_refused_as_the_file_it_is(self, tmp_path, monkeypatch):
+        """Nobody ever answered busy, so no peer is holding anything: the
+        file cannot be put in WAL, and that is what is said."""
+        monkeypatch.setattr(sqlite_module, "_BUSY_TIMEOUT_MS", 200)
+        database = self._database_of(tmp_path / "runtime.db")
+        connection = self._AnsweringTheSwitch([])
+
+        began = time.monotonic()
+        with pytest.raises(RuntimeStoreFileRefused, match="stays in journal mode 'delete'") as raised:
+            database._activate_wal(connection)
+
+        assert time.monotonic() - began >= 0.2, "it gave up before its budget was spent"
+        assert connection.switches > 1, "it tried only once"
+        assert not isinstance(raised.value, RuntimeStoreUnavailable)
+        assert "held by another process" not in str(raised.value)
+
+    def test_a_switch_that_was_busy_once_is_the_store_held(self, tmp_path, monkeypatch):
+        """Busy at least once, and never WAL afterwards: a peer had it, so
+        the answer is the one contention always gets."""
+        monkeypatch.setattr(sqlite_module, "_BUSY_TIMEOUT_MS", 200)
+        database = self._database_of(tmp_path / "runtime.db")
+        connection = self._AnsweringTheSwitch([], busy_first=True)
+
+        with pytest.raises(RuntimeStoreUnavailable, match="held by another process"):
+            database._activate_wal(connection)
+
+    @pytest.mark.skipif(not _POSIX, reason="the read-only open is POSIX here")
+    def test_a_failure_that_is_not_contention_is_itself(self, tmp_path):
+        """Only contention is worth another attempt: anything else is what
+        it is, and is not dressed as the store being held."""
+        path = tmp_path / "runtime.db"
+        database = self._database_of(path)
+        self._in_rollback_journal(path)
+        connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True, isolation_level=None)
+
+        with pytest.raises(sqlite3.OperationalError, match="readonly database") as raised:
+            database._activate_wal(connection)
+
+        connection.close()
+        assert not isinstance(raised.value, RuntimeStoreUnavailable)
+
+    def test_a_failure_that_is_not_contention_is_not_tried_again(self, tmp_path, monkeypatch):
+        """Counted rather than timed: under load a clock says nothing."""
+        monkeypatch.setattr(sqlite_module, "_BUSY_TIMEOUT_MS", 2000)
+        database = self._database_of(tmp_path / "runtime.db")
+        connection = self._AnsweringTheSwitch([], failing=sqlite3.OperationalError("attempt to write a readonly database"))
+
+        with pytest.raises(sqlite3.OperationalError, match="readonly database"):
+            database._activate_wal(connection)
+
+        assert connection.switches == 1
+
+    def test_a_file_already_in_wal_is_not_switched_again(self, tmp_path):
+        """Nothing to take the file for, so contention is no delay at all,
+        and the journal mode is the file's, not the connection's."""
+        path = tmp_path / "runtime.db"
+        database = self._database_of(path)
+        held = threading.Event()
+        holder = self._holding_it_reserved(str(path), 1.5, held)
+        holder.start()
+        assert held.wait(5)
+
+        waited = self._switch(path, database)
+
+        holder.join(10)
+        assert waited < 0.2, "a file in WAL was switched again"
 
 
 class TestTheOrderOfCreation:
