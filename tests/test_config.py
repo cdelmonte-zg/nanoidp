@@ -107,7 +107,7 @@ class TestUserAuthentication:
         """Test authentication with valid credentials."""
         with app.app_context():
             config = get_config()
-            user = identities_for(config).authenticate("admin", "admin")
+            user = identities_for(config, config.snapshot).authenticate("admin", "admin")
 
         assert user is not None
         assert user.username == "admin"
@@ -116,7 +116,7 @@ class TestUserAuthentication:
         """Test authentication with wrong password."""
         with app.app_context():
             config = get_config()
-            user = identities_for(config).authenticate("admin", "wrong-password")
+            user = identities_for(config, config.snapshot).authenticate("admin", "wrong-password")
 
         assert user is None
 
@@ -124,7 +124,7 @@ class TestUserAuthentication:
         """Test authentication with non-existent user."""
         with app.app_context():
             config = get_config()
-            user = identities_for(config).authenticate("nonexistent", "password")
+            user = identities_for(config, config.snapshot).authenticate("nonexistent", "password")
 
         assert user is None
 
@@ -133,7 +133,7 @@ class TestUserAuthentication:
         with app.app_context():
             config = get_config()
 
-        user = identities_for(config).authenticate("", "")
+        user = identities_for(config, config.snapshot).authenticate("", "")
         assert user is None
 
     def test_authenticate_rejects_passwordless_user(self, app):
@@ -144,9 +144,9 @@ class TestUserAuthentication:
             config = get_config()
             config.users["persona-user"] = User(username="persona-user")
 
-            assert identities_for(config).authenticate("persona-user", "") is None
-            assert identities_for(config).authenticate("persona-user", "anything") is None
-            assert identities_for(config).authenticate("persona-user", "persona-user") is None
+            assert identities_for(config, config.snapshot).authenticate("persona-user", "") is None
+            assert identities_for(config, config.snapshot).authenticate("persona-user", "anything") is None
+            assert identities_for(config, config.snapshot).authenticate("persona-user", "persona-user") is None
 
     def test_authenticate_passwordless_user_safe_with_bcrypt_enabled(self, app):
         """Must not crash (AttributeError on None.encode()) when
@@ -156,7 +156,7 @@ class TestUserAuthentication:
             config.users["persona-user"] = User(username="persona-user")
             config.settings.password_hashing = True
 
-            assert identities_for(config).authenticate("persona-user", "anything") is None
+            assert identities_for(config, config.snapshot).authenticate("persona-user", "anything") is None
 
 
 class TestClientManagement:
@@ -166,7 +166,7 @@ class TestClientManagement:
         """Test checking valid client credentials."""
         with app.app_context():
             config = get_config()
-            result = identities_for(config).check_client("demo-client", "demo-secret")
+            result = identities_for(config, config.snapshot).check_client("demo-client", "demo-secret")
 
         assert result is True
 
@@ -174,7 +174,7 @@ class TestClientManagement:
         """Test checking client with wrong secret."""
         with app.app_context():
             config = get_config()
-            result = identities_for(config).check_client("demo-client", "wrong-secret")
+            result = identities_for(config, config.snapshot).check_client("demo-client", "wrong-secret")
 
         assert result is False
 
@@ -182,7 +182,7 @@ class TestClientManagement:
         """Test checking non-existent client."""
         with app.app_context():
             config = get_config()
-            result = identities_for(config).check_client("nonexistent-client", "any-secret")
+            result = identities_for(config, config.snapshot).check_client("nonexistent-client", "any-secret")
 
         assert result is False
 

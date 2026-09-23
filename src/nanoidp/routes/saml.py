@@ -58,6 +58,7 @@ from ._auth import (
     session_auth_method,
     two_step_phase,
 )
+from ._config import request_config
 from ._issuer import effective_saml_entity_id, effective_saml_sso_url
 
 
@@ -583,7 +584,7 @@ def _sso_authenticate_inline(
             saml_request=saml_request_b64,
             relay_state=relay_state,
             original_verb=original_verb,
-            users=identities_for(config).persona_picker_entries(),
+            users=identities_for(config, request_config()).persona_picker_entries(),
             persona_mode=persona_mode,
             two_step_login=two_step_login,
             login_username=login_username,
@@ -610,7 +611,7 @@ def _sso_authenticate_inline(
 
     if request.form.get(PENDING_SECOND_FACTOR_FIELD) and not password_submitted:
         continuation = continue_second_factor(
-            config, purpose="saml_sso", context=second_factor_context
+            config, request_config(), purpose="saml_sso", context=second_factor_context
         )
         if continuation.error is not None:
             audit_event(
@@ -668,7 +669,7 @@ def _sso_authenticate_inline(
     # bound to this SAML request (#373); the screen carries only its id. A
     # POST carrying the password and the code together completes both here,
     # statelessly, as before.
-    login = authenticate_interactively(config, username=form_username, password=form_password)
+    login = authenticate_interactively(config, request_config(), username=form_username, password=form_password)
 
     if login.phase.pending:
         if login.phase is SecondFactorPhase.CODE_INVALID:
@@ -838,7 +839,7 @@ def sso() -> ResponseReturnValue:
         return login_page
     assert username is not None  # _sso_authenticate_inline returns one or the other
 
-    user = identities_for(config).get_user(username)
+    user = identities_for(config, request_config()).get_user(username)
     if not user:
         audit_event(
             "saml_request",
@@ -1186,7 +1187,7 @@ def attribute_query() -> ResponseReturnValue:
         )
 
         # Get user from config
-        user = identities_for(config).get_user(user_id)
+        user = identities_for(config, request_config()).get_user(user_id)
 
         if user:
             # Shared resolver (#302). Two behavior changes vs the old inline

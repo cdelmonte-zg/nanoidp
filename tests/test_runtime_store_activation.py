@@ -117,7 +117,7 @@ class TestTheStoreIsChosenByTheConfiguration:
 
         _app(_config_dir(tmp_path))
 
-        assert _tool_get_settings({}, get_config())["runtime"] == {"store": "memory"}
+        assert _tool_get_settings({}, get_config(), get_config().snapshot)["runtime"] == {"store": "memory"}
 
     def test_the_store_that_is_used_is_the_one_that_was_activated(self, tmp_path):
         _app(_config_dir(tmp_path))

@@ -7,7 +7,7 @@ Tests JWT token creation, authorities building, and token validation.
 import jwt as pyjwt
 import pytest
 
-from nanoidp.config import User
+from nanoidp.config import User, get_config
 from nanoidp.services.token import TokenService, get_token_service
 
 
@@ -18,7 +18,7 @@ class TestTokenCreation:
     def token_service(self, app):
         """Get token service instance."""
         with app.app_context():
-            return get_token_service()
+            return get_token_service(get_config().snapshot)
 
     @pytest.fixture
     def basic_user(self):
@@ -186,7 +186,7 @@ class TestAuthoritiesBuilding:
     def token_service(self, app):
         """Get token service instance."""
         with app.app_context():
-            return get_token_service()
+            return get_token_service(get_config().snapshot)
 
     def test_build_authorities_with_roles(self, token_service, app):
         """Test that roles are converted to authorities with ROLE_ prefix."""
@@ -292,7 +292,7 @@ class TestTokenInclusion:
     def token_service(self, app):
         """Get token service instance."""
         with app.app_context():
-            return get_token_service()
+            return get_token_service(get_config().snapshot)
 
     def test_token_includes_authorities(self, token_service, app):
         """Test that authorities are included in token."""
@@ -428,7 +428,7 @@ class TestGlobalTokenService:
     def test_get_token_service_returns_instance(self, app):
         """Test that get_token_service returns a TokenService."""
         with app.app_context():
-            service = get_token_service()
+            service = get_token_service(get_config().snapshot)
 
         assert isinstance(service, TokenService)
 
@@ -442,7 +442,7 @@ class TestRefreshTokenBindingInvariant:
     @pytest.fixture
     def token_service(self, app):
         with app.app_context():
-            return get_token_service()
+            return get_token_service(get_config().snapshot)
 
     @pytest.fixture
     def basic_user(self):

@@ -16,6 +16,7 @@ from . import __version__
 from .config import ConfigManager, DeclaredConfigurationUnloadable, get_config, init_config
 from .config_writer import LockUnavailableError
 from .routes import api_bp, oauth_bp, registration_bp, runtime_bp, saml_bp, ui_bp
+from .routes._config import forget_after_this_request, remember_for_this_request
 from .services import activate_services
 from .services.dynamic_registration import prune_stale_registrations
 from .services.identities import identities_for, reconcile_runtime_identities
@@ -53,7 +54,8 @@ def _after_load(config: ConfigManager) -> None:
     """
     reconcile_runtime_identities(config)
     try:
-        prune_stale_registrations(identities_for(config))
+        # The configuration this load committed: the sweep follows it.
+        prune_stale_registrations(identities_for(config, config.snapshot))
     except Exception:  # pragma: no cover - defensive, same contract as above
         logging.getLogger(__name__).exception(
             "Could not sweep dynamic registration records after a config load"
@@ -67,9 +69,15 @@ _READS_NO_CONFIGURATION = frozenset({"health", "api.health", "static"})
 
 
 def _fresh_configuration_unless_it_is_not_read() -> None:
+    """Freshness, then the configuration this request will read (#406).
+
+    Both here, in this order and in one hook: first which configuration is
+    current, then the reference this request keeps. A second hook would make
+    the order a matter of registration."""
     if request.endpoint in _READS_NO_CONFIGURATION:
         return
     fresh_configuration()
+    remember_for_this_request(get_config().snapshot)
 
 
 def create_app(
@@ -256,6 +264,8 @@ def create_app(
     # files are looked at here, once per request, not in get_config() (#354,
     # step 4a). LockUnavailableError is the 503 above.
     app.before_request(_fresh_configuration_unless_it_is_not_read)
+    # The choice belongs to the request that made it (#406).
+    app.teardown_request(forget_after_this_request)
 
     app.register_blueprint(oauth_bp)
     app.register_blueprint(saml_bp)

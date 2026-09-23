@@ -17,7 +17,7 @@ from typing import Mapping, Optional, Sequence
 from flask import Response, current_app, jsonify, make_response, redirect, request, session, url_for
 from flask.typing import ResponseReturnValue
 
-from ..config import ConfigManager, User, get_config
+from ..config import ConfigManager, ConfigSnapshot, User, get_config
 
 # Re-exported: verify_secret moved to the framework-free nanoidp.security
 # (#286) so the stdio MCP process stops importing Flask to reach it; this
@@ -31,6 +31,7 @@ from ..services.pending_second_factors import (
     get_pending_second_factor_store,
 )
 from ..services.totp import verify_totp
+from ._config import request_config
 
 
 class TwoStepPhase(str, Enum):
@@ -292,6 +293,7 @@ class InteractiveLogin:
 
 def authenticate_interactively(
     config: ConfigManager,
+    loaded: ConfigSnapshot,
     *,
     username: str,
     password: str,
@@ -307,15 +309,15 @@ def authenticate_interactively(
     failed attempt (#348 review, cleanup). Each route only renders what
     the returned ``InteractiveLogin`` says; the rule is here.
     """
-    user = identities_for(config).interactive_authenticate(username, password)
+    user = identities_for(config, loaded).interactive_authenticate(username, password)
     if user is None:
         return InteractiveLogin(None, SecondFactorPhase.NOT_REQUIRED, AuthMethod.PASSWORD, None)
-    if config.settings.persona_mode_enabled:
+    if loaded.settings.persona_mode_enabled:
         return InteractiveLogin(user, SecondFactorPhase.NOT_REQUIRED, AuthMethod.PERSONA, None)
-    return check_second_factor(config, user)
+    return check_second_factor(config, loaded, user)
 
 
-def check_second_factor(config: ConfigManager, user: User) -> InteractiveLogin:
+def check_second_factor(config: ConfigManager, loaded: ConfigSnapshot, user: User) -> InteractiveLogin:
     """The TOTP phase for a user whose password has already been verified,
     reading the submitted code from this request's form (#348).
 
@@ -325,7 +327,7 @@ def check_second_factor(config: ConfigManager, user: User) -> InteractiveLogin:
     screen does not have to send the password back: the phase rule and the
     field name stay spelled once either way.
     """
-    totp_active = config.settings.totp_active
+    totp_active = loaded.settings.totp_active
     phase = second_factor_phase(
         totp_active=totp_active,
         user=user,
@@ -403,7 +405,7 @@ class SecondFactorContinuation:
 
 
 def continue_second_factor(
-    config: ConfigManager, *, purpose: Purpose, context: Mapping[str, str]
+    config: ConfigManager, loaded: ConfigSnapshot, *, purpose: Purpose, context: Mapping[str, str]
 ) -> SecondFactorContinuation:
     """The code screen's POST on the pending second factor its form names
     (#373). The user is the one the record names: a username or password in
@@ -424,8 +426,8 @@ def continue_second_factor(
             error=SECOND_FACTOR_EXPIRED,
             reason="unknown, expired or foreign pending second factor",
         )
-    settings = config.settings
-    user = identities_for(config).get_user(record.username)
+    settings = loaded.settings
+    user = identities_for(config, loaded).get_user(record.username)
     if (
         user is None
         or settings.persona_mode_enabled
@@ -438,7 +440,7 @@ def continue_second_factor(
             reason="second factor no longer applicable to the verified user",
             username=record.username,
         )
-    login = check_second_factor(config, user)
+    login = check_second_factor(config, loaded, user)
     if login.phase.pending:
         return SecondFactorContinuation(login=login, pending=record, username=record.username)
     if store.consume(record.id, binding, purpose=purpose, context=context) is None:
@@ -513,8 +515,16 @@ def ui_login_required() -> ResponseReturnValue | None:
 
 
 def get_management_secret() -> str | None:
-    """The configured management_secret, or None when the gate is off."""
-    return get_config().settings.management_secret
+    """The management_secret this request reads, or None when the gate is
+    off (#406).
+
+    From the configuration the request chose, like every other declared
+    read: the gate deciding on one load while the handler it guards works
+    from another is the pairing this boundary exists to prevent, and the
+    gate is checked more than once in a request (the secret, then the
+    session marker, then the header).
+    """
+    return request_config().settings.management_secret
 
 
 def verify_management_secret(candidate: object) -> bool:
@@ -582,9 +592,12 @@ def management_secret_required_for_api() -> ResponseReturnValue | None:
     needing to attach the header itself (#163 review) - the header remains
     the contract for non-browser API clients, which have no such session.
     """
-    if not get_management_secret():
-        return None
+    # The method first: a safe one is not gated, and asking for the secret
+    # before that would need a configuration from a request that chose none
+    # (health and static are exempt from the boundary, #406).
     if request.method in _SAFE_METHODS:
+        return None
+    if not get_management_secret():
         return None
     if _unlocked_in_session():
         return None
@@ -602,9 +615,10 @@ def management_secret_required_for_ui() -> ResponseReturnValue | None:
     the rest of the session, the same way ui_login_required trusts
     session['user'] without re-prompting for a password on every request.
     """
-    if not get_management_secret():
-        return None
+    # The method first, as in the api gate above.
     if request.method in _SAFE_METHODS:
+        return None
+    if not get_management_secret():
         return None
     if request.endpoint in _UI_MANAGEMENT_EXEMPT_ENDPOINTS:
         return None

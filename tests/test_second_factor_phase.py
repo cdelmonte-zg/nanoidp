@@ -115,7 +115,7 @@ class TestAuthenticateInteractively:
 
     def _login(self, app, config, username, password, form=None):
         with app.test_request_context("/login", method="POST", data=form or {}):
-            return authenticate_interactively(config, username=username, password=password)
+            return authenticate_interactively(config, config.snapshot, username=username, password=password)
 
     def test_wrong_password_returns_no_user(self, app, tmp_path):
         config = self._config(tmp_path, totp=True)

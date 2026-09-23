@@ -695,10 +695,10 @@ class TestWhatACachedClientMayNotDo:
             config = get_config()
 
             assert oauth_routes._may_hold_a_refresh_token(
-                config, "https://nobody.example/m.json"
+                config, config.snapshot, "https://nobody.example/m.json"
             ) is False
-            assert oauth_routes._may_hold_a_refresh_token(config, "gone-client") is False
-            assert oauth_routes._may_hold_a_refresh_token(config, "demo-client") is True
+            assert oauth_routes._may_hold_a_refresh_token(config, config.snapshot, "gone-client") is False
+            assert oauth_routes._may_hold_a_refresh_token(config, config.snapshot, "demo-client") is True
 
     def test_a_cached_client_cannot_start_the_device_grant(
         self, app, origin, resolves_to_loopback

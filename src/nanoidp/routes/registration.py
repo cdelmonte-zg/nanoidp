@@ -51,6 +51,7 @@ from ..services.runtime_repository import delete_if
 from ..services.runtime_store import RuntimeObjectExists
 from ._audit import audit_event
 from ._auth import no_store
+from ._config import request_config
 from ._issuer import effective_issuer
 
 registration_bp = Blueprint("registration", __name__)
@@ -82,6 +83,9 @@ def _only_when_enabled() -> Optional[ResponseReturnValue]:
     off later does not delete anything - clients registered while it was on
     keep working as OAuth clients, they just stop being manageable here.
     """
+    # Whether the capability is offered at all is the server's, not the
+    # request's, as for client metadata documents (#406): turning it off
+    # takes effect at once, including for a request that began before.
     if not get_config().settings.dynamic_registration_enabled:
         return jsonify({"error": "not_found"}), 404
     return None
@@ -154,8 +158,9 @@ def _audit(event_type: str, status: str, client_id: str, **details: Any) -> None
 @registration_bp.route("/register", methods=["POST"])
 def register() -> ResponseReturnValue:
     """RFC 7591 client registration."""
-    settings = get_config().settings
-    identities = identities_for(get_config())
+    loaded = request_config()
+    settings = loaded.settings
+    identities = identities_for(get_config(), loaded)
 
     body = request.get_json(silent=True)
     try:
@@ -257,7 +262,7 @@ def read_registration(client_id: str) -> ResponseReturnValue:
     The response carries the registration access token again. It is the one
     the caller has just presented, which is why nothing has to keep it.
     """
-    identities = identities_for(get_config())
+    identities = identities_for(get_config(), request_config())
     authenticated = _authenticated(client_id, identities)
     if authenticated is None:
         # Not audited: the audit is a bounded deque, and anyone can reach
@@ -270,7 +275,7 @@ def read_registration(client_id: str) -> ResponseReturnValue:
         client,
         registration,
         token,
-        effective_issuer(get_config().settings),
+        effective_issuer(request_config().settings),
         include_secret=client.client_secret is not None,
     )
     return no_store(jsonify(body)), 200
@@ -279,7 +284,7 @@ def read_registration(client_id: str) -> ResponseReturnValue:
 @registration_bp.route("/register/<client_id>", methods=["DELETE"])
 def delete_registration(client_id: str) -> ResponseReturnValue:
     """RFC 7592 delete: the client goes with the registration."""
-    identities = identities_for(get_config())
+    identities = identities_for(get_config(), request_config())
     authenticated = _authenticated(client_id, identities)
     if authenticated is None:
         return _unauthorized()

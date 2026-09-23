@@ -223,7 +223,7 @@ class TestAuthorityPrefixConfiguration:
             source_acl=["ACL_READ"]
         )
 
-        service = TokenService(get_config())
+        service = TokenService(get_config(), get_config().snapshot)
         authorities = service.build_authorities(user)
 
         # Check that authorities include properly prefixed values
@@ -279,7 +279,7 @@ class TestEmptyAndMissingFields:
             source_acl=[]
         )
 
-        service = TokenService(get_config())
+        service = TokenService(get_config(), get_config().snapshot)
         authorities = service.build_authorities(user)
 
         # Should return empty or minimal authorities
@@ -297,7 +297,7 @@ class TestEmptyAndMissingFields:
             identity_class=None
         )
 
-        service = TokenService(get_config())
+        service = TokenService(get_config(), get_config().snapshot)
         authorities = service.build_authorities(user)
 
         # Should not have any IDENTITY_ prefixed entry

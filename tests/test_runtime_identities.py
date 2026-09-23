@@ -819,13 +819,17 @@ class TestReloadReconciliation:
         _, config_dir = app_client
         manager = get_config()
         get_identities().create_runtime_user(_user("ci-alice"))
-        real_get_user = manager.get_user
+        repository = get_runtime_store().users
+        real_get = repository.get
         reloaded = []
 
-        def get_user_then_reload(name):
-            found = real_get_user(name)
+        # The seam is after the store is read: the declared side is the
+        # operation's configuration now (#406), so the reload that declares
+        # the name and reconciles the runtime object away lands between the
+        # two reads here.
+        def get_then_reload(name):
+            found = real_get(name)
             if not reloaded:
-                # The reload lands right after this read, from another thread.
                 reloaded.append(True)
                 self._declare(config_dir, "ci-alice", "ci-alice-app")
                 worker = threading.Thread(target=manager.reload)
@@ -833,9 +837,9 @@ class TestReloadReconciliation:
                 worker.join()
             return found
 
-        monkeypatch.setattr(manager, "get_user", get_user_then_reload)
+        monkeypatch.setattr(repository, "get", get_then_reload)
         resolved = get_identities().resolve_user("ci-alice")
-        monkeypatch.setattr(manager, "get_user", real_get_user)
+        monkeypatch.setattr(repository, "get", real_get)
 
         assert reloaded
         assert resolved is not None
@@ -864,7 +868,13 @@ class TestReloadReconciliation:
         assert reloaded
         assert names.count("ci-alice") == 1
 
-    def test_a_settings_snapshot_older_than_the_reload_still_finds_the_client(self, app_client):
+    def test_a_settings_snapshot_older_than_the_reload_resolves_nothing(self, app_client):
+        """The contract changed with #406: a caller holding a snapshot from
+        before the reload that declared the name and reconciled the runtime
+        client away resolves nothing, where it used to be answered from the
+        current settings. Answering would pair a client this operation never
+        read with the issuer, expiry and policy it did read; the operation
+        after it sees the declaration."""
         client, config_dir = app_client
         get_identities().create_runtime_client(_client("ci-app"))
         snapshot = get_config().settings
@@ -872,7 +882,9 @@ class TestReloadReconciliation:
         self._declare(config_dir, "ci-carol", "ci-app")
         assert client.post("/api/config/reload").status_code == 200
 
-        resolved = get_identities().resolve_client("ci-app", snapshot)
+        assert get_identities().resolve_client("ci-app", snapshot) is None
+        # The next operation, on the configuration as it is now:
+        resolved = get_identities().resolve_client("ci-app")
         assert resolved is not None and resolved.origin == "declared"
 
     def test_runtime_objects_survive_an_unrelated_reload_and_a_ui_write(self, app_client):

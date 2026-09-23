@@ -44,6 +44,7 @@ from ..services.runtime_store import RuntimeObjectExists
 from ..services.yaml_writer import PostWriteError
 from ._audit import audit_event
 from ._auth import management_secret_required_for_api
+from ._config import request_config
 from ._identity_views import client_summary, user_summary
 
 runtime_bp = Blueprint("runtime", __name__, url_prefix="/api/runtime")
@@ -87,19 +88,19 @@ def create_user() -> ResponseReturnValue:
         user = parse_user_entry(username, body, "POST /api/runtime/users")
     except EntryInvalid as exc:
         return _error(400, exc.message, "invalid")
-    return _create("user", user.username, lambda: identities_for(get_config()).create_runtime_user(user),
+    return _create("user", user.username, lambda: identities_for(get_config(), request_config()).create_runtime_user(user),
                    lambda created: user_summary(created, "runtime"))
 
 
 @runtime_bp.route("/users")
 def list_users() -> ResponseReturnValue:
-    users = [user_summary(user, "runtime") for user in identities_for(get_config()).store.users.list()]
+    users = [user_summary(user, "runtime") for user in identities_for(get_config(), request_config()).store.users.list()]
     return jsonify({"users": users, "count": len(users)})
 
 
 @runtime_bp.route("/users/<username>")
 def get_user(username: str) -> ResponseReturnValue:
-    user = identities_for(get_config()).store.users.get(username)
+    user = identities_for(get_config(), request_config()).store.users.get(username)
     if user is None:
         return _error(404, f"no runtime user {username!r}", "not_found")
     return jsonify(user_summary(user, "runtime"))
@@ -107,12 +108,12 @@ def get_user(username: str) -> ResponseReturnValue:
 
 @runtime_bp.route("/users/<username>", methods=["DELETE"])
 def delete_user(username: str) -> ResponseReturnValue:
-    return _delete("user", username, identities_for(get_config()).delete_runtime_user)
+    return _delete("user", username, identities_for(get_config(), request_config()).delete_runtime_user)
 
 
 @runtime_bp.route("/users/<username>/promote", methods=["POST"])
 def promote_user(username: str) -> ResponseReturnValue:
-    resolver = identities_for(get_config())
+    resolver = identities_for(get_config(), request_config())
     return _promote("user", username, "users.yaml", lambda context: resolver.promote_runtime_user(username, context))
 
 
@@ -128,7 +129,7 @@ def create_client() -> ResponseReturnValue:
     except EntryInvalid as exc:
         return _error(400, exc.message, "invalid")
     return _create("client", client.client_id,
-                   lambda: identities_for(get_config()).create_runtime_client(client),
+                   lambda: identities_for(get_config(), request_config()).create_runtime_client(client),
                    lambda created: client_summary(created, "runtime"))
 
 
@@ -145,14 +146,14 @@ def _source_of(client: Entry[OAuthClient]) -> Optional[str]:
 
 @runtime_bp.route("/clients")
 def list_clients() -> ResponseReturnValue:
-    entries = identities_for(get_config()).store.clients.entries()
+    entries = identities_for(get_config(), request_config()).store.clients.entries()
     clients = [client_summary(entry.value, "runtime", _source_of(entry)) for entry in entries]
     return jsonify({"clients": clients, "count": len(clients)})
 
 
 @runtime_bp.route("/clients/<client_id>")
 def get_client(client_id: str) -> ResponseReturnValue:
-    entry = identities_for(get_config()).store.clients.entry(client_id)
+    entry = identities_for(get_config(), request_config()).store.clients.entry(client_id)
     if entry is None:
         return _error(404, f"no runtime client {client_id!r}", "not_found")
     return jsonify(client_summary(entry.value, "runtime", _source_of(entry)))
@@ -160,7 +161,7 @@ def get_client(client_id: str) -> ResponseReturnValue:
 
 @runtime_bp.route("/clients/<client_id>", methods=["DELETE"])
 def delete_client(client_id: str) -> ResponseReturnValue:
-    resolver = identities_for(get_config())
+    resolver = identities_for(get_config(), request_config())
     # With the record issued for it, if it was registered (#190, #403).
     return _delete(
         "client", client_id, lambda name: delete_client_and_registration(name, resolver)
@@ -169,7 +170,7 @@ def delete_client(client_id: str) -> ResponseReturnValue:
 
 @runtime_bp.route("/clients/<client_id>/promote", methods=["POST"])
 def promote_client(client_id: str) -> ResponseReturnValue:
-    resolver = identities_for(get_config())
+    resolver = identities_for(get_config(), request_config())
     return _promote(
         "client", client_id, "settings.yaml", lambda context: resolver.promote_runtime_client(client_id, context)
     )
@@ -182,7 +183,7 @@ def promote_client(client_id: str) -> ResponseReturnValue:
 def reset() -> ResponseReturnValue:
     """Remove every runtime user and client. Never touches the declared
     configuration."""
-    resolver = identities_for(get_config())
+    resolver = identities_for(get_config(), request_config())
     users_deleted, clients_deleted = resolver.reset_runtime_identities()
     # Tidiness, and the capacity count: the records of the clients that just
     # went match nothing any more (#404), including a client created under

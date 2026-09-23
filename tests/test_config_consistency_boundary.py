@@ -28,6 +28,7 @@ thousand probabilistic iterations: the reader is stopped at the exact seam
 between its two acquisitions, which is the only moment the defect needs.
 """
 
+import base64
 import contextlib
 import errno
 import fcntl
@@ -36,7 +37,9 @@ import shutil
 import threading
 from pathlib import Path
 
+import jwt
 import pytest
+import yaml
 
 from nanoidp import config_writer
 from nanoidp.config import ConfigManager
@@ -1015,7 +1018,7 @@ class TestTheMcpToolTakesItsStrictnessFromTheSameObservation:
         assert manager.strict_config is True
 
         self._write(directory, "warn", with_warning=True)
-        result = _tool_validate_config({}, manager)
+        result = _tool_validate_config({}, manager, manager.snapshot)
 
         assert result["strict"] is False
         assert result["valid"] is True, result["findings"]
@@ -1027,7 +1030,7 @@ class TestTheMcpToolTakesItsStrictnessFromTheSameObservation:
         manager = ConfigManager(config_dir=str(directory), strict_config=True)
         self._write(directory, "warn", with_warning=True)
 
-        result = _tool_validate_config({}, manager)
+        result = _tool_validate_config({}, manager, manager.snapshot)
 
         assert result["strict"] is True
         assert result["valid"] is False
@@ -1067,3 +1070,271 @@ class TestTheMcpToolTakesItsStrictnessFromTheSameObservation:
 
         assert result["strict"] is False
         assert result["valid"] is True, result["findings"]
+
+
+class TestAnOperationReadsOneConfiguration:
+    """The same boundary, one level up (#406): an operation that reads the
+    declared configuration twice could read two loads.
+
+    The rest of this file pins the directory: two files are observed as one
+    pair. This pins the operation: an externally visible operation that
+    reads the declared configuration chooses one published configuration,
+    after freshness has been established, and carries that reference
+    through. An HTTP request and an MCP tool call are two implementations
+    of that one invariant, not two rules.
+
+    The interleaving is forced at the seam, never with sleeps: a load is
+    committed exactly between two reads the handler makes.
+    """
+
+    BASIC = {"Authorization": "Basic " + base64.b64encode(b"demo-client:demo-secret").decode()}
+
+    @staticmethod
+    def _declare(directory, users, default_user=None):
+        document = yaml.safe_load((directory / "users.yaml").read_text())
+        document["users"] = {name: {"password": "pw", "roles": ["user"]} for name in users}
+        if default_user is not None:
+            document["default_user"] = default_user
+        (directory / "users.yaml").write_text(yaml.safe_dump(document, sort_keys=False))
+
+    @pytest.fixture
+    def directory_of_two_loads(self, tmp_path):
+        directory = tmp_path / "config"
+        shutil.copytree(_REPO_CONFIG, directory)
+        self._declare(directory, ["alice"], default_user="alice")
+        return directory
+
+    def test_a_grant_answers_from_the_configuration_it_began_with(self, directory_of_two_loads, monkeypatch):
+        """Measured before the fix: a load between the read of `default_user`
+        and the lookup of that user made the grant mint for the synthetic
+        `service-account`, a subject neither configuration named."""
+        from nanoidp.app import create_app
+        from nanoidp.config import get_config
+        from nanoidp.services import identities as identities_module
+
+        app = create_app(str(directory_of_two_loads))
+        client = app.test_client()
+        real = identities_module.IdentityResolver.get_user
+        in_the_window = threading.Event()
+
+        def load_between_the_two_reads(resolver, username):
+            if not in_the_window.is_set():
+                in_the_window.set()
+                self._declare(directory_of_two_loads, ["bob"], default_user="bob")
+                get_config().reload_local()
+            return real(resolver, username)
+
+        monkeypatch.setattr(identities_module.IdentityResolver, "get_user", load_between_the_two_reads)
+        answer = client.post("/token", data={"grant_type": "client_credentials"}, headers=self.BASIC)
+
+        assert in_the_window.is_set(), "the load was never placed in the window"
+        assert answer.status_code == 200, answer.data
+        claims = jwt.decode(answer.get_json()["access_token"], options={"verify_signature": False})
+        assert claims["sub"] == "alice", "the answer pairs the configuration it began with and the next"
+
+    def test_a_grant_answers_from_the_configuration_the_request_chose(self, directory_of_two_loads, monkeypatch):
+        """Not the one it was dispatched with: the load lands before the
+        grant context is built, so a context taking its own would answer
+        from a configuration the request never chose."""
+        import nanoidp.routes.oauth as oauth_module
+        from nanoidp.app import create_app
+        from nanoidp.config import get_config
+
+        app = create_app(str(directory_of_two_loads))
+        client = app.test_client()
+        began_with = None
+        real = oauth_module._enforce_token_endpoint_auth
+        in_the_window = threading.Event()
+
+        def load_before_the_context_is_built(*arguments, **named):
+            nonlocal began_with
+            if not in_the_window.is_set():
+                in_the_window.set()
+                began_with = get_config().snapshot.settings.audience
+                document = yaml.safe_load((directory_of_two_loads / "settings.yaml").read_text())
+                document["oauth"]["audience"] = "an-audience-of-the-next-load"
+                (directory_of_two_loads / "settings.yaml").write_text(yaml.safe_dump(document, sort_keys=False))
+                # The default user moves too: the grant reads it from the
+                # context, and the token is built from the service's
+                # configuration, so both sides of the answer are pinned.
+                self._declare(directory_of_two_loads, ["bob"], default_user="bob")
+                get_config().reload_local()
+            return real(*arguments, **named)
+
+        monkeypatch.setattr(oauth_module, "_enforce_token_endpoint_auth", load_before_the_context_is_built)
+        answer = client.post("/token", data={"grant_type": "client_credentials"}, headers=self.BASIC)
+
+        assert in_the_window.is_set(), "the load was never placed in the window"
+        assert answer.status_code == 200, answer.data
+        claims = jwt.decode(answer.get_json()["access_token"], options={"verify_signature": False})
+        assert claims["aud"] == began_with, "the token was built from a load the request did not choose"
+        assert claims["sub"] == "alice", "the grant read a default user the request did not choose"
+
+    def test_a_load_between_the_choice_and_the_handler_is_not_read(self, directory_of_two_loads):
+        """The choice is made in the freshness hook, and the handler is not
+        the next thing to run: other hooks, the rate limiter and the gates
+        come between. A handler taking its own configuration there would
+        answer from a load the request never chose."""
+        from nanoidp.app import create_app
+        from nanoidp.config import get_config
+
+        app = create_app(str(directory_of_two_loads))
+        began_with = []
+
+        @app.before_request
+        def load_after_the_choice():  # runs after the freshness hook
+            if not began_with:
+                began_with.append(get_config().snapshot.settings.audience)
+                document = yaml.safe_load((directory_of_two_loads / "settings.yaml").read_text())
+                document["oauth"]["audience"] = "an-audience-of-the-next-load"
+                (directory_of_two_loads / "settings.yaml").write_text(yaml.safe_dump(document, sort_keys=False))
+                self._declare(directory_of_two_loads, ["bob"], default_user="bob")
+                get_config().reload_local()
+            return None
+
+        answer = app.test_client().post(
+            "/token", data={"grant_type": "client_credentials"}, headers=self.BASIC
+        )
+
+        assert began_with, "the load was never placed in the window"
+        assert answer.status_code == 200, answer.data
+        claims = jwt.decode(answer.get_json()["access_token"], options={"verify_signature": False})
+        assert (claims["sub"], claims["aud"]) == ("alice", began_with[0])
+
+    def test_no_token_for_a_user_declared_after_the_request_began(self, directory_of_two_loads):
+        """The strict rule at an endpoint (#406, review): a user the request's
+        configuration never declared gets no token, rather than one carrying
+        this request's issuer, expiry and policy."""
+        from nanoidp.app import create_app
+        from nanoidp.config import get_config
+
+        app = create_app(str(directory_of_two_loads))
+        loaded_again = []
+
+        @app.before_request
+        def declare_someone_after_the_choice():
+            if not loaded_again:
+                loaded_again.append(True)
+                self._declare(directory_of_two_loads, ["alice", "declared-later"], default_user="alice")
+                get_config().reload_local()
+            return None
+
+        answer = app.test_client().post("/api/users/declared-later/token")
+
+        assert loaded_again, "the load was never placed in the window"
+        assert answer.status_code == 404, answer.data
+        # The request after it, on the configuration as it is now:
+        assert app.test_client().post("/api/users/declared-later/token").status_code == 200
+
+    def test_no_client_authentication_for_one_declared_after_the_request_began(self, directory_of_two_loads):
+        """The same rule on the client-authentication boundary of /token."""
+        import base64 as b64
+
+        from nanoidp.app import create_app
+        from nanoidp.config import get_config
+
+        app = create_app(str(directory_of_two_loads))
+        loaded_again = []
+
+        def declare_a_client():
+            document = yaml.safe_load((directory_of_two_loads / "settings.yaml").read_text())
+            document["oauth"]["clients"] = document["oauth"]["clients"] + [
+                {"client_id": "declared-later-client", "client_secret": "a-secret"}
+            ]
+            (directory_of_two_loads / "settings.yaml").write_text(yaml.safe_dump(document, sort_keys=False))
+
+        @app.before_request
+        def declare_after_the_choice():
+            if not loaded_again:
+                loaded_again.append(True)
+                declare_a_client()
+                get_config().reload_local()
+            return None
+
+        header = {"Authorization": "Basic " + b64.b64encode(b"declared-later-client:a-secret").decode()}
+        answer = app.test_client().post("/token", data={"grant_type": "client_credentials"}, headers=header)
+
+        assert loaded_again, "the load was never placed in the window"
+        # Basic credentials that this request's configuration does not know:
+        # the authentication refusal, not some other error.
+        assert answer.status_code == 401, answer.data
+        assert answer.get_json()["error"] == "invalid_client"
+        # The request after it authenticates:
+        assert app.test_client().post(
+            "/token", data={"grant_type": "client_credentials"}, headers=header
+        ).status_code == 200
+
+    def test_the_reported_configuration_is_one_load(self, directory_of_two_loads, monkeypatch):
+        """GET /api/config reads the settings, the version, the strictness
+        and the users separately, so a load landing while it renders is
+        reported as a document that never existed."""
+        from nanoidp.app import create_app
+        from nanoidp.config import get_config
+
+        app = create_app(str(directory_of_two_loads))
+        client = app.test_client()
+        in_the_window = threading.Event()
+        registry = type(get_config().hooks)
+        describe = registry.describe
+
+        def load_while_it_renders(hooks):
+            if not in_the_window.is_set():
+                in_the_window.set()
+                self._declare(directory_of_two_loads, ["alice", "bob"], default_user="alice")
+                get_config().reload_local()
+            return describe(hooks)
+
+        monkeypatch.setattr(registry, "describe", load_while_it_renders)
+        answer = client.get("/api/config")
+
+        assert in_the_window.is_set(), "the load was never placed in the window"
+        assert answer.status_code == 200
+        assert answer.get_json()["users_count"] == 1, "the count comes from a later load than the rest of the document"
+
+    def test_the_report_does_not_read_the_manager_at_all(self, directory_of_two_loads, monkeypatch):
+        """Counted, because once the document is rendered from one
+        configuration the window is not there to force."""
+        from nanoidp.app import create_app
+        from nanoidp.config import ConfigManager, get_config
+
+        app = create_app(str(directory_of_two_loads))
+        client = app.test_client()
+        reads = []
+        published = ConfigManager.settings.fget
+
+        monkeypatch.setattr(
+            ConfigManager, "settings", property(lambda manager: (reads.append(1), published(manager))[1])
+        )
+        with app.app_context():
+            get_config()
+        reads.clear()
+
+        assert client.get("/api/config").status_code == 200
+        assert reads == [], f"the document read the manager {len(reads)} times"
+
+    def test_the_management_gate_reads_what_the_request_chose(self, tmp_path):
+        """The gate is checked more than once in a request (the secret, the
+        session marker, the header), and it guards a handler that reads the
+        request's configuration: deciding from a later load would gate one
+        configuration's write with another's secret."""
+        from nanoidp.app import create_app
+        from nanoidp.config import get_config
+        from nanoidp.routes._auth import get_management_secret
+        from nanoidp.routes._config import remember_for_this_request
+
+        directory = tmp_path / "config"
+        shutil.copytree(_REPO_CONFIG, directory)
+        document = yaml.safe_load((directory / "settings.yaml").read_text())
+        document.setdefault("session", {})["management_secret"] = "the-one-the-request-chose"
+        (directory / "settings.yaml").write_text(yaml.safe_dump(document, sort_keys=False))
+        app = create_app(str(directory))
+
+        with app.test_request_context("/api/users"):
+            began_with = get_config().snapshot
+            remember_for_this_request(began_with)
+            document["session"]["management_secret"] = "the-one-of-the-next-load"
+            (directory / "settings.yaml").write_text(yaml.safe_dump(document, sort_keys=False))
+            get_config().reload_local()
+
+            assert get_management_secret() == "the-one-the-request-chose"
+

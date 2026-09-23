@@ -9,7 +9,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence, Union
 
-from ..config import ConfigManager, Settings, User, get_config
+from ..config import ConfigManager, ConfigSnapshot, Settings, User, get_config
 from .crypto import CryptoService, get_crypto_service
 from .identities import identities_for
 
@@ -127,10 +127,16 @@ def resolve_user_claim(user: User, name: str) -> tuple[bool, Any]:
 
 
 class TokenService:
-    """Service for generating JWT tokens."""
+    """Service for generating JWT tokens, from one configuration.
 
-    def __init__(self, config: ConfigManager) -> None:
+    ``loaded`` is the configuration the operation this response belongs to
+    began with (#406). It is not optional: a service that took its own would
+    build a response from a load the rest of the operation never read.
+    """
+
+    def __init__(self, config: ConfigManager, loaded: ConfigSnapshot) -> None:
         self.config = config
+        self.loaded = loaded
 
     @property
     def crypto(self) -> CryptoService:
@@ -148,7 +154,7 @@ class TokenService:
         ``settings`` is the snapshot a token is being built from; omitted,
         the current settings.
         """
-        prefixes = (settings or self.config.settings).authority_prefixes
+        prefixes = (settings or self.loaded.settings).authority_prefixes
         authorities = []
 
         # Add ROLE_ prefix for user roles
@@ -216,7 +222,7 @@ class TokenService:
         resource_audience = settings.audience
         # Declared clients from the response's settings snapshot, then the
         # runtime ones (#235).
-        client = identities_for(self.config).get_client(client_id, settings)
+        client = identities_for(self.config, self.loaded).get_client(client_id, settings)
         extras = client.additional_audiences if client else []
 
         aud = [client_id]
@@ -319,7 +325,7 @@ class TokenService:
         # service they were published with or a newer one, never an older
         # one; and a reload landing mid-response cannot sign the access token
         # and the ID or refresh token with two different keys.
-        settings = self.config.settings
+        settings = self.loaded.settings
         crypto = self.crypto
         if issue_refresh_token and not client_id:
             raise ValueError(
@@ -529,10 +535,12 @@ class TokenService:
         return response
 
 
-def get_token_service() -> TokenService:
-    """A token service over the process's one ConfigManager.
+def get_token_service(loaded: ConfigSnapshot) -> TokenService:
+    """A token service over the process's one ConfigManager, for a response
+    built from ``loaded``: the configuration the operation began with (#406).
 
-    Not a cached instance: the service holds nothing but that manager, and
-    a cached one kept whichever manager existed when it was first built.
+    Not a cached instance: the service holds nothing but that manager and
+    that configuration, and a cached one kept whichever manager existed when
+    it was first built.
     """
-    return TokenService(get_config())
+    return TokenService(get_config(), loaded)

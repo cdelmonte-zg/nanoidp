@@ -18,7 +18,7 @@ from pathlib import Path
 import jwt
 import yaml
 
-import nanoidp.services.token as token_module
+import nanoidp.routes.oauth as oauth_module
 from nanoidp.app import create_app
 from nanoidp.config import get_config
 from nanoidp.services.crypto import get_crypto_service
@@ -186,13 +186,19 @@ class TestActivationOrder:
         manager = get_config()
         reloaded = []
 
+        # The seam is inside create_token, between the configuration this
+        # response is built from and the signing service (#406: the
+        # configuration is the request's, the service is the current one).
         class ReloadAfterSettingsRead:
+            def __init__(self, loaded):
+                self._loaded = loaded
+
             def __getattr__(self, name):
-                return getattr(manager, name)
+                return getattr(self._loaded, name)
 
             @property
             def settings(self):
-                snapshot = manager.settings
+                taken = self._loaded.settings
                 if not reloaded:
                     reloaded.append(True)
                     _set_settings(
@@ -200,9 +206,15 @@ class TestActivationOrder:
                         lambda doc: doc["jwt"].update(keys_dir=str(tmp_path / "keys-2")),
                     )
                     manager.reload()
-                return snapshot
+                return taken
 
-        monkeypatch.setattr(token_module, "get_config", lambda: ReloadAfterSettingsRead())
+        # Patched where /token calls it: the route imported the name.
+        real_service = oauth_module.get_token_service
+        monkeypatch.setattr(
+            oauth_module,
+            "get_token_service",
+            lambda loaded: real_service(ReloadAfterSettingsRead(loaded)),
+        )
         token = _token(client)
 
         assert reloaded

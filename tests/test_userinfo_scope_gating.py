@@ -130,7 +130,7 @@ class TestUserinfoOauth21ProfileGated:
 
         config = get_config()
         assert config.settings.security_profile == "oauth21"
-        token = get_token_service().create_token(
+        token = get_token_service(get_config().snapshot).create_token(
             config.get_user("admin"), scope=scope, client_id="demo-client"
         )["access_token"]
 

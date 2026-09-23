@@ -357,7 +357,7 @@ class TestDeviceFlow:
             store = get_device_code_store()
             store.verify(
                 start["user_code"], "approve",
-                identities_for(get_config()).interactive_authenticate("admin", "admin"),
+                identities_for(get_config(), get_config().snapshot).interactive_authenticate("admin", "admin"),
             )
         resp = client.post(
             "/token",
@@ -385,7 +385,7 @@ class TestDeviceFlow:
         with app.app_context():
             get_device_code_store().verify(
                 start["user_code"], "approve",
-                identities_for(get_config()).interactive_authenticate("admin", "admin"),
+                identities_for(get_config(), get_config().snapshot).interactive_authenticate("admin", "admin"),
             )
         resp = client.post(
             "/token",

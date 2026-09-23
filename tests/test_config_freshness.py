@@ -425,7 +425,7 @@ class TestWhatIsRememberedAndWhatIsTriedAgain:
         _failing_activation(config, 1)
         assert config.refresh_if_changed() is False
 
-        IdentityResolver(config, store).create_runtime_user(User(username="fresh", password="pw"))
+        IdentityResolver(config, config.snapshot, store).create_runtime_user(User(username="fresh", password="pw"))
         assert config.get_user("carol") is not None
         loads = _counting_loads(monkeypatch, config)
         clock.now += 6
@@ -447,7 +447,7 @@ class TestTheFourthReview:
         _failing_activation(config, 1)
 
         with pytest.raises(DeclaredConfigurationUnloadable) as refused:
-            IdentityResolver(config, store).create_runtime_user(User(username="x", password="pw"))
+            IdentityResolver(config, config.snapshot, store).create_runtime_user(User(username="x", password="pw"))
 
         assert refused.value.temporary is True
         assert store.users.get("x") is None
@@ -459,7 +459,7 @@ class TestTheFourthReview:
         (config_dir / "users.yaml").write_text("users: [this is not a mapping\n")
 
         with pytest.raises(DeclaredConfigurationUnloadable) as refused:
-            IdentityResolver(config, store).create_runtime_user(User(username="x", password="pw"))
+            IdentityResolver(config, config.snapshot, store).create_runtime_user(User(username="x", password="pw"))
 
         assert refused.value.temporary is False
 
@@ -476,7 +476,7 @@ class TestTheFourthReview:
 
         monkeypatch.setattr(config, "reload_local", plugin_fails)
         with pytest.raises(DeclaredConfigurationUnloadable) as refused:
-            IdentityResolver(config, store).create_runtime_user(User(username="x", password="pw"))
+            IdentityResolver(config, config.snapshot, store).create_runtime_user(User(username="x", password="pw"))
         monkeypatch.setattr(config, "reload_local", real_reload)
 
         assert refused.value.temporary is True
@@ -636,7 +636,7 @@ class TestTheFifthReview:
 
         monkeypatch.setattr(config._store, "read_snapshot_within_lock", unreadable)
         with pytest.raises(DeclaredConfigurationUnloadable) as refused:
-            IdentityResolver(config, store).create_runtime_user(User(username="x", password="pw"))
+            IdentityResolver(config, config.snapshot, store).create_runtime_user(User(username="x", password="pw"))
 
         assert refused.value.temporary is True
         assert isinstance(refused.value.__cause__, PermissionError)
@@ -684,7 +684,7 @@ class TestTheFifthReview:
         config = ConfigManager(str(config_dir))
         (config_dir / "users.yaml").write_text("")
 
-        IdentityResolver(config, store).create_runtime_user(User(username="admin", password="pw"))
+        IdentityResolver(config, config.snapshot, store).create_runtime_user(User(username="admin", password="pw"))
 
         assert store.users.get("admin") is not None
 
@@ -1314,7 +1314,7 @@ class TestTheCriticalCreation:
         """The census scenario: B's loaded configuration is stale, and B
         checks the name against the disk, under the lock the writers take."""
         config_dir, config, store = shared
-        b = IdentityResolver(config, store)
+        b = IdentityResolver(config, config.snapshot, store)
         _declare_user(config_dir, "x")
         assert config.get_user("x") is None
 
@@ -1329,7 +1329,7 @@ class TestTheCriticalCreation:
         import fcntl
 
         config_dir, config, store = shared
-        b = IdentityResolver(config, store)
+        b = IdentityResolver(config, config.snapshot, store)
         held = []
         real_create = store.users.create
 
@@ -1352,7 +1352,7 @@ class TestTheCriticalCreation:
 
     def test_a_disk_that_moves_again_after_the_reload_is_looked_at_again(self, shared, monkeypatch):
         config_dir, config, store = shared
-        b = IdentityResolver(config, store)
+        b = IdentityResolver(config, config.snapshot, store)
         _declare_user(config_dir, "first")
         reloads = []
         real_reload = config.reload_local
@@ -1377,7 +1377,7 @@ class TestTheCriticalCreation:
         from nanoidp.config import DeclaredConfigurationUnloadable
 
         config_dir, config, store = shared
-        b = IdentityResolver(config, store)
+        b = IdentityResolver(config, config.snapshot, store)
         (config_dir / "users.yaml").write_text("users: [this is not a mapping\n")
 
         with pytest.raises(DeclaredConfigurationUnloadable):
@@ -1414,7 +1414,7 @@ class TestTheCriticalCreation:
         from nanoidp import config_writer
 
         config_dir, config, store = shared
-        b = IdentityResolver(config, store)
+        b = IdentityResolver(config, config.snapshot, store)
 
         def unavailable(*args, **kwargs):
             raise LockUnavailableError("held by a peer", kind="lock_timeout")
@@ -1433,7 +1433,7 @@ class TestTheCriticalCreation:
         from nanoidp.config import DeclaredConfigurationUnloadable
 
         config_dir, config, store = shared
-        b = IdentityResolver(config, store)
+        b = IdentityResolver(config, config.snapshot, store)
         _declare_user(config_dir, "someone")
         _lock_fails_after(monkeypatch, 1)
 
@@ -1478,7 +1478,7 @@ class TestTheCriticalCreation:
             return real(*args, **kwargs)
 
         monkeypatch.setattr(config_writer, "_cross_process_lock", recording)
-        IdentityResolver(config, store).create_runtime_user(User(username="fresh", password="pw"))
+        IdentityResolver(config, config.snapshot, store).create_runtime_user(User(username="fresh", password="pw"))
 
         assert taken == []
 
@@ -1486,7 +1486,7 @@ class TestTheCriticalCreation:
         from nanoidp.config import OAuthClient
 
         config_dir, config, store = shared
-        b = IdentityResolver(config, store)
+        b = IdentityResolver(config, config.snapshot, store)
         settings = config_dir / "settings.yaml"
         document = yaml.safe_load(settings.read_text())
         document["oauth"]["clients"].append({"client_id": "x", "client_secret": "s" * 20})
@@ -1535,7 +1535,7 @@ def _b_process(config_dir, store_path, loaded, declared, out):
     loaded.set()
     declared.wait(60)
     try:
-        IdentityResolver(config, store).create_runtime_user(User(username="x", password="pw"))
+        IdentityResolver(config, config.snapshot, store).create_runtime_user(User(username="x", password="pw"))
         outcome = "created"
     except Exception as failure:  # noqa: BLE001 - said to the parent
         outcome = type(failure).__name__

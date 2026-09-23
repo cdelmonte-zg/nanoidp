@@ -13,7 +13,7 @@ from urllib.parse import urlencode
 import jwt as pyjwt
 
 from nanoidp.app import create_app
-from nanoidp.config import User
+from nanoidp.config import User, get_config
 from nanoidp.routes.oauth import _parse_claims_parameter
 from nanoidp.services.token import resolve_user_claim
 
@@ -194,7 +194,7 @@ def _mint_and_userinfo(profile, scope, userinfo_claims):
 
     app = create_app(profile=profile)
     app.config["TESTING"] = True
-    token = get_token_service().create_token(
+    token = get_token_service(get_config().snapshot).create_token(
         get_config().get_user("admin"),
         scope=scope,
         client_id="demo-client",
@@ -251,7 +251,7 @@ class TestUserinfoMember:
         from nanoidp.services.token import get_token_service
 
         client = _dev_client()
-        token = get_token_service().create_token(
+        token = get_token_service(get_config().snapshot).create_token(
             get_config().get_user("admin"),
             scope="openid",
             client_id="demo-client",
@@ -319,7 +319,7 @@ class TestClaimsPersistAcrossRefresh:
         app = create_app(profile="stricter-dev")
         app.config["TESTING"] = True
         client = app.test_client()
-        original = get_token_service().create_token(
+        original = get_token_service(get_config().snapshot).create_token(
             get_config().get_user("admin"),
             scope="openid",
             client_id="demo-client",
@@ -371,7 +371,7 @@ class TestClaimsPersistAcrossRefresh:
         client = app.test_client()
 
         # 1. original grant: scope "openid email" + userinfo claims request
-        original = get_token_service().create_token(
+        original = get_token_service(get_config().snapshot).create_token(
             get_config().get_user("admin"),
             scope="openid email",
             client_id="demo-client",
@@ -506,7 +506,7 @@ class TestReservedClaimsCannotBeSpoofed:
 
         app = create_app(profile=profile)
         app.config["TESTING"] = True
-        token = get_token_service().create_token(
+        token = get_token_service(get_config().snapshot).create_token(
             get_config().get_user("admin"),
             scope=scope,
             client_id="demo-client",
@@ -566,7 +566,7 @@ class TestReservedClaimNames:
             username="attacker", password="p", email="a@example.org",
             attributes={"exp": 111, "aud": "https://evil.example", "iss": "https://evil"},
         )
-        resp = get_token_service().create_token(
+        resp = get_token_service(get_config().snapshot).create_token(
             user, scope="openid", client_id="demo-client",
             id_token_claims=["exp", "aud", "iss", "email"],
         )

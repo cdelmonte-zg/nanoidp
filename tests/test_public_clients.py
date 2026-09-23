@@ -130,7 +130,7 @@ class TestModel:
         config = ConfigManager(str(config_dir))
         assert config.get_client("pub").is_public is True
         # The stored secret must never become a credential (#188).
-        assert identities_for(config).check_client("pub", "stored-but-ignored") is False
+        assert identities_for(config, config.snapshot).check_client("pub", "stored-but-ignored") is False
 
     def test_clearing_the_secret_on_a_confidential_client_is_rejected(self):
         c = OAuthClient(client_id="x", client_secret="s")

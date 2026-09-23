@@ -17,7 +17,7 @@ from flask import (
 )
 from flask.typing import ResponseReturnValue
 
-from ..config import ConfigManager, OAuthClient, User
+from ..config import ConfigManager, ConfigSnapshot, OAuthClient, User
 from ..services import (
     DevicePollOutcome,
     get_auth_code_store,
@@ -70,9 +70,17 @@ class _GrantOutcome:
 
 @dataclass
 class _GrantContext:
-    """Request-scoped facts shared by every grant handler."""
+    """Request-scoped facts shared by every grant handler.
+
+    The context is the point after which a different configuration cannot be
+    read by accident (#406): `loaded` is the one this request began with, and
+    the resolver was built on it. `config` is here for the few decisions that
+    are the server's rather than the request's, and each of those says so.
+    """
 
     config: ConfigManager
+    # The declared configuration this request reads (#406).
+    loaded: ConfigSnapshot
     # Users and clients resolve here, declared first, then runtime (#235).
     identities: IdentityResolver
     # token() rejects requests without a client identity before dispatching,
@@ -166,7 +174,7 @@ def _grant_refresh_token(ctx: _GrantContext) -> GrantResult:
 
     # Verify and decode refresh token. Settings before the signing service
     # (#359): see get_crypto_service().
-    settings = ctx.config.settings
+    settings = ctx.loaded.settings
     crypto = get_crypto_service()
     try:
         payload = crypto.verify_jwt(refresh_token, settings.audience)
@@ -446,7 +454,7 @@ def _grant_password(ctx: _GrantContext) -> GrantResult:
     # OAuth 2.1 removes the resource-owner password grant entirely; under
     # the oauth21 profile it is rejected (RFC 6749 §5.2) and absent from
     # the discovery document's grant_types_supported (#68).
-    if not ctx.config.settings.password_grant_enabled:
+    if not ctx.loaded.settings.password_grant_enabled:
         audit_event(
             "token_request",
             "failed",
@@ -497,8 +505,8 @@ def _grant_password(ctx: _GrantContext) -> GrantResult:
         scope_result = resolve_scope(
             requested_scope,
             client,
-            ctx.config.settings.scopes_supported,
-            ctx.config.settings.scope_enforcement_active,
+            ctx.loaded.settings.scopes_supported,
+            ctx.loaded.settings.scope_enforcement_active,
         )
         if not scope_result.ok:
             audit_event(
@@ -613,8 +621,8 @@ def _grant_authorization_code(ctx: _GrantContext) -> GrantResult:
         scope_result = resolve_scope(
             code_scope,
             client,
-            ctx.config.settings.scopes_supported,
-            ctx.config.settings.scope_enforcement_active,
+            ctx.loaded.settings.scopes_supported,
+            ctx.loaded.settings.scope_enforcement_active,
             validate_only=True,
         )
         if not scope_result.ok:
@@ -683,8 +691,8 @@ def _grant_client_credentials(ctx: _GrantContext) -> GrantResult:
         scope_result = resolve_scope(
             requested_scope,
             client,
-            ctx.config.settings.scopes_supported,
-            ctx.config.settings.scope_enforcement_active,
+            ctx.loaded.settings.scopes_supported,
+            ctx.loaded.settings.scope_enforcement_active,
         )
         if not scope_result.ok:
             audit_event(
@@ -716,7 +724,7 @@ def _grant_client_credentials(ctx: _GrantContext) -> GrantResult:
             requested_scope = " ".join(remaining) or None
 
     # Use default user for client credentials
-    default_username = ctx.config.default_user
+    default_username = ctx.loaded.default_user
     user = ctx.identities.get_user(default_username)
     if not user:
         # Create a minimal service account user. No password: it never
@@ -833,8 +841,8 @@ def _grant_device_code(ctx: _GrantContext) -> GrantResult:
             scope_result = resolve_scope(
                 device_scope,
                 device_client,
-                ctx.config.settings.scopes_supported,
-                ctx.config.settings.scope_enforcement_active,
+                ctx.loaded.settings.scopes_supported,
+                ctx.loaded.settings.scope_enforcement_active,
                 validate_only=True,
             )
             if not scope_result.ok:

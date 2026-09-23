@@ -8,6 +8,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **An operation reads one configuration, the one it began with** (#406,
+  second of two steps). A request read the manager again at each use, so a
+  load landing between two of those reads gave it a configuration that never
+  existed: measured at `/token`, where a load between the read of
+  `default_user` and the lookup of that user made the grant mint for the
+  synthetic `service-account`, a subject neither configuration named, in a
+  token that verifies. An externally visible operation now chooses one
+  published configuration, right after freshness is established, and carries
+  that reference through: an HTTP request in the hook that establishes
+  freshness, an MCP tool call at the start of the call, which are the two
+  implementations of one rule rather than two rules. The identity resolver
+  and the token service take it, so nothing resolves a user or builds a
+  response from a load the rest of the operation never read, and the
+  management gate reads it too, rather than deciding on one load while the
+  handler it guards works from another. Declared clients come from it as
+  well, so a record that changed under an operation is not half of its
+  answer, and so do the issuer a token carries and the expiry it defaults
+  to. `GET /api/config` and the MCP
+  `get_settings` tool serialise that one reference instead of four separate
+  reads. What stays deliberately current is unchanged and says so where it
+  is: whether the client-metadata and dynamic-registration capabilities are
+  offered at all, and the check that refuses a runtime name the files declare
+  right now. **A contract changes with it:** a
+  lookup that spans a load which declares a name and reconciles its runtime
+  object away could once find one of the two, because both sides were read
+  live; the declared side is now the operation's, with no fallback, because
+  "neither has it" does not establish that a reconciliation happened - it
+  holds just as well for a name simply declared afterwards, and answering
+  from the current declaration would pair a new identity with the issuer,
+  expiry and policy the operation had already read. So an operation that
+  began before such a load may resolve nothing where it once resolved the
+  runtime object, and answers that the name is unknown; the operation after
+  it reads the new declaration.
+
 - **A loaded configuration is published as one value** (#406, first of two
   steps). A load was transactional on the way in and not on the way out: it
   validated both files before changing anything, and then published what it

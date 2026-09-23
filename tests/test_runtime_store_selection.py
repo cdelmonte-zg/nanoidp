@@ -304,7 +304,7 @@ class TestTheSurfaces:
 
         init_config(str(_config_dir(tmp_path)), activate=activate_services)
 
-        async def held(name, arguments, config):
+        async def held(name, arguments, config, loaded=None):
             raise RuntimeStoreUnavailable("the runtime store is held by another process for longer than 5000 ms")
 
         monkeypatch.setattr(mcp_server, "_execute_tool", held)

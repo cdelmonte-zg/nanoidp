@@ -25,7 +25,7 @@ from flask import (
 from flask.typing import ResponseReturnValue
 
 from ..branding import effective_logos_dir, resolve_client_logo
-from ..config import ConfigManager, OAuthClient, User, get_config
+from ..config import ConfigManager, ConfigSnapshot, OAuthClient, User, get_config
 from ..services import (
     DeviceVerifyOutcome,
     build_discovery_document,
@@ -86,6 +86,7 @@ from ._auth import (
     no_store,
     two_step_phase,
 )
+from ._config import request_config
 from ._issuer import effective_issuer
 from ._oauth_error import invalid_client_error, oauth_error
 from .oauth_grants import _GRANT_HANDLERS, _GrantContext, _GrantOutcome
@@ -143,9 +144,10 @@ def oidc_config() -> ResponseReturnValue:
     8414 name - n8n does, before falling back to the OIDC one - so a 404
     there only sends it the long way round to the same answer.
     """
-    config = get_config()
+    # The configuration this request began with (#406).
+    loaded = request_config()
     return jsonify(
-        build_discovery_document(config.settings, issuer=effective_issuer(config.settings))
+        build_discovery_document(loaded.settings, issuer=effective_issuer(loaded.settings))
     )
 
 
@@ -333,6 +335,8 @@ def _authorize_error_redirect(
     it structured, not only inside ``reason``'s free text. ``None`` for
     every other caller, exactly as before.
     """
+    # The configuration this request began with (#406).
+    loaded = request_config()
     audit_event(
         "authorization_request",
         "failed",
@@ -344,7 +348,7 @@ def _authorize_error_redirect(
     params = {"error": error, "error_description": description}
     if p.state:
         params["state"] = p.state
-    issuer = effective_issuer(config.settings)
+    issuer = effective_issuer(loaded.settings)
     if issuer_qualifies_for_iss_parameter(issuer):
         params["iss"] = issuer
     return redirect(append_authorization_params(p.redirect_uri, params))
@@ -370,7 +374,7 @@ def _validate_authorize_client(
             400,
         )
 
-    client = identities_for(config).get_client(p.client_id)
+    client = identities_for(config, request_config()).get_client(p.client_id)
     if client is None:
         client = _client_from_metadata_document(config, p.client_id)
     if not client:
@@ -401,8 +405,14 @@ def _client_from_metadata_document(
     entry records that a document was refused, and the operator reads why
     where only the operator is.
     """
-    settings = config.settings
-    if not settings.client_id_metadata_documents_enabled:
+    # The configuration this request began with (#406), except for the
+    # switch: whether the capability is offered at all is the server's, not
+    # the request's, and the resolver reads it live for the same reason. A
+    # request that began while it was on must not reach the one outbound
+    # fetch this server makes after it was turned off.
+    loaded = request_config()
+    settings = loaded.settings
+    if not config.settings.client_id_metadata_documents_enabled:
         return None
     if not looks_like_client_id_url(client_id):
         return None
@@ -452,11 +462,13 @@ def _validate_authorize_scope(
     Checked before redirect_uri so an invalid_scope on an unregistered client
     reports the more specific problem first. Mutates p.scope to the granted
     value on success."""
+    # The configuration this request began with (#406).
+    loaded = request_config()
     scope_result = resolve_scope(
         p.scope,
         client,
-        config.settings.scopes_supported,
-        config.settings.scope_enforcement_active,
+        loaded.settings.scopes_supported,
+        loaded.settings.scope_enforcement_active,
         default_when_omitted="openid",
     )
     if not scope_result.ok:
@@ -498,6 +510,8 @@ def _validate_authorize_redirect_uri(
     they exist). Enforced here, not at config load, so other grants keep
     working for unregistered clients.
     """
+    # The configuration this request began with (#406).
+    loaded = request_config()
     rejection = redirect_uri_rejection_reason(p.redirect_uri)
     if rejection is not None:
         return jsonify({"error": "invalid_request", "error_description": rejection}), 400
@@ -512,7 +526,7 @@ def _validate_authorize_redirect_uri(
             "redirect_uri is not registered for this client",
         )
 
-    if config.settings.security_profile == "oauth21" and not client.redirect_uris:
+    if loaded.settings.security_profile == "oauth21" and not client.redirect_uris:
         return _authorize_reject(
             p.client_id,
             "oauth21 profile requires registered redirect_uris",
@@ -536,6 +550,8 @@ def _validate_authorize_pkce(
     §7.5.1, RFC 7636): with no client authentication at the token
     endpoint, the verifier is the only thing binding the code to the
     party that started the flow."""
+    # The configuration this request began with (#406).
+    loaded = request_config()
     if client is not None and client.is_public:
         if not p.code_challenge:
             return _authorize_error_redirect(
@@ -556,7 +572,7 @@ def _validate_authorize_pkce(
                 "Public client with non-S256 PKCE",
             )
 
-    if config.settings.pkce_required and not p.code_challenge:
+    if loaded.settings.pkce_required and not p.code_challenge:
         return _authorize_error_redirect(
             config,
             p,
@@ -587,16 +603,16 @@ def _validate_authorize_pkce(
     # (RFC 7636 §4.2); the stricter-dev (#47) and oauth21 (#68, OAuth 2.1
     # §7.5.2) profiles reject it outright, whether requested explicitly
     # or via the implicit default.
-    if effective_method == "plain" and not config.settings.pkce_plain_allowed:
+    if effective_method == "plain" and not loaded.settings.pkce_plain_allowed:
         return _authorize_error_redirect(
             config,
             p,
             "invalid_request",
             "code_challenge_method 'plain' (including the "
             "implicit default when the parameter is omitted) "
-            f"is not allowed by the {config.settings.security_profile} "
+            f"is not allowed by the {loaded.settings.security_profile} "
             "profile; use S256",
-            "PKCE method 'plain' rejected by " f"{config.settings.security_profile} profile",
+            "PKCE method 'plain' rejected by " f"{loaded.settings.security_profile} profile",
         )
     return None
 
@@ -628,7 +644,9 @@ def _validate_authorize_resources(
     return None
 
 
-def _may_hold_a_refresh_token(config: ConfigManager, client_id: Optional[str]) -> bool:
+def _may_hold_a_refresh_token(
+    config: ConfigManager, loaded: ConfigSnapshot, client_id: Optional[str]
+) -> bool:
     """Whether a token for this client may carry a refresh token (#196).
 
     A client learned from a metadata document exists only in the cache, and
@@ -665,7 +683,7 @@ def _may_hold_a_refresh_token(config: ConfigManager, client_id: Optional[str]) -
         # first place; create_token refuses that pairing. Left to the
         # existing rule rather than answered twice.
         return True
-    resolved = identities_for(config).resolve_client(client_id)
+    resolved = identities_for(config, loaded).resolve_client(client_id)
     return resolved is not None and resolved.origin != "cimd"
 
 
@@ -688,7 +706,7 @@ def _hold_cached_client_for_the_code(
     ``False`` means do not issue: either the client is no longer resolvable
     at all, or the cache has no room to promise anything about it.
     """
-    resolved = identities_for(config).resolve_client(p.client_id)
+    resolved = identities_for(config, request_config()).resolve_client(p.client_id)
     if resolved is None:
         return False
     if resolved.origin != "cimd":
@@ -724,6 +742,8 @@ def _issue_authorization_code(
     ``verified_username`` is passed on to the store for a completion resting
     on a password verified on an earlier request (see ``consume``).
     """
+    # The configuration this request began with (#406).
+    loaded = request_config()
     if transaction is not None and (
         get_authorization_transaction_store().consume(
             transaction.id, browser_flow_binding(), verified_username=verified_username
@@ -776,7 +796,7 @@ def _issue_authorization_code(
     # metadata promising it, or vice versa. The value is the per-request
     # effective issuer, so it stays correct under issuer_from_request
     # (#126).
-    issuer = effective_issuer(config.settings)
+    issuer = effective_issuer(loaded.settings)
     if issuer_qualifies_for_iss_parameter(issuer):
         redirect_params["iss"] = issuer
 
@@ -797,7 +817,7 @@ def _issue_authorization_code(
         },
     )
 
-    if config.settings.verbose_logging:
+    if loaded.settings.verbose_logging:
         logger.info(
             f"Authorization code issued for user '{username}', client '{p.client_id}'"
             + (" via auto-login" if auto_login else "")
@@ -837,13 +857,15 @@ def _try_persona_auto_login(
     state, the same post-redirect_uri error channel every other validation
     failure already uses (contract point 3) - never a bare 400.
     """
-    if not config.settings.auto_login_enabled:
+    # The configuration this request began with (#406).
+    loaded = request_config()
+    if not loaded.settings.auto_login_enabled:
         return None
     if not p.login_hint.startswith(_AUTO_LOGIN_HINT_PREFIX):
         return None
 
     username = p.login_hint[len(_AUTO_LOGIN_HINT_PREFIX) :]
-    user = identities_for(config).interactive_authenticate(username, "")
+    user = identities_for(config, request_config()).interactive_authenticate(username, "")
     if user is None:
         return _authorize_error_redirect(
             config,
@@ -885,13 +907,15 @@ def _handle_authorize_login(
     every password-form surface; the declarative TOTP second factor (#348)
     rides the same machinery via ``_auth.authenticate_interactively``.
     """
+    # The configuration this request began with (#406).
+    loaded = request_config()
     username = request.form.get("username", "").strip()
     password_submitted = "password" in request.form
     password = request.form.get("password", "")
-    persona_mode = config.settings.persona_mode_enabled
+    persona_mode = loaded.settings.persona_mode_enabled
 
     phase = two_step_phase(
-        two_step_active=config.settings.two_step_login_active,
+        two_step_active=loaded.settings.two_step_login_active,
         username=username,
         password=password,
         password_submitted=password_submitted,
@@ -907,7 +931,7 @@ def _handle_authorize_login(
         # username carried forward.
         return None, None, False
 
-    login = authenticate_interactively(config, username=username, password=password)
+    login = authenticate_interactively(config, request_config(), username=username, password=password)
 
     if login.phase.pending:
         store = get_authorization_transaction_store()
@@ -997,9 +1021,11 @@ def _complete_second_factor(
     the user was deleted, lost their secret, TOTP was switched off, or
     persona mode was switched on.
     """
+    # The configuration this request began with (#406).
+    loaded = request_config()
     username = transaction.primary_username or ""
-    settings = config.settings
-    user = identities_for(config).get_user(username)
+    settings = loaded.settings
+    user = identities_for(config, request_config()).get_user(username)
     if (
         user is None
         or settings.persona_mode_enabled
@@ -1016,7 +1042,7 @@ def _complete_second_factor(
             username=username,
         )
 
-    login = check_second_factor(config, user)
+    login = check_second_factor(config, request_config(), user)
     if login.phase.pending:
         if login.phase is SecondFactorPhase.CODE_INVALID:
             _audit_invalid_code(p, username, login.phase)
@@ -1051,13 +1077,15 @@ def _render_authorize_login(
     screen (#348) for the user it names. no_store is applied to that screen
     here, the one place that knows it is being rendered.
     """
+    # The configuration this request began with (#406).
+    loaded = request_config()
     client = transaction.client_snapshot
     totp_step = transaction.state is TransactionState.PRIMARY_VERIFIED
     if totp_step:
         login_username = transaction.primary_username or ""
 
     logo_url = None
-    logos_dir = effective_logos_dir(config.settings.logos_dir, current_app.static_folder)
+    logos_dir = effective_logos_dir(loaded.settings.logos_dir, current_app.static_folder)
     if resolve_client_logo(logos_dir, client.client_id):
         logo_url = url_for("oauth.client_logo", client_id=client.client_id)
 
@@ -1068,12 +1096,12 @@ def _render_authorize_login(
         logo_url=logo_url,
         scope=transaction.params.scope,
         error=error_msg,
-        persona_mode=config.settings.persona_mode_enabled,
-        two_step_login=config.settings.two_step_login_active,
+        persona_mode=loaded.settings.persona_mode_enabled,
+        two_step_login=loaded.settings.two_step_login_active,
         login_username=login_username,
         totp_step=totp_step,
         transaction_id=transaction.id if name_transaction else None,
-        users=identities_for(config).persona_picker_entries(),
+        users=identities_for(config, request_config()).persona_picker_entries(),
     )
     return no_store(response) if totp_step else response
 
@@ -1091,7 +1119,7 @@ def _begin_transaction(
     way a code holds it for the code's (#196): a transaction must not
     outlive the only copy of the client it was validated against.
     """
-    resolved = identities_for(config).resolve_client(p.client_id)
+    resolved = identities_for(config, request_config()).resolve_client(p.client_id)
     if resolved is None:
         return None, _authorize_error_redirect(
             config,
@@ -1423,8 +1451,9 @@ def client_logo(client_id: str) -> ResponseReturnValue:
     client_id against the charset whitelist, so this is as path-traversal-safe
     as the default case.
     """
-    config = get_config()
-    logos_dir = effective_logos_dir(config.settings.logos_dir, current_app.static_folder)
+    # The configuration this request began with (#406).
+    loaded = request_config()
+    logos_dir = effective_logos_dir(loaded.settings.logos_dir, current_app.static_folder)
     filename = resolve_client_logo(logos_dir, client_id)
     if not filename:
         abort(404)
@@ -1523,7 +1552,7 @@ def _enforce_token_endpoint_auth(
     request may proceed. RFC 7591 method semantics, RFC 6749 §3.2.1
     (confidential clients MUST authenticate, authorization_code included).
     """
-    token_client = identities_for(config).get_client(client_id)
+    token_client = identities_for(config, request_config()).get_client(client_id)
 
     # Public client (token_endpoint_auth_method 'none'): identified by
     # client_id alone; any presented secret is ignored, never validated.
@@ -1587,7 +1616,7 @@ def _enforce_registered_client_auth(
     client_secret_basic, the default); the wrong channel for the registered
     method is rejected instead of silently accepted.
     """
-    client = identities_for(config).get_client(client_id) if client_id else None
+    client = identities_for(config, request_config()).get_client(client_id) if client_id else None
     method = client.token_endpoint_auth_method if client is not None else "client_secret_basic"
 
     # client_secret_post: credentials in the body only; Basic is rejected.
@@ -1598,7 +1627,7 @@ def _enforce_registered_client_auth(
                 "'client_secret_post'; use client_id and client_secret in the "
                 "request body, not HTTP Basic"
             )
-        if not body_client_secret or not identities_for(config).check_client(client_id, body_client_secret):
+        if not body_client_secret or not identities_for(config, request_config()).check_client(client_id, body_client_secret):
             return "Invalid client credentials"
         return None
 
@@ -1615,7 +1644,7 @@ def _enforce_registered_client_auth(
         )
     if auth is None:
         return "Client authentication required"
-    if not identities_for(config).check_client(auth.username, auth.password):
+    if not identities_for(config, request_config()).check_client(auth.username, auth.password):
         return "Invalid client credentials"
     return None
 
@@ -1624,6 +1653,8 @@ def _enforce_registered_client_auth(
 def token() -> ResponseReturnValue:
     """OAuth2 token endpoint: shared validation, then per-grant dispatch."""
     config = get_config()
+    # The configuration this request began with, for the whole path (#406).
+    loaded = request_config()
 
     grant_type = request.form.get("grant_type", "client_credentials")
     # client_secret_post (RFC 6749 §2.3.1, #188): discovery has always
@@ -1679,7 +1710,7 @@ def token() -> ResponseReturnValue:
     # 'exp' passes int() but overflows the timedelta arithmetic - both would
     # be 500s after the token was consumed.
     try:
-        exp_minutes = int(request.form.get("exp", config.settings.token_expiry_minutes))
+        exp_minutes = int(request.form.get("exp", request_config().settings.token_expiry_minutes))
     except (TypeError, ValueError):
         audit_event(
             "token_request",
@@ -1746,7 +1777,8 @@ def token() -> ResponseReturnValue:
 
     ctx = _GrantContext(
         config=config,
-        identities=identities_for(config),
+        loaded=loaded,
+        identities=identities_for(config, loaded),
         client_id=client_id,
         grant_type=grant_type,
     )
@@ -1757,7 +1789,7 @@ def token() -> ResponseReturnValue:
     # Create token ('exp' and 'extra' were validated before the grant dispatch
     # so the rotation claim in the refresh handler is the last thing that can
     # reject)
-    token_service = get_token_service()
+    token_service = get_token_service(request_config())
     token_response = token_service.create_token(
         user=result.user,
         exp_minutes=exp_minutes,
@@ -1770,9 +1802,9 @@ def token() -> ResponseReturnValue:
         refresh_family=result.refresh_family,
         id_token_claims=result.id_token_claims,
         userinfo_claims=result.userinfo_claims,
-        issuer=effective_issuer(config.settings),
+        issuer=effective_issuer(loaded.settings),
         issue_refresh_token=(
-            result.issue_refresh_token and _may_hold_a_refresh_token(config, client_id)
+            result.issue_refresh_token and _may_hold_a_refresh_token(config, loaded, client_id)
         ),
         resource=result.resource,
         refresh_resource=result.refresh_resource,
@@ -1787,11 +1819,11 @@ def token() -> ResponseReturnValue:
         client_id=client_id,
         details={
             "grant_type": grant_type,
-            "authorities_count": len(token_service.build_authorities(result.user)),
+            "authorities_count": len(token_service.build_authorities(result.user, loaded.settings)),
         },
     )
 
-    if config.settings.log_token_requests:
+    if loaded.settings.log_token_requests:
         logger.info(f"Token issued for user '{result.username}' via {grant_type} grant")
 
     return jsonify(token_response)
@@ -1812,6 +1844,8 @@ def userinfo() -> ResponseReturnValue:
     Returns claims about the authenticated user.
     Requires a valid Bearer token.
     """
+    # The configuration this request began with (#406).
+    loaded = request_config()
     config = get_config()
 
     # Extract Bearer token
@@ -1821,7 +1855,7 @@ def userinfo() -> ResponseReturnValue:
 
     # Verify token. Settings before the signing service (#359): see
     # get_crypto_service().
-    settings = config.settings
+    settings = loaded.settings
     crypto = get_crypto_service()
     try:
         # /userinfo is the OP's own protected resource, so a token must be
@@ -1873,7 +1907,7 @@ def userinfo() -> ResponseReturnValue:
 
     # Get user info
     username = payload.get("sub")
-    user = identities_for(config).get_user(username) if username else None
+    user = identities_for(config, request_config()).get_user(username) if username else None
 
     # What this token's bearer may see is domain policy, and lives in
     # services/userinfo.py since #303: scope-to-claim gating, the claims
@@ -1918,7 +1952,7 @@ def introspect() -> ResponseReturnValue:
     auth = identity.auth
     body_client_secret = identity.body_client_secret
     client_id = identity.client_id
-    introspect_client = identities_for(config).get_client(client_id) if client_id else None
+    introspect_client = identities_for(config, request_config()).get_client(client_id) if client_id else None
     if identity.mismatch:
         # One request, two claimed identities (#277) - same rejection as
         # /token, where this check has always lived.
@@ -2014,7 +2048,7 @@ def revoke() -> ResponseReturnValue:
     auth = identity.auth
     body_client_secret = identity.body_client_secret
     client_id = identity.client_id
-    revoking_client = identities_for(config).get_client(client_id) if client_id else None
+    revoking_client = identities_for(config, request_config()).get_client(client_id) if client_id else None
     is_public = revoking_client is not None and revoking_client.is_public
 
     # A confidential client authenticates as at the token endpoint (#262):
@@ -2178,7 +2212,7 @@ def end_session() -> ResponseReturnValue:
 
 
 def _device_client(
-    config: ConfigManager, client_id: Optional[str]
+    config: ConfigManager, loaded: ConfigSnapshot, client_id: Optional[str]
 ) -> Optional[OAuthClient]:
     """The client for a device authorization request, which is never one
     learned from a metadata document (#196).
@@ -2197,7 +2231,7 @@ def _device_client(
     """
     if not client_id:
         return None
-    resolved = identities_for(config).resolve_client(client_id)
+    resolved = identities_for(config, loaded).resolve_client(client_id)
     if resolved is None or resolved.origin == "cimd":
         return None
     return resolved.client
@@ -2218,6 +2252,8 @@ def device_authorization() -> ResponseReturnValue:
     Optional:
     - scope: Requested scopes
     """
+    # The configuration this request began with (#406).
+    loaded = request_config()
     config = get_config()
 
     # Client authentication. A confidential client authenticates as at the
@@ -2231,7 +2267,7 @@ def device_authorization() -> ResponseReturnValue:
     auth = identity.auth
     body_client_secret = identity.body_client_secret
     resolved_client_id = identity.client_id
-    device_client = _device_client(config, resolved_client_id)
+    device_client = _device_client(config, loaded, resolved_client_id)
     if identity.mismatch:
         # One request, two claimed identities (#277) - same rejection as
         # /token, for public and confidential clients alike.
@@ -2269,13 +2305,13 @@ def device_authorization() -> ResponseReturnValue:
 
     # Scope validation (issue #186), same rule as /authorize including the
     # "openid" default when omitted on an unrestricted client.
-    client = identities_for(config).get_client(client_id)
+    client = identities_for(config, request_config()).get_client(client_id)
     if client is not None:
         scope_result = resolve_scope(
             requested_scope,
             client,
-            config.settings.scopes_supported,
-            config.settings.scope_enforcement_active,
+            loaded.settings.scopes_supported,
+            loaded.settings.scope_enforcement_active,
             default_when_omitted="openid",
         )
         if not scope_result.ok:
@@ -2373,7 +2409,7 @@ def device_authorization() -> ResponseReturnValue:
     # Build verification URI. device_verification_base_url overrides the
     # request-derived issuer here so a backend/container caller's Host
     # doesn't leak into a URL the human's own browser can't reach.
-    settings = config.settings
+    settings = loaded.settings
     verification_base = settings.issuer
     if settings.issuer_from_request:
         verification_base = settings.device_verification_base_url or effective_issuer(settings)
@@ -2401,9 +2437,11 @@ def device_verify() -> ResponseReturnValue:
     GET: Show form to enter user_code
     POST: Process user_code and login
     """
+    # The configuration this request began with (#406).
+    loaded = request_config()
     config = get_config()
-    persona_mode = config.settings.persona_mode_enabled
-    two_step_login = config.settings.two_step_login_active
+    persona_mode = loaded.settings.persona_mode_enabled
+    two_step_login = loaded.settings.two_step_login_active
 
     error_msg = None
     success_msg = None
@@ -2431,7 +2469,7 @@ def device_verify() -> ResponseReturnValue:
             login_username=login_username,
             totp_step=totp_step,
             pending_second_factor=pending_second_factor,
-            users=identities_for(config).persona_picker_entries(),
+            users=identities_for(config, request_config()).persona_picker_entries(),
         )
         return no_store(response) if totp_step else response
 
@@ -2465,7 +2503,7 @@ def device_verify() -> ResponseReturnValue:
             )
         elif on_code_screen:
             continuation = continue_second_factor(
-                config, purpose="device", context=second_factor_context
+                config, request_config(), purpose="device", context=second_factor_context
             )
             if continuation.error is not None:
                 audit_event(
@@ -2558,7 +2596,7 @@ def device_verify() -> ResponseReturnValue:
             and not missing_input
             and store.pending_status(user_code) is None
         ):
-            login = authenticate_interactively(config, username=username, password=password)
+            login = authenticate_interactively(config, request_config(), username=username, password=password)
             if login.phase.pending:
                 if login.phase is SecondFactorPhase.CODE_INVALID:
                     audit_event(

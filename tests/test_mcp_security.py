@@ -207,6 +207,13 @@ class TestMCPSecurityIntegration:
             config.settings.audience = "test"
             config.settings.token_expiry_minutes = 60
             config.settings.keys_dir = "./keys"
+            # The call reads the configuration it chose (#406), so the fake
+            # publishes the same concrete values through it.
+            config.snapshot.users = config.users
+            config.snapshot.default_user = config.default_user
+            config.snapshot.users_revision = config.users_revision
+            config.snapshot.settings_revision = config.settings_revision
+            config.snapshot.settings = config.settings
             mock.return_value = config
             yield config
 

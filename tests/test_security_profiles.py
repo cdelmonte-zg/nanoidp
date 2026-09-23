@@ -47,12 +47,12 @@ class TestPasswordHashing:
         )
 
         # Should authenticate
-        user = identities_for(config).authenticate("testuser", "plaintext123")
+        user = identities_for(config, config.snapshot).authenticate("testuser", "plaintext123")
         assert user is not None
         assert user.username == "testuser"
 
         # Wrong password should fail
-        assert identities_for(config).authenticate("testuser", "wrongpassword") is None
+        assert identities_for(config, config.snapshot).authenticate("testuser", "wrongpassword") is None
 
     def test_authenticate_with_bcrypt_password(self):
         """Test authentication with bcrypt hashed password."""
@@ -69,12 +69,12 @@ class TestPasswordHashing:
         )
 
         # Should authenticate with correct password
-        user = identities_for(config).authenticate("hashuser", "secret123")
+        user = identities_for(config, config.snapshot).authenticate("hashuser", "secret123")
         assert user is not None
         assert user.username == "hashuser"
 
         # Wrong password should fail
-        assert identities_for(config).authenticate("hashuser", "wrongpassword") is None
+        assert identities_for(config, config.snapshot).authenticate("hashuser", "wrongpassword") is None
 
     def test_authenticate_bcrypt_fallback_to_plaintext(self):
         """Test that invalid bcrypt hash falls back to plaintext comparison."""
@@ -89,13 +89,13 @@ class TestPasswordHashing:
         )
 
         # Should still authenticate via fallback
-        user = identities_for(config).authenticate("plainuser", "notahash")
+        user = identities_for(config, config.snapshot).authenticate("plainuser", "notahash")
         assert user is not None
 
     def test_authenticate_nonexistent_user(self):
         """Test authentication with nonexistent user."""
         config = ConfigManager()
-        assert identities_for(config).authenticate("nonexistent", "password") is None
+        assert identities_for(config, config.snapshot).authenticate("nonexistent", "password") is None
 
     def test_enforce_password_check_disabled_by_default(self):
         """Test that enforce_password_check defaults to False."""
@@ -116,7 +116,7 @@ class TestPasswordHashing:
         )
 
         # Should be rejected, not fall back to plaintext comparison
-        assert identities_for(config).authenticate("plainuser", "notahash") is None
+        assert identities_for(config, config.snapshot).authenticate("plainuser", "notahash") is None
 
 
 class TestSecurityProfileSettings:
