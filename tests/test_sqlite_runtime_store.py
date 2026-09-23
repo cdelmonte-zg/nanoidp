@@ -390,6 +390,34 @@ class TestWalActivationUnderContention:
         assert attempts[-1] < attempts[0], "a later attempt was given as much as the first"
         assert connection.timeouts[-1] == 300, "the connection was left without its own timeout"
 
+    def test_no_attempt_begins_past_the_budget(self, tmp_path, monkeypatch):
+        """The pause between attempts is time too: a loop that looked at the
+        clock only after an attempt would begin one with nothing left, and
+        could even turn the file at a budget already spent. On a clock this
+        test moves itself, so the window is not a matter of luck."""
+
+        class _Clock:
+            def __init__(self):
+                self.now = 0.0
+
+            def monotonic(self):
+                return self.now
+
+            def sleep(self, seconds):
+                self.now += seconds
+
+        clock = _Clock()
+        monkeypatch.setattr(sqlite_module, "time", clock)
+        monkeypatch.setattr(sqlite_module, "_BUSY_TIMEOUT_MS", 300)
+        monkeypatch.setattr(sqlite_module, "_WAL_ATTEMPT_INTERVAL", 10)
+        database = self._database_of(tmp_path / "runtime.db")
+        connection = self._AnsweringTheSwitch([], busy_always=True)
+
+        with pytest.raises(RuntimeStoreUnavailable):
+            database._activate_wal(connection)
+
+        assert connection.switches == 1, "an attempt began with nothing left of the budget"
+
     def test_a_file_that_never_turns_is_refused_as_the_file_it_is(self, tmp_path, monkeypatch):
         """Nobody ever answered busy, so no peer is holding anything: the
         file cannot be put in WAL, and that is what is said."""

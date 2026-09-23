@@ -612,35 +612,23 @@ class _Database:
         busy and never turned is a file that cannot be put in WAL, which is
         the file's own refusal and is said as one.
         """
-        if _journal_mode(connection) == _WAL:
+        mode = _journal_mode(connection)
+        if mode == _WAL:
             return
         try:
-            self._turning_to_wal(connection)
+            self._turning_to_wal(connection, mode)
         finally:
             connection.execute(f"PRAGMA busy_timeout = {_BUSY_TIMEOUT_MS}")
 
-    def _turning_to_wal(self, connection: sqlite3.Connection) -> None:
-        """The attempts themselves, each within what is left of the budget."""
+    def _turning_to_wal(self, connection: sqlite3.Connection, mode: str) -> None:
+        """The attempts themselves: none begun past the budget, and none
+        given more of it than is left."""
         deadline = time.monotonic() + _BUSY_TIMEOUT_MS / 1000
         contended: Optional[sqlite3.Error] = None
-        answered = ""
+        answered = mode
         while True:
-            # What is left of the budget, and no more: an attempt the busy
-            # handler does wait out would otherwise be given a whole one of
-            # its own, and two shapes of contention in one wait would add up
-            # to twice what was promised.
-            connection.execute(f"PRAGMA busy_timeout = {max(0, int((deadline - time.monotonic()) * 1000))}")
-            try:
-                # The switch answers with the mode it ended in, so a refusal
-                # need not be an exception.
-                answered = _spelling_of(connection.execute(f"PRAGMA journal_mode = {_WAL}").fetchone()[0])
-                if answered == _WAL:
-                    return
-            except sqlite3.OperationalError as refused:
-                if not _is_busy(refused):
-                    raise
-                contended = refused
-            if time.monotonic() >= deadline:
+            left = deadline - time.monotonic()
+            if left <= 0:
                 if contended is not None:
                     raise _unavailable(contended) from contended
                 # Nobody ever answered busy: the file stayed in its journal
@@ -651,7 +639,21 @@ class _Database:
                     f"{answered!r} and the store needs WAL; a filesystem that cannot do WAL, such as "
                     "a network share, is not a place for it"
                 )
-            time.sleep(_WAL_ATTEMPT_INTERVAL)
+            # What is left of the budget, and no more: SQLite waits inside
+            # the attempt, so an attempt the busy handler waits out would
+            # otherwise be given a whole budget of its own.
+            connection.execute(f"PRAGMA busy_timeout = {max(1, int(left * 1000))}")
+            try:
+                # The switch answers with the mode it ended in, so a refusal
+                # need not be an exception.
+                answered = _spelling_of(connection.execute(f"PRAGMA journal_mode = {_WAL}").fetchone()[0])
+                if answered == _WAL:
+                    return
+            except sqlite3.OperationalError as refused:
+                if not _is_busy(refused):
+                    raise
+                contended = refused
+            time.sleep(min(_WAL_ATTEMPT_INTERVAL, max(0.0, deadline - time.monotonic())))
 
     def _check(self, connection: sqlite3.Connection, tables: set) -> None:
         if "meta" not in tables:
