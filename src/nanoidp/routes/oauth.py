@@ -1042,7 +1042,7 @@ def _complete_second_factor(
             username=username,
         )
 
-    login = check_second_factor(config, user)
+    login = check_second_factor(config, request_config(), user)
     if login.phase.pending:
         if login.phase is SecondFactorPhase.CODE_INVALID:
             _audit_invalid_code(p, username, login.phase)
@@ -1653,6 +1653,8 @@ def _enforce_registered_client_auth(
 def token() -> ResponseReturnValue:
     """OAuth2 token endpoint: shared validation, then per-grant dispatch."""
     config = get_config()
+    # The configuration this request began with, for the whole path (#406).
+    loaded = request_config()
 
     grant_type = request.form.get("grant_type", "client_credentials")
     # client_secret_post (RFC 6749 §2.3.1, #188): discovery has always
@@ -1773,7 +1775,6 @@ def token() -> ResponseReturnValue:
             "unsupported_grant_type", "The requested grant_type is not supported"
         )
 
-    loaded = request_config()
     ctx = _GrantContext(
         config=config,
         loaded=loaded,
@@ -1822,7 +1823,7 @@ def token() -> ResponseReturnValue:
         },
     )
 
-    if config.settings.log_token_requests:
+    if loaded.settings.log_token_requests:
         logger.info(f"Token issued for user '{result.username}' via {grant_type} grant")
 
     return jsonify(token_response)

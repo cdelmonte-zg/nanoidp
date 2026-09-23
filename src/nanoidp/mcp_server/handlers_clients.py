@@ -25,12 +25,12 @@ from .serializers import _client_to_dict
 
 # Client Management
 def _tool_list_clients(arguments: dict[str, Any], config: ConfigManager, loaded: ConfigSnapshot) -> dict[str, Any]:
-    clients = [_client_to_dict(c) for c in config.settings.clients]
+    clients = [_client_to_dict(c) for c in loaded.settings.clients]
     # Clients live in settings.yaml, so their precondition is the
     # settings revision (#229 phase 5).
     return {
         "count": len(clients),
-        "settings_revision": config.settings_revision,
+        "settings_revision": loaded.settings_revision,
         "clients": clients,
     }
 
@@ -42,9 +42,9 @@ def _tool_get_client(arguments: dict[str, Any], config: ConfigManager, loaded: C
         return {
             "found": True,
             "client": _client_to_dict(client),
-            "settings_revision": config.settings_revision,
+            "settings_revision": loaded.settings_revision,
         }
-    return {"found": False, "client_id": client_id, "settings_revision": config.settings_revision}
+    return {"found": False, "client_id": client_id, "settings_revision": loaded.settings_revision}
 
 
 def _tool_create_client(arguments: dict[str, Any], config: ConfigManager, loaded: ConfigSnapshot) -> dict[str, Any]:

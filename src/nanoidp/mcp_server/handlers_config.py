@@ -271,7 +271,7 @@ def _tool_save_config(arguments: dict[str, Any], config: ConfigManager, loaded: 
 def _tool_get_oidc_discovery(arguments: dict[str, Any], config: ConfigManager, loaded: ConfigSnapshot) -> dict[str, Any]:
     # Shared with the HTTP /.well-known/openid-configuration endpoint so
     # the two documents can never drift apart (issue #40).
-    return build_discovery_document(config.settings)
+    return build_discovery_document(loaded.settings)
 
 
 def _tool_get_jwks(arguments: dict[str, Any], config: ConfigManager, loaded: ConfigSnapshot) -> dict[str, Any]:

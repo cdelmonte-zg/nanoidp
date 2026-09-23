@@ -312,12 +312,12 @@ def authenticate_interactively(
     user = identities_for(config, loaded).interactive_authenticate(username, password)
     if user is None:
         return InteractiveLogin(None, SecondFactorPhase.NOT_REQUIRED, AuthMethod.PASSWORD, None)
-    if config.settings.persona_mode_enabled:
+    if loaded.settings.persona_mode_enabled:
         return InteractiveLogin(user, SecondFactorPhase.NOT_REQUIRED, AuthMethod.PERSONA, None)
-    return check_second_factor(config, user)
+    return check_second_factor(config, loaded, user)
 
 
-def check_second_factor(config: ConfigManager, user: User) -> InteractiveLogin:
+def check_second_factor(config: ConfigManager, loaded: ConfigSnapshot, user: User) -> InteractiveLogin:
     """The TOTP phase for a user whose password has already been verified,
     reading the submitted code from this request's form (#348).
 
@@ -327,7 +327,7 @@ def check_second_factor(config: ConfigManager, user: User) -> InteractiveLogin:
     screen does not have to send the password back: the phase rule and the
     field name stay spelled once either way.
     """
-    totp_active = config.settings.totp_active
+    totp_active = loaded.settings.totp_active
     phase = second_factor_phase(
         totp_active=totp_active,
         user=user,
@@ -426,7 +426,7 @@ def continue_second_factor(
             error=SECOND_FACTOR_EXPIRED,
             reason="unknown, expired or foreign pending second factor",
         )
-    settings = config.settings
+    settings = loaded.settings
     user = identities_for(config, loaded).get_user(record.username)
     if (
         user is None
@@ -440,7 +440,7 @@ def continue_second_factor(
             reason="second factor no longer applicable to the verified user",
             username=record.username,
         )
-    login = check_second_factor(config, user)
+    login = check_second_factor(config, loaded, user)
     if login.phase.pending:
         return SecondFactorContinuation(login=login, pending=record, username=record.username)
     if store.consume(record.id, binding, purpose=purpose, context=context) is None:

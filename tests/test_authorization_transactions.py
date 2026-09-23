@@ -493,9 +493,9 @@ class TestSecondFactor:
             binding = session["authorize_binding"]
         original = oauth_routes.check_second_factor
 
-        def reset_meanwhile(config, user):
+        def reset_meanwhile(config, loaded, user):
             get_authorization_transaction_store().reset_login(transaction_id, binding)
-            return original(config, user)
+            return original(config, loaded, user)
 
         monkeypatch.setattr(oauth_routes, "check_second_factor", reset_meanwhile)
 

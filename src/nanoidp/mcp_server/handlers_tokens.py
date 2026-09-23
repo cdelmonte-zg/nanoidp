@@ -16,7 +16,7 @@ from .normalize import _normalize_str_list
 # Token Operations
 def _tool_generate_token(arguments: dict[str, Any], config: ConfigManager, loaded: ConfigSnapshot) -> dict[str, Any]:
     username = arguments["username"]
-    user = config.get_user(username)
+    user = loaded.users.get(username)
     if not user:
         return {"success": False, "error": f"User '{username}' not found"}
 
@@ -25,13 +25,14 @@ def _tool_generate_token(arguments: dict[str, Any], config: ConfigManager, loade
     # client could ever match, i.e. a refresh token that looks bound but is
     # dead - reject it up front instead.
     client_id = arguments.get("client_id")
-    if client_id is not None and config.get_client(client_id) is None:
+    declared = [client for client in loaded.settings.clients if client.client_id == client_id]
+    if client_id is not None and not declared:
         return {"success": False, "error": f"Client '{client_id}' not found"}
 
     token_service = TokenService(config, loaded)
     token_response = token_service.create_token(
         user=user,
-        exp_minutes=arguments.get("expires_in_minutes", config.settings.token_expiry_minutes),
+        exp_minutes=arguments.get("expires_in_minutes", loaded.settings.token_expiry_minutes),
         extra_claims=arguments.get("extra_claims"),
         # BOUNDARY (#279): like `resource` below, `scope` is passed through
         # with no scopes_supported vocabulary check and no allowed_scopes

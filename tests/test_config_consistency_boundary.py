@@ -1170,6 +1170,37 @@ class TestAnOperationReadsOneConfiguration:
         assert claims["aud"] == began_with, "the token was built from a load the request did not choose"
         assert claims["sub"] == "alice", "the grant read a default user the request did not choose"
 
+    def test_a_load_between_the_choice_and_the_handler_is_not_read(self, directory_of_two_loads):
+        """The choice is made in the freshness hook, and the handler is not
+        the next thing to run: other hooks, the rate limiter and the gates
+        come between. A handler taking its own configuration there would
+        answer from a load the request never chose."""
+        from nanoidp.app import create_app
+        from nanoidp.config import get_config
+
+        app = create_app(str(directory_of_two_loads))
+        began_with = []
+
+        @app.before_request
+        def load_after_the_choice():  # runs after the freshness hook
+            if not began_with:
+                began_with.append(get_config().snapshot.settings.audience)
+                document = yaml.safe_load((directory_of_two_loads / "settings.yaml").read_text())
+                document["oauth"]["audience"] = "an-audience-of-the-next-load"
+                (directory_of_two_loads / "settings.yaml").write_text(yaml.safe_dump(document, sort_keys=False))
+                self._declare(directory_of_two_loads, ["bob"], default_user="bob")
+                get_config().reload_local()
+            return None
+
+        answer = app.test_client().post(
+            "/token", data={"grant_type": "client_credentials"}, headers=self.BASIC
+        )
+
+        assert began_with, "the load was never placed in the window"
+        assert answer.status_code == 200, answer.data
+        claims = jwt.decode(answer.get_json()["access_token"], options={"verify_signature": False})
+        assert (claims["sub"], claims["aud"]) == ("alice", began_with[0])
+
     def test_the_reported_configuration_is_one_load(self, directory_of_two_loads, monkeypatch):
         """GET /api/config reads the settings, the version, the strictness
         and the users separately, so a load landing while it renders is

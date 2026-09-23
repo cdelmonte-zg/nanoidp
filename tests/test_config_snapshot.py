@@ -268,6 +268,39 @@ class TestAnMcpCallIsAnOperationToo:
         assert in_the_window, "the load was never placed in the window"
         assert json.loads(answer.content[0].text)["audience"] == began_with
 
+    def test_a_listing_pairs_its_objects_with_its_own_revision(self, config_dir, monkeypatch):
+        """A caller passes the revision back as a precondition, so it must be
+        of the load whose objects it was given, not of a later one."""
+        import asyncio
+
+        from mcp.types import CallToolRequestParams
+
+        from nanoidp import mcp_server
+        from nanoidp.config import ConfigManager
+
+        config = ConfigManager(str(config_dir))
+        began_with = (sorted(config.users), config.users_revision)
+        monkeypatch.setattr(mcp_server, "_ensure_config", lambda: config)
+        monkeypatch.setattr(mcp_server, "fresh_configuration", lambda: None)
+        in_the_window = []
+        validate = mcp_server.best_match
+
+        def load_before_the_dispatch(errors):
+            if not in_the_window:
+                in_the_window.append(True)
+                _declare(config_dir, "someone-of-the-next-load")
+                config.reload_local()
+            return validate(errors)
+
+        monkeypatch.setattr(mcp_server, "best_match", load_before_the_dispatch)
+        answer = asyncio.run(
+            mcp_server.call_tool(None, CallToolRequestParams(name="list_users", arguments={}))
+        )
+
+        assert in_the_window, "the load was never placed in the window"
+        reported = json.loads(answer.content[0].text)
+        assert (sorted(user["username"] for user in reported["users"]), reported["users_revision"]) == began_with
+
     def test_every_tool_handler_is_synchronous(self):
         """The census measured that two tool calls in one process do not
         interleave, because a handler runs to completion between awaits. One
@@ -408,6 +441,25 @@ class TestWhatStaysTheServersDecision:
         resolved = self._resolver(config, began_with).resolve_client("a-client")
         assert resolved is not None
         assert resolved.client.client_secret == "the-secret-it-began-with"
+
+    def test_a_client_check_authenticates_against_the_operations_client(self, config_dir):
+        """The client-authentication boundary of /token: a secret rotated
+        under a request must not make that request's own client unknown."""
+        from nanoidp.config import ConfigManager
+
+        def declare(secret):
+            document = yaml.safe_load((config_dir / "settings.yaml").read_text())
+            document["oauth"]["clients"] = [{"client_id": "a-client", "client_secret": secret}]
+            (config_dir / "settings.yaml").write_text(yaml.safe_dump(document, sort_keys=False))
+
+        declare("the-secret-it-began-with")
+        config = ConfigManager(str(config_dir))
+        began_with = config.snapshot
+
+        declare("the-secret-of-the-next-load")
+        config.reload_local()
+
+        assert self._resolver(config, began_with).check_client("a-client", "the-secret-it-began-with")
 
     def test_a_runtime_creation_checks_the_declaration_as_it_is_now(self, config_dir):
         """The check exists to refuse a runtime name the files declare, and

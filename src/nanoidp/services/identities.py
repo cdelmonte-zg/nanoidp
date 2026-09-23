@@ -575,7 +575,7 @@ class IdentityResolver:
         user = self.get_user(username)
         if not user or user.password is None:
             return None
-        settings = self.config.settings
+        settings = self.loaded.settings
 
         if settings.password_hashing:
             import bcrypt
@@ -613,7 +613,7 @@ class IdentityResolver:
         selects the user - no credential check. Password mode: unchanged,
         delegates to ``authenticate()`` and requires both fields.
         """
-        if self.config.settings.persona_mode_enabled:
+        if self.loaded.settings.persona_mode_enabled:
             return self.get_user(username) if username else None
         return self.authenticate(username, password) if username and password else None
 
@@ -625,6 +625,8 @@ class IdentityResolver:
         """
         if client_id is None or client_secret is None:
             return False
+        # No settings argument: resolve_client already reads this
+        # operation's configuration (#406).
         client = self.get_client(client_id)
         # A public client (token_endpoint_auth_method 'none', #188) can
         # never authenticate: a stored-but-ignored secret must not become a

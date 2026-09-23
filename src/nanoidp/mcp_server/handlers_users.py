@@ -36,27 +36,27 @@ def _build_user_from_arguments(
 
 # User Management
 def _tool_list_users(arguments: dict[str, Any], config: ConfigManager, loaded: ConfigSnapshot) -> dict[str, Any]:
-    users = [_user_to_dict(user) for user in config.users.values()]
+    users = [_user_to_dict(user) for user in loaded.users.values()]
     return {
         "count": len(users),
-        "default_user": config.default_user,
+        "default_user": loaded.default_user,
         # The users.yaml revision this runtime was loaded from (#229 phase
         # 5): pass it to save_config as expected_users_revision to refuse
         # the save if another writer moved the file since.
-        "users_revision": config.users_revision,
+        "users_revision": loaded.users_revision,
         "users": users,
     }
 
 
 def _tool_get_user(arguments: dict[str, Any], config: ConfigManager, loaded: ConfigSnapshot) -> dict[str, Any]:
     username = arguments["username"]
-    user = config.get_user(username)
+    user = loaded.users.get(username)
     if user:
-        return {"found": True, "user": _user_to_dict(user), "users_revision": config.users_revision}
+        return {"found": True, "user": _user_to_dict(user), "users_revision": loaded.users_revision}
     # Meaningful on the not-found branch too: get_user -> create_user ->
     # save_config(expected_users_revision=...) is "create this user only
     # if the file still looks like it did when I saw them absent".
-    return {"found": False, "username": username, "users_revision": config.users_revision}
+    return {"found": False, "username": username, "users_revision": loaded.users_revision}
 
 
 def _tool_create_user(arguments: dict[str, Any], config: ConfigManager, loaded: ConfigSnapshot) -> dict[str, Any]:
