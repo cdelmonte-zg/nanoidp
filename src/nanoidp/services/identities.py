@@ -277,8 +277,12 @@ class IdentityResolver:
         reads what is there or gets nothing.
         """
         runtime = self.store.clients.get(client_id)
-        declared = _find_client(settings or self.config.settings, client_id)
-        if declared is None and runtime is None and settings is not None:
+        declared = _find_client(settings or self.loaded.settings, client_id)
+        if declared is None and runtime is None:
+            # As in resolve_user: the store is live and the declaration is
+            # this operation's, so a load that declared the name and
+            # reconciled the runtime client away would otherwise be observed
+            # as neither.
             declared = _find_client(self.config.settings, client_id)
         if declared is not None:
             return ResolvedClient(declared, "declared")

@@ -16,7 +16,7 @@ from . import __version__
 from .config import ConfigManager, DeclaredConfigurationUnloadable, get_config, init_config
 from .config_writer import LockUnavailableError
 from .routes import api_bp, oauth_bp, registration_bp, runtime_bp, saml_bp, ui_bp
-from .routes._config import remember_for_this_request
+from .routes._config import forget_after_this_request, remember_for_this_request
 from .services import activate_services
 from .services.dynamic_registration import prune_stale_registrations
 from .services.identities import identities_for, reconcile_runtime_identities
@@ -264,6 +264,8 @@ def create_app(
     # files are looked at here, once per request, not in get_config() (#354,
     # step 4a). LockUnavailableError is the 503 above.
     app.before_request(_fresh_configuration_unless_it_is_not_read)
+    # The choice belongs to the request that made it (#406).
+    app.teardown_request(forget_after_this_request)
 
     app.register_blueprint(oauth_bp)
     app.register_blueprint(saml_bp)

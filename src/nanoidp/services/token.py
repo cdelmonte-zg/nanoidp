@@ -154,7 +154,7 @@ class TokenService:
         ``settings`` is the snapshot a token is being built from; omitted,
         the current settings.
         """
-        prefixes = (settings or self.config.settings).authority_prefixes
+        prefixes = (settings or self.loaded.settings).authority_prefixes
         authorities = []
 
         # Add ROLE_ prefix for user roles

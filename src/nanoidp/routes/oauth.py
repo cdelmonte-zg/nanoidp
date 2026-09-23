@@ -405,10 +405,14 @@ def _client_from_metadata_document(
     entry records that a document was refused, and the operator reads why
     where only the operator is.
     """
-    # The configuration this request began with (#406).
+    # The configuration this request began with (#406), except for the
+    # switch: whether the capability is offered at all is the server's, not
+    # the request's, and the resolver reads it live for the same reason. A
+    # request that began while it was on must not reach the one outbound
+    # fetch this server makes after it was turned off.
     loaded = request_config()
     settings = loaded.settings
-    if not settings.client_id_metadata_documents_enabled:
+    if not config.settings.client_id_metadata_documents_enabled:
         return None
     if not looks_like_client_id_url(client_id):
         return None
@@ -1704,7 +1708,7 @@ def token() -> ResponseReturnValue:
     # 'exp' passes int() but overflows the timedelta arithmetic - both would
     # be 500s after the token was consumed.
     try:
-        exp_minutes = int(request.form.get("exp", config.settings.token_expiry_minutes))
+        exp_minutes = int(request.form.get("exp", request_config().settings.token_expiry_minutes))
     except (TypeError, ValueError):
         audit_event(
             "token_request",
@@ -1797,7 +1801,7 @@ def token() -> ResponseReturnValue:
         refresh_family=result.refresh_family,
         id_token_claims=result.id_token_claims,
         userinfo_claims=result.userinfo_claims,
-        issuer=effective_issuer(config.settings),
+        issuer=effective_issuer(loaded.settings),
         issue_refresh_token=(
             result.issue_refresh_token and _may_hold_a_refresh_token(config, loaded, client_id)
         ),
@@ -1814,7 +1818,7 @@ def token() -> ResponseReturnValue:
         client_id=client_id,
         details={
             "grant_type": grant_type,
-            "authorities_count": len(token_service.build_authorities(result.user)),
+            "authorities_count": len(token_service.build_authorities(result.user, loaded.settings)),
         },
     )
 

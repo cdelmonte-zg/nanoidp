@@ -84,7 +84,8 @@ def generate_token(username: str) -> ResponseReturnValue:
         return jsonify({"error": "User not found"}), 404
 
     body = request.get_json(silent=True) or {}
-    exp_minutes = body.get("exp_minutes", config.settings.token_expiry_minutes)
+    loaded = request_config()
+    exp_minutes = body.get("exp_minutes", loaded.settings.token_expiry_minutes)
 
     # Optional client binding (#73), mirroring the MCP generate_token tool: a
     # given client_id must name a real client. Whether a refresh token is
@@ -101,7 +102,7 @@ def generate_token(username: str) -> ResponseReturnValue:
     token_response = token_service.create_token(
         user=user,
         exp_minutes=exp_minutes,
-        issuer=effective_issuer(config.settings),
+        issuer=effective_issuer(loaded.settings),
         client_id=client_id,
     )
 

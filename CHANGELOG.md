@@ -22,7 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and the token service take it, so nothing resolves a user or builds a
   response from a load the rest of the operation never read, and the
   management gate reads it too, rather than deciding on one load while the
-  handler it guards works from another. `GET /api/config` and the MCP
+  handler it guards works from another. Declared clients come from it as
+  well, so a record that changed under an operation is not half of its
+  answer, and so do the issuer a token carries and the expiry it defaults
+  to. `GET /api/config` and the MCP
   `get_settings` tool serialise that one reference instead of four separate
   reads. What stays deliberately current is unchanged and says so where it
   is: whether the client-metadata capability is offered at all, the check

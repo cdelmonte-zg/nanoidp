@@ -346,6 +346,69 @@ class TestWhatStaysTheServersDecision:
 
         assert resolved is not None and resolved.origin == "declared"
 
+    def test_the_route_reads_the_capability_switch_live_too(self, config_dir):
+        """The one outbound fetch this server makes is behind the switch, and
+        the resolver reads it live: the route that falls back to learning a
+        client must not disagree, or a request that began while it was on
+        would fetch after it was turned off."""
+        from flask import Flask
+
+        from nanoidp.config import ConfigManager
+        from nanoidp.routes._config import remember_for_this_request
+        from nanoidp.routes.oauth import _client_from_metadata_document
+
+        def switch(on):
+            document = yaml.safe_load((config_dir / "settings.yaml").read_text())
+            document.setdefault("oauth", {})["client_id_metadata_documents"] = {
+                "enabled": on,
+                "allowed_hosts": ["a-client.example"],
+            }
+            (config_dir / "settings.yaml").write_text(yaml.safe_dump(document, sort_keys=False))
+
+        switch(True)
+        config = ConfigManager(str(config_dir))
+        began_with = config.snapshot
+        switch(False)
+        config.reload_local()
+
+        import nanoidp.routes.oauth as oauth_module
+
+        attempts = []
+        learn = oauth_module.learn_client
+
+        with Flask(__name__).test_request_context("/authorize"):
+            remember_for_this_request(began_with)
+            oauth_module.learn_client = lambda *arguments, **named: attempts.append(1)
+            try:
+                assert _client_from_metadata_document(config, "https://a-client.example/m.json") is None
+            finally:
+                oauth_module.learn_client = learn
+
+        assert attempts == [], "a document was fetched under a capability that is off"
+
+    def test_a_declared_client_is_the_one_the_operation_began_with(self, config_dir):
+        """Users were the measured case, clients are the same rule: a record
+        that changed under the operation must not be half of its answer."""
+        from nanoidp.config import ConfigManager
+
+        def declare(secret):
+            document = yaml.safe_load((config_dir / "settings.yaml").read_text())
+            document["oauth"]["clients"] = [
+                {"client_id": "a-client", "client_secret": secret, "description": "one"}
+            ]
+            (config_dir / "settings.yaml").write_text(yaml.safe_dump(document, sort_keys=False))
+
+        declare("the-secret-it-began-with")
+        config = ConfigManager(str(config_dir))
+        began_with = config.snapshot
+
+        declare("the-secret-of-the-next-load")
+        config.reload_local()
+
+        resolved = self._resolver(config, began_with).resolve_client("a-client")
+        assert resolved is not None
+        assert resolved.client.client_secret == "the-secret-it-began-with"
+
     def test_a_runtime_creation_checks_the_declaration_as_it_is_now(self, config_dir):
         """The check exists to refuse a runtime name the files declare, and
         the files are read under their lock: an operation's older view would
@@ -365,6 +428,24 @@ class TestWhatStaysTheServersDecision:
 
 
 class TestTheBoundaryOfTheRequest:
+    def test_one_request_does_not_read_what_another_chose(self, config_dir):
+        """`g` belongs to the application context, which outlives a request
+        when a caller pushed one around it, so the choice is kept with the
+        request that made it and forgotten when that request ends."""
+        from nanoidp.app import create_app
+        from nanoidp.routes._config import request_config
+
+        app = create_app(str(config_dir))
+
+        with app.app_context():
+            client = app.test_client()
+            assert client.get("/api/config").status_code == 200
+
+            with pytest.raises(RuntimeError, match="outside the boundary"):
+                request_config()
+
+            assert client.get("/api/health").status_code == 200
+
     def test_a_probe_that_reads_no_configuration_chooses_none(self, config_dir):
         """Health and static are exempt from freshness (#354, step 4a), so
         they choose no configuration either, and must not need one."""
