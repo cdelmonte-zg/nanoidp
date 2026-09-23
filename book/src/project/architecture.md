@@ -132,8 +132,11 @@ There are exactly two kinds of state, and they never share a store:
   (`services/runtime_store.py`): authorization codes, device codes,
   revocation and rotation families, the audit log, runtime users and
   clients, whatever the protocols and the management surfaces keep.
-  Outside it, and process-local on purpose: Flask sessions, the
-  rate limiter's counters and the CIMD fetch budget. Which store holds
+  Outside it, and process-local on purpose: the rate limiter's
+  counters and the CIMD fetch budget. The login session is not among
+  them: it is a signed cookie, which processes sharing a `secret_key`
+  all accept, and the `/authorize` transaction it names lives in the
+  store. Which store holds
   it is configuration: `memory`, the default, keeps it in the process
   and loses it at restart; `sqlite` keeps it in files that several
   processes **on one host** share (see [Two processes, one runtime

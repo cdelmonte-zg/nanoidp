@@ -14,9 +14,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is for, and no test composed two real servers over one store. The guide
   "Two processes, one runtime state" says when a second process is worth it,
   what the two share (runtime identities, authorization and device codes,
-  refresh families and revocations, the audit) and what stays each process's
-  own (the login session, the rate limiter's counters, the metadata fetch
-  budget, plugin dispatch), that `jwt.keys_dir` is relative to the working
+  refresh families and revocations, the audit, and the browser leg, since the
+  login session is a signed cookie both accept and the transaction behind
+  `/authorize` is in the store) and what stays each process's own (the rate
+  limiter's counters, the metadata fetch budget, plugin dispatch), that
+  `jwt.keys_dir` is relative to the working
   directory where `runtime.path` is relative to the configuration directory,
   and how to start afresh with the processes stopped. It also states the
   limit plainly: a store that survives a restart is not a store NanoIDP
