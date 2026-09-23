@@ -14,7 +14,7 @@ from flask import Blueprint, Response, abort, render_template, request, session
 from flask.typing import ResponseReturnValue
 from lxml import etree
 
-from ..config import get_config
+from ..config import ConfigSnapshot, get_config
 from ..exceptions import SAMLSignatureError
 from ..services import get_crypto_service, identities_for
 from ..services.saml_assertion import (
@@ -224,6 +224,7 @@ def _parse_saml_request(
 
 
 def _build_saml_response(
+    loaded: ConfigSnapshot,
     acs_url: str,
     issuer: str,
     audience: str,
@@ -242,8 +243,9 @@ def _build_saml_response(
     claiming PasswordProtectedTransport for that login would be false (#persona
     login design contract, point 6).
     """
-    # Settings before the signing service (#359): see get_crypto_service().
-    settings = get_config().settings
+    # The configuration this operation began with (#406), and the signing
+    # service after it (#359): see get_crypto_service().
+    settings = loaded.settings
     crypto = get_crypto_service()
 
     now = datetime.now(timezone.utc)
@@ -345,7 +347,7 @@ def _build_saml_response(
 @saml_bp.route("/metadata")
 def metadata() -> ResponseReturnValue:
     """SAML IdP Metadata endpoint."""
-    settings = get_config().settings
+    settings = request_config().settings
     crypto = get_crypto_service()
 
     NS = {
@@ -403,7 +405,8 @@ def cert() -> ResponseReturnValue:
 
 
 def _verify_authn_request_signature(
-    config: Any, saml_request_b64: str, relay_state: str
+    config: Any,
+    loaded: ConfigSnapshot, saml_request_b64: str, relay_state: str
 ) -> Optional[ResponseReturnValue]:
     """AuthnRequest signature verification (#69), opt-in via
     saml.want_authn_requests_signed. Verified where the request ENTERS:
@@ -425,7 +428,7 @@ def _verify_authn_request_signature(
     Returns the rejection response, or None when the request may proceed
     (verification passed, or the opt-in is off).
     """
-    if not config.settings.saml_want_authn_requests_signed:
+    if not loaded.settings.saml_want_authn_requests_signed:
         return None
 
     form_leg_verb = (request.form.get("saml_original_verb") or "").upper()
@@ -433,7 +436,7 @@ def _verify_authn_request_signature(
         if request.method == "GET":
             verify_redirect_signature(
                 request.query_string.decode("latin-1"),
-                load_sp_certificates(config.settings.saml_sp_certificates),
+                load_sp_certificates(loaded.settings.saml_sp_certificates),
             )
             # Remembering this request is the caller's, once it knows a
             # login continuation is actually needed (#375): a browser that
@@ -447,7 +450,7 @@ def _verify_authn_request_signature(
             xml_bytes = _decode_saml_request_bytes(saml_request_b64)
             verify_post_signature(
                 xml_bytes,
-                load_sp_certificates(config.settings.saml_sp_certificates),
+                load_sp_certificates(loaded.settings.saml_sp_certificates),
             )
     except SAMLSignatureError as e:
         audit_event(
@@ -542,8 +545,9 @@ def _sso_authenticate_inline(
     if username:
         return username, None
 
-    persona_mode = config.settings.persona_mode_enabled
-    two_step_login = config.settings.two_step_login_active
+    loaded = request_config()
+    persona_mode = loaded.settings.persona_mode_enabled
+    two_step_login = loaded.settings.two_step_login_active
     login_error = None
 
     username_submitted = "username" in request.form
@@ -718,7 +722,7 @@ def _sso_authenticate_inline(
 
 
 def _sso_parse_request(
-    config: Any, saml_request_b64: str
+    config: Any, loaded: ConfigSnapshot, saml_request_b64: str
 ) -> tuple[Optional[str], Optional[str], Optional[ResponseReturnValue]]:
     """Parse the SAMLRequest: (acs_url, in_response_to, None) or (None, None, error).
 
@@ -735,11 +739,11 @@ def _sso_parse_request(
         return None, None, abort(400, description="invalid saml_original_verb")
     original_verb = (form_verb or request.method or "POST").upper()
     saml_info = _parse_saml_request(
-        saml_request_b64, http_verb=original_verb, strict=config.settings.strict_saml_binding
+        saml_request_b64, http_verb=original_verb, strict=loaded.settings.strict_saml_binding
     )
 
     requested_acs = saml_info.get("acs_url") if saml_info else None
-    acs_url = requested_acs or config.settings.default_acs_url
+    acs_url = requested_acs or loaded.settings.default_acs_url
     in_response_to = saml_info.get("id") if saml_info else None
     return acs_url, in_response_to, None
 
@@ -756,7 +760,8 @@ def _sso_success_response(
     # Shared resolver (#302); the SSO assertion never carries source_acl -
     # a login assertion is not a backend authorization lookup (deliberate,
     # see services/saml_attributes.py and the saml.md divergence table).
-    saml_attrs = resolve_saml_attributes(config.settings, user, include_source_acl=False)
+    loaded = request_config()
+    saml_attrs = resolve_saml_attributes(loaded.settings, user, include_source_acl=False)
 
     name_id = user.email or f"{username}@example.org"
 
@@ -769,13 +774,14 @@ def _sso_success_response(
 
     # Generate SAML Response
     xml = _build_saml_response(
+        loaded,
         acs_url=acs_url,
-        issuer=effective_saml_entity_id(config.settings),
-        audience=config.settings.audience,
+        issuer=effective_saml_entity_id(loaded.settings),
+        audience=loaded.settings.audience,
         name_id=name_id,
         attributes={k: v for k, v in saml_attrs.items() if v is not None},
         in_response_to=in_response_to,
-        sign=config.settings.saml_sign_responses,
+        sign=loaded.settings.saml_sign_responses,
         authn_context=authn_context,
     )
     saml_b64 = b64encode(xml).decode("ascii")
@@ -788,7 +794,7 @@ def _sso_success_response(
         details={"acs_url": acs_url},
     )
 
-    if config.settings.log_saml_requests:
+    if loaded.settings.log_saml_requests:
         logger.info(f"SAML Response issued for user '{username}' to {acs_url}")
 
     # Auto-submit form (escape user-controlled values to prevent XSS)
@@ -819,6 +825,8 @@ def sso() -> ResponseReturnValue:
     error and audit behavior (#212).
     """
     config = get_config()
+    # The configuration this request began with (#406).
+    loaded = request_config()
 
     saml_request_b64 = request.form.get("SAMLRequest") or request.args.get("SAMLRequest")
     relay_state = request.form.get("RelayState") or request.args.get("RelayState", "")
@@ -826,13 +834,13 @@ def sso() -> ResponseReturnValue:
     if not saml_request_b64:
         return abort(400, description="missing SAMLRequest")
 
-    rejected = _verify_authn_request_signature(config, saml_request_b64, relay_state)
+    rejected = _verify_authn_request_signature(config, loaded, saml_request_b64, relay_state)
     if rejected is not None:
         return rejected
 
     username, login_page = _sso_authenticate_inline(config, saml_request_b64, relay_state)
     if login_page is not None:
-        if config.settings.saml_want_authn_requests_signed and request.method == "GET":
+        if loaded.settings.saml_want_authn_requests_signed and request.method == "GET":
             # A verified Redirect request is remembered here, where it is
             # known that this browser has a login to continue (#375).
             _remember_verified_redirect(saml_request_b64, relay_state)
@@ -850,7 +858,7 @@ def sso() -> ResponseReturnValue:
         )
         return abort(401, description=f"user '{username}' not found")
 
-    acs_url, in_response_to, invalid = _sso_parse_request(config, saml_request_b64)
+    acs_url, in_response_to, invalid = _sso_parse_request(config, loaded, saml_request_b64)
     if invalid is not None:
         return invalid
 
@@ -958,7 +966,7 @@ def _sign_attribute_query_response(response_xml: str, sign: bool = True) -> str:
         return response_xml
 
     try:
-        settings = get_config().settings
+        settings = request_config().settings
         crypto = get_crypto_service()
 
         root = secure_fromstring(response_xml.encode("utf-8"))
@@ -1092,7 +1100,7 @@ def _attribute_query_fault(
         len(body),
         f": {detail}" if detail else "",
     )
-    if body and get_config().settings.verbose_logging:
+    if body and request_config().settings.verbose_logging:
         # The body names a principal, so it is operator-only material.
         logger.debug("AttributeQuery body: %r", body[:2000])
     return _soap_fault(message)
@@ -1125,6 +1133,8 @@ def attribute_query() -> ResponseReturnValue:
     never a fabricated assertion (#275).
     """
     config = get_config()
+    # The configuration this request began with (#406).
+    loaded = request_config()
 
     try:
         # Parse SOAP request body (using defusedxml to prevent XXE attacks).
@@ -1198,7 +1208,7 @@ def attribute_query() -> ResponseReturnValue:
             # (#134). source_acl IS exported here - this surface exists for
             # backend authorization lookups (deliberate divergence from SSO).
             attributes = resolve_saml_attributes(
-                config.settings, user, include_source_acl=True
+                loaded.settings, user, include_source_acl=True
             )
         else:
             # Unknown principal (#275): a SAML error status, not a signed
@@ -1207,13 +1217,13 @@ def attribute_query() -> ResponseReturnValue:
             logger.warning(f"AttributeQuery for unknown user '{user_id}'")
             error_xml = _build_attribute_query_error_response(
                 request_id=request_id,
-                issuer_url=effective_saml_entity_id(config.settings),
+                issuer_url=effective_saml_entity_id(loaded.settings),
             )
             # Same signing path as the success response (#289 review): with
             # saml_sign_responses on, an SP validating signatures must never
             # meet the one response shape nanoidp forgot to sign.
             error_xml = _sign_attribute_query_response(
-                error_xml, config.settings.saml_sign_responses
+                error_xml, loaded.settings.saml_sign_responses
             )
             _audit_attribute_query(
                 "failed",
@@ -1231,7 +1241,7 @@ def attribute_query() -> ResponseReturnValue:
             return Response(soap_error, mimetype="text/xml")
 
         # Build SAML Response
-        issuer_url = effective_saml_entity_id(config.settings)
+        issuer_url = effective_saml_entity_id(loaded.settings)
         response_xml = _build_attribute_query_response(
             user_id=user_id,
             attributes=attributes,
@@ -1241,7 +1251,7 @@ def attribute_query() -> ResponseReturnValue:
 
         # Sign the response (if configured)
         signed_response = _sign_attribute_query_response(
-            response_xml, config.settings.saml_sign_responses
+            response_xml, loaded.settings.saml_sign_responses
         )
 
         # Wrap in SOAP envelope

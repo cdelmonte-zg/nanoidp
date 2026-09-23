@@ -845,12 +845,20 @@ class TestReloadReconciliation:
         assert resolved is not None
         assert get_runtime_store().users.get("ci-alice") is None
 
-    def test_a_listing_spanning_a_reload_that_declares_the_name_shows_one_of_the_two(
+    def test_a_listing_spanning_a_reload_that_declares_the_name_may_show_neither(
         self, app_client, monkeypatch
     ):
+        """The contract changed with #406: a listing shows the declaration of
+        the operation it was rendered for, and the store as it is. A load
+        that declares a runtime object's name and reconciles it away, landing
+        between the two, therefore leaves that name out of a listing an
+        operation began before it, where both sides used to be live and one
+        of the two was always shown. Composing them would be a listing of no
+        configuration; the listing after it shows the declared object."""
         _, config_dir = app_client
         manager = get_config()
         get_identities().create_runtime_user(_user("ci-alice"))
+        began_with = get_identities()
         repository = get_runtime_store().users
         real_list = repository.list
         reloaded = []
@@ -863,10 +871,13 @@ class TestReloadReconciliation:
             return real_list()
 
         monkeypatch.setattr(repository, "list", reload_then_list)
-        names = [entry.user.username for entry in get_identities().list_users()]
+        names = [entry.user.username for entry in began_with.list_users()]
+        monkeypatch.setattr(repository, "list", real_list)
 
         assert reloaded
-        assert names.count("ci-alice") == 1
+        assert names.count("ci-alice") == 0
+        # The operation after it, on the configuration as it is now:
+        assert [entry.user.username for entry in get_identities().list_users()].count("ci-alice") == 1
 
     def test_a_settings_snapshot_older_than_the_reload_resolves_nothing(self, app_client):
         """The contract changed with #406: a caller holding a snapshot from

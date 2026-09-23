@@ -484,6 +484,40 @@ class TestWhatStaysTheServersDecision:
 
         assert self._resolver(config, began_with).check_client("a-client", "the-secret-it-began-with")
 
+    def test_a_listing_shows_the_declaration_the_operation_began_with(self, config_dir):
+        """The last two reads of the manager in the resolver (#406): a
+        listing rendered for an operation shows that operation's declared
+        users, not a later load's, exactly as a lookup does."""
+        from nanoidp.config import ConfigManager
+
+        config = ConfigManager(str(config_dir))
+        began_with = config.snapshot
+        _declare(config_dir, "declared-later")
+        config.reload_local()
+
+        listed = self._resolver(config, began_with).list_users()
+
+        assert "declared-later" not in [entry.user.username for entry in listed]
+        assert "declared-later" in [entry.user.username for entry in self._resolver(config).list_users()]
+
+    def test_a_client_listing_shows_the_operations_declaration_too(self, config_dir):
+        from nanoidp.config import ConfigManager
+
+        def declare(client_id):
+            document = yaml.safe_load((config_dir / "settings.yaml").read_text())
+            document["oauth"]["clients"] = [{"client_id": client_id, "client_secret": "s"}]
+            (config_dir / "settings.yaml").write_text(yaml.safe_dump(document, sort_keys=False))
+
+        declare("the-one-it-began-with")
+        config = ConfigManager(str(config_dir))
+        began_with = config.snapshot
+        declare("the-one-of-the-next-load")
+        config.reload_local()
+
+        listed = [entry.client.client_id for entry in self._resolver(config, began_with).list_clients()]
+
+        assert listed == ["the-one-it-began-with"]
+
     def test_a_runtime_creation_checks_the_declaration_as_it_is_now(self, config_dir):
         """The check exists to refuse a runtime name the files declare, and
         the files are read under their lock: an operation's older view would

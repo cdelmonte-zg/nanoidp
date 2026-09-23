@@ -15,6 +15,8 @@ import zlib
 import pytest
 from lxml import etree
 
+from nanoidp.config import get_config
+
 SAML_NS = {
     "md": "urn:oasis:names:tc:SAML:2.0:metadata",
     "ds": "http://www.w3.org/2000/09/xmldsig#",
@@ -262,6 +264,7 @@ class TestSAMLResponse:
         from nanoidp.routes.saml import _build_saml_response
 
         xml = _build_saml_response(
+            get_config().snapshot,
             acs_url='http://sp.example.com/acs',
             issuer='http://localhost:8000/saml',
             audience='http://sp.example.com',
@@ -280,6 +283,7 @@ class TestSAMLResponse:
 
         issuer_url = 'http://localhost:8000/saml'
         xml = _build_saml_response(
+            get_config().snapshot,
             acs_url='http://sp.example.com/acs',
             issuer=issuer_url,
             audience='http://sp.example.com',
@@ -299,6 +303,7 @@ class TestSAMLResponse:
 
         name_id = 'testuser@example.com'
         xml = _build_saml_response(
+            get_config().snapshot,
             acs_url='http://sp.example.com/acs',
             issuer='http://localhost:8000/saml',
             audience='http://sp.example.com',
@@ -317,6 +322,7 @@ class TestSAMLResponse:
         from nanoidp.routes.saml import _build_saml_response
 
         xml = _build_saml_response(
+            get_config().snapshot,
             acs_url='http://sp.example.com/acs',
             issuer='http://localhost:8000/saml',
             audience='http://sp.example.com',
@@ -337,6 +343,7 @@ class TestSAMLResponse:
 
         audience = 'http://sp.example.com'
         xml = _build_saml_response(
+            get_config().snapshot,
             acs_url='http://sp.example.com/acs',
             issuer='http://localhost:8000/saml',
             audience=audience,
@@ -361,6 +368,7 @@ class TestSAMLResponse:
         }
 
         xml = _build_saml_response(
+            get_config().snapshot,
             acs_url='http://sp.example.com/acs',
             issuer='http://localhost:8000/saml',
             audience='http://sp.example.com',
@@ -386,6 +394,7 @@ class TestSAMLResponse:
 
         request_id = '_req_abc123'
         xml = _build_saml_response(
+            get_config().snapshot,
             acs_url='http://sp.example.com/acs',
             issuer='http://localhost:8000/saml',
             audience='http://sp.example.com',
@@ -578,6 +587,7 @@ class TestSAMLSigningConfiguration:
         from nanoidp.routes.saml import _build_saml_response
 
         xml = _build_saml_response(
+            get_config().snapshot,
             acs_url='http://sp.example.com/acs',
             issuer='http://localhost:8000/saml',
             audience='http://sp.example.com',
@@ -595,6 +605,7 @@ class TestSAMLSigningConfiguration:
         from nanoidp.routes.saml import _build_saml_response
 
         xml = _build_saml_response(
+            get_config().snapshot,
             acs_url='http://sp.example.com/acs',
             issuer='http://localhost:8000/saml',
             audience='http://sp.example.com',
@@ -717,6 +728,7 @@ class TestSAMLSigningConfiguration:
             pytest.skip("signxml not available")
 
         xml = _build_saml_response(
+            get_config().snapshot,
             acs_url='http://sp.example.com/acs',
             issuer='http://localhost:8000/saml',
             audience='http://sp.example.com',
@@ -752,6 +764,7 @@ class TestSAMLSigningConfiguration:
             pytest.skip("signxml not available")
 
         xml = _build_saml_response(
+            get_config().snapshot,
             acs_url='http://sp.example.com/acs',
             issuer='http://localhost:8000/saml',
             audience='http://sp.example.com',
@@ -792,6 +805,7 @@ class TestSAMLSigningConfiguration:
 
         try:
             xml = _build_saml_response(
+                get_config().snapshot,
                 acs_url='http://sp.example.com/acs',
                 issuer='http://localhost:8000/saml',
                 audience='http://sp.example.com',
@@ -831,6 +845,7 @@ class TestSAMLSigningConfiguration:
 
         try:
             xml = _build_saml_response(
+                get_config().snapshot,
                 acs_url='http://sp.example.com/acs',
                 issuer='http://localhost:8000/saml',
                 audience='http://sp.example.com',
@@ -954,6 +969,7 @@ class TestSAMLStatus:
         from nanoidp.routes.saml import _build_saml_response
 
         xml = _build_saml_response(
+            get_config().snapshot,
             acs_url='http://sp.example.com/acs',
             issuer='http://localhost:8000/saml',
             audience='http://sp.example.com',

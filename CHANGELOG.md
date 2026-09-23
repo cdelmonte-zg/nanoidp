@@ -8,6 +8,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **SAML, the web UI and the listings read the configuration their operation
+  began with** (#406, last of three steps). The step before made the OAuth and
+  MCP surfaces read one configuration per operation; these were left, and read
+  the manager again at each use. A SAML response could be built with one
+  load's entity id and another's canonicalisation, a metadata document or a
+  dashboard could be rendered from two, and an attribute query could export
+  the attributes of a load its answer was not about. The builders now receive
+  the configuration the response is built from, the pages take it once, and
+  the listings of users and clients compose that declaration with the store as
+  it is, the way the lookups do. **The listings change contract with it,** as
+  the lookups did: one rendered for an operation that began before a load
+  which declares a runtime object's name and reconciles it away leaves that
+  name out, where both sides used to be live and one of the two was always
+  shown; composing them would be a listing of no configuration, and the
+  listing after it shows the declared object. Restoring continuity across a
+  reconciliation, without that transient, is a contract of its own and is
+  tracked separately.
+
 - **An operation reads one configuration, the one it began with** (#406,
   second of two steps). A request read the manager again at each use, so a
   load landing between two of those reads gave it a configuration that never
