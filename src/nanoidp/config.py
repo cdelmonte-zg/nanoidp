@@ -210,6 +210,15 @@ class ConfigSnapshot:
     observed_at: float
 
 
+def _persistable(loaded: ConfigSnapshot) -> Settings:
+    """The declared settings of one loaded configuration: what a writer
+    serializes, with the fields a --profile forced carrying the value the
+    file declared."""
+    if not loaded.declared:
+        return loaded.settings
+    return loaded.settings.model_copy(update=loaded.declared)
+
+
 @dataclass(frozen=True)
 class _Pending:
     # None when the files could not be read at all.
@@ -556,10 +565,6 @@ class ConfigManager:
     def observed_at(self) -> float:
         return self._snapshot.observed_at
 
-    @property
-    def _declared(self) -> Dict[str, Any]:
-        return self._snapshot.declared
-
     def persistable_settings(self) -> Settings:
         """The declared configuration state, as opposed to the effective one.
 
@@ -571,10 +576,7 @@ class ConfigManager:
         """
         # One observation (#406): composing the two from separate reads
         # wrote a file pairing one load's values with another's declarations.
-        loaded = self.snapshot
-        if not loaded.declared:
-            return loaded.settings
-        return loaded.settings.model_copy(update=loaded.declared)
+        return _persistable(self.snapshot)
 
     def _stage_directory(self) -> Dict[str, Any]:
         """Parse and validate the whole directory into candidates, committing
@@ -1126,19 +1128,24 @@ class ConfigManager:
         # directory. Not yet every write in the codebase - YamlWriter's
         # per-field saves still call compare_and_replace directly, through
         # the same protocol but not through this door.
+        # One observation for both documents (#406): the lambdas run under
+        # the directory lock, but a load commits outside it, so reading the
+        # configuration twice here wrote users.yaml from one load and
+        # settings.yaml from another.
+        loaded = self.snapshot
         self._store.compare_and_replace_many(
             [
                 (
                     "users.yaml",
                     expected_users_revision,
-                    lambda doc: apply_users_document(doc, self.users, self.default_user),
+                    lambda doc: apply_users_document(doc, loaded.users, loaded.default_user),
                 ),
                 (
                     "settings.yaml",
                     expected_settings_revision,
                     # Declared state, not effective state (#172): see persistable_settings().
                     lambda doc: apply_settings_document(
-                        doc, self.persistable_settings(), defaults=document_defaults()
+                        doc, _persistable(loaded), defaults=document_defaults()
                     ),
                 ),
             ],
@@ -1187,10 +1194,11 @@ class ConfigManager:
         legitimately wants only one file written and notified (existing
         direct-call tests in test_hooks.py)."""
         users_file = self.config_dir / "users.yaml"
+        loaded = self.snapshot
         compare_and_replace(
             users_file,
             expected_revision,
-            lambda doc: apply_users_document(doc, self.users, self.default_user),
+            lambda doc: apply_users_document(doc, loaded.users, loaded.default_user),
             validate=reject_unloadable,
         )
         self.notify_saved(users_file, "users")

@@ -44,10 +44,15 @@ _PUBLISHED = (
 )
 
 
+_REPO_CONFIG = Path(__file__).resolve().parent.parent / "config"
+
+
 @pytest.fixture
 def config_dir(tmp_path):
+    # Resolved from this file, not from the working directory, and copied:
+    # the repository's own config/ is written to during development.
     directory = tmp_path / "config"
-    shutil.copytree("config", directory)
+    shutil.copytree(_REPO_CONFIG, directory)
     return directory
 
 
@@ -62,15 +67,22 @@ class TestOnePublication:
     def test_the_published_state_is_assigned_once(self):
         """Not eleven assignments whose order is the contract: one."""
         source = textwrap.dedent(inspect.getsource(ConfigManager._commit_directory))
-        assigned = [
-            target.attr
-            for node in ast.walk(ast.parse(source))
-            if isinstance(node, ast.Assign)
-            for target in node.targets
-            if isinstance(target, ast.Attribute) and isinstance(target.value, ast.Name) and target.value.id == "self"
-        ]
+        assigned = []
+        for node in ast.walk(ast.parse(source)):
+            # An annotated assignment is one too: `self.observed_at: float =`
+            # is how one of these fields used to be published.
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target] if isinstance(node, ast.AnnAssign) else []
+            for target in targets:
+                if isinstance(target, ast.Attribute) and isinstance(target.value, ast.Name) and target.value.id == "self":
+                    assigned.append(target.attr)
+            # setattr(self, "settings", ...) would be a publication too.
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "setattr":
+                first = node.args[0] if node.args else None
+                if isinstance(first, ast.Name) and first.id == "self" and len(node.args) > 1:
+                    named = node.args[1]
+                    assigned.append(named.value if isinstance(named, ast.Constant) else "setattr")
 
-        published = [name for name in assigned if name in _PUBLISHED]
+        published = [name for name in assigned if name in _PUBLISHED or name == "setattr"]
         assert published == [], f"still published field by field: {published}"
         assert assigned.count("_snapshot") == 1, f"the snapshot is not assigned exactly once: {assigned}"
 
@@ -104,7 +116,8 @@ class TestOnePublication:
 
         assert held.default_user != "bob"
         assert held.users == held_users
-        assert held.settings is not config.snapshot.settings or held.settings == config.snapshot.settings
+        assert "bob" not in held.users
+        assert config.snapshot.users.keys() != held.users.keys()
 
     def test_the_carrier_refuses_to_be_changed(self, config_dir):
         config = ConfigManager(str(config_dir))
@@ -122,6 +135,36 @@ class TestOnePublication:
 
 
 class TestOneObservationPerAnswer:
+    @staticmethod
+    def _counting(config, monkeypatch):
+        taken = []
+        real = type(config).snapshot.fget
+        monkeypatch.setattr(
+            type(config), "snapshot", property(lambda self: (taken.append(1), real(self))[1])
+        )
+        return taken
+
+    def test_a_save_writes_both_files_from_one_carrier(self, config_dir, monkeypatch):
+        """The two documents are written under the directory's lock, but a
+        load commits outside it, so composing the save from two reads wrote
+        users.yaml from one load and settings.yaml from another."""
+        config = ConfigManager(str(config_dir))
+        taken = self._counting(config, monkeypatch)
+
+        config.save()
+
+        assert len(taken) == 1, f"the carrier was observed {len(taken)} times"
+
+    def test_saving_the_users_alone_reads_the_carrier_once(self, config_dir, monkeypatch):
+        """The user map and the default user are one pair, or the file gets
+        one load's users under another's default."""
+        config = ConfigManager(str(config_dir))
+        taken = self._counting(config, monkeypatch)
+
+        config._save_users()
+
+        assert len(taken) == 1, f"the carrier was observed {len(taken)} times"
+
     def test_persistable_settings_reads_the_carrier_once(self, config_dir, monkeypatch):
         """It composed `settings` with `_declared` from two reads, so a load
         between them wrote a file pairing one load's values with another's
