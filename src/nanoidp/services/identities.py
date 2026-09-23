@@ -205,18 +205,16 @@ class IdentityResolver:
         return resolved.user if resolved is not None else None
 
     def list_users(self) -> List[ResolvedUser]:
-        # Store first, as in resolve_user: a listing spanning a reload that
-        # declares a runtime object's name shows one of the two.
-        #
-        # Both sides are read live here, deliberately (#406, first slice):
-        # what a request-consistent listing should show when a load lands
-        # under it is a rule of its own, not settled by this step, and a
-        # listing composed from this operation's declaration and the live
-        # store would answer with neither half of a name that load declared
-        # and reconciled away. The rule belongs to the work that closes
-        # #406, with the continuity question.
+        # The declaration is this operation's, as in resolve_user (#406); the
+        # store is live, as runtime identities are by design (#235). So a
+        # load that declares a runtime object's name and reconciles it away
+        # can leave a listing rendered by an operation that began before it
+        # showing neither half of that name, the same transient the lookups
+        # accept, and for the same reason: composing the two would be a
+        # listing of no configuration. Continuity across that reconciliation
+        # is a contract of its own.
         runtime_users = self.store.users.list()
-        declared_users = self.config.users
+        declared_users = self.loaded.users
         declared = [ResolvedUser(user, "declared") for user in declared_users.values()]
         runtime = [
             ResolvedUser(user, "runtime")
@@ -323,9 +321,9 @@ class IdentityResolver:
         return resolved.client if resolved is not None else None
 
     def list_clients(self) -> List[ResolvedClient]:
-        # Live on both sides, for the reason given in list_users.
+        # This operation's declaration and the live store, as in list_users.
         runtime_clients = self.store.clients.list()  # store first, see list_users
-        declared_clients = self.config.settings.clients
+        declared_clients = self.loaded.settings.clients
         declared_ids = {client.client_id for client in declared_clients}
         declared = [ResolvedClient(client, "declared") for client in declared_clients]
         runtime = [

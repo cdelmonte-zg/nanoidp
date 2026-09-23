@@ -85,7 +85,19 @@ def _expected_revision_from_form() -> str | None:
 def _conflict_message(exc: ConflictError) -> str:
     """One phrasing for every 'someone else changed this' flash (#229
     phase 4): the technical detail from ConflictError is useful (it
-    names the file), the prefix says what to do about it."""
+    names the file), the prefix says what to do about it.
+
+    The advice is made true here (#406): a form carries the revision of the
+    documents this request read, so telling the operator to reload the page
+    would be useless while this process still holds the configuration from
+    before the change - with a store of its own, nothing else would make it
+    read the file again. The refusal is that signal, so the declaration is
+    read again before the page is rendered anew.
+    """
+    try:
+        get_config().reload_local()
+    except Exception:  # noqa: BLE001 - the message is what matters here
+        logger.exception("Could not read the configuration again after a conflict")
     return f"{exc} - please reload the page and try again"
 
 
@@ -94,9 +106,11 @@ def _conflict_message(exc: ConflictError) -> str:
 @ui_bp.route("/")
 def index() -> ResponseReturnValue:
     """Dashboard home page."""
+    # The configuration this request began with (#406).
+    loaded = request_config()
     config = get_config()
     audit = get_audit_log()
-    users = identities_for(config, request_config()).list_users()
+    users = identities_for(config, loaded).list_users()
     runtime_users = sum(1 for entry in users if entry.origin == "runtime")
 
     return render_template(
@@ -104,9 +118,9 @@ def index() -> ResponseReturnValue:
         users_count=len(users),
         runtime_users_count=runtime_users,
         declared_users_count=len(users) - runtime_users,
-        saml_entity_id=effective_saml_entity_id(config.settings),
+        saml_entity_id=effective_saml_entity_id(loaded.settings),
         stats=audit.get_stats(),
-        settings=config.settings,
+        settings=loaded.settings,
         current_user=session.get("user"),
         recent_events=audit.get_entries(limit=5),
     )
@@ -121,9 +135,11 @@ def login() -> ResponseReturnValue:
     Note: SAML SSO uses inline login at /saml/sso to preserve binding context.
     This endpoint is for direct web UI access only.
     """
+    # The configuration this request began with (#406).
+    loaded = request_config()
     config = get_config()
-    persona_mode = config.settings.persona_mode_enabled
-    two_step_login = config.settings.two_step_login_active
+    persona_mode = loaded.settings.persona_mode_enabled
+    two_step_login = loaded.settings.two_step_login_active
 
     def render_login(
         error: str | None,
@@ -134,6 +150,8 @@ def login() -> ResponseReturnValue:
         # A pending second factor (#373) renders the code screen. no_store
         # applied here, not by each caller (#348 review, cleanup): the one
         # place that knows the code screen is being rendered.
+        # The configuration this request began with (#406).
+        loaded = request_config()
         totp_step = bool(pending_second_factor)
         response = render_template(
             "login.html",
@@ -144,7 +162,7 @@ def login() -> ResponseReturnValue:
             login_username=login_username,
             totp_step=totp_step,
             pending_second_factor=pending_second_factor,
-            management_secret_configured=bool(config.settings.management_secret),
+            management_secret_configured=bool(loaded.settings.management_secret),
         )
         return no_store(response) if totp_step else response
 
@@ -202,7 +220,7 @@ def login() -> ResponseReturnValue:
     # the login is complete, so the failure branch below cannot be reached
     # with a code still outstanding. A POST carrying the password and the
     # code together completes both here, statelessly, as before.
-    login = authenticate_interactively(config, request_config(), username=username, password=password)
+    login = authenticate_interactively(config, loaded, username=username, password=password)
 
     if login.phase.pending:
         if login.phase is SecondFactorPhase.CODE_INVALID:
@@ -331,9 +349,11 @@ def users() -> ResponseReturnValue:
     """Users management page: declared users, and runtime ones (#192) shown
     read-only, since their lifecycle is /api/runtime's."""
     config = get_config()
+    # The configuration this request began with (#406).
+    loaded = request_config()
     return render_template(
         "users.html",
-        users=identities_for(config, request_config()).list_users(),
+        users=identities_for(config, loaded).list_users(),
         current_user=session.get("user"),
     )
 
@@ -341,7 +361,8 @@ def users() -> ResponseReturnValue:
 @ui_bp.route("/users/create", methods=["GET", "POST"])
 def user_create() -> ResponseReturnValue:
     """Create new user."""
-    config = get_config()
+    # The configuration this request began with (#406).
+    loaded = request_config()
 
     yaml_writer = get_yaml_writer()
 
@@ -349,10 +370,10 @@ def user_create() -> ResponseReturnValue:
         return render_template(
             "users_form.html",
             user=None,
-            allowed_identity_classes=config.settings.allowed_identity_classes,
-            persona_mode=config.settings.persona_mode_enabled,
+            allowed_identity_classes=loaded.settings.allowed_identity_classes,
+            persona_mode=loaded.settings.persona_mode_enabled,
             current_user=session.get("user"),
-            revision=yaml_writer.current_revision("users.yaml"),
+            revision=loaded.users_revision,
         )
 
     # POST: Create user
@@ -368,7 +389,7 @@ def user_create() -> ResponseReturnValue:
         # validator must still be answered with this sentence rather than
         # with the model's refusal text (#298 review).
         if not request.form.get("password", "").strip() and not (
-            config.settings.persona_mode_enabled
+            loaded.settings.persona_mode_enabled
         ):
             flash("Password is required for new users", "error")
             return redirect(url_for("ui.user_create"))
@@ -397,14 +418,15 @@ def user_create() -> ResponseReturnValue:
 @ui_bp.route("/users/<username>")
 def user_detail(username: str) -> ResponseReturnValue:
     """User detail page."""
-    config = get_config()
+    # The configuration this request began with (#406).
+    loaded = request_config()
 
-    user = config.get_user(username)
+    user = loaded.users.get(username)
     if not user:
         flash(f"User '{username}' not found", "error")
         return redirect(url_for("ui.users"))
 
-    token_service = get_token_service(request_config())
+    token_service = get_token_service(loaded)
     authorities = token_service.build_authorities(user)
 
     return render_template(
@@ -418,9 +440,10 @@ def user_detail(username: str) -> ResponseReturnValue:
 @ui_bp.route("/users/<username>/edit", methods=["GET", "POST"])
 def user_edit(username: str) -> ResponseReturnValue:
     """Edit user."""
-    config = get_config()
+    # The configuration this request began with (#406).
+    loaded = request_config()
 
-    user = config.get_user(username)
+    user = loaded.users.get(username)
     if not user:
         flash(f"User '{username}' not found", "error")
         return redirect(url_for("ui.users"))
@@ -431,10 +454,10 @@ def user_edit(username: str) -> ResponseReturnValue:
         return render_template(
             "users_form.html",
             user=user,
-            allowed_identity_classes=config.settings.allowed_identity_classes,
-            persona_mode=config.settings.persona_mode_enabled,
+            allowed_identity_classes=loaded.settings.allowed_identity_classes,
+            persona_mode=loaded.settings.persona_mode_enabled,
             current_user=session.get("user"),
-            revision=yaml_writer.current_revision("users.yaml"),
+            revision=loaded.users_revision,
         )
 
     # POST: Update user
@@ -493,11 +516,13 @@ def clients() -> ResponseReturnValue:
     """OAuth clients management page: declared clients, and runtime ones
     (#192) shown read-only, since their lifecycle is /api/runtime's."""
     config = get_config()
+    # The configuration this request began with (#406).
+    loaded = request_config()
     return render_template(
         "clients.html",
-        clients=identities_for(config, request_config()).list_clients(),
+        clients=identities_for(config, loaded).list_clients(),
         current_user=session.get("user"),
-        revision=get_yaml_writer().current_revision("settings.yaml"),
+        revision=loaded.settings_revision,
     )
 
 
@@ -685,13 +710,15 @@ def _client_from_form(client_id: str, existing: OAuthClient | None) -> OAuthClie
 @ui_bp.route("/clients/create", methods=["GET", "POST"])
 def client_create() -> ResponseReturnValue:
     """Create new OAuth client."""
+    # The configuration this request began with (#406).
+    loaded = request_config()
     yaml_writer = get_yaml_writer()
 
     if request.method == "GET":
         # Generate a random client secret
         generated_secret = secrets.token_urlsafe(32)
         logos_dir = effective_logos_dir(
-            get_config().settings.logos_dir, current_app.static_folder
+            loaded.settings.logos_dir, current_app.static_folder
         )
         return render_template(
             "clients_form.html",
@@ -699,7 +726,7 @@ def client_create() -> ResponseReturnValue:
             generated_secret=generated_secret,
             logos_dir=logos_dir,
             current_user=session.get("user"),
-            revision=yaml_writer.current_revision("settings.yaml"),
+            revision=loaded.settings_revision,
         )
 
     # POST: Create client
@@ -737,11 +764,12 @@ def client_create() -> ResponseReturnValue:
 @ui_bp.route("/clients/<client_id>/edit", methods=["GET", "POST"])
 def client_edit(client_id: str) -> ResponseReturnValue:
     """Edit OAuth client."""
-    config = get_config()
+    # The configuration this request began with (#406).
+    loaded = request_config()
 
     # Find the client
     client = None
-    for c in config.settings.clients:
+    for c in loaded.settings.clients:
         if c.client_id == client_id:
             client = c
             break
@@ -754,7 +782,7 @@ def client_edit(client_id: str) -> ResponseReturnValue:
 
     if request.method == "GET":
         logos_dir = effective_logos_dir(
-            config.settings.logos_dir, current_app.static_folder
+            loaded.settings.logos_dir, current_app.static_folder
         )
         return render_template(
             "clients_form.html",
@@ -762,7 +790,7 @@ def client_edit(client_id: str) -> ResponseReturnValue:
             generated_secret=None,
             logos_dir=logos_dir,
             current_user=session.get("user"),
-            revision=yaml_writer.current_revision("settings.yaml"),
+            revision=loaded.settings_revision,
         )
 
     # POST: Update client
@@ -844,11 +872,12 @@ def client_delete(client_id: str) -> ResponseReturnValue:
 @ui_bp.route("/clients/<client_id>/regenerate-secret", methods=["POST"])
 def client_regenerate_secret(client_id: str) -> ResponseReturnValue:
     """Regenerate OAuth client secret."""
-    config = get_config()
+    # The configuration this request began with (#406).
+    loaded = request_config()
 
     # Find the client
     client = None
-    for c in config.settings.clients:
+    for c in loaded.settings.clients:
         if c.client_id == client_id:
             client = c
             break
@@ -1002,19 +1031,20 @@ def _settings_form_fields(section: str) -> dict[str, Any]:
 @ui_bp.route("/settings", methods=["GET", "POST"])
 def settings() -> ResponseReturnValue:
     """IdP settings configuration page."""
-    config = get_config()
+    # The configuration this request began with (#406).
+    loaded = request_config()
 
     yaml_writer = get_yaml_writer()
 
     if request.method == "GET":
         return render_template(
             "settings.html",
-            settings=config.settings,
+            settings=loaded.settings,
             # Shown as placeholders when the fields are derived (#181)
-            effective_saml_entity_id=effective_saml_entity_id(config.settings),
-            effective_saml_sso_url=effective_saml_sso_url(config.settings),
+            effective_saml_entity_id=effective_saml_entity_id(loaded.settings),
+            effective_saml_sso_url=effective_saml_sso_url(loaded.settings),
             current_user=session.get("user"),
-            revision=yaml_writer.current_revision("settings.yaml"),
+            revision=loaded.settings_revision,
         )
 
     # POST: Update settings
@@ -1073,10 +1103,12 @@ def settings() -> ResponseReturnValue:
 @ui_bp.route("/keys")
 def keys() -> ResponseReturnValue:
     """Keys and certificates management page."""
+    # The configuration this request began with (#406).
+    loaded = request_config()
     # Settings before the signing service (#359): see get_crypto_service().
     # What describes the key (its directory, the retention) comes from the
     # service itself, so the page never mixes two configurations.
-    settings = get_config().settings
+    settings = loaded.settings
     crypto = get_crypto_service()
 
     # Get key file modification time as proxy for creation date
@@ -1156,15 +1188,16 @@ def keys_download(key_type: str) -> ResponseReturnValue:
 @ui_bp.route("/claims", methods=["GET", "POST"])
 def claims() -> ResponseReturnValue:
     """Claims and authority prefixes configuration."""
-    config = get_config()
+    # The configuration this request began with (#406).
+    loaded = request_config()
     yaml_writer = get_yaml_writer()
 
     if request.method == "GET":
         return render_template(
             "claims.html",
-            settings=config.settings,
+            settings=loaded.settings,
             current_user=session.get("user"),
-            revision=yaml_writer.current_revision("settings.yaml"),
+            revision=loaded.settings_revision,
         )
 
     # POST: Update authority prefixes
@@ -1205,13 +1238,14 @@ def claims() -> ResponseReturnValue:
 @ui_bp.route("/claims/preview/<username>")
 def claims_preview(username: str) -> ResponseReturnValue:
     """Preview token claims for a user (AJAX endpoint)."""
-    config = get_config()
+    # The configuration this request began with (#406).
+    loaded = request_config()
 
-    user = config.get_user(username)
+    user = loaded.users.get(username)
     if not user:
         return {"error": "User not found"}, 404
 
-    token_service = get_token_service(request_config())
+    token_service = get_token_service(loaded)
     authorities = token_service.build_authorities(user)
 
     return {
@@ -1333,10 +1367,11 @@ def audit_clear() -> ResponseReturnValue:
 @ui_bp.route("/test")
 def test_page() -> ResponseReturnValue:
     """Token testing page."""
-    config = get_config()
+    # The configuration this request began with (#406).
+    loaded = request_config()
     return render_template(
         "test.html",
-        users=list(config.users.keys()),
+        users=list(loaded.users.keys()),
         current_user=session.get("user"),
-        settings=config.settings,
+        settings=loaded.settings,
     )

@@ -25,6 +25,7 @@ import pytest
 from lxml import etree
 
 import nanoidp.routes.saml as saml
+from nanoidp.config import get_config
 from nanoidp.services.saml_assertion import saml_instant
 
 _INSTANT = datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
@@ -58,6 +59,7 @@ def frozen(monkeypatch):
 
 def _sso(**overrides):
     arguments = {
+        "loaded": get_config().snapshot,
         "acs_url": "https://sp.example/acs",
         "issuer": "https://idp.example",
         "audience": "aud-x",

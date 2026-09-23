@@ -294,6 +294,7 @@ def _signed_saml_response_verifies_against_the_metadata(client) -> bool:
         "-----BEGIN CERTIFICATE-----\n" + certificate_b64 + "\n-----END CERTIFICATE-----\n"
     )
     xml = _build_saml_response(
+        get_config().snapshot,
         acs_url="http://sp.example.com/acs",
         issuer="http://localhost:8000/saml",
         audience="http://sp.example.com",

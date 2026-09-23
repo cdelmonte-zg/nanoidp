@@ -41,6 +41,7 @@ import jwt
 import pytest
 import yaml
 
+import nanoidp.routes.saml as saml_module
 from nanoidp import config_writer
 from nanoidp.config import ConfigManager
 from nanoidp.config_store import ConfigFileStore
@@ -592,6 +593,12 @@ class TestAnUnobservableDirectoryAnswers503:
         config_dir.mkdir()
         shutil.copy(_REPO_CONFIG / "settings.yaml", config_dir / "settings.yaml")
         shutil.copy(_REPO_CONFIG / "users.yaml", config_dir / "users.yaml")
+        # A store shared with other processes, which is when a request looks
+        # at the directory at all (#354, step 4a): a page otherwise renders
+        # from the configuration this process holds and needs no lock (#406).
+        document = yaml.safe_load((config_dir / "settings.yaml").read_text())
+        document["runtime"] = {"store": "sqlite", "path": str(tmp_path / "runtime.db")}
+        (config_dir / "settings.yaml").write_text(yaml.safe_dump(document, sort_keys=False))
         app = create_app(config_dir=str(config_dir))
         app.config["TESTING"] = False
         client = app.test_client()
@@ -619,6 +626,12 @@ class TestAnUnobservableDirectoryAnswers503:
         config_dir.mkdir()
         shutil.copy(_REPO_CONFIG / "settings.yaml", config_dir / "settings.yaml")
         shutil.copy(_REPO_CONFIG / "users.yaml", config_dir / "users.yaml")
+        # A store shared with other processes, which is when a request looks
+        # at the directory at all (#354, step 4a): a page otherwise renders
+        # from the configuration this process holds and needs no lock (#406).
+        document = yaml.safe_load((config_dir / "settings.yaml").read_text())
+        document["runtime"] = {"store": "sqlite", "path": str(tmp_path / "runtime.db")}
+        (config_dir / "settings.yaml").write_text(yaml.safe_dump(document, sort_keys=False))
         app = create_app(config_dir=str(config_dir))
         app.config["TESTING"] = False
 
@@ -1263,6 +1276,270 @@ class TestAnOperationReadsOneConfiguration:
         assert app.test_client().post(
             "/token", data={"grant_type": "client_credentials"}, headers=header
         ).status_code == 200
+
+    @staticmethod
+    def _loading_once(app, directory, change):
+        """A load placed after the request chose its configuration: the hook
+        that establishes freshness has run, the handler has not."""
+        began_with = []
+
+        @app.before_request
+        def load_after_the_choice():
+            if not began_with:
+                from nanoidp.config import get_config
+
+                began_with.append(get_config().snapshot)
+                document = yaml.safe_load((directory / "settings.yaml").read_text())
+                change(document)
+                (directory / "settings.yaml").write_text(yaml.safe_dump(document, sort_keys=False))
+                get_config().reload_local()
+            return None
+
+        return began_with
+
+    def test_a_form_carries_the_revision_of_the_values_it_shows(self, directory_of_two_loads):
+        """The writer refuses a save whose expected revision is not the
+        file's (#229), but the form is what hands it that precondition. With
+        the values of the configuration this request read and the revision
+        of a later one, a save passes the check and silently undoes whatever
+        that later load brought."""
+        from nanoidp.app import create_app
+        from nanoidp.config import get_config
+        from nanoidp.services.yaml_writer import get_yaml_writer
+
+        app = create_app(str(directory_of_two_loads))
+        began_with = self._loading_once(
+            app, directory_of_two_loads,
+            lambda document: document["oauth"].update(audience="changed-by-another-editor"),
+        )
+
+        page = app.test_client().get("/settings").get_data(as_text=True)
+
+        assert began_with, "the load was never placed in the window"
+        assert 'value="my-app"' in page, "the form shows the audience this request read"
+        with app.app_context():
+            of_the_next_load = get_yaml_writer().current_revision("settings.yaml")
+            assert get_config().snapshot.settings.audience == "changed-by-another-editor"
+        shown = page.split('name="expected_revision" value="')[1].split('"')[0]
+        assert shown == began_with[0].settings_revision, (
+            "the form pairs one load's values with another's revision"
+        )
+        assert shown != of_the_next_load
+
+    def test_a_form_refused_once_can_be_saved_next_time(self, directory_of_two_loads):
+        """The other half of the rule above: the form carries the revision of
+        what this request read, so after somebody else edits the file the
+        save is refused - and the advice to reload the page has to be true.
+        With a store of its own, nothing else would make the process read
+        the file again, so the refusal is what does."""
+        from nanoidp.app import create_app
+
+        app = create_app(str(directory_of_two_loads))
+        client = app.test_client()
+        page = client.get("/claims").get_data(as_text=True)
+        revision = page.split('name="expected_revision" value="')[1].split('"')[0]
+
+        # Somebody else edits the file between the render and the save.
+        document = yaml.safe_load((directory_of_two_loads / "settings.yaml").read_text())
+        document.setdefault("authority_prefixes", {})["roles"] = "EDITED_"
+        (directory_of_two_loads / "settings.yaml").write_text(yaml.safe_dump(document, sort_keys=False))
+
+        refused = client.post(
+            "/claims", data={"prefix_roles": "MINE_", "expected_revision": revision}
+        )
+        assert refused.status_code in (200, 302)
+        settings_now = yaml.safe_load((directory_of_two_loads / "settings.yaml").read_text())
+        assert settings_now["authority_prefixes"]["roles"] == "EDITED_", "the save was not refused"
+
+        # The page rendered again carries what the file says now, so the
+        # operator can follow the advice.
+        page = client.get("/claims").get_data(as_text=True)
+        again = page.split('name="expected_revision" value="')[1].split('"')[0]
+        assert again != revision
+        client.post("/claims", data={"prefix_roles": "MINE_", "expected_revision": again})
+        settings_now = yaml.safe_load((directory_of_two_loads / "settings.yaml").read_text())
+        assert settings_now["authority_prefixes"]["roles"] == "MINE_"
+
+    def test_the_ui_gate_and_the_page_agree_on_the_configuration(self, directory_of_two_loads):
+        """The gate decided from the current configuration while the page it
+        guards read the request's: a load turning the login requirement off
+        after the request chose let an anonymous request through a policy
+        that was still on for it."""
+        from nanoidp.app import create_app
+
+        document = yaml.safe_load((directory_of_two_loads / "settings.yaml").read_text())
+        document.setdefault("session", {})["require_ui_login"] = True
+        (directory_of_two_loads / "settings.yaml").write_text(yaml.safe_dump(document, sort_keys=False))
+        app = create_app(str(directory_of_two_loads))
+        began_with = self._loading_once(
+            app, directory_of_two_loads,
+            lambda document: document.setdefault("session", {}).update(require_ui_login=False),
+        )
+
+        answer = app.test_client().get("/")
+
+        assert began_with, "the load was never placed in the window"
+        assert answer.status_code == 302, "the request was let through a policy that was on for it"
+        assert "/login" in answer.headers["Location"]
+
+    def test_the_saml_metadata_is_one_configuration(self, directory_of_two_loads):
+        from nanoidp.app import create_app
+
+        app = create_app(str(directory_of_two_loads))
+        began_with = self._loading_once(
+            app, directory_of_two_loads,
+            lambda document: document.setdefault("saml", {}).update(entity_id="http://entity-of-the-next-load"),
+        )
+
+        answer = app.test_client().get("/saml/metadata")
+
+        assert began_with, "the load was never placed in the window"
+        assert answer.status_code == 200
+        assert b"http://entity-of-the-next-load" not in answer.data
+
+    def test_a_saml_assertion_is_signed_as_the_operation_asked(self, directory_of_two_loads):
+        """The builder reads the canonicalisation from the configuration it
+        is given; everything else it is handed. A load changing it under the
+        response would sign one document by two loads' rules."""
+        import base64 as b64
+        import urllib.parse
+
+        from nanoidp.app import create_app
+
+        app = create_app(str(directory_of_two_loads))
+        began_with = self._loading_once(
+            app, directory_of_two_loads,
+            # A valid other value: the next load asks for inclusive c14n.
+            lambda document: document.setdefault("saml", {}).update(c14n_algorithm="c14n11"),
+        )
+        request_xml = (
+            '<samlp:AuthnRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" '
+            'xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="_a-request" Version="2.0" '
+            'IssueInstant="2026-01-01T00:00:00Z" AssertionConsumerServiceURL="http://sp.example/acs">'
+            "<saml:Issuer>http://sp.example</saml:Issuer></samlp:AuthnRequest>"
+        )
+        answer = app.test_client().post(
+            "/saml/sso",
+            data={"SAMLRequest": b64.b64encode(request_xml.encode()).decode(), "username": "alice", "password": "pw"},
+        )
+
+        assert began_with, "the load was never placed in the window"
+        assert answer.status_code == 200, answer.data[:200]
+        page = answer.get_data(as_text=True)
+        posted = urllib.parse.unquote(page.split('name="SAMLResponse" value="')[1].split('"')[0])
+        assertion = b64.b64decode(posted).decode()
+        assert "xml-c14n11" not in assertion, "canonicalised by the rule of the next load"
+
+    def test_an_attribute_query_answers_from_one_configuration(self, directory_of_two_loads):
+        """The response's issuer and whether it is signed are the operation's:
+        the route read them from the manager, twice, on two paths."""
+        from nanoidp.app import create_app
+
+        app = create_app(str(directory_of_two_loads))
+        began_with = self._loading_once(
+            app, directory_of_two_loads,
+            # The attribute set this surface exports is what the route reads
+            # from the configuration for this answer.
+            lambda document: document.setdefault("saml", {}).update(
+                export_roles=True, roles_attr_name="roles-of-the-next-load"
+            ),
+        )
+        envelope = (
+            '<?xml version="1.0"?>'
+            '<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">'
+            '<soap:Body><samlp:AttributeQuery xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" '
+            'xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="_q1" Version="2.0" '
+            'IssueInstant="2026-01-01T00:00:00Z">'
+            '<saml:Issuer>http://sp.example</saml:Issuer>'
+            '<saml:Subject><saml:NameID>alice</saml:NameID></saml:Subject>'
+            "</samlp:AttributeQuery></soap:Body></soap:Envelope>"
+        )
+
+        answer = app.test_client().post(
+            "/saml/attribute-query", data=envelope, content_type="text/xml"
+        )
+
+        assert began_with, "the load was never placed in the window"
+        assert answer.status_code == 200, answer.data[:200]
+        assert b"roles-of-the-next-load" not in answer.data
+
+    def test_a_ui_page_renders_one_configuration(self, directory_of_two_loads):
+        from nanoidp.app import create_app
+
+        app = create_app(str(directory_of_two_loads))
+        began_with = self._loading_once(
+            app, directory_of_two_loads,
+            lambda document: document.setdefault("saml", {}).update(entity_id="http://entity-of-the-next-load"),
+        )
+
+        answer = app.test_client().get("/")
+
+        assert began_with, "the load was never placed in the window"
+        assert answer.status_code == 200
+        assert b"entity-of-the-next-load" not in answer.data
+
+    def test_the_login_page_is_rendered_from_one_configuration(self, directory_of_two_loads):
+        from nanoidp.app import create_app
+
+        app = create_app(str(directory_of_two_loads))
+        began_with = self._loading_once(
+            app, directory_of_two_loads,
+            lambda document: document.setdefault("login", {}).update(mode="persona"),
+        )
+
+        answer = app.test_client().get("/login")
+
+        assert began_with, "the load was never placed in the window"
+        assert answer.status_code == 200
+        # The persona picker belongs to the next load, not to this page.
+        assert b"select a user to sign in" not in answer.data
+
+    def test_a_saml_response_is_built_from_one_configuration(self, directory_of_two_loads, monkeypatch):
+        """The assertion's entity id, audience and signing policy, and the
+        canonicalisation the builder uses, are one configuration's: the
+        builder took its own, so a load landing while the response was built
+        signed one document with two loads' rules (#406)."""
+        import base64 as b64
+        import urllib.parse
+
+        from nanoidp.app import create_app
+        from nanoidp.config import get_config
+
+        app = create_app(str(directory_of_two_loads))
+        client = app.test_client()
+        began_with = []
+        request_xml = (
+            '<samlp:AuthnRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" '
+            'xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="_a-request" Version="2.0" '
+            'IssueInstant="2026-01-01T00:00:00Z" AssertionConsumerServiceURL="http://sp.example/acs">'
+            "<saml:Issuer>http://sp.example</saml:Issuer></samlp:AuthnRequest>"
+        )
+        encoded = b64.b64encode(request_xml.encode()).decode()
+
+        real = saml_module.resolve_saml_attributes
+
+        def load_while_it_is_built(*arguments, **named):
+            if not began_with:
+                began_with.append(get_config().snapshot.settings.audience)
+                document = yaml.safe_load((directory_of_two_loads / "settings.yaml").read_text())
+                document["oauth"]["audience"] = "an-audience-of-the-next-load"
+                (directory_of_two_loads / "settings.yaml").write_text(yaml.safe_dump(document, sort_keys=False))
+                get_config().reload_local()
+            return real(*arguments, **named)
+
+        monkeypatch.setattr(saml_module, "resolve_saml_attributes", load_while_it_is_built)
+        answer = client.post(
+            "/saml/sso",
+            data={"SAMLRequest": encoded, "username": "alice", "password": "pw"},
+        )
+
+        assert began_with, "the load was never placed in the window"
+        assert answer.status_code == 200, answer.data[:300]
+        page = answer.get_data(as_text=True)
+        posted = urllib.parse.unquote(page.split('name="SAMLResponse" value="')[1].split('"')[0])
+        assertion = b64.b64decode(posted).decode()
+        assert began_with[0] in assertion, "the assertion carries an audience the response was not built from"
+        assert "an-audience-of-the-next-load" not in assertion
 
     def test_the_reported_configuration_is_one_load(self, directory_of_two_loads, monkeypatch):
         """GET /api/config reads the settings, the version, the strictness

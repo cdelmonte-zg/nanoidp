@@ -37,7 +37,8 @@ def _tool_list_clients(arguments: dict[str, Any], config: ConfigManager, loaded:
 
 def _tool_get_client(arguments: dict[str, Any], config: ConfigManager, loaded: ConfigSnapshot) -> dict[str, Any]:
     client_id = arguments["client_id"]
-    client = config.get_client(client_id)
+    declared = [entry for entry in loaded.settings.clients if entry.client_id == client_id]
+    client = declared[0] if declared else None
     if client:
         return {
             "found": True,
@@ -91,7 +92,8 @@ def _tool_create_client(arguments: dict[str, Any], config: ConfigManager, loaded
 
 def _tool_update_client(arguments: dict[str, Any], config: ConfigManager, loaded: ConfigSnapshot) -> dict[str, Any]:
     client_id = arguments["client_id"]
-    client = config.get_client(client_id)
+    declared = [entry for entry in loaded.settings.clients if entry.client_id == client_id]
+    client = declared[0] if declared else None
     if not client:
         return {"success": False, "error": f"Client '{client_id}' not found"}
 
@@ -188,7 +190,8 @@ def _tool_update_client(arguments: dict[str, Any], config: ConfigManager, loaded
 
 def _tool_delete_client(arguments: dict[str, Any], config: ConfigManager, loaded: ConfigSnapshot) -> dict[str, Any]:
     client_id = arguments["client_id"]
-    client = config.get_client(client_id)
+    declared = [entry for entry in loaded.settings.clients if entry.client_id == client_id]
+    client = declared[0] if declared else None
     if not client:
         return {"success": False, "error": f"Client '{client_id}' not found"}
 
