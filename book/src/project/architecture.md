@@ -128,15 +128,22 @@ There are exactly two kinds of state, and they never share a store:
   change - the UI's forms submit it as a hidden field, MCP callers pass
   it to `save_config`. Without a revision a write stays unconditional
   (last write wins), stated as such.
-- **Runtime state** lives in memory. What the protocols and the
-  management surfaces keep is behind one boundary
+- **Runtime state** lives behind one boundary
   (`services/runtime_store.py`): authorization codes, device codes,
   revocation and rotation families, the audit log, runtime users and
-  clients. Outside it, and process-local on purpose: Flask sessions, the
-  rate limiter's counters and the CIMD fetch budget. It is lost on restart by design; an
-  instance is disposable (see [Vision](vision.md)). If you are about
-  to persist runtime state to disk, stop and re-read the
-  database-persistence non-goal.
+  clients, whatever the protocols and the management surfaces keep.
+  Outside it, and process-local on purpose: the rate limiter's
+  counters and the CIMD fetch budget. The login session is not among
+  them: it is a signed cookie, which processes sharing a `secret_key`
+  all accept, and the `/authorize` transaction it names lives in the
+  store. Which store holds
+  it is configuration: `memory`, the default, keeps it in the process
+  and loses it at restart; `sqlite` keeps it in files that several
+  processes **on one host** share (see [Two processes, one runtime
+  state](../guides/shared-runtime-store.md)). Neither is a database of
+  record: an instance is disposable (see [Vision](vision.md)), no
+  durability is promised, and the SQLite store is for test state that
+  outlives a restart, not for keeping anything.
 
 `ConfigManager.load()` is transactional: parse and validate first,
 swap the live objects only on success. A failed reload leaves the
@@ -209,7 +216,9 @@ builders) stay covered by the per-feature tests this list requires.
   in CI on Python 3.10/3.11/3.12, with coverage uploaded to Codecov.
 - `e2e/test_agent.py` is the end-to-end agent: it drives a real
   server over HTTP and MCP the way an agent would. CI runs it in the
-  `http-e2e` and `mcp-e2e` jobs. When a test creates state through
+  `http-e2e` and `mcp-e2e` jobs, and `e2e/shared_store_e2e.py` in the
+  `shared-store-e2e` job, which is the only one that starts two
+  servers, over one SQLite runtime store. When a test creates state through
   the UI it must use the shared session (`self.session`), or the
   management gates will silently redirect it.
 - Test isolation from the repo's own `config/` directory is enforced

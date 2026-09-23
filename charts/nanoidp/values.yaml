@@ -12,9 +12,11 @@ image:
 commonLabels: {}
 commonAnnotations: {}
 
-# Single replica only, nanoidp keeps authorization codes, refresh-token
-# families, revocations and the audit log in-process with no coordination
-# between instances. There is deliberately no replicaCount value here.
+# Single replica only: nanoidp keeps authorization codes, refresh-token
+# families, revocations and the audit log in its runtime store, which this
+# chart leaves in the process. The SQLite store shares them only between
+# processes on one host with one local store, which this chart does not set
+# up. There is deliberately no replicaCount value here.
 
 resources: {}
 

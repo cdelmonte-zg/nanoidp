@@ -733,7 +733,9 @@ runtime:
 
 Where runtime state is kept: runtime users and clients, authorization codes,
 device codes, revocations, the audit, and the rest of what a running IdP
-records that is not declared in these files.
+records that is not declared in these files. For what sharing one buys and
+what it does not, see the guide [Two processes, one runtime
+state](../guides/shared-runtime-store.md).
 
 - `memory` keeps it in the process and loses it on restart, as NanoIDP always
   has.

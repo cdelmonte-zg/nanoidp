@@ -11,6 +11,7 @@
 
 - [Requesting tokens](guides/token-requests.md)
 - [Disposable test identities](guides/runtime-identities.md)
+- [Two processes, one runtime state](guides/shared-runtime-store.md)
 - [Dynamic client registration](guides/dynamic-client-registration.md)
 - [Client ID metadata documents](guides/client-metadata-documents.md)
 - [Running behind a reverse proxy](guides/reverse-proxy.md)

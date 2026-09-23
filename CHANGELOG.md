@@ -8,6 +8,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **A guide for the shared runtime store, and an end-to-end job that runs two
+  processes over one** (#354, fifth and last step). The SQLite runtime store
+  has been selectable since the previous step, but nothing described what it
+  is for, and no test composed two real servers over one store. The guide
+  "Two processes, one runtime state" says when a second process is worth it,
+  what the two share (runtime identities, authorization and device codes,
+  refresh families and revocations, the audit, and the browser leg, since the
+  login session is a signed cookie both accept and the transaction behind
+  `/authorize` is in the store) and what stays each process's own (the rate
+  limiter's counters, the metadata fetch budget, plugin dispatch), that
+  `jwt.keys_dir` is relative to the working
+  directory where `runtime.path` is relative to the configuration directory,
+  and how to start afresh with the processes stopped. It also states the
+  limit plainly: a store that survives a restart is not a store NanoIDP
+  promises to keep, and it coordinates processes on one host only. The
+  `shared-store-e2e` job starts two servers from different working
+  directories over one configuration directory and one store, and asserts
+  through real HTTP that a runtime user created at one logs in at the other,
+  that a code issued by one is redeemed at the other and refused the second
+  time at both, that a token revoked at one is refused by the other, that a
+  promotion made at one is declared for the other, and that the audit of
+  both reads as one. Two statements that the store had made untrue are
+  corrected with it: the architecture page said runtime state lives in
+  memory and is lost on restart by design, and the Helm chart gave "no
+  coordination between instances" as the reason for its single replica,
+  which now says what would actually be needed for more than one.
 - **Processes creating one SQLite runtime store together all get it**
   (#354, found in CI). The store puts a new file in WAL, which needs the file
   to itself for a moment, and SQLite answers contention there in two ways:
