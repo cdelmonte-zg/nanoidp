@@ -16,9 +16,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   one load's users with another's settings. They are published as one frozen
   value now, assigned once, and the manager's attributes read through to it,
   so nothing outside changes. `persistable_settings()`, which composed the
-  settings with the values the file declared from two reads, takes one. The
-  signing service stays outside that value and keeps its own order (#359): a
-  request may pair older settings with the newer service, never the reverse.
+  settings with the values the file declared from two reads, takes one. What
+  is immutable is the value, not the objects it refers to: a load builds new
+  ones, while the surfaces that edit a configuration in memory before saving
+  it still change those in place, and where that boundary lies belongs to the
+  second step. The signing service stays outside the value and keeps its own
+  order (#359): a request may pair older settings with the newer service,
+  never the reverse.
   This step alone does not make a request consistent, because a request still
   reads the manager several times; that is the second step.
 

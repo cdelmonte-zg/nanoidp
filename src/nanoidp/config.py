@@ -181,10 +181,12 @@ class ConfigSnapshot:
     across a load got a pair that no load ever produced; they are published
     as this one value instead, and `ConfigManager` reads through to it.
 
-    Frozen as a carrier, not deep-frozen: it holds the objects a load built,
-    and the next load builds new ones rather than changing these. A caller
-    that reaches in and mutates `settings` is doing something this promises
-    nothing about.
+    The carrier is immutable, not the objects it references. A load builds
+    new ones rather than changing these, which is what makes publication
+    atomic; but the surfaces that edit the configuration in memory before
+    saving it (the MCP write tools: `handlers_users.py`, `handlers_clients.py`)
+    do change those objects in place, and this step says nothing about them.
+    Where the boundary for such an edit lies is #406's second step.
 
     What is NOT here: the signing service, published before the settings on
     purpose (#359), so that a request can pair older settings with the newer

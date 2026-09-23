@@ -15,8 +15,9 @@ the attributes read through to it, and a holder of the carrier unaffected
 by a later load.
 
 The carrier holds references, not deep copies: a load publishes new objects
-instead of mutating the old ones, and this is not a promise against a
-caller that mutates ``settings`` in place.
+instead of mutating the old ones. The objects themselves are still mutable,
+and the MCP write tools do mutate them in place before saving; where the
+boundary for such an edit lies belongs to step B, not here.
 """
 
 import ast
