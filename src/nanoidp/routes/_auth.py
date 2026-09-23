@@ -17,7 +17,7 @@ from typing import Mapping, Optional, Sequence
 from flask import Response, current_app, jsonify, make_response, redirect, request, session, url_for
 from flask.typing import ResponseReturnValue
 
-from ..config import ConfigManager, ConfigSnapshot, User, get_config
+from ..config import ConfigManager, ConfigSnapshot, User
 
 # Re-exported: verify_secret moved to the framework-free nanoidp.security
 # (#286) so the stdio MCP process stops importing Flask to reach it; this
@@ -505,7 +505,10 @@ def ui_login_required() -> ResponseReturnValue | None:
     renders whenever management_secret is configured would silently do
     nothing (#163 review).
     """
-    if not get_config().settings.require_ui_login:
+    # The gate and the page it guards read one configuration (#406): a load
+    # turning the requirement off under a request must not let that request
+    # through a policy that was on when it began.
+    if not request_config().settings.require_ui_login:
         return None
     if request.endpoint in ("ui.login", "ui.management_unlock"):
         return None
@@ -530,8 +533,8 @@ def get_management_secret() -> str | None:
 def verify_management_secret(candidate: object) -> bool:
     """verify_secret against the globally configured management_secret.
 
-    Used by ui_bp/api_bp, which both read config through
-    nanoidp.config.get_config() (the same global create_app() initializes).
+    Used by ui_bp/api_bp, which both read the configuration their request
+    began with (#406).
     The MCP server gates its tools in mcp_server._check_admin_secret, off
     the ConfigManager each call is handed.
     """

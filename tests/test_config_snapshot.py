@@ -568,3 +568,20 @@ class TestTheBoundaryOfTheRequest:
 
             with pytest.raises(RuntimeError, match="outside the boundary"):
                 request_config()
+
+
+class TestEveryFormCarriesItsOwnRevision:
+    def test_no_page_reads_the_revision_from_the_directory(self):
+        """A form's expected revision is the precondition the writer checks
+        (#229), so it must be the revision of the documents the page shows
+        (#406). Reading it from the directory pairs one load's values with
+        another's revision, and a save then passes the check and undoes
+        whatever that load brought. One page is pinned by behaviour in
+        tests/test_config_consistency_boundary.py; this is the rule for all
+        of them."""
+        import inspect as inspection
+
+        from nanoidp.routes import ui
+
+        source = inspection.getsource(ui)
+        assert "current_revision(" not in source, "a page takes its precondition from the directory"

@@ -405,7 +405,6 @@ def cert() -> ResponseReturnValue:
 
 
 def _verify_authn_request_signature(
-    config: Any,
     loaded: ConfigSnapshot, saml_request_b64: str, relay_state: str
 ) -> Optional[ResponseReturnValue]:
     """AuthnRequest signature verification (#69), opt-in via
@@ -722,7 +721,7 @@ def _sso_authenticate_inline(
 
 
 def _sso_parse_request(
-    config: Any, loaded: ConfigSnapshot, saml_request_b64: str
+    loaded: ConfigSnapshot, saml_request_b64: str
 ) -> tuple[Optional[str], Optional[str], Optional[ResponseReturnValue]]:
     """Parse the SAMLRequest: (acs_url, in_response_to, None) or (None, None, error).
 
@@ -749,7 +748,6 @@ def _sso_parse_request(
 
 
 def _sso_success_response(
-    config: Any,
     user: Any,
     username: str,
     acs_url: str,
@@ -834,7 +832,7 @@ def sso() -> ResponseReturnValue:
     if not saml_request_b64:
         return abort(400, description="missing SAMLRequest")
 
-    rejected = _verify_authn_request_signature(config, loaded, saml_request_b64, relay_state)
+    rejected = _verify_authn_request_signature(loaded, saml_request_b64, relay_state)
     if rejected is not None:
         return rejected
 
@@ -858,7 +856,7 @@ def sso() -> ResponseReturnValue:
         )
         return abort(401, description=f"user '{username}' not found")
 
-    acs_url, in_response_to, invalid = _sso_parse_request(config, loaded, saml_request_b64)
+    acs_url, in_response_to, invalid = _sso_parse_request(loaded, saml_request_b64)
     if invalid is not None:
         return invalid
 
@@ -887,7 +885,7 @@ def sso() -> ResponseReturnValue:
             "and saml.default_acs_url is not configured",
         )
 
-    return _sso_success_response(config, user, username, acs_url, in_response_to, relay_state)
+    return _sso_success_response(user, username, acs_url, in_response_to, relay_state)
 
 
 def _build_attribute_query_error_response(request_id: str, issuer_url: str) -> str:
@@ -957,7 +955,8 @@ def _build_attribute_query_response(
     return etree.tostring(response, encoding="unicode", pretty_print=True)
 
 
-def _sign_attribute_query_response(response_xml: str, sign: bool = True) -> str:
+def _sign_attribute_query_response(
+    loaded: ConfigSnapshot,response_xml: str, sign: bool = True) -> str:
     """Sign a SAML Response for AttributeQuery using signxml."""
     if not sign:
         return response_xml
@@ -966,7 +965,7 @@ def _sign_attribute_query_response(response_xml: str, sign: bool = True) -> str:
         return response_xml
 
     try:
-        settings = request_config().settings
+        settings = loaded.settings
         crypto = get_crypto_service()
 
         root = secure_fromstring(response_xml.encode("utf-8"))
@@ -1223,7 +1222,7 @@ def attribute_query() -> ResponseReturnValue:
             # saml_sign_responses on, an SP validating signatures must never
             # meet the one response shape nanoidp forgot to sign.
             error_xml = _sign_attribute_query_response(
-                error_xml, loaded.settings.saml_sign_responses
+                loaded, error_xml, loaded.settings.saml_sign_responses
             )
             _audit_attribute_query(
                 "failed",
@@ -1251,7 +1250,7 @@ def attribute_query() -> ResponseReturnValue:
 
         # Sign the response (if configured)
         signed_response = _sign_attribute_query_response(
-            response_xml, loaded.settings.saml_sign_responses
+            loaded, response_xml, loaded.settings.saml_sign_responses
         )
 
         # Wrap in SOAP envelope

@@ -593,6 +593,12 @@ class TestAnUnobservableDirectoryAnswers503:
         config_dir.mkdir()
         shutil.copy(_REPO_CONFIG / "settings.yaml", config_dir / "settings.yaml")
         shutil.copy(_REPO_CONFIG / "users.yaml", config_dir / "users.yaml")
+        # A store shared with other processes, which is when a request looks
+        # at the directory at all (#354, step 4a): a page otherwise renders
+        # from the configuration this process holds and needs no lock (#406).
+        document = yaml.safe_load((config_dir / "settings.yaml").read_text())
+        document["runtime"] = {"store": "sqlite", "path": str(tmp_path / "runtime.db")}
+        (config_dir / "settings.yaml").write_text(yaml.safe_dump(document, sort_keys=False))
         app = create_app(config_dir=str(config_dir))
         app.config["TESTING"] = False
         client = app.test_client()
@@ -620,6 +626,12 @@ class TestAnUnobservableDirectoryAnswers503:
         config_dir.mkdir()
         shutil.copy(_REPO_CONFIG / "settings.yaml", config_dir / "settings.yaml")
         shutil.copy(_REPO_CONFIG / "users.yaml", config_dir / "users.yaml")
+        # A store shared with other processes, which is when a request looks
+        # at the directory at all (#354, step 4a): a page otherwise renders
+        # from the configuration this process holds and needs no lock (#406).
+        document = yaml.safe_load((config_dir / "settings.yaml").read_text())
+        document["runtime"] = {"store": "sqlite", "path": str(tmp_path / "runtime.db")}
+        (config_dir / "settings.yaml").write_text(yaml.safe_dump(document, sort_keys=False))
         app = create_app(config_dir=str(config_dir))
         app.config["TESTING"] = False
 
@@ -1284,6 +1296,91 @@ class TestAnOperationReadsOneConfiguration:
             return None
 
         return began_with
+
+    def test_a_form_carries_the_revision_of_the_values_it_shows(self, directory_of_two_loads):
+        """The writer refuses a save whose expected revision is not the
+        file's (#229), but the form is what hands it that precondition. With
+        the values of the configuration this request read and the revision
+        of a later one, a save passes the check and silently undoes whatever
+        that later load brought."""
+        from nanoidp.app import create_app
+        from nanoidp.config import get_config
+        from nanoidp.services.yaml_writer import get_yaml_writer
+
+        app = create_app(str(directory_of_two_loads))
+        began_with = self._loading_once(
+            app, directory_of_two_loads,
+            lambda document: document["oauth"].update(audience="changed-by-another-editor"),
+        )
+
+        page = app.test_client().get("/settings").get_data(as_text=True)
+
+        assert began_with, "the load was never placed in the window"
+        assert 'value="my-app"' in page, "the form shows the audience this request read"
+        with app.app_context():
+            of_the_next_load = get_yaml_writer().current_revision("settings.yaml")
+            assert get_config().snapshot.settings.audience == "changed-by-another-editor"
+        shown = page.split('name="expected_revision" value="')[1].split('"')[0]
+        assert shown == began_with[0].settings_revision, (
+            "the form pairs one load's values with another's revision"
+        )
+        assert shown != of_the_next_load
+
+    def test_a_form_refused_once_can_be_saved_next_time(self, directory_of_two_loads):
+        """The other half of the rule above: the form carries the revision of
+        what this request read, so after somebody else edits the file the
+        save is refused - and the advice to reload the page has to be true.
+        With a store of its own, nothing else would make the process read
+        the file again, so the refusal is what does."""
+        from nanoidp.app import create_app
+
+        app = create_app(str(directory_of_two_loads))
+        client = app.test_client()
+        page = client.get("/claims").get_data(as_text=True)
+        revision = page.split('name="expected_revision" value="')[1].split('"')[0]
+
+        # Somebody else edits the file between the render and the save.
+        document = yaml.safe_load((directory_of_two_loads / "settings.yaml").read_text())
+        document.setdefault("authority_prefixes", {})["roles"] = "EDITED_"
+        (directory_of_two_loads / "settings.yaml").write_text(yaml.safe_dump(document, sort_keys=False))
+
+        refused = client.post(
+            "/claims", data={"prefix_roles": "MINE_", "expected_revision": revision}
+        )
+        assert refused.status_code in (200, 302)
+        settings_now = yaml.safe_load((directory_of_two_loads / "settings.yaml").read_text())
+        assert settings_now["authority_prefixes"]["roles"] == "EDITED_", "the save was not refused"
+
+        # The page rendered again carries what the file says now, so the
+        # operator can follow the advice.
+        page = client.get("/claims").get_data(as_text=True)
+        again = page.split('name="expected_revision" value="')[1].split('"')[0]
+        assert again != revision
+        client.post("/claims", data={"prefix_roles": "MINE_", "expected_revision": again})
+        settings_now = yaml.safe_load((directory_of_two_loads / "settings.yaml").read_text())
+        assert settings_now["authority_prefixes"]["roles"] == "MINE_"
+
+    def test_the_ui_gate_and_the_page_agree_on_the_configuration(self, directory_of_two_loads):
+        """The gate decided from the current configuration while the page it
+        guards read the request's: a load turning the login requirement off
+        after the request chose let an anonymous request through a policy
+        that was still on for it."""
+        from nanoidp.app import create_app
+
+        document = yaml.safe_load((directory_of_two_loads / "settings.yaml").read_text())
+        document.setdefault("session", {})["require_ui_login"] = True
+        (directory_of_two_loads / "settings.yaml").write_text(yaml.safe_dump(document, sort_keys=False))
+        app = create_app(str(directory_of_two_loads))
+        began_with = self._loading_once(
+            app, directory_of_two_loads,
+            lambda document: document.setdefault("session", {}).update(require_ui_login=False),
+        )
+
+        answer = app.test_client().get("/")
+
+        assert began_with, "the load was never placed in the window"
+        assert answer.status_code == 302, "the request was let through a policy that was on for it"
+        assert "/login" in answer.headers["Location"]
 
     def test_the_saml_metadata_is_one_configuration(self, directory_of_two_loads):
         from nanoidp.app import create_app

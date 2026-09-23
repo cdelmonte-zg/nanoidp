@@ -85,7 +85,19 @@ def _expected_revision_from_form() -> str | None:
 def _conflict_message(exc: ConflictError) -> str:
     """One phrasing for every 'someone else changed this' flash (#229
     phase 4): the technical detail from ConflictError is useful (it
-    names the file), the prefix says what to do about it."""
+    names the file), the prefix says what to do about it.
+
+    The advice is made true here (#406): a form carries the revision of the
+    documents this request read, so telling the operator to reload the page
+    would be useless while this process still holds the configuration from
+    before the change - with a store of its own, nothing else would make it
+    read the file again. The refusal is that signal, so the declaration is
+    read again before the page is rendered anew.
+    """
+    try:
+        get_config().reload_local()
+    except Exception:  # noqa: BLE001 - the message is what matters here
+        logger.exception("Could not read the configuration again after a conflict")
     return f"{exc} - please reload the page and try again"
 
 
@@ -98,7 +110,7 @@ def index() -> ResponseReturnValue:
     loaded = request_config()
     config = get_config()
     audit = get_audit_log()
-    users = identities_for(config, request_config()).list_users()
+    users = identities_for(config, loaded).list_users()
     runtime_users = sum(1 for entry in users if entry.origin == "runtime")
 
     return render_template(
@@ -208,7 +220,7 @@ def login() -> ResponseReturnValue:
     # the login is complete, so the failure branch below cannot be reached
     # with a code still outstanding. A POST carrying the password and the
     # code together completes both here, statelessly, as before.
-    login = authenticate_interactively(config, request_config(), username=username, password=password)
+    login = authenticate_interactively(config, loaded, username=username, password=password)
 
     if login.phase.pending:
         if login.phase is SecondFactorPhase.CODE_INVALID:
@@ -337,9 +349,11 @@ def users() -> ResponseReturnValue:
     """Users management page: declared users, and runtime ones (#192) shown
     read-only, since their lifecycle is /api/runtime's."""
     config = get_config()
+    # The configuration this request began with (#406).
+    loaded = request_config()
     return render_template(
         "users.html",
-        users=identities_for(config, request_config()).list_users(),
+        users=identities_for(config, loaded).list_users(),
         current_user=session.get("user"),
     )
 
@@ -359,7 +373,7 @@ def user_create() -> ResponseReturnValue:
             allowed_identity_classes=loaded.settings.allowed_identity_classes,
             persona_mode=loaded.settings.persona_mode_enabled,
             current_user=session.get("user"),
-            revision=yaml_writer.current_revision("users.yaml"),
+            revision=loaded.users_revision,
         )
 
     # POST: Create user
@@ -412,7 +426,7 @@ def user_detail(username: str) -> ResponseReturnValue:
         flash(f"User '{username}' not found", "error")
         return redirect(url_for("ui.users"))
 
-    token_service = get_token_service(request_config())
+    token_service = get_token_service(loaded)
     authorities = token_service.build_authorities(user)
 
     return render_template(
@@ -443,7 +457,7 @@ def user_edit(username: str) -> ResponseReturnValue:
             allowed_identity_classes=loaded.settings.allowed_identity_classes,
             persona_mode=loaded.settings.persona_mode_enabled,
             current_user=session.get("user"),
-            revision=yaml_writer.current_revision("users.yaml"),
+            revision=loaded.users_revision,
         )
 
     # POST: Update user
@@ -502,11 +516,13 @@ def clients() -> ResponseReturnValue:
     """OAuth clients management page: declared clients, and runtime ones
     (#192) shown read-only, since their lifecycle is /api/runtime's."""
     config = get_config()
+    # The configuration this request began with (#406).
+    loaded = request_config()
     return render_template(
         "clients.html",
-        clients=identities_for(config, request_config()).list_clients(),
+        clients=identities_for(config, loaded).list_clients(),
         current_user=session.get("user"),
-        revision=get_yaml_writer().current_revision("settings.yaml"),
+        revision=loaded.settings_revision,
     )
 
 
@@ -710,7 +726,7 @@ def client_create() -> ResponseReturnValue:
             generated_secret=generated_secret,
             logos_dir=logos_dir,
             current_user=session.get("user"),
-            revision=yaml_writer.current_revision("settings.yaml"),
+            revision=loaded.settings_revision,
         )
 
     # POST: Create client
@@ -774,7 +790,7 @@ def client_edit(client_id: str) -> ResponseReturnValue:
             generated_secret=None,
             logos_dir=logos_dir,
             current_user=session.get("user"),
-            revision=yaml_writer.current_revision("settings.yaml"),
+            revision=loaded.settings_revision,
         )
 
     # POST: Update client
@@ -1028,7 +1044,7 @@ def settings() -> ResponseReturnValue:
             effective_saml_entity_id=effective_saml_entity_id(loaded.settings),
             effective_saml_sso_url=effective_saml_sso_url(loaded.settings),
             current_user=session.get("user"),
-            revision=yaml_writer.current_revision("settings.yaml"),
+            revision=loaded.settings_revision,
         )
 
     # POST: Update settings
@@ -1181,7 +1197,7 @@ def claims() -> ResponseReturnValue:
             "claims.html",
             settings=loaded.settings,
             current_user=session.get("user"),
-            revision=yaml_writer.current_revision("settings.yaml"),
+            revision=loaded.settings_revision,
         )
 
     # POST: Update authority prefixes
@@ -1229,7 +1245,7 @@ def claims_preview(username: str) -> ResponseReturnValue:
     if not user:
         return {"error": "User not found"}, 404
 
-    token_service = get_token_service(request_config())
+    token_service = get_token_service(loaded)
     authorities = token_service.build_authorities(user)
 
     return {
