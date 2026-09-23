@@ -614,10 +614,22 @@ class _Database:
         """
         if _journal_mode(connection) == _WAL:
             return
+        try:
+            self._turning_to_wal(connection)
+        finally:
+            connection.execute(f"PRAGMA busy_timeout = {_BUSY_TIMEOUT_MS}")
+
+    def _turning_to_wal(self, connection: sqlite3.Connection) -> None:
+        """The attempts themselves, each within what is left of the budget."""
         deadline = time.monotonic() + _BUSY_TIMEOUT_MS / 1000
         contended: Optional[sqlite3.Error] = None
         answered = ""
         while True:
+            # What is left of the budget, and no more: an attempt the busy
+            # handler does wait out would otherwise be given a whole one of
+            # its own, and two shapes of contention in one wait would add up
+            # to twice what was promised.
+            connection.execute(f"PRAGMA busy_timeout = {max(0, int((deadline - time.monotonic()) * 1000))}")
             try:
                 # The switch answers with the mode it ended in, so a refusal
                 # need not be an exception.

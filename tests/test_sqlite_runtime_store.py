@@ -328,29 +328,35 @@ class TestWalActivationUnderContention:
         which SQLite documents as a refusal too: the conversion did not
         happen and the file is in the mode it names."""
 
-        def __init__(self, answers, failing=None, busy_first=False):
+        def __init__(self, answers, failing=None, busy_first=False, busy_always=False):
             self.answers = list(answers)
             self.failing = failing
             self.busy_first = busy_first
+            self.busy_always = busy_always
             self.switches = 0
+            self.timeouts = []
 
         def execute(self, statement):
+            if statement.startswith("PRAGMA busy_timeout ="):
+                self.timeouts.append(int(statement.split("=")[1]))
+                return _Answer("0")
             if statement.startswith("PRAGMA journal_mode ="):
                 self.switches += 1
                 if self.failing is not None:
                     raise self.failing
-                if self.busy_first and self.switches == 1:
+                if self.busy_always or (self.busy_first and self.switches == 1):
                     raise sqlite3.OperationalError("database is locked")
                 answer = self.answers.pop(0) if self.answers else "delete"
             else:
                 answer = "delete"
             return _Answer(answer)
 
-    def test_a_switch_that_answers_another_mode_is_tried_again(self, monkeypatch):
+    def test_a_switch_that_answers_another_mode_is_tried_again(self, tmp_path, monkeypatch):
         monkeypatch.setattr(sqlite_module, "_BUSY_TIMEOUT_MS", 400)
+        database = self._database_of(tmp_path / "runtime.db")
         connection = self._AnsweringTheSwitch(["delete", "delete", "wal"])
 
-        sqlite_module._Database._activate_wal(None, connection)
+        database._activate_wal(connection)
 
         assert connection.switches == 3
 
@@ -364,6 +370,25 @@ class TestWalActivationUnderContention:
         database._activate_wal(connection)
 
         assert connection.switches == 1
+
+    def test_no_attempt_is_given_more_than_what_is_left(self, tmp_path, monkeypatch):
+        """The budget is the whole wait even when the contention changes
+        shape: SQLite waits inside an attempt, so an attempt begun late must
+        be given what is left, not a budget of its own. Otherwise a run of
+        immediate refusals followed by one the handler waits out spends
+        twice what was promised."""
+        monkeypatch.setattr(sqlite_module, "_BUSY_TIMEOUT_MS", 300)
+        database = self._database_of(tmp_path / "runtime.db")
+        connection = self._AnsweringTheSwitch([], busy_always=True)
+
+        with pytest.raises(RuntimeStoreUnavailable):
+            database._activate_wal(connection)
+
+        attempts = connection.timeouts[:-1]  # the last one restores the store's own
+        assert attempts, "no attempt was given a timeout at all"
+        assert attempts[0] <= 300, f"the first attempt was given more than the budget ({attempts[0]})"
+        assert attempts[-1] < attempts[0], "a later attempt was given as much as the first"
+        assert connection.timeouts[-1] == 300, "the connection was left without its own timeout"
 
     def test_a_file_that_never_turns_is_refused_as_the_file_it_is(self, tmp_path, monkeypatch):
         """Nobody ever answered busy, so no peer is holding anything: the
@@ -406,13 +431,14 @@ class TestWalActivationUnderContention:
         connection.close()
         assert not isinstance(raised.value, RuntimeStoreUnavailable)
 
-    def test_a_failure_that_is_not_contention_is_not_tried_again(self, monkeypatch):
+    def test_a_failure_that_is_not_contention_is_not_tried_again(self, tmp_path, monkeypatch):
         """Counted rather than timed: under load a clock says nothing."""
         monkeypatch.setattr(sqlite_module, "_BUSY_TIMEOUT_MS", 2000)
+        database = self._database_of(tmp_path / "runtime.db")
         connection = self._AnsweringTheSwitch([], failing=sqlite3.OperationalError("attempt to write a readonly database"))
 
         with pytest.raises(sqlite3.OperationalError, match="readonly database"):
-            sqlite_module._Database._activate_wal(None, connection)
+            database._activate_wal(connection)
 
         assert connection.switches == 1
 
