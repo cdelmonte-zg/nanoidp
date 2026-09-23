@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **A loaded configuration is published as one value** (#406, first of two
+  steps). A load was transactional on the way in and not on the way out: it
+  validated both files before changing anything, and then published what it
+  had read as eleven separate assignments, with the order between them as the
+  only rule. A reader that took two of those fields across a load could pair
+  one load's users with another's settings. They are published as one frozen
+  value now, assigned once, and the manager's attributes read through to it,
+  so nothing outside changes. `persistable_settings()`, which composed the
+  settings with the values the file declared from two reads, takes one. The
+  signing service stays outside that value and keeps its own order (#359): a
+  request may pair older settings with the newer service, never the reverse.
+  This step alone does not make a request consistent, because a request still
+  reads the manager several times; that is the second step.
+
 - **A guide for the shared runtime store, and an end-to-end job that runs two
   processes over one** (#354, fifth and last step). The SQLite runtime store
   has been selectable since the previous step, but nothing described what it

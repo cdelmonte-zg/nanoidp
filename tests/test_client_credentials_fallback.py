@@ -8,6 +8,7 @@ empty string, so the fallback has to be built without a password.
 
 import base64
 import json
+from dataclasses import replace
 
 import jwt as pyjwt
 
@@ -20,7 +21,9 @@ def test_missing_default_user_falls_back_to_the_service_account(app, client):
     with app.app_context():
         config = get_config()
         assert config.get_user("nobody-here") is None
-        config.default_user = "nobody-here"
+        # The configuration is published whole (#406), so a test that wants
+        # one field different replaces it whole too.
+        config._snapshot = replace(config.snapshot, default_user="nobody-here")
 
     response = client.post("/token", data={"grant_type": "client_credentials"}, headers=BASIC)
 

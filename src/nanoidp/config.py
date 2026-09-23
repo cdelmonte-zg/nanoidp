@@ -172,6 +172,43 @@ def _identity_of(observed: Dict[str, FileSnapshot]) -> _Identity:
 
 
 @dataclass(frozen=True)
+class ConfigSnapshot:
+    """The declared configuration as one load left it (#406).
+
+    A load is transactional on the way in: nothing changes until both files
+    have been read and validated. This is the way out. The fields below were
+    published one assignment at a time, so a request reading two of them
+    across a load got a pair that no load ever produced; they are published
+    as this one value instead, and `ConfigManager` reads through to it.
+
+    Frozen as a carrier, not deep-frozen: it holds the objects a load built,
+    and the next load builds new ones rather than changing these. A caller
+    that reaches in and mutates `settings` is doing something this promises
+    nothing about.
+
+    What is NOT here: the signing service, published before the settings on
+    purpose (#359), so that a request can pair older settings with the newer
+    service and never the reverse; the hook registry, replaced before both;
+    and runtime identities, which are read live by design (#235).
+    """
+
+    settings: Settings
+    users: Dict[str, User]
+    default_user: str
+    strict_config: bool
+    config_version: int
+    # The values the file declared for the fields a --profile forces, kept
+    # apart so that a write serializes the operator's file and not the run's
+    # hardening.
+    declared: Dict[str, Any]
+    # The revisions of the bytes this configuration was loaded from (#229
+    # phase 5) - what a caller passes back to save() as expected_*_revision.
+    users_revision: Optional[str]
+    settings_revision: Optional[str]
+    observed_at: float
+
+
+@dataclass(frozen=True)
 class _Pending:
     # None when the files could not be read at all.
     revisions: Optional[_Identity]
@@ -296,16 +333,23 @@ class ConfigManager:
         # write landing between them cannot pair one file's strictness with
         # the other's content.
         pre_load = self._observe_pre_load()
-        self.strict_config: bool = self._effective_strict(
-            self._declared_mode_of(pre_load["settings.yaml"])
+        # The configuration is one value from here on (#406): before the
+        # first load it is the defaults, with the strictness the pre-load
+        # observation established, which the bootstrap registry below reads.
+        self._snapshot = ConfigSnapshot(
+            settings=Settings(),
+            users={},
+            default_user="admin",
+            strict_config=self._effective_strict(self._declared_mode_of(pre_load["settings.yaml"])),
+            # Effective config schema version of the loaded files (#175):
+            # the declared value, or 1 when a file carries no
+            # config_version key.
+            config_version=IMPLICIT_CONFIG_VERSION,
+            declared={},
+            users_revision=None,
+            settings_revision=None,
+            observed_at=0.0,
         )
-        self._declared: Dict[str, Any] = {}
-        self.settings: Settings = Settings()
-        self.users: Dict[str, User] = {}
-        self.default_user: str = "admin"
-        # Effective config schema version of the loaded files (#175): the
-        # declared value, or 1 when a file carries no config_version key.
-        self.config_version: int = IMPLICIT_CONFIG_VERSION
         # Hooks and plugins (#185): the bootstrap surface (bootstrap.yaml in
         # the config dir, NANOIDP_BOOTSTRAP_HOOK / _PLUGIN) is read before
         # the first load because settings.yaml may be what a hook renders;
@@ -470,6 +514,50 @@ class ConfigManager:
                 setattr(settings, field, forced)
         return declared
 
+    @property
+    def snapshot(self) -> ConfigSnapshot:
+        """The declared configuration as one value (#406). A caller that
+        answers from the configuration takes it once and reads it, rather
+        than reading the manager again at each use: what it holds cannot be
+        half of one load and half of the next."""
+        return self._snapshot
+
+    @property
+    def settings(self) -> Settings:
+        return self._snapshot.settings
+
+    @property
+    def users(self) -> Dict[str, User]:
+        return self._snapshot.users
+
+    @property
+    def default_user(self) -> str:
+        return self._snapshot.default_user
+
+    @property
+    def strict_config(self) -> bool:
+        return self._snapshot.strict_config
+
+    @property
+    def config_version(self) -> int:
+        return self._snapshot.config_version
+
+    @property
+    def users_revision(self) -> Optional[str]:
+        return self._snapshot.users_revision
+
+    @property
+    def settings_revision(self) -> Optional[str]:
+        return self._snapshot.settings_revision
+
+    @property
+    def observed_at(self) -> float:
+        return self._snapshot.observed_at
+
+    @property
+    def _declared(self) -> Dict[str, Any]:
+        return self._snapshot.declared
+
     def persistable_settings(self) -> Settings:
         """The declared configuration state, as opposed to the effective one.
 
@@ -479,9 +567,12 @@ class ConfigManager:
         implies, must never be written into the operator's file, where it
         would survive the next start without the flag.
         """
-        if not self._declared:
-            return self.settings
-        return self.settings.model_copy(update=self._declared)
+        # One observation (#406): composing the two from separate reads
+        # wrote a file pairing one load's values with another's declarations.
+        loaded = self.snapshot
+        if not loaded.declared:
+            return loaded.settings
+        return loaded.settings.model_copy(update=loaded.declared)
 
     def _stage_directory(self) -> Dict[str, Any]:
         """Parse and validate the whole directory into candidates, committing
@@ -594,13 +685,9 @@ class ConfigManager:
             self._configure_hooks_from(staged["hooks_section"], staged["plugins"])
         if publish is not None:
             publish()
-        self.settings = staged["settings"]
-        self._declared = staged["declared"]
-        self.strict_config = staged["strict"]
-        self.config_version = staged["version"]
-        self.users = staged["users"]
-        self.default_user = staged["default_user"]
-        # The revisions of the bytes this runtime was loaded from (#229
+        # One assignment (#406): a reader takes the whole configuration or
+        # the whole previous one, never a pair of the two. The revisions in
+        # it are those of the bytes this runtime was loaded from (#229
         # phase 5) - what a caller passes back to save() as
         # expected_*_revision to mean "refuse my save if the file moved
         # since the state I based my change on". Deliberately NOT the
@@ -608,9 +695,17 @@ class ConfigManager:
         # the directory (another process wrote), a fresh disk hash would
         # satisfy the precondition exactly when the lost update is real.
         # Every successful write path refreshes these via reload_local().
-        self.users_revision = staged["users_revision"]
-        self.settings_revision = staged["settings_revision"]
-        self.observed_at: float = staged["observed_at"]
+        self._snapshot = ConfigSnapshot(
+            settings=staged["settings"],
+            users=staged["users"],
+            default_user=staged["default_user"],
+            strict_config=staged["strict"],
+            config_version=staged["version"],
+            declared=staged["declared"],
+            users_revision=staged["users_revision"],
+            settings_revision=staged["settings_revision"],
+            observed_at=staged["observed_at"],
+        )
         self._loaded_state = (staged["fingerprints"], _racy(staged["fingerprints"], staged["read_at_ns"]))
         self._loaded_identity = staged["identity"]
         self._commits += 1
