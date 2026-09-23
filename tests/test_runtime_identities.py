@@ -868,7 +868,13 @@ class TestReloadReconciliation:
         assert reloaded
         assert names.count("ci-alice") == 1
 
-    def test_a_settings_snapshot_older_than_the_reload_still_finds_the_client(self, app_client):
+    def test_a_settings_snapshot_older_than_the_reload_resolves_nothing(self, app_client):
+        """The contract changed with #406: a caller holding a snapshot from
+        before the reload that declared the name and reconciled the runtime
+        client away resolves nothing, where it used to be answered from the
+        current settings. Answering would pair a client this operation never
+        read with the issuer, expiry and policy it did read; the operation
+        after it sees the declaration."""
         client, config_dir = app_client
         get_identities().create_runtime_client(_client("ci-app"))
         snapshot = get_config().settings
@@ -876,7 +882,9 @@ class TestReloadReconciliation:
         self._declare(config_dir, "ci-carol", "ci-app")
         assert client.post("/api/config/reload").status_code == 200
 
-        resolved = get_identities().resolve_client("ci-app", snapshot)
+        assert get_identities().resolve_client("ci-app", snapshot) is None
+        # The next operation, on the configuration as it is now:
+        resolved = get_identities().resolve_client("ci-app")
         assert resolved is not None and resolved.origin == "declared"
 
     def test_runtime_objects_survive_an_unrelated_reload_and_a_ui_write(self, app_client):

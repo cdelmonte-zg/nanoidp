@@ -362,22 +362,45 @@ class TestWhatStaysTheServersDecision:
             "the operation still holds the configuration it began with"
         )
 
-    def test_a_name_declared_after_the_operation_began_is_still_found(self, config_dir):
-        """The store is live and the declaration is the operation's, so a
-        load that declares a name and reconciles the runtime object away
-        would otherwise be observed as neither."""
+    def test_a_name_declared_after_the_operation_began_is_not_found(self, config_dir):
+        """The strict rule (#406, review): "neither the operation's
+        declaration nor the store has it" does not establish that a load
+        reconciled a runtime object away. It holds just as well for a name
+        simply declared afterwards, and answering from the current
+        declaration would pair a new identity with this operation's issuer,
+        expiry and policy."""
         from nanoidp.config import ConfigManager
-        from nanoidp.services.runtime_store import get_runtime_store
 
         config = ConfigManager(str(config_dir))
         began_with = config.snapshot
-        _declare(config_dir, "later")
+        _declare(config_dir, "declared-later")
         config.reload_local()
-        get_runtime_store().users.delete("later")
 
-        resolved = self._resolver(config, began_with).resolve_user("later")
+        assert self._resolver(config, began_with).resolve_user("declared-later") is None
+        # The operation after it reads the declaration:
+        assert self._resolver(config).resolve_user("declared-later") is not None
 
-        assert resolved is not None and resolved.origin == "declared"
+    def test_a_runtime_identity_reconciled_away_may_resolve_to_nothing(self, config_dir):
+        """The price of the rule above, stated rather than hidden: an
+        operation that began while the object was runtime, and whose store
+        read lands after the reconciliation, finds nothing where it once
+        found the runtime object. A transient unknown, not a token built
+        from two configurations."""
+        from nanoidp.config import ConfigManager, User
+        from nanoidp.services.identities import reconcile_runtime_identities
+        from nanoidp.services.runtime_store import get_runtime_store
+
+        config = ConfigManager(str(config_dir), after_load=reconcile_runtime_identities)
+        store = get_runtime_store()
+        store.users.create(User(username="both-ways", password="pw"))
+        began_with = config.snapshot
+
+        _declare(config_dir, "both-ways")
+        config.reload_local()  # the reconciliation removes the runtime object
+
+        assert store.users.get("both-ways") is None
+        assert self._resolver(config, began_with).resolve_user("both-ways") is None
+        assert self._resolver(config).resolve_user("both-ways") is not None
 
     def test_the_route_reads_the_capability_switch_live_too(self, config_dir):
         """The one outbound fetch this server makes is behind the switch, and

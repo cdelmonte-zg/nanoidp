@@ -1201,6 +1201,66 @@ class TestAnOperationReadsOneConfiguration:
         claims = jwt.decode(answer.get_json()["access_token"], options={"verify_signature": False})
         assert (claims["sub"], claims["aud"]) == ("alice", began_with[0])
 
+    def test_no_token_for_a_user_declared_after_the_request_began(self, directory_of_two_loads):
+        """The strict rule at an endpoint (#406, review): a user the request's
+        configuration never declared gets no token, rather than one carrying
+        this request's issuer, expiry and policy."""
+        from nanoidp.app import create_app
+        from nanoidp.config import get_config
+
+        app = create_app(str(directory_of_two_loads))
+        loaded_again = []
+
+        @app.before_request
+        def declare_someone_after_the_choice():
+            if not loaded_again:
+                loaded_again.append(True)
+                self._declare(directory_of_two_loads, ["alice", "declared-later"], default_user="alice")
+                get_config().reload_local()
+            return None
+
+        answer = app.test_client().post("/api/users/declared-later/token")
+
+        assert loaded_again, "the load was never placed in the window"
+        assert answer.status_code == 404, answer.data
+        # The request after it, on the configuration as it is now:
+        assert app.test_client().post("/api/users/declared-later/token").status_code == 200
+
+    def test_no_client_authentication_for_one_declared_after_the_request_began(self, directory_of_two_loads):
+        """The same rule on the client-authentication boundary of /token."""
+        import base64 as b64
+
+        from nanoidp.app import create_app
+        from nanoidp.config import get_config
+
+        app = create_app(str(directory_of_two_loads))
+        loaded_again = []
+
+        def declare_a_client():
+            document = yaml.safe_load((directory_of_two_loads / "settings.yaml").read_text())
+            document["oauth"]["clients"] = document["oauth"]["clients"] + [
+                {"client_id": "declared-later-client", "client_secret": "a-secret"}
+            ]
+            (directory_of_two_loads / "settings.yaml").write_text(yaml.safe_dump(document, sort_keys=False))
+
+        @app.before_request
+        def declare_after_the_choice():
+            if not loaded_again:
+                loaded_again.append(True)
+                declare_a_client()
+                get_config().reload_local()
+            return None
+
+        header = {"Authorization": "Basic " + b64.b64encode(b"declared-later-client:a-secret").decode()}
+        answer = app.test_client().post("/token", data={"grant_type": "client_credentials"}, headers=header)
+
+        assert loaded_again, "the load was never placed in the window"
+        assert answer.status_code in (400, 401), answer.data
+        # The request after it authenticates:
+        assert app.test_client().post(
+            "/token", data={"grant_type": "client_credentials"}, headers=header
+        ).status_code == 200
+
     def test_the_reported_configuration_is_one_load(self, directory_of_two_loads, monkeypatch):
         """GET /api/config reads the settings, the version, the strictness
         and the users separately, so a load landing while it renders is

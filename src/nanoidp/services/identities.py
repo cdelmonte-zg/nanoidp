@@ -183,15 +183,16 @@ class IdentityResolver:
         # declared users before it removes a runtime object they now shadow,
         # so a lookup spanning that reload finds one of the two, never neither.
         runtime = self.store.users.get(username)
+        # The declaration is this operation's, with no fallback to the current
+        # one (#406): "neither the snapshot nor the store has it" does not
+        # establish that a reload reconciled a runtime object away, since it
+        # holds just as well for a name simply declared after this operation
+        # began, and answering from the current declaration would pair a new
+        # identity with this operation's issuer, expiry and policy. An
+        # operation that began before such a load may therefore find nothing
+        # where it would once have found the runtime object; the next one
+        # sees the new declaration.
         declared = self.loaded.users.get(username)
-        if declared is None and runtime is None:
-            # The store is live and the declaration is this operation's, so a
-            # reload that declared the name and reconciled the runtime object
-            # away would otherwise be observed as neither: the rule above says
-            # a lookup spanning that reload finds one of the two. The current
-            # declaration is consulted for that case alone, as resolve_client
-            # does for the same reason.
-            declared = self.config.get_user(username)
         if declared is not None:
             return ResolvedUser(declared, "declared")
         return ResolvedUser(runtime, "runtime") if runtime is not None else None
@@ -259,10 +260,11 @@ class IdentityResolver:
         """``settings`` is the snapshot a caller already holds (a token
         response is built from one, #359); omitted, the current settings.
 
-        The store is read first, for the reason given in resolve_user. A
-        snapshot can predate the reload that removed a runtime client, so
-        when neither the snapshot nor the store has it, the current settings
-        are consulted too.
+        The store is read first, for the reason given in resolve_user, and
+        the declaration is the caller's with no fallback to the current one
+        (#406): a snapshot that predates the reload which reconciled a
+        runtime client away resolves nothing, rather than answering with a
+        client this operation never read.
 
         Precedence is declared, then runtime, then a cached metadata
         document (#196). A client an operator declared, or a test created,
@@ -277,13 +279,8 @@ class IdentityResolver:
         reads what is there or gets nothing.
         """
         runtime = self.store.clients.get(client_id)
+        # This operation's declaration, with no fallback: see resolve_user.
         declared = _find_client(settings or self.loaded.settings, client_id)
-        if declared is None and runtime is None:
-            # As in resolve_user: the store is live and the declaration is
-            # this operation's, so a load that declared the name and
-            # reconciled the runtime client away would otherwise be observed
-            # as neither.
-            declared = _find_client(self.config.settings, client_id)
         if declared is not None:
             return ResolvedClient(declared, "declared")
         if runtime is not None:
