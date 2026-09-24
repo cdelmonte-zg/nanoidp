@@ -1,6 +1,6 @@
 # Quickstart
 
-From a fresh install to a verified token in a couple of minutes.
+From a fresh install to a token you have verified, in a couple of minutes.
 
 ## 1. Create a configuration
 
@@ -53,14 +53,46 @@ The response carries an `access_token` (its `aud` is the resource audience
 from `oauth.audience`) and, because the request included the `openid`
 scope, an `id_token` (its `aud` is the client's `client_id`).
 
-Verify it the way your client would, via discovery and JWKS:
+The password grant is used here because it is one request. It is a legacy
+grant that OAuth 2.1 removes, so do not model a real login on it: a browser
+login is Authorization Code with PKCE, see
+[Public clients](../guides/token-requests.md#public-clients-no-secret).
+
+## 4. Verify the token
+
+Verify it the way your client or API would: find the keys through
+discovery, then check the signature, the issuer and the audience. PyJWT is
+installed with nanoidp, so this runs as is:
 
 ```bash
-curl http://localhost:8000/.well-known/openid-configuration
-curl http://localhost:8000/.well-known/jwks.json
+TOKEN=$(curl -s -X POST 'http://localhost:8000/token' \
+  -u 'demo-client:demo-secret' \
+  -d 'grant_type=password&username=admin&password=admin&scope=openid' \
+  | python -c 'import json, sys; print(json.load(sys.stdin)["access_token"])')
+
+python - "$TOKEN" <<'EOF'
+import json, sys, urllib.request
+import jwt  # PyJWT, installed with nanoidp
+
+token = sys.argv[1]
+discovery = json.load(urllib.request.urlopen(
+    "http://localhost:8000/.well-known/openid-configuration"))
+key = jwt.PyJWKClient(discovery["jwks_uri"]).get_signing_key_from_jwt(token)
+claims = jwt.decode(token, key, algorithms=["RS256"],
+                    issuer=discovery["issuer"], audience="my-app")
+print("valid:", claims["sub"], claims["iss"], claims["aud"])
+EOF
 ```
 
-## 4. Open the web UI
+```
+valid: admin http://localhost:8000 my-app
+```
+
+Change `audience="my-app"` to any other value and the same script fails with
+`InvalidAudienceError`: that rejection is what your API must do with a
+token issued for someone else.
+
+## 5. Open the web UI
 
 The admin UI at [http://localhost:8000](http://localhost:8000) covers the
 rest: users, OAuth clients, settings, keys and certificates, claims
