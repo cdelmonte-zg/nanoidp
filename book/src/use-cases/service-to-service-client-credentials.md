@@ -20,7 +20,7 @@ and the repository's CI builds the API and runs the tests below against it.
 ## 1. Declare the services, their scopes and their audiences
 
 ```bash
-pip install nanoidp
+pip install nanoidp requests pytest   # requests and pytest for the tests below
 mkdir -p config
 base=https://raw.githubusercontent.com/cdelmonte-zg/nanoidp/main/examples/microservices-client-credentials
 curl -fsSL -o config/settings.yaml "$base/settings.yaml"

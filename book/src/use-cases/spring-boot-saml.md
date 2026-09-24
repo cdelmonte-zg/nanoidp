@@ -20,7 +20,7 @@ and the repository's CI builds the SP and runs the tests below against it.
 ## 1. Start NanoIDP with the preset
 
 ```bash
-pip install nanoidp
+pip install nanoidp requests pytest   # requests and pytest for the tests below
 mkdir -p config
 base=https://raw.githubusercontent.com/cdelmonte-zg/nanoidp/main/examples/spring-boot-saml
 curl -fsSL -o config/settings.yaml "$base/settings.yaml"

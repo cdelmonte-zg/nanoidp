@@ -21,7 +21,7 @@ A CLI ships to its users, so a secret inside it is not a secret. Register it
 as a public client, identified by its `client_id` alone:
 
 ```bash
-pip install nanoidp
+pip install nanoidp requests pytest   # the CLI uses requests; pytest runs the tests
 mkdir -p config
 base=https://raw.githubusercontent.com/cdelmonte-zg/nanoidp/main/examples/cli-device-flow
 curl -fsSL -o config/settings.yaml "$base/settings.yaml"
@@ -86,6 +86,9 @@ A CLI keeps its refresh token between runs. For a public client NanoIDP
 always rotates it: each refresh answers a new refresh token, and the old one
 stops working. Using an old one again is treated as a stolen token: it
 fails, and it also revokes the newest one, so the CLI has to log in again.
+The revocation covers the refresh tokens of that one login: access tokens
+already issued stay valid until they expire, and other logins of the same
+user are not affected.
 A CLI must therefore write the new refresh token to disk after every
 refresh, before anything else can fail. The last test pins that behaviour.
 
@@ -93,10 +96,12 @@ refresh, before anything else can fail. The last test pins that behaviour.
 
 - Register a CLI as a public client (`token_endpoint_auth_method: "none"`):
   it cannot keep a secret.
-- Poll at the interval the server gives, handle `slow_down` by waiting
-  longer, and stop on every error that is not `authorization_pending`.
+- Poll at the interval the server gives. Keep polling on
+  `authorization_pending`, and on `slow_down` with 5 seconds more between
+  polls; stop on every other error.
 - A device code gives tokens once.
-- Store the rotated refresh token every time. Reusing an old one logs the
-  user out everywhere.
+- Store the rotated refresh token every time. Reusing an old one revokes
+  that login's refresh tokens, the newest included, so the CLI has to log in
+  again.
 - The browser step is one form post, so the whole device login is a test
   that runs in CI.

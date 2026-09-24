@@ -6,6 +6,8 @@ client, the CLI's login code (`cli_login.py`), and tests that run its
 polling while a scripted browser step approves or denies (`tests/`).
 
 ```bash
+pip install nanoidp requests pytest
+
 # NanoIDP with this preset, on :8000
 mkdir -p idp-config && cp settings.yaml users.yaml idp-config/
 python -m nanoidp --config ./idp-config

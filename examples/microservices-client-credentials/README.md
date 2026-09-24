@@ -15,7 +15,7 @@ python -m nanoidp --config ./idp-config
 cd inventory-api && mvn -q package -DskipTests && java -jar target/inventory-api-1.0.jar
 
 # The service calls (a third terminal)
-pytest tests
+pip install requests pytest && pytest tests
 ```
 
 | Client | Secret | May ask for | For the audience |
