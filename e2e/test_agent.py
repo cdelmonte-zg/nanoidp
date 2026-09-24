@@ -2159,7 +2159,7 @@ class NanoIDPTestAgent:
                     timeout=5,
                 )
                 checks["device_pending_factor_refused_to_another_browser"] = (
-                    "authorized successfully" not in stolen.text.lower()
+                    "the device has been authorized" not in stolen.text.lower()
                 )
                 device_done = device_sess.post(
                     f"{self.base_url}/device",
@@ -2172,7 +2172,7 @@ class NanoIDPTestAgent:
                     timeout=5,
                 )
                 checks["device_code_alone_authorizes"] = (
-                    "authorized successfully" in device_done.text.lower()
+                    "the device has been authorized" in device_done.text.lower()
                 )
 
             success = all(checks.values())

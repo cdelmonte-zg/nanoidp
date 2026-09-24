@@ -120,10 +120,10 @@ class Device(Surface):
         return {"user_code": data["user_code"]}
 
     def completed(self, app, client, response):
-        return b"authorized successfully" in response.data.lower()
+        return b"the device has been authorized" in response.data.lower()
 
     def not_completed(self, app, client, response):
-        return b"authorized successfully" not in response.data.lower()
+        return b"the device has been authorized" not in response.data.lower()
 
 
 SURFACES = [Login(), SamlSso(), Device()]
