@@ -30,8 +30,14 @@ oauth:
         - "http://localhost:5173/callback"  # Vite default port
 ```
 
+Fetch the preset into a config directory and start NanoIDP on it
+(`pip install nanoidp` first; no checkout of the repository needed):
+
 ```bash
-cp examples/react-spa-pkce/*.yaml ./config/
+mkdir -p config
+base=https://raw.githubusercontent.com/cdelmonte-zg/nanoidp/main/examples/react-spa-pkce
+curl -fsSL -o config/settings.yaml "$base/settings.yaml"
+curl -fsSL -o config/users.yaml "$base/users.yaml"
 python -m nanoidp --config ./config
 ```
 
@@ -44,7 +50,10 @@ under `security_profile: stricter-dev` it is limited to `localhost` and
 
 ## 2. Point the SPA at NanoIDP
 
-With [react-oidc-context](https://github.com/authts/react-oidc-context):
+With [react-oidc-context](https://github.com/authts/react-oidc-context),
+in an existing React app (for example one created with
+`npm create vite@latest -- --template react-ts`, which serves on port 5173:
+use `http://localhost:5173/callback` as the `redirect_uri` there):
 
 ```bash
 npm install react-oidc-context oidc-client-ts
@@ -52,7 +61,10 @@ npm install react-oidc-context oidc-client-ts
 
 ```tsx
 // src/main.tsx
+import { StrictMode } from "react";
+import { createRoot } from "react-dom/client";
 import { AuthProvider } from "react-oidc-context";
+import App from "./App";
 
 const oidcConfig = {
   authority: "http://localhost:8000",
@@ -60,12 +72,21 @@ const oidcConfig = {
   redirect_uri: "http://localhost:3000/callback",
   scope: "openid profile email",
   response_type: "code",
-  loadUserInfo: true, // email and profile come from /userinfo, see below
+  loadUserInfo: true, // in NanoIDP, email and profile come from /userinfo
+  // Required by react-oidc-context: remove the code and state from the URL
+  // once the login completes, or token renewal fails after a page reload
+  onSigninCallback: () => {
+    window.history.replaceState({}, document.title, window.location.pathname);
+  },
 };
 
-<AuthProvider {...oidcConfig}>
-  <App />
-</AuthProvider>
+createRoot(document.getElementById("root")!).render(
+  <StrictMode>
+    <AuthProvider {...oidcConfig}>
+      <App />
+    </AuthProvider>
+  </StrictMode>,
+);
 ```
 
 ```tsx
@@ -81,23 +102,28 @@ function App() {
     return (
       <div>
         <p>Hello {auth.user?.profile.sub} ({auth.user?.profile.email})</p>
-        <button onClick={() => auth.removeUser()}>Log out</button>
+        {/* local logout: clears the library's state, not NanoIDP's session */}
+        <button onClick={() => void auth.removeUser()}>Log out</button>
       </div>
     );
   }
-  return <button onClick={() => auth.signinRedirect()}>Log in</button>;
+  return <button onClick={() => void auth.signinRedirect()}>Log in</button>;
 }
 ```
 
 The library does the PKCE work: it generates the verifier, sends the
 `S256` challenge to `/authorize`, and redeems the code at `/token` with the
-verifier and no secret. Any OIDC client library works the same way; the
-only NanoIDP-specific values are the `authority` and the `client_id`.
+verifier and no secret. Other OIDC client libraries take the same values:
+the `authority`, the `client_id` and the `redirect_uri`.
+
+The Log out button is a local logout: `removeUser()` forgets the user in
+the SPA and does not call NanoIDP.
 
 ## 3. Know which token carries what
 
 Three places hold facts about the user, and looking in the wrong one is
-the most common surprise:
+the most common surprise. Providers split the claims differently; in
+NanoIDP:
 
 | Where | What is in it | Who reads it |
 |---|---|---|
@@ -105,7 +131,7 @@ the most common surprise:
 | Access token | `aud` = `spa-api`, `scope`, `roles`, `authorities` and the other user attributes | your API, on every request |
 | `/userinfo` | `email`, `email_verified`, profile claims, per granted scope | the SPA, with `loadUserInfo: true` |
 
-The ID token does not carry `email`: without `loadUserInfo: true`,
+NanoIDP's ID token does not carry `email`: without `loadUserInfo: true`,
 `auth.user.profile.email` is `undefined`. The details are in
 [Tokens and claims](../reference/tokens.md#where-do-the-email--profile-claims-come-from).
 
@@ -113,7 +139,9 @@ The ID token does not carry `email`: without `loadUserInfo: true`,
 
 The whole flow can be scripted, which makes it a test you can run in CI.
 This script does what the browser and the SPA do together, then checks the
-ID token the way an OIDC library does. It needs `requests`
+ID token's signature against NanoIDP's JWKS, its issuer, its audience and
+its expiry. An OIDC library may check more, depending on the library and its
+settings; this is a test of the flow, not a replacement for the library. It needs `requests`
 (`pip install requests`); PyJWT comes with NanoIDP.
 
 ```python
@@ -160,7 +188,7 @@ tokens = requests.post(f"{IDP}/token", data={
     "code_verifier": verifier,
 }).json()
 
-# 5. Check the ID token the way the SPA's OIDC library does
+# 5. Check the ID token: signature (JWKS), issuer, audience, expiry
 discovery = requests.get(f"{IDP}/.well-known/openid-configuration").json()
 id_token = tokens["id_token"]
 key = jwt.PyJWKClient(discovery["jwks_uri"]).get_signing_key_from_jwt(id_token)
@@ -174,9 +202,9 @@ print("logged in:", claims["sub"], "| id_token aud:", claims["aud"],
 logged in: user | id_token aud: spa-client | refresh token: True
 ```
 
-The form fields (`transaction_id`, `username`, `password`) are NanoIDP's
-own login page; the rest is standard OAuth that any authorization server
-answers the same way.
+Steps 2 and 3 are specific to NanoIDP: `transaction_id`, `username` and
+`password` are the fields of its login page. The rest is the standard
+Authorization Code exchange with PKCE.
 
 ## 5. Drive the real SPA in an end-to-end test
 
@@ -206,10 +234,11 @@ preserved), so the failure path is testable too. See
 ## What must fail
 
 A login test that only checks the happy path does not tell you the client
-is correct. Each of these is answered by NanoIDP as the specs require, and
-each one is worth a test on your side:
+is correct. With this preset, NanoIDP answers each of these as below, and
+each one is worth a test on your side. The protocol answers follow the
+OAuth and PKCE specifications; the login form is NanoIDP's own.
 
-| What the client does | NanoIDP's answer |
+| What the client does | NanoIDP's answer, with this preset |
 |---|---|
 | `/authorize` without `code_challenge` | redirect with `error=invalid_request`: PKCE with `S256` is required for a public client |
 | `code_challenge_method=plain` | redirect with `error=invalid_request`: must be `S256` |
@@ -225,7 +254,7 @@ each one is worth a test on your side:
   protects the code.
 - Register the redirect URIs. Exact matching is what stops a code from
   being sent somewhere else, and it is what production providers enforce.
-- The ID token says who logged in; the access token is for your API; email
-  and profile come from `/userinfo`.
+- The ID token says who logged in; the access token is for your API. In
+  NanoIDP, email and profile come from `/userinfo`.
 - The flow is scriptable end to end, and auto-login lets a browser test
   drive the real SPA without a login form.
