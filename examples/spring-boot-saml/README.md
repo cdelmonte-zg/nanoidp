@@ -1,105 +1,27 @@
-# Spring Boot SAML Integration
+# Spring Boot SAML
 
-This preset configures NanoIDP for integration with Spring Security SAML.
+A Spring Boot 4 service provider logging in over SAML 2.0 against NanoIDP:
+the preset (`settings.yaml`, `users.yaml`), the SP (`sp/`), and tests that
+drive the login without a browser (`tests/`).
 
-## Quick Start
-
-1. Copy configuration files:
 ```bash
-cp examples/spring-boot-saml/*.yaml ./config/
-python -m nanoidp
+# NanoIDP with this preset, on :8000
+mkdir -p idp-config && cp settings.yaml users.yaml idp-config/
+python -m nanoidp --config ./idp-config
+
+# The SP, on :8080 (another terminal; Java 21+ and Maven)
+cd sp && mvn -q package -DskipTests && java -jar target/nanoidp-saml-sp-1.0.jar
+
+# The login, admin and non-admin (a third terminal)
+pytest tests
 ```
 
-2. Get the IdP metadata for your Spring app:
-```
-http://localhost:8000/saml/metadata
-```
+Test users: `admin` / `admin` (roles `ADMIN`, `USER`, group
+`ADMINISTRATORS`), `user` / `user` (role `USER`), `readonly` / `readonly`
+(role `VIEWER`).
 
-## Spring Boot Configuration
-
-Add the following to your `application.yml`:
-
-```yaml
-spring:
-  security:
-    saml2:
-      relyingparty:
-        registration:
-          nanoidp:
-            entity-id: "{baseUrl}/saml2/service-provider-metadata/{registrationId}"
-            assertingparty:
-              metadata-uri: http://localhost:8000/saml/metadata
-            acs:
-              location: "{baseUrl}/login/saml2/sso/{registrationId}"
-            singlelogout:
-              binding: POST
-              url: "{baseUrl}/logout/saml2/slo"
-```
-
-## Test Users
-
-| Username | Password | Roles | Groups |
-|----------|----------|-------|--------|
-| `admin` | `admin` | ADMIN, USER | ADMINISTRATORS |
-| `user` | `user` | USER | |
-| `readonly` | `readonly` | VIEWER | |
-
-## SAML Attributes Mapping
-
-NanoIDP sends these SAML attributes:
-
-| Attribute | Description |
-|-----------|-------------|
-| `email` | User's email address |
-| `roles` | User's roles, one `AttributeValue` each; requires `saml.export_roles: true` (set in this example) |
-| `groups` | User's groups, one `AttributeValue` each; requires `saml.export_groups: true` (set in this example) |
-| `tenant` | User's tenant |
-| `authorities` | All Spring GrantedAuthorities |
-
-## Spring Security Configuration
-
-```java
-@Configuration
-@EnableWebSecurity
-public class SecurityConfig {
-
-    @Bean
-    public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
-        http
-            .authorizeHttpRequests(auth -> auth
-                .requestMatchers("/admin/**").hasRole("ADMIN")
-                .requestMatchers("/api/**").authenticated()
-                .anyRequest().permitAll()
-            )
-            .saml2Login(Customizer.withDefaults())
-            .saml2Logout(Customizer.withDefaults());
-        return http.build();
-    }
-}
-```
-
-## Troubleshooting
-
-### Certificate Validation Errors
-
-If you get certificate validation errors, NanoIDP generates self-signed certificates.
-For development, you can disable signature validation:
-
-```yaml
-spring:
-  security:
-    saml2:
-      relyingparty:
-        registration:
-          nanoidp:
-            assertingparty:
-              verification:
-                credentials:
-                  - certificate-location: classpath:idp-cert.pem
-```
-
-Download the certificate from: `http://localhost:8000/keys/download/certificate`
-
-### Clock Skew
-
-If you get "Assertion is not yet valid" errors, ensure your system clocks are synchronized.
+The SP sets its entity ID to `oauth.audience` as a workaround for #443.
+The guide explains that and the rest, from the Maven setup to mapping
+roles to Spring authorities:
+[Test a Spring Boot SAML service provider without a real IdP](https://cdelmonte-zg.github.io/nanoidp/use-cases/spring-boot-saml.html).
+The repository runs this directory in `.github/workflows/saml-example.yml`.
