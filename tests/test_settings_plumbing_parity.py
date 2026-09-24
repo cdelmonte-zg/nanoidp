@@ -31,6 +31,7 @@ _SECTION_MODELS = {
     "saml": cd.SamlSection,
     "logging": cd.LoggingSection,
     "login": cd.LoginSection,
+    "device_flow": cd.DeviceFlowSection,
     "": cd.SettingsDocument,
 }
 
@@ -44,6 +45,14 @@ class TestOwnedSettingsDeriveFromTheModels:
         for row in OWNED_SETTINGS:
             model = _SECTION_MODELS[row.section]
             assert row.key in model.model_fields, row
+
+    def test_every_field_the_mcp_tool_writes_is_a_row(self):
+        """update_settings changes the process's Settings; save_config
+        persists only table rows. A writable field without a row would be
+        reported as updated and lost on the next load (#441: the three new
+        fields were added to the tool before the table)."""
+        rows = {row.attr for row in OWNED_SETTINGS}
+        assert [field for field in _UPDATE_SETTINGS_FIELDS if field not in rows] == []
 
     def test_rows_are_unique_per_key(self):
         keys = [(row.section, row.key) for row in OWNED_SETTINGS]

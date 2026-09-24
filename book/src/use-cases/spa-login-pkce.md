@@ -46,7 +46,13 @@ The preset's `users.yaml` has two users, `admin` / `admin` and
 
 CORS needs nothing: the default `dev` profile allows every origin, and
 under `security_profile: stricter-dev` it is limited to `localhost` and
-`127.0.0.1` on any port.
+`127.0.0.1` on any port. To test the SPA against a policy that names its
+origin, releases after 3.3.0 take a list, which applies in every profile:
+
+```yaml
+cors_allowed_origins:
+  - "http://localhost:3000"
+```
 
 ## 2. Point the SPA at NanoIDP
 

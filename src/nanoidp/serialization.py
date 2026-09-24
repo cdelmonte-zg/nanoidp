@@ -406,6 +406,9 @@ def user_to_yaml(user: User) -> Dict[str, Any]:
 # callers hand it in and these two literals only cover legacy call sites.
 _FALLBACK_DEFAULTS: Dict[str, Any] = {
     "security_profile": "dev",
+    "oauth.refresh_token_expiry_minutes": 10080,
+    "device_flow.code_expiry_seconds": 600,
+    "device_flow.polling_interval": 5,
     "login.mode": "password",
     "login.auto_login": False,
     "login.two_step": False,
@@ -468,6 +471,12 @@ OWNED_SETTINGS: tuple[OwnedSetting, ...] = (
     OwnedSetting("oauth", "issuer_from_proxy_headers", "issuer_from_proxy_headers"),
     OwnedSetting("oauth", "audience", "audience"),
     OwnedSetting("oauth", "token_expiry_minutes", "token_expiry_minutes"),
+    # Accepted and ignored until #441, so files that never set them must not
+    # gain them on the next save: written only while they differ from the
+    # default, like the login keys below.
+    OwnedSetting(
+        "oauth", "refresh_token_expiry_minutes", "refresh_token_expiry_minutes", "omit_when_default"
+    ),
     OwnedSetting("oauth", "refresh_token_rotation", "refresh_token_rotation"),
     OwnedSetting("oauth", "require_pkce", "require_pkce"),
     OwnedSetting("oauth", "logos_dir", "logos_dir", "omit_when_falsy", ""),
@@ -494,6 +503,12 @@ OWNED_SETTINGS: tuple[OwnedSetting, ...] = (
     OwnedSetting("saml", "want_authn_requests_signed", "saml_want_authn_requests_signed"),
     OwnedSetting("saml", "sp_certificates", "saml_sp_certificates", "omit_when_falsy", []),
     OwnedSetting("logging", "verbose_logging", "verbose_logging"),
+    OwnedSetting(
+        "device_flow", "code_expiry_seconds", "device_code_expiry_seconds", "omit_when_default"
+    ),
+    OwnedSetting(
+        "device_flow", "polling_interval", "device_polling_interval", "omit_when_default"
+    ),
     # Written only when they differ from the model default, which is what
     # "absent" means for them in the file (#319). The row needs no default
     # of its own: where to look it up is the section and the key.

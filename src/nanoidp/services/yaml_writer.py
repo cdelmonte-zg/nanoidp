@@ -53,6 +53,14 @@ def _mutate_settings_section(
         if value is None:
             continue
         field = rows[key]
+        if field.doc_mode == "omit_when_default":
+            # Written only while it differs from its default, the same rule
+            # apply_settings_document follows (#319): a form save must not
+            # add a key at its default to a file that never had it (#441).
+            merge_owned_setting_at_default(
+                document, field, value, document_defaults()[default_lookup_key(field)]
+            )
+            continue
         compare = value if (field.doc_mode == "plain" or value) else field.empty
         if not is_unchanged(section.get(key), compare):
             if field.doc_mode != "plain" and not value:
@@ -391,6 +399,7 @@ class YamlWriter:
         issuer_from_proxy_headers: Optional[bool] = None,
         audience: Optional[str] = None,
         token_expiry_minutes: Optional[int] = None,
+        refresh_token_expiry_minutes: Optional[int] = None,
         require_pkce: Optional[bool] = None,
         refresh_token_rotation: Optional[bool] = None,
         logos_dir: Optional[str] = None,
@@ -412,6 +421,7 @@ class YamlWriter:
                 "issuer_from_proxy_headers": issuer_from_proxy_headers,
                 "audience": audience,
                 "token_expiry_minutes": token_expiry_minutes,
+                "refresh_token_expiry_minutes": refresh_token_expiry_minutes,
                 "require_pkce": require_pkce,
                 "refresh_token_rotation": refresh_token_rotation,
                 "logos_dir": logos_dir,

@@ -270,7 +270,7 @@ whether it came from an override, and the derived values (#172).
 | Feature | `dev` | `stricter-dev` | `oauth21` |
 |---------|-------|----------------|-----------|
 | Password storage | Plaintext | bcrypt hash | Plaintext |
-| CORS | `*` (all origins) | localhost only | `*` (all origins) |
+| CORS (unless `cors_allowed_origins` is set, which applies in every profile) | `*` (all origins) | localhost only | `*` (all origins) |
 | Rate limiting | None | 10 req/min on `/token` | None |
 | Debug mode | Allowed | Blocked | Allowed |
 | PKCE | Optional | Required, S256 only | Required, S256 only |

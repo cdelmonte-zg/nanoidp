@@ -425,6 +425,7 @@ oauth:
                                  # headers are otherwise spoofable.
   audience: "my-app"            # access token "aud" (resource audience, RFC 9068)
   token_expiry_minutes: 60
+  refresh_token_expiry_minutes: 10080  # default 7 days, at most 30 - see "Lifetimes and CORS" below
   refresh_token_rotation: false # true: each refresh invalidates the used refresh token
   clients:
     - client_id: "demo-client"
@@ -504,6 +505,15 @@ saml:
 # for that run only (any of the three, including an explicit dev), is never
 # written back here and survives every reload (#172)
 # security_profile: oauth21   # dev (default) | stricter-dev | oauth21
+
+# Optional; absent, the security profile decides - see "Lifetimes and CORS" below
+# cors_allowed_origins:
+#   - "http://localhost:5173"
+
+# Optional; the device authorization grant's timing - see "Lifetimes and CORS" below
+# device_flow:
+#   code_expiry_seconds: 600   # default; 1 to 3600
+#   polling_interval: 5        # default; 1 to 60
 
 # Optional; local dev/testing convenience, off by default - see "Login mode" above
 # login:
@@ -718,6 +728,38 @@ YAML-only, like `session.secret_key` (see
 [Session Cookie Trust](../guides/SECURITY.md#session-cookie-trust-secret_key)
 for why that one matters here too).
 
+### Lifetimes and CORS
+
+These settings default to what nanoidp did before they could be set (#441),
+so a file that does not mention them behaves as it always did.
+
+- **`oauth.refresh_token_expiry_minutes`** (default 10080, 7 days; 1 to
+  43200): the lifetime of every refresh token issued from now on, a rotated
+  one included. A token already issued keeps the lifetime it was issued
+  with. A short value is how a test sees a client handle an expired refresh
+  token.
+- **`device_flow.code_expiry_seconds`** (default 600; 1 to 3600) and
+  **`device_flow.polling_interval`** (default 5; 1 to 60): what
+  `/device_authorization` announces as `expires_in` and `interval` (RFC
+  8628), and how long a device code and its user code stay valid. With
+  `code_expiry_seconds: 1`, a test sees `expired_token` a second later.
+- **`cors_allowed_origins`**: the origins a browser may call nanoidp from.
+  Absent, the security profile decides: every origin under `dev` and
+  `oauth21`, `localhost` and `127.0.0.1` on any port under `stricter-dev`.
+  Present, it is the list in every profile: `[]` allows no origin, `"*"`
+  every origin, and a blank entry is refused. CORS is set up when the
+  server starts, so a change takes effect at the next restart, not at a
+  reload.
+
+`GET /api/config` and the MCP `get_settings` tool report all four; the
+settings page edits the refresh token lifetime, and MCP `update_settings`
+the refresh token lifetime and the two device flow values.
+
+Two keys that used to be accepted and ignored are not settings:
+`logging.format` (the log format is fixed) and `session.permanent` (the
+login session is always a permanent cookie). They are reported like any
+unknown key: a warning, or a refusal under `config_validation: strict`.
+
 ### Runtime store (`runtime:`)
 
 ```yaml
@@ -780,6 +822,8 @@ logging:
   log_saml_requests: true  # Log SAML endpoint requests
   verbose_logging: true    # Include usernames/client_ids in log messages
 ```
+
+The format of the log lines is fixed; `logging.format` is not a setting.
 
 **Verbose logging** (`verbose_logging: true`, default):
 

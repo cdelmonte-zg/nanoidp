@@ -420,6 +420,30 @@ class Settings(BaseModel):
     )
     audience: str = Field(default="default", min_length=1, description="OAuth audience")
     token_expiry_minutes: int = Field(default=60, gt=0, le=1440, description="Token expiry in minutes")
+    refresh_token_expiry_minutes: int = Field(
+        default=10080,
+        ge=1,
+        le=43200,
+        description="Refresh token lifetime in minutes (default 7 days, at most 30). "
+        "Applies to every refresh token issued from now on, a rotated one "
+        "included; tokens already issued keep the lifetime they were issued "
+        "with.",
+    )
+    device_code_expiry_seconds: int = Field(
+        default=600,
+        ge=1,
+        le=3600,
+        description="How long a device code and its user code stay valid, in "
+        "seconds (RFC 8628 expires_in). A short value makes expired_token "
+        "testable.",
+    )
+    device_polling_interval: int = Field(
+        default=5,
+        ge=1,
+        le=60,
+        description="The minimum polling interval announced to device clients, "
+        "in seconds (RFC 8628 interval).",
+    )
     client_id_metadata_documents_enabled: bool = Field(
         default=False,
         description="Accept a Client ID Metadata Document as a client source "
@@ -682,9 +706,26 @@ class Settings(BaseModel):
     security_profile: str = Field(
         default="dev", description="Security profile: dev, stricter-dev or oauth21"
     )
-    cors_allowed_origins: List[str] = Field(default_factory=lambda: ["*"], description="CORS allowed origins")
+    cors_allowed_origins: Optional[List[str]] = Field(
+        default=None,
+        description="Origins allowed to call nanoidp from a browser (CORS). "
+        "Absent: the security profile decides, every origin under dev and "
+        "oauth21, localhost and 127.0.0.1 on any port under stricter-dev. "
+        "Present: exactly this list in every profile; an empty list allows "
+        "no origin, and \"*\" every origin. Applied when the server starts.",
+    )
     rate_limit_enabled: bool = Field(default=False, description="Enable rate limiting")
     rate_limit_token_endpoint: str = Field(default="10/minute", description="Rate limit for /token endpoint")
+
+    @field_validator("cors_allowed_origins")
+    @classmethod
+    def validate_cors_allowed_origins(cls, v: Optional[List[str]]) -> Optional[List[str]]:
+        """A blank entry is refused rather than dropped: it would match no
+        origin, so keeping it silently is a list that says less than it
+        seems to (#441)."""
+        if v is not None and any(not origin.strip() for origin in v):
+            raise ValueError("cors_allowed_origins entries must not be blank")
+        return v
 
     @field_validator("rate_limit_token_endpoint")
     @classmethod

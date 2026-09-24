@@ -178,6 +178,7 @@ def get_configuration() -> ResponseReturnValue:
             "issuer_from_proxy_headers": settings.issuer_from_proxy_headers,
             "audience": settings.audience,
             "token_expiry_minutes": settings.token_expiry_minutes,
+            "refresh_token_expiry_minutes": settings.refresh_token_expiry_minutes,
             "clients_count": len(settings.clients),
             # YAML-only (#186) - reported for visibility like the rest of
             # this block, never settable through this endpoint.
@@ -235,6 +236,15 @@ def get_configuration() -> ResponseReturnValue:
             "rate_limit_enabled": settings.rate_limit_enabled,
             "debug": settings.debug,
         },
+        # The device authorization grant's timing (#441), as announced to
+        # clients in expires_in and interval.
+        "device_flow": {
+            "code_expiry_seconds": settings.device_code_expiry_seconds,
+            "polling_interval": settings.device_polling_interval,
+        },
+        # As declared (#441); null means the security profile decides. Read
+        # once, when the server starts: a reload does not change CORS.
+        "cors_allowed_origins": settings.cors_allowed_origins,
         # Hooks and plugins (#185): what is loaded, from which surface, and
         # the failure counters. YAML-only; reported, never settable here.
         "hooks": config.hooks.describe(),

@@ -156,19 +156,21 @@ def create_app(
             app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1
         )
 
-    # Configure CORS based on security profile
-    if settings.security_profile == "stricter-dev":
-        # Restricted CORS for stricter-dev profile
-        origins = settings.cors_allowed_origins
-        if origins == ["*"]:
-            # Default to localhost only in stricter-dev
-            origins = ["http://localhost:*", "http://127.0.0.1:*"]
-        CORS(app, resources={r"/*": {"origins": origins}})
-        logger.info(f"  - CORS: restricted to {origins}")
-    else:
-        # Permissive CORS for dev profile
-        CORS(app, resources={r"/*": {"origins": "*"}})
+    # CORS (#441): a declared cors_allowed_origins is the list, in every
+    # profile; absent, the profile decides, as it always did: localhost only
+    # under stricter-dev, every origin otherwise. Read once, at startup.
+    origins = settings.cors_allowed_origins
+    if origins is None:
+        origins = (
+            ["http://localhost:*", "http://127.0.0.1:*"]
+            if settings.security_profile == "stricter-dev"
+            else ["*"]
+        )
+    CORS(app, resources={r"/*": {"origins": origins}})
+    if origins == ["*"]:
         logger.info("  - CORS: permissive (all origins)")
+    else:
+        logger.info(f"  - CORS: restricted to {origins}")
 
     # Configure rate limiting
     if settings.rate_limit_enabled:

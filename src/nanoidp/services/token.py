@@ -470,7 +470,8 @@ class TokenService:
             )
 
 
-        # Create refresh token (valid for 7 days). Its claims persist the
+        # Create refresh token (oauth.refresh_token_expiry_minutes, 7 days by
+        # default, #441). Its claims persist the
         # context needed at refresh time:
         # - scope and auth_time, so the grant re-issues an ID Token with the
         #   same authentication context (OIDC Core §12.2, #39/#42);
@@ -521,7 +522,7 @@ class TokenService:
                 roles=user.roles,
                 tenant=user.tenant,
                 extra=refresh_extra,
-                exp_minutes=7 * 24 * 60,  # 7 days
+                exp_minutes=settings.refresh_token_expiry_minutes,
             )
         # RFC 6749 §5.1: report the scope actually granted - it may have been
         # narrowed on refresh (§6) and was previously hardcoded to "openid"

@@ -7,7 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Config schema
+- **Four keys that were accepted and ignored are settings now, two are
+  reported as unknown** (#441). No `config_version` bump: none of the six
+  loses a meaning it had, since none had one. Files that do not mention them
+  behave exactly as before.
+  - `oauth.refresh_token_expiry_minutes` (default 10080, 7 days, the
+    lifetime that was hardcoded; 1 to 43200), `device_flow.code_expiry_seconds`
+    (default 600; 1 to 3600) and `device_flow.polling_interval` (default 5;
+    1 to 60) now set what they name, and `cors_allowed_origins` sets the CORS
+    origins in every profile (absent: the profile decides, as before; `[]`
+    allows none). A save from the web UI or the MCP server writes them only
+    while they differ from the default.
+  - They are validated like every other key, so a value that used to load
+    and mean nothing is now an error: `refresh_token_expiry_minutes: "soon"`,
+    a bound exceeded, a bare `device_flow:` line (null is not an empty
+    section, as for every section but `login`), a scalar or a blank entry in
+    `cors_allowed_origins`.
+  - `logging.format` and `session.permanent` are no longer declared: the log
+    format is fixed and the login session is always a permanent cookie. They
+    are reported like any unknown key, a warning by default and a refusal
+    under `config_validation: strict`, and are removed from the shipped
+    `config/settings.yaml` and `examples/agentic-stack`.
+
 ### Added
+- **Refresh token lifetime, device code timing and CORS origins can be set**
+  (#441): see "Config schema" above. `GET /api/config` and the MCP
+  `get_settings` tool report all four; the settings page edits the refresh
+  token lifetime, and MCP `update_settings` the refresh token lifetime and
+  the two device flow values. A short `device_flow.code_expiry_seconds`
+  makes `expired_token` testable in a second, a short refresh lifetime an
+  expired refresh token.
+
 - **A device flow example, run by CI.** `examples/cli-device-flow` now has
   the CLI's side of the device authorization grant (`cli_login.py`) and
   tests that run its polling while a scripted browser step approves or

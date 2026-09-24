@@ -438,6 +438,12 @@ _TOOLS: list[Tool] = [
                     "on the next app restart, not the running process."),
                 "audience": _domain(Settings, "audience", "Default token audience"),
                 "token_expiry_minutes": _domain(Settings, "token_expiry_minutes", "Token expiration in minutes"),
+                "refresh_token_expiry_minutes": _domain(Settings, "refresh_token_expiry_minutes",
+                    "Refresh token lifetime in minutes (default 10080, 7 days); applies to refresh tokens issued from now on"),
+                "device_code_expiry_seconds": _domain(Settings, "device_code_expiry_seconds",
+                    "Device authorization: how long a device code stays valid, in seconds (default 600)"),
+                "device_polling_interval": _domain(Settings, "device_polling_interval",
+                    "Device authorization: the polling interval announced to clients, in seconds (default 5)"),
                 "saml_entity_id": _domain(Settings, "saml_entity_id", "SAML IdP entityID. Empty string clears it so "
                     "it is derived again from the effective issuer as "
                     "<issuer>/saml (#181)"),

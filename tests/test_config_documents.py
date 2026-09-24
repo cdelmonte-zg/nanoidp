@@ -267,21 +267,6 @@ class TestEdgeConventionsPreserved:
         with pytest.raises(ValueError, match="invalid value at users"):
             ConfigManager(str(tmp_path))
 
-    def test_compatibility_keys_are_not_validated(self, tmp_path):
-        """Keys the old loader never read must keep loading with any value."""
-        cfg = _write(tmp_path, {
-            "cors_allowed_origins": "*",
-            "session": {"permanent": "whatever"},
-            "logging": {"format": 42},
-            "oauth": {"refresh_token_expiry_minutes": "soon"},
-            "device_flow": {"polling_interval": "x", "code_expiry_seconds": None},
-        })
-        settings = ConfigManager(cfg).settings
-        assert settings.cors_allowed_origins == ["*"]
-        # the container shape was never read either: a scalar or a bare line loads
-        for value in ("whatever", None, 3):
-            ConfigManager(_write(tmp_path, {"device_flow": value}))
-
     def test_blank_saml_attr_names_fall_back_to_defaults(self, tmp_path):
         """A bare `roles_attr_name:` reached Settings as None and the domain
         before-validator turned it into the default; the document model must
@@ -308,21 +293,6 @@ class TestEdgeConventionsPreserved:
         ]}})
         with pytest.raises(ValueError, match="Duplicate OAuth client_id 'foo'"):
             ConfigManager(cfg)
-
-    def test_compat_keys_are_accepted_but_not_consumed(self, tmp_path, caplog):
-        cfg = _write(tmp_path, {
-            "cors_allowed_origins": ["http://a"],
-            "device_flow": {"code_expiry_seconds": 1, "polling_interval": 2},
-            "logging": {"format": "%(message)s"},
-            "oauth": {"refresh_token_expiry_minutes": 5},
-            "session": {"permanent": True},
-        })
-        with caplog.at_level(logging.WARNING):
-            settings = ConfigManager(cfg).settings
-        assert "unknown key" not in caplog.text
-        # exactly as before this refactor: the keys never reached Settings
-        assert settings.cors_allowed_origins == ["*"]
-
 
 class TestWriterUsesDocumentDefaults:
     def test_round_trip_of_shipped_config_keeps_placeholders_and_is_idempotent(self):
