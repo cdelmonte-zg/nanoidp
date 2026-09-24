@@ -104,6 +104,18 @@ async def run(config_dir: str) -> int:
                     f"{settings_payload.get('settings_revision')!r}"
                 )
                 return 1
+            # The four #441 settings reach an agent over stdio, at the
+            # defaults the shipped config leaves them at
+            expected = {
+                "refresh_token_expiry_minutes": 10080,
+                "device_code_expiry_seconds": 600,
+                "device_polling_interval": 5,
+                "cors_allowed_origins": None,
+            }
+            seen = {key: settings_payload.get(key, "missing") for key in expected}
+            if seen != expected:
+                print(f"[FAIL] get_settings timing/CORS fields: {seen!r}")
+                return 1
             result = await session.call_tool(
                 "save_config", {"expected_users_revision": "0" * 64}
             )
