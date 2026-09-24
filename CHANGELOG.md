@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **A CI example, run by CI.** `examples/ci-github-actions` sets up NanoIDP
+  inside a GitHub Actions job, from PyPI or as a service container, with a
+  readiness check that refuses a port another process holds, a pytest
+  fixture that gives each test its own runtime user and deletes it by name,
+  and tests that pin what deleting a user does not revoke. A new workflow,
+  `CI example`, runs it against this checkout and against the published
+  image, and the book's new page [Run a real OIDC provider in CI with GitHub
+  Actions](https://cdelmonte-zg.github.io/nanoidp/use-cases/oidc-provider-in-ci.html)
+  includes these files as they are.
+
 ### Changed
 - **The `react-spa-pkce` preset declares a real public client.** `spa-client`
   carried a placeholder secret from before public clients existed (#188); it

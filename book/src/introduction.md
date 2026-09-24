@@ -35,6 +35,9 @@ an API would, and points to Authorization Code with PKCE for a real login.
 - **A single-page app's login.** A public client with PKCE, the login
   scripted for CI, and the cases that must fail:
   [Test an SPA login with Authorization Code and PKCE](use-cases/spa-login-pkce.md).
+- **An identity provider inside your CI pipeline.** Started in the job,
+  checked for readiness, a user per test, isolated and cleaned up:
+  [Run a real OIDC provider in CI with GitHub Actions](use-cases/oidc-provider-in-ci.md).
 - **An MCP server that requires OAuth.** Scoped tools, a token for the
   wrong audience rejected, revocation versus JWKS validation:
   [Testing an MCP client against nanoidp](guides/testing-an-mcp-client.md).
