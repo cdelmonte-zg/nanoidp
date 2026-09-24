@@ -14,6 +14,7 @@ on:
       - "examples/ci-github-actions/**"
       - "examples/spring-boot-saml/**"
       - "examples/microservices-client-credentials/**"
+      - "examples/cli-device-flow/**"
       - "docs/**"
       - "VISION.md"
       - "CHANGELOG.md"

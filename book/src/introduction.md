@@ -44,6 +44,9 @@ an API would, and points to Authorization Code with PKCE for a real login.
 - **Service-to-service calls.** Client credentials, a scope per operation,
   an audience per API, and the tokens an API must refuse:
   [Test service-to-service auth with client credentials](use-cases/service-to-service-client-credentials.md).
+- **A command-line tool or a device without a browser.** The device
+  authorization flow, polling, deny and reuse, rotating refresh tokens:
+  [Test a CLI login with the device authorization flow](use-cases/cli-device-flow.md).
 - **An MCP server that requires OAuth.** Scoped tools, a token for the
   wrong audience rejected, revocation versus JWKS validation:
   [Testing an MCP client against nanoidp](guides/testing-an-mcp-client.md).

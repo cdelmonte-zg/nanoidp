@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **A device flow example, run by CI.** `examples/cli-device-flow` now has
+  the CLI's side of the device authorization grant (`cli_login.py`) and
+  tests that run its polling while a scripted browser step approves or
+  denies, including the rotation and reuse detection of refresh tokens; a
+  new workflow, `Device flow example`, runs them. The preset's CLI is now a
+  public client, where it held a client secret it cannot keep, and the
+  preset drops `refresh_token_expiry_minutes` and `device_flow`, which the
+  loader never reads (#441); the README showed an access token with an
+  `email` and a `device_code_used` claim it does not have. The walkthrough
+  is a book page, [Test a CLI login with the device authorization
+  flow](https://cdelmonte-zg.github.io/nanoidp/use-cases/cli-device-flow.html).
+
 - **A client credentials example with a real resource server, run by CI.**
   `examples/microservices-client-credentials` now gives each client its own
   scopes and API audience (RFC 8707), carries a Spring Boot 4 resource
