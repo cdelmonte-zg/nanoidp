@@ -1,0 +1,15 @@
+spring:
+  security:
+    saml2:
+      relyingparty:
+        registration:
+          nanoidp:
+            assertingparty:
+              # Everything about the IdP (SSO URL, bindings, signing
+              # certificate) comes from NanoIDP's metadata
+              metadata-uri: http://localhost:8000/saml/metadata
+            # Workaround for #443: NanoIDP's assertions carry oauth.audience
+            # as their Audience, so the SP's entity ID must equal it. Without
+            # this line Spring uses {baseUrl}/saml2/service-provider-metadata/nanoidp
+            # and rejects every response
+            entity-id: spring-boot-app

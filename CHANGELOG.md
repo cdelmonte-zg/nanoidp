@@ -8,6 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **A SAML example with a real service provider, run by CI.**
+  `examples/spring-boot-saml` now carries a Spring Boot 4 SP (`sp/`) and
+  tests that drive its SAML login through NanoIDP without a browser; a new
+  workflow, `SAML example`, builds and runs them. The preset's README
+  described single logout, which NanoIDP does not implement, attributes the
+  login assertion does not carry (`tenant`, `authorities`), and a role check
+  that fails without a mapping; it is replaced by a book page, [Test a
+  Spring Boot SAML service provider without a real
+  IdP](https://cdelmonte-zg.github.io/nanoidp/use-cases/spring-boot-saml.html).
+  The preset drops an OAuth client SAML does not use. Writing it found #443:
+  the SSO assertion's audience is `oauth.audience` rather than the SP's
+  entity ID, which the example works around.
+
 - **A CI example, run by CI.** `examples/ci-github-actions` sets up NanoIDP
   inside a GitHub Actions job, from PyPI or as a service container, with a
   readiness check that refuses a port another process holds, a pytest

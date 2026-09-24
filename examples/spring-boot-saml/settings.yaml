@@ -1,5 +1,6 @@
 # NanoIDP Settings - Spring Boot SAML Integration
 # Copy this file to your config directory
+# Guide: https://cdelmonte-zg.github.io/nanoidp/use-cases/spring-boot-saml.html
 
 server:
   host: "127.0.0.1"
@@ -8,12 +9,10 @@ server:
 
 oauth:
   issuer: "http://localhost:8000"
+  # Also the Audience of every SAML assertion (#443): the service provider's
+  # entity ID must equal this value, which is why the example sets Spring's
+  # entity-id to it
   audience: "spring-boot-app"
-  token_expiry_minutes: 60
-  clients:
-    - client_id: "spring-saml-client"
-      client_secret: "spring-saml-secret"
-      description: "Spring Boot SAML application"
 
 saml:
   # entity_id / sso_url: absent = derived from the effective issuer as
@@ -21,7 +20,7 @@ saml:
   # them only to pin a fixed value
   # entity_id: "http://localhost:8000/saml"
   # sso_url: "http://localhost:8000/saml/sso"
-  # Change this to match your Spring Boot app's ACS URL
+  # Used only when a request names no ACS URL; Spring always names one
   default_acs_url: "http://localhost:8080/login/saml2/sso/nanoidp"
   # Export roles/groups as SAML attributes (off by default in NanoIDP)
   export_roles: true

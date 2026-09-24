@@ -12,6 +12,7 @@ on:
     paths:
       - "book/**"
       - "examples/ci-github-actions/**"
+      - "examples/spring-boot-saml/**"
       - "docs/**"
       - "VISION.md"
       - "CHANGELOG.md"

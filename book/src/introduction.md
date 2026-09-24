@@ -38,6 +38,9 @@ an API would, and points to Authorization Code with PKCE for a real login.
 - **An identity provider inside your CI pipeline.** Started in the job,
   checked for readiness, a user per test, isolated and cleaned up:
   [Run a real OIDC provider in CI with GitHub Actions](use-cases/oidc-provider-in-ci.md).
+- **A SAML service provider, such as a Spring Boot app.** Metadata,
+  signed assertions, roles mapped to authorities, a login tested without a
+  browser: [Test a Spring Boot SAML service provider without a real IdP](use-cases/spring-boot-saml.md).
 - **An MCP server that requires OAuth.** Scoped tools, a token for the
   wrong audience rejected, revocation versus JWKS validation:
   [Testing an MCP client against nanoidp](guides/testing-an-mcp-client.md).
