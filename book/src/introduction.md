@@ -32,6 +32,9 @@ an API would, and points to Authorization Code with PKCE for a real login.
 
 ## Start from what you are testing
 
+- **A single-page app's login.** A public client with PKCE, the login
+  scripted for CI, and the cases that must fail:
+  [Test an SPA login with Authorization Code and PKCE](use-cases/spa-login-pkce.md).
 - **An MCP server that requires OAuth.** Scoped tools, a token for the
   wrong audience rejected, revocation versus JWKS validation:
   [Testing an MCP client against nanoidp](guides/testing-an-mcp-client.md).
