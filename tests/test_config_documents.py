@@ -127,8 +127,8 @@ class TestShippedFilesLoadWithoutWarnings:
             document = load_settings_document(data, path)
         assert not [r for r in caplog.records if "unknown key" in r.getMessage()], caplog.text
         # Every shipped preset must actually load (#198): react-spa-pkce used
-        # to ship client_secret "" which OAuthClient refuses; it now carries a
-        # placeholder until #188 introduces real public clients.
+        # to ship client_secret "" which OAuthClient refuses; it now declares
+        # a public client (token_endpoint_auth_method "none", #188).
         document.to_settings()
 
     @pytest.mark.parametrize("path", SHIPPED_USERS, ids=lambda p: str(p.relative_to(REPO)))

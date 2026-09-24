@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **The `react-spa-pkce` preset declares a real public client.** `spa-client`
+  carried a placeholder secret from before public clients existed (#188); it
+  is now `token_endpoint_auth_method: "none"` with its redirect URIs
+  registered, so PKCE `S256` is required and `/authorize` matches the
+  redirect URI exactly. The access token's `aud` is `spa-api`, the API the
+  SPA calls, instead of the client's own id. The preset no longer sets
+  `cors_allowed_origins` and `oauth.refresh_token_expiry_minutes`, which the
+  loader has never read. Its walkthrough is a new page of the book, [Test an
+  SPA login with Authorization Code and
+  PKCE](https://cdelmonte-zg.github.io/nanoidp/use-cases/spa-login-pkce.html).
+
 - **SAML, the web UI and the listings read the configuration their operation
   began with** (#406, last of three steps). The step before made the OAuth and
   MCP surfaces read one configuration per operation; these were left, and read

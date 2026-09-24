@@ -1,5 +1,6 @@
 # NanoIDP Settings - React SPA PKCE Integration
 # Copy this file to your config directory
+# Guide: https://cdelmonte-zg.github.io/nanoidp/use-cases/spa-login-pkce.html
 
 server:
   host: "127.0.0.1"
@@ -8,18 +9,18 @@ server:
 
 oauth:
   issuer: "http://localhost:8000"
-  audience: "spa-client"
+  audience: "spa-api"  # the access token's aud: the API your SPA calls
   token_expiry_minutes: 60
-  refresh_token_expiry_minutes: 1440  # 24 hours
   clients:
     - client_id: "spa-client"
-      client_secret: "spa-not-a-secret"  # schema placeholder until #188; unused by the SPA PKCE flow, not a real secret
+      token_endpoint_auth_method: "none"  # public client: no secret, PKCE S256 required
       description: "React SPA with PKCE"
+      redirect_uris:  # exact string match at /authorize
+        - "http://localhost:3000/callback"
+        - "http://localhost:5173/callback"  # Vite default port
 
-# CORS configuration for SPA
-cors_allowed_origins:
-  - "http://localhost:3000"
-  - "http://localhost:5173"  # Vite default port
+# CORS: the default dev profile allows every origin; under
+# security_profile: stricter-dev it is limited to localhost and 127.0.0.1.
 
 # Authority prefix mapping
 authority_prefixes:

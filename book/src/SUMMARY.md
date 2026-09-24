@@ -7,6 +7,10 @@
 - [Install](getting-started/install.md)
 - [Quickstart](getting-started/quickstart.md)
 
+# Use cases
+
+- [Test an SPA login with PKCE](use-cases/spa-login-pkce.md)
+
 # Guides
 
 - [Requesting tokens](guides/token-requests.md)
