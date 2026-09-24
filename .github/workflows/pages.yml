@@ -43,9 +43,11 @@ jobs:
       - name: Build the book
         run: cd book && mdbook build
 
-      # mdBook does not emit a sitemap, so list the rendered chapters. index.html
-      # duplicates the first chapter; 404, print, toc and the Search Console
-      # verification file are not pages to index.
+      # mdBook does not emit a sitemap, so list the rendered chapters: the
+      # canonical URLs meant to be found. The site root stands for index.html
+      # and introduction.html, which render the same chapter; 404, print, toc
+      # and the Search Console verification file are not pages; vision,
+      # contributing and the changelog are not pages people arrive at.
       - name: Generate the sitemap
         run: |
           base="https://cdelmonte-zg.github.io/nanoidp/"
@@ -57,6 +59,8 @@ jobs:
             find . -name '*.html' \
               ! -path './index.html' ! -path './404.html' ! -path './print.html' \
               ! -path './toc.html' ! -path './google*.html' \
+              ! -path './introduction.html' ! -path './project/vision.html' \
+              ! -path './project/contributing.html' ! -path './project/changelog.html' \
               | sed 's|^\./||' | sort \
               | while read -r page; do echo "  <url><loc>${base}${page}</loc></url>"; done
             echo '</urlset>'
