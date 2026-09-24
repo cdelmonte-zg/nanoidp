@@ -1,0 +1,13 @@
+server:
+  port: 8081
+
+spring:
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          # Discovery and JWKS come from NanoIDP; iss is checked against it
+          issuer-uri: http://localhost:8000
+          # Spring does not check aud unless told to: without this line a
+          # token issued for any other service is accepted here
+          audiences: https://inventory.internal

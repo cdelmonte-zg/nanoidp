@@ -13,6 +13,7 @@ on:
       - "book/**"
       - "examples/ci-github-actions/**"
       - "examples/spring-boot-saml/**"
+      - "examples/microservices-client-credentials/**"
       - "docs/**"
       - "VISION.md"
       - "CHANGELOG.md"

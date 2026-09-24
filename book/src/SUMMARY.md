@@ -12,6 +12,7 @@
 - [Test an SPA login with PKCE](use-cases/spa-login-pkce.md)
 - [Run an OIDC provider in CI](use-cases/oidc-provider-in-ci.md)
 - [Test a Spring Boot SAML service provider](use-cases/spring-boot-saml.md)
+- [Test service-to-service auth](use-cases/service-to-service-client-credentials.md)
 
 # Guides
 
