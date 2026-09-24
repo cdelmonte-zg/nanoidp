@@ -18,7 +18,7 @@
 - [Extending nanoidp: hooks and plugins](guides/extending.md)
 - [MCP with Claude Code](guides/MCP_WORKFLOW.md)
 - [Testing an MCP client against nanoidp](guides/testing-an-mcp-client.md)
-- [n8n end to end](guides/n8n-end-to-end.md)
+- [Test MCP OAuth with n8n and NanoIDP](guides/n8n-end-to-end.md)
 - [Security guide](guides/SECURITY.md)
 
 # Reference

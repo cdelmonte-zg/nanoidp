@@ -1,4 +1,4 @@
-# n8n end to end
+# Test MCP OAuth with n8n and NanoIDP
 
 A real MCP host is the honest test of nanoidp's OAuth/MCP surface: it has its
 own expectations about discovery, PKCE, `resource` and how a resource server
@@ -163,11 +163,13 @@ which accepts the public client as it is.
 
 - **Dynamic client registration.** n8n's `MCP OAuth2 API` credential enables
   it by default; with it on, n8n discovers nanoidp from the resource
-  metadata and asks for `/.well-known/oauth-authorization-server`. nanoidp
-  now serves that name (the same document as `openid-configuration`), so the
-  fallback is no longer needed, but n8n still stops at the missing
-  `registration_endpoint`. That is the rest of #190. The stack runs with the
-  toggle off.
+  metadata, asks for `/.well-known/oauth-authorization-server` (nanoidp
+  serves it, the same document as `openid-configuration`) and then looks
+  for a `registration_endpoint`. nanoidp implements registration, but it is
+  opt-in and this stack does not enable it: see
+  [Dynamic client registration](dynamic-client-registration.md). The stack
+  runs with n8n's toggle off and a pre-registered public client; n8n with
+  registration switched on is not part of what this guide verifies.
 - **OIDC login to n8n itself** through nanoidp is an n8n Enterprise feature
   and is not part of this stack.
 

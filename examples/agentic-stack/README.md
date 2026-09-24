@@ -7,7 +7,7 @@ Client node and from inside an AI Agent's tool-calling loop. `e2e/n8n_e2e.py`
 drives both loops headless; the same stack lets you open n8n and watch them
 by hand.
 
-The guide is [n8n end to end](https://cdelmonte-zg.github.io/nanoidp/guides/n8n-end-to-end.html);
+The guide is [Test MCP OAuth with n8n and NanoIDP](https://cdelmonte-zg.github.io/nanoidp/guides/n8n-end-to-end.html);
 this file is the short version.
 
 ```bash

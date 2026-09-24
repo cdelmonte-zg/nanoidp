@@ -25,6 +25,33 @@ $ curl -s -X POST 'http://localhost:8000/token' \
 }
 ```
 
+That first token uses the password grant because it is one request; it is
+a legacy grant that OAuth 2.1 removes. The
+[Quickstart](getting-started/quickstart.md) then verifies the token the way
+an API would, and points to Authorization Code with PKCE for a real login.
+
+## Start from what you are testing
+
+- **An MCP server that requires OAuth.** Scoped tools, a token for the
+  wrong audience rejected, revocation versus JWKS validation:
+  [Testing an MCP client against nanoidp](guides/testing-an-mcp-client.md).
+- **An MCP host such as n8n, end to end.** A real host runs discovery,
+  PKCE and resource indicators against nanoidp, allowed and denied cases
+  included: [Test MCP OAuth with n8n and NanoIDP](guides/n8n-end-to-end.md).
+- **Tests that need users and clients for one run.** Create them on a
+  running IdP through a REST API and remove them all with one call, without
+  touching the declared files:
+  [Disposable test identities](guides/runtime-identities.md).
+- **Two processes that must see the same state,** such as an app server
+  and a CLI talking to the same IdP: [Two processes, one runtime state](guides/shared-runtime-store.md).
+- **A client that registers itself.** Dynamic client registration (RFC
+  7591) and client ID metadata documents, both opt-in:
+  [Dynamic client registration](guides/dynamic-client-registration.md),
+  [Client ID metadata documents](guides/client-metadata-documents.md).
+- **Every grant with curl.** Authorization Code with PKCE, client
+  credentials, refresh, device flow, resource indicators:
+  [Requesting tokens](guides/token-requests.md).
+
 The product is **confidence**: the behaviors NanoIDP advertises and
 implements are grounded in the relevant specifications, so clients can test
 against them without depending on accidental or invented semantics.
@@ -43,7 +70,10 @@ against them without depending on accidental or invented semantics.
   AttributeQuery, with configurable response signing, strict-binding mode,
   canonicalization algorithms, and opt-in verification of signed
   AuthnRequests against registered SP certificates.
-- **Drive it from an agent.** An [MCP server](guides/MCP_WORKFLOW.md)
+- **Test MCP authorization.** Issue tokens with the audience, scopes and
+  resource indicators an MCP server checks, and watch it accept or refuse
+  them. See [Testing an MCP client against nanoidp](guides/testing-an-mcp-client.md).
+- **Manage it from an agent.** A separate [MCP server](guides/MCP_WORKFLOW.md)
   exposes users, clients, tokens, keys, and settings to Claude Code and
   other MCP-compatible tools.
 - **See who you're testing as.** Persona login mode lists your configured
