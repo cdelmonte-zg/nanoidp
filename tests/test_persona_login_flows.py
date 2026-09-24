@@ -534,7 +534,7 @@ class TestDevicePersonaMode:
             "/device", data={"user_code": user_code, "username": "admin"}
         )
         assert response.status_code == 200
-        assert b"authorized successfully" in response.data
+        assert b"The device has been authorized" in response.data
 
         token_response = client.post(
             "/token",

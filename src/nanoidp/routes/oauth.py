@@ -2444,14 +2444,17 @@ def device_verify() -> ResponseReturnValue:
     two_step_login = loaded.settings.two_step_login_active
 
     error_msg = None
-    success_msg = None
+    # The user's decision, once one is recorded: "authorized" or "denied".
+    # The page shows each as what it is; one success slot for both rendered
+    # a denial as an authorization.
+    decision: Optional[str] = None
     user_code = request.args.get("user_code", "")
     login_username = ""
 
     def render_device(
         error: Optional[str],
         *,
-        success: Optional[str] = None,
+        decision: Optional[str] = None,
         pending_second_factor: str = "",
     ) -> ResponseReturnValue:
         # One render for every exit below (#348 review), the same closure
@@ -2463,7 +2466,7 @@ def device_verify() -> ResponseReturnValue:
             "device.html",
             user_code=user_code,
             error=error,
-            success=success,
+            decision=decision,
             persona_mode=persona_mode,
             two_step_login=two_step_login,
             login_username=login_username,
@@ -2639,7 +2642,7 @@ def device_verify() -> ResponseReturnValue:
         elif outcome is DeviceVerifyOutcome.EXPIRED:
             error_msg = "This code has expired"
         elif outcome is DeviceVerifyOutcome.DENIED:
-            success_msg = "Device authorization denied"
+            decision = "denied"
             audit_event(
                 "device_verification",
                 "denied",
@@ -2659,7 +2662,7 @@ def device_verify() -> ResponseReturnValue:
                 details={"user_code": user_code, "reason": "Invalid credentials"},
             )
         elif outcome is DeviceVerifyOutcome.AUTHORIZED and user is not None:
-            success_msg = "Device authorized successfully! You can close this window."
+            decision = "authorized"
             audit_event(
                 "device_verification",
                 "success",
@@ -2669,4 +2672,4 @@ def device_verify() -> ResponseReturnValue:
             )
             logger.info(f"Device authorized for user '{user.username}', user_code: {user_code}")
 
-    return render_device(error_msg, success=success_msg)
+    return render_device(error_msg, decision=decision)

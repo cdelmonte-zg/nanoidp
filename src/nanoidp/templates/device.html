@@ -46,13 +46,18 @@
             letter-spacing: 0.3em;
             text-align: center;
         }
-        .success-message {
+        .decision-message {
             text-align: center;
             padding: 2rem 0;
         }
-        .success-message i {
+        .decision-message i {
             font-size: 4rem;
+        }
+        .decision-authorized i {
             color: #198754;
+        }
+        .decision-denied i {
+            color: #dc3545;
         }
     </style>
 </head>
@@ -64,12 +69,20 @@
             <small class="opacity-75">Device Authorization</small>
         </div>
         <div class="device-body">
-            {% if success %}
-            <div class="success-message">
+            {% if decision == "authorized" %}
+            <div class="decision-message decision-authorized">
                 <i class="bi bi-check-circle-fill mb-3"></i>
-                <h5 class="text-success">{{ success }}</h5>
+                <h5 class="text-success">Device authorized</h5>
                 <p class="text-muted mt-3">
-                    The device has been authorized. You can now return to your device.
+                    The device has been authorized. You can close this window and return to your device.
+                </p>
+            </div>
+            {% elif decision == "denied" %}
+            <div class="decision-message decision-denied">
+                <i class="bi bi-x-circle-fill mb-3"></i>
+                <h5 class="text-danger">Device authorization denied</h5>
+                <p class="text-muted mt-3">
+                    The device will not be signed in. You can close this window.
                 </p>
             </div>
             {% else %}

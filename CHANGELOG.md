@@ -55,6 +55,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Actions](https://cdelmonte-zg.github.io/nanoidp/use-cases/oidc-provider-in-ci.html)
   includes these files as they are.
 
+### Fixed
+- **The device verification page says "denied" when the user denies.** After
+  **Deny**, `/device` showed "Device authorization denied" inside the
+  success box, followed by "The device has been authorized. You can now
+  return to your device.": both outcomes went through one success message,
+  and the template's text was the authorization's. The route now passes the
+  decision itself, and the page shows each with its own heading, icon and
+  text. The polling answer was always right (`access_denied`); only the
+  page was wrong.
+
 ### Changed
 - **The `react-spa-pkce` preset declares a real public client.** `spa-client`
   carried a placeholder secret from before public clients existed (#188); it

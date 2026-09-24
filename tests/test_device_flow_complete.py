@@ -265,6 +265,36 @@ class TestDeviceFlowDenied:
         assert error_data['error'] == 'access_denied'
 
 
+class TestDeviceDecisionPage:
+    """The page after the user's decision says which decision it was.
+
+    Both outcomes used to render through one success slot whose text said
+    "The device has been authorized", so a denial read as an authorization.
+    """
+
+    def _decide(self, client, auth_header, action):
+        data = json.loads(client.post('/device_authorization', headers=auth_header).data)
+        return client.post('/device', data={
+            'user_code': data['user_code'],
+            'username': 'admin',
+            'password': 'admin',
+            'action': action,
+        })
+
+    def test_authorizing_says_authorized(self, client, auth_header):
+        page = self._decide(client, auth_header, 'authorize').data
+        assert b'Device authorized' in page
+        assert b'The device has been authorized' in page
+        assert b'Device authorization denied' not in page
+
+    def test_denying_says_denied_and_never_authorized(self, client, auth_header):
+        page = self._decide(client, auth_header, 'deny').data
+        assert b'Device authorization denied' in page
+        assert b'will not be signed in' in page
+        assert b'has been authorized' not in page
+        assert b'Device authorized' not in page
+
+
 class TestDeviceCodeReuse:
     """Tests for device code one-time use."""
 
