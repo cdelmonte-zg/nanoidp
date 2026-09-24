@@ -2595,7 +2595,9 @@ class NanoIDPTestAgent:
             config = self.session.get(f"{self.base_url}/api/config", timeout=5).json()
             device = config["device_flow"]
             refresh_minutes = config["oauth"]["refresh_token_expiry_minutes"]
-            origins = config["cors_allowed_origins"]
+            # What the server applies, not what the file declares: CORS is
+            # set up at startup, so after a reload the two can differ
+            origins = config["cors_applied_origins"]
 
             answer = self.session.post(
                 f"{self.base_url}/device_authorization", data={"scope": "openid"}, timeout=5
@@ -2613,19 +2615,20 @@ class NanoIDPTestAgent:
             claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
             refresh_ok = claims["exp"] - claims["iat"] == refresh_minutes * 60
 
-            # A declared list is checked against its first entry; absent, the
-            # profile decides and an arbitrary origin tells dev from stricter-dev
-            probe = origins[0] if origins else "http://e2e-origin.test"
-            allowed = requests.get(
-                f"{self.base_url}/.well-known/openid-configuration",
-                headers={"Origin": probe}, timeout=5,
-            ).headers.get("Access-Control-Allow-Origin")
-            if origins:
-                cors_ok = allowed in (probe, "*")
-            elif config["security_profile"] == "stricter-dev":
-                cors_ok = allowed is None
-            else:
-                cors_ok = allowed in (probe, "*")
+            # An origin outside every list is allowed exactly when "*" is in
+            # force; an exact origin in the list, when there is one, is allowed
+            def allow_origin(origin):
+                return requests.get(
+                    f"{self.base_url}/.well-known/openid-configuration",
+                    headers={"Origin": origin}, timeout=5,
+                ).headers.get("Access-Control-Allow-Origin")
+
+            outsider = allow_origin("http://e2e-origin.test")
+            cors_ok = (outsider is not None) == ("*" in origins)
+            exact = [origin for origin in origins if origin.startswith("http") and "(" not in origin]
+            if exact:
+                cors_ok = cors_ok and allow_origin(exact[0]) == exact[0]
+            allowed = outsider
 
             return self._add_result(
                 name,

@@ -161,12 +161,27 @@ def create_app(
     # under stricter-dev, every origin otherwise. Read once, at startup.
     origins = settings.cors_allowed_origins
     if origins is None:
+        # flask-cors reads an entry with regex characters as a pattern and
+        # matches it with re.match, anchored at the start only: the old
+        # "http://localhost:*" also let http://localhost.evil.test through.
+        # Anchored at both ends, with the dots escaped (#441 review).
         origins = (
-            ["http://localhost:*", "http://127.0.0.1:*"]
+            [r"^http://localhost(:[0-9]+)?$", r"^http://127\.0\.0\.1(:[0-9]+)?$"]
             if settings.security_profile == "stricter-dev"
             else ["*"]
         )
     CORS(app, resources={r"/*": {"origins": origins}})
+    # What is in force until the next start, whatever a reload declares:
+    # GET /api/config reports it next to the declared list.
+    app.config["NANOIDP_CORS_ORIGINS"] = list(origins)
+    if settings.security_profile == "stricter-dev" and "*" in (settings.cors_allowed_origins or []):
+        # A declared list wins over the profile, "*" included. Said out loud
+        # because until #441 the key was ignored, so a file carrying "*"
+        # under stricter-dev got localhost only and now gets every origin.
+        logger.warning(
+            "cors_allowed_origins lists \"*\": every origin may call nanoidp from a "
+            "browser, although the security profile is stricter-dev"
+        )
     if origins == ["*"]:
         logger.info("  - CORS: permissive (all origins)")
     else:

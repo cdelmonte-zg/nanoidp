@@ -40,17 +40,20 @@ import time
 from dataclasses import dataclass
 from typing import Any, Optional, Union
 
+from ..models import MAX_REFRESH_TOKEN_EXPIRY_MINUTES
 from .runtime_repository import RepositoryTransaction, checked_time
 from .runtime_store import RuntimeRepository, get_runtime_store
 
 # The retention when the caller cannot supply a TRUSTED exp: covers the
-# 7-day refresh JWT (services/token.py mints refresh tokens with a fixed
-# 7-day expiry) plus one day of clock skew. NOT a cap on trusted expiries:
+# longest refresh JWT oauth.refresh_token_expiry_minutes allows (30 days;
+# it was a fixed 7 days until #441, and an 8-day bound then let a family
+# revoked on reuse come back while its descendants still lived) plus one
+# day of clock skew. NOT a cap on trusted expiries:
 # /api/users/<username>/token and MCP generate_token mint access tokens with
 # arbitrary exp_minutes, so a verified exp can legitimately exceed this -
 # capping it let a revoked 14-day token flicker back after the day-8 sweep
 # (#293 review round 1, blocker 1).
-_DEFAULT_RETENTION_SECONDS = 8 * 24 * 3600
+_DEFAULT_RETENTION_SECONDS = MAX_REFRESH_TOKEN_EXPIRY_MINUTES * 60 + 24 * 3600
 
 
 class _Unset:
@@ -225,7 +228,7 @@ class RevocationStore:
         token without exp, which never stops being presentable. A family
         marker set on reuse detection gets the retention bound when the
         presented ancestor carries an exp (every nanoidp-minted descendant
-        lives at most 7 more days), and indefinite retention when it does
+        lives at most MAX_REFRESH_TOKEN_EXPIRY_MINUTES more), and indefinite retention when it does
         not (its descendants may be equally undying).
 
         Must be the LAST validation in the refresh grant: from the moment it

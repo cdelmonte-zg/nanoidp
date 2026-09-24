@@ -4,7 +4,7 @@ REST API routes for management and monitoring.
 
 import logging
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, current_app, jsonify, request
 from flask.typing import ResponseReturnValue
 
 from ..config import ConfigurationRejected, get_config
@@ -242,9 +242,12 @@ def get_configuration() -> ResponseReturnValue:
             "code_expiry_seconds": settings.device_code_expiry_seconds,
             "polling_interval": settings.device_polling_interval,
         },
-        # As declared (#441); null means the security profile decides. Read
-        # once, when the server starts: a reload does not change CORS.
+        # As declared (#441); null means the security profile decides.
         "cors_allowed_origins": settings.cors_allowed_origins,
+        # What this server applies: set up once, at startup, so after a
+        # reload that changed the declared list the two differ until the
+        # next start (#441 review).
+        "cors_applied_origins": current_app.config.get("NANOIDP_CORS_ORIGINS"),
         # Hooks and plugins (#185): what is loaded, from which surface, and
         # the failure counters. YAML-only; reported, never settable here.
         "hooks": config.hooks.describe(),

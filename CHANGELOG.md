@@ -17,8 +17,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     (default 600; 1 to 3600) and `device_flow.polling_interval` (default 5;
     1 to 60) now set what they name, and `cors_allowed_origins` sets the CORS
     origins in every profile (absent: the profile decides, as before; `[]`
-    allows none). A save from the web UI or the MCP server writes them only
-    while they differ from the default.
+    allows none; entries are exact origins, and a pattern such as
+    `http://localhost:*` is refused, because flask-cors would match it at
+    the start only). A save from the web UI or the MCP server writes them
+    only while they differ from the default.
+  - A revoked refresh token family is remembered for the longest lifetime
+    the setting allows plus a day (31 days), where it was 8 days, sized for
+    the fixed 7-day refresh token. Otherwise a family revoked on reuse would
+    have come back while a descendant with a 30-day lifetime still lived.
   - They are validated like every other key, so a value that used to load
     and mean nothing is now an error: `refresh_token_expiry_minutes: "soon"`,
     a bound exceeded, a bare `device_flow:` line (null is not an empty
@@ -33,7 +39,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - **Refresh token lifetime, device code timing and CORS origins can be set**
   (#441): see "Config schema" above. `GET /api/config` and the MCP
-  `get_settings` tool report all four; the settings page edits the refresh
+  `get_settings` tool report all four, and `/api/config` also reports
+  `cors_applied_origins`, the origins the server applies: CORS is set up at
+  startup, so after a reload that changed the list the two differ until the
+  next start. A `"*"` under `stricter-dev` is logged as a warning; the settings page edits the refresh
   token lifetime, and MCP `update_settings` the refresh token lifetime and
   the two device flow values. A short `device_flow.code_expiry_seconds`
   makes `expired_token` testable in a second, a short refresh lifetime an
@@ -87,6 +96,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   includes these files as they are.
 
 ### Fixed
+- **`stricter-dev` CORS is localhost, and nothing that starts like it**
+  (#441 review). The profile's default origins were `http://localhost:*`
+  and `http://127.0.0.1:*`, which flask-cors reads as regular expressions
+  and matches from the start only: `http://localhost.evil.test`,
+  `http://127.0.0.1.nip.io` and `http://127a0b0c1.test` were allowed too,
+  reproduced on the previous code. The patterns are now anchored at both
+  ends, with the dots escaped.
 - **The device verification page says "denied" when the user denies.** After
   **Deny**, `/device` showed "Device authorization denied" inside the
   success box, followed by "The device has been authorized. You can now

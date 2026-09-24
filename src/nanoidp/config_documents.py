@@ -22,10 +22,12 @@ writer receives the defaults it needs as a mapping (``document_defaults``)
 rather than importing this module.
 
 Five keys used to be declared here only so that files carrying them loaded
-without a warning, with any value, and did nothing (#441). Four are
-settings now (``oauth.refresh_token_expiry_minutes``, ``device_flow``,
-``cors_allowed_origins``); ``logging.format`` and ``session.permanent`` are
-not declared any more, so they are reported like every unknown key.
+without a warning, with any value, and did nothing (#441). Three of them
+are settings now: ``oauth.refresh_token_expiry_minutes``,
+``cors_allowed_origins`` and the ``device_flow`` section, whose two keys
+are ``code_expiry_seconds`` and ``polling_interval``. ``logging.format``
+and ``session.permanent`` are not declared any more, so they are reported
+like every unknown key.
 """
 
 from __future__ import annotations

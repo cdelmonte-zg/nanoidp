@@ -671,7 +671,7 @@ def _may_hold_a_refresh_token(
     A client that does not resolve at all answers ``False``, not ``True``:
     this is decided after the grant handler has run, so an entry can go
     between the authorization code being consumed and this question being
-    asked. Handing a seven day credential to a client that has just
+    asked. Handing a long-lived refresh token to a client that has just
     disappeared is exactly the outcome the rule exists to prevent, and the
     conservative answer costs a caller who is still there nothing but a
     second login.

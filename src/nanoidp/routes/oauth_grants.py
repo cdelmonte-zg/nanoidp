@@ -738,7 +738,7 @@ def _grant_client_credentials(ctx: _GrantContext) -> GrantResult:
         )
     # RFC 6749 §4.4.3: "A refresh token SHOULD NOT be included." The client
     # authenticates itself on every request; a refresh token here would be a
-    # second, 7-day credential bound to the default user (or the synthetic
+    # second, long-lived credential bound to the default user (or the synthetic
     # service account) that the grant never authenticated, spendable at
     # grant_type=refresh_token to obtain user-context tokens (#239).
     resource, resource_error = _resolve_token_resource(ctx, client, None)

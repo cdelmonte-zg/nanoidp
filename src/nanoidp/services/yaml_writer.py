@@ -49,6 +49,8 @@ def _mutate_settings_section(
     """
     section = document.setdefault(section_name, {})
     rows = {f.key: f for f in OWNED_SETTINGS if f.section == section_name}
+    # Built once per call, and only if a defaults-dependent row is provided
+    defaults: Optional[Mapping[str, Any]] = None
     for key, value in provided.items():
         if value is None:
             continue
@@ -57,9 +59,9 @@ def _mutate_settings_section(
             # Written only while it differs from its default, the same rule
             # apply_settings_document follows (#319): a form save must not
             # add a key at its default to a file that never had it (#441).
-            merge_owned_setting_at_default(
-                document, field, value, document_defaults()[default_lookup_key(field)]
-            )
+            if defaults is None:
+                defaults = document_defaults()
+            merge_owned_setting_at_default(document, field, value, defaults[default_lookup_key(field)])
             continue
         compare = value if (field.doc_mode == "plain" or value) else field.empty
         if not is_unchanged(section.get(key), compare):

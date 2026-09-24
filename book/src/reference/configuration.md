@@ -747,7 +747,10 @@ so a file that does not mention them behaves as it always did.
   Absent, the security profile decides: every origin under `dev` and
   `oauth21`, `localhost` and `127.0.0.1` on any port under `stricter-dev`.
   Present, it is the list in every profile: `[]` allows no origin, `"*"`
-  every origin, and a blank entry is refused. CORS is set up when the
+  every origin, and entries are exact origins (`scheme://host[:port]`); a
+  blank entry or a pattern such as `http://localhost:*` is refused. A `"*"`
+  under `stricter-dev` is logged as a warning at startup: the list wins
+  over the profile. CORS is set up when the
   server starts, so a change takes effect at the next restart, not at a
   reload.
 

@@ -117,6 +117,27 @@ class TestRefreshClaimExpiry:
             is True
         )
 
+    def test_family_marker_outlives_the_longest_refresh_token_allowed(self, store, monkeypatch):
+        """A descendant minted just before reuse detection can live as long
+        as oauth.refresh_token_expiry_minutes allows; the family marker must
+        still be there when it is presented. The bound used to be sized for
+        a fixed 7-day refresh JWT, and the setting (#441) allows 30 days."""
+        from nanoidp.models import Settings
+
+        upper = Settings.model_fields["refresh_token_expiry_minutes"].metadata
+        longest_minutes = next(m.le for m in upper if getattr(m, "le", None) is not None)
+
+        store.check_and_claim_refresh("rt-b", "fam-y", True, expires_at=time.time() + 60)
+        assert store.check_and_claim_refresh("rt-b", "fam-y", True, expires_at=time.time() + 60) is True
+
+        _advance(monkeypatch, longest_minutes * 60)
+        assert (
+            store.check_and_claim_refresh(
+                "rt-late-descendant", "fam-y", True, expires_at=revocation.time.time() + 60
+            )
+            is True
+        )
+
     def test_rotation_semantics_unchanged(self, store):
         """The pre-#288 contract: first claim passes, family revocation on
         reuse hits every member."""

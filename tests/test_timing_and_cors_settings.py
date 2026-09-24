@@ -161,14 +161,69 @@ class TestCorsAllowedOrigins:
         # localhost is the profile's default, not added to an explicit list
         assert self._allowed(client, "http://localhost:5173") is None
 
+    def test_a_star_under_stricter_dev_opens_cors_and_says_so(self, isolated_repo_config, caplog):
+        with caplog.at_level(logging.WARNING, logger="nanoidp.app"):
+            client = _client(
+                isolated_repo_config, security_profile="stricter-dev", cors_allowed_origins=["*"]
+            )
+        assert self._allowed(client, "http://other.test") in ("*", "http://other.test")
+        assert "every origin may call nanoidp" in caplog.text
+
+    def test_no_warning_for_a_list_without_a_star(self, isolated_repo_config, caplog):
+        with caplog.at_level(logging.WARNING, logger="nanoidp.app"):
+            _client(
+                isolated_repo_config,
+                security_profile="stricter-dev",
+                cors_allowed_origins=["http://app.test"],
+            )
+        assert "every origin may call nanoidp" not in caplog.text
+
     def test_absent_keeps_the_stricter_dev_default(self, isolated_repo_config):
         client = _client(isolated_repo_config, security_profile="stricter-dev")
         assert self._allowed(client, "http://localhost:5173") == "http://localhost:5173"
         assert self._allowed(client, "http://other.test") is None
 
+    @pytest.mark.parametrize("origin, allowed", [
+        ("http://localhost", True),
+        ("http://localhost:5173", True),
+        ("http://127.0.0.1:8080", True),
+        # flask-cors matches a pattern with re.match, anchored at the start
+        # only: "http://localhost:*" used to admit all of these
+        ("http://localhost.evil.test", False),
+        ("http://localhost:5173.evil.test", False),
+        ("http://127.0.0.1.nip.io", False),
+        ("http://127a0b0c1.test", False),
+        # only the dots differ: an unescaped "." in the pattern admits it
+        ("http://127a0a0a1:8080", False),
+        ("https://localhost.evil.test", False),
+    ])
+    def test_the_stricter_dev_default_is_localhost_and_nothing_that_starts_like_it(
+        self, isolated_repo_config, origin, allowed
+    ):
+        client = _client(isolated_repo_config, security_profile="stricter-dev")
+        assert (self._allowed(client, origin) == origin) is allowed
+
     def test_an_empty_list_allows_no_origin(self, isolated_repo_config):
         client = _client(isolated_repo_config, cors_allowed_origins=[])
         assert self._allowed(client, "http://localhost:5173") is None
+
+
+class TestOneDefaultPerSetting:
+    """The defaults are written in the document model and in Settings; a
+    file that says nothing must land on Settings' own defaults."""
+
+    def test_the_document_defaults_are_the_domain_defaults(self):
+        from nanoidp.config_documents import SettingsDocument
+        from nanoidp.models import Settings
+
+        loaded, domain = SettingsDocument().to_settings(), Settings()
+        for field in (
+            "refresh_token_expiry_minutes",
+            "device_code_expiry_seconds",
+            "device_polling_interval",
+            "cors_allowed_origins",
+        ):
+            assert getattr(loaded, field) == getattr(domain, field), field
 
 
 class TestInvalidValuesAreErrors:
@@ -189,6 +244,10 @@ class TestInvalidValuesAreErrors:
         ({"device_flow": None}, "device_flow"),
         ({"cors_allowed_origins": "*"}, "cors_allowed_origins"),
         ({"cors_allowed_origins": ["http://ok.test", ""]}, "cors_allowed_origins"),
+        # a pattern would be matched at the start only (#441 review)
+        ({"cors_allowed_origins": ["http://localhost:*"]}, "cors_allowed_origins"),
+        ({"cors_allowed_origins": ["http://*.example.test"]}, "cors_allowed_origins"),
+        ({"cors_allowed_origins": ["^http://a.test$"]}, "cors_allowed_origins"),
     ])
     def test_refused(self, tmp_path, settings, path):
         with pytest.raises(ValueError, match=path.replace(".", r"\.")):
@@ -245,9 +304,27 @@ class TestReportedWhereTheNeighboursAre:
         assert config["oauth"]["refresh_token_expiry_minutes"] == 90
         assert config["device_flow"] == {"code_expiry_seconds": 120, "polling_interval": 2}
         assert config["cors_allowed_origins"] == ["http://app.test"]
+        assert config["cors_applied_origins"] == ["http://app.test"]
+
+    def test_api_config_reports_the_origins_in_force_not_only_the_file(self, isolated_repo_config):
+        """CORS is set up at startup; a reload changes the declared list but
+        not what the server applies, so the report names both (#441 review)."""
+        client = _client(isolated_repo_config)
+        _set(isolated_repo_config, cors_allowed_origins=["http://app.test"])
+        assert client.post("/api/config/reload").status_code == 200
+        config = client.get("/api/config").get_json()
+        assert config["cors_allowed_origins"] == ["http://app.test"]
+        assert config["cors_applied_origins"] == ["*"]
+        # and that is what a browser meets
+        response = client.get(
+            "/.well-known/openid-configuration", headers={"Origin": "http://other.test"}
+        )
+        assert response.headers.get("Access-Control-Allow-Origin") in ("*", "http://other.test")
 
     def test_api_config_says_when_cors_is_left_to_the_profile(self, client):
-        assert client.get("/api/config").get_json()["cors_allowed_origins"] is None
+        config = client.get("/api/config").get_json()
+        assert config["cors_allowed_origins"] is None
+        assert config["cors_applied_origins"] == ["*"]
 
     @pytest.mark.asyncio
     async def test_mcp_get_settings(self, isolated_repo_config, mcp_call_tool, monkeypatch):

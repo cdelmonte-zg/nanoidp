@@ -355,6 +355,13 @@ class OAuthClient(BaseModel):
         return self.token_endpoint_auth_method == PUBLIC_AUTH_METHOD
 
 
+# The longest refresh token lifetime oauth.refresh_token_expiry_minutes
+# allows (30 days). The revocation store sizes the memory of a revoked
+# refresh token family from it: a family must stay revoked for as long as
+# any of its tokens can live (#441 review).
+MAX_REFRESH_TOKEN_EXPIRY_MINUTES = 43200
+
+
 class Settings(BaseModel):
     """Application settings with validation."""
     # secret_key and management_secret are validated here; a rejected value
@@ -423,7 +430,7 @@ class Settings(BaseModel):
     refresh_token_expiry_minutes: int = Field(
         default=10080,
         ge=1,
-        le=43200,
+        le=MAX_REFRESH_TOKEN_EXPIRY_MINUTES,
         description="Refresh token lifetime in minutes (default 7 days, at most 30). "
         "Applies to every refresh token issued from now on, a rotated one "
         "included; tokens already issued keep the lifetime they were issued "
@@ -712,7 +719,9 @@ class Settings(BaseModel):
         "Absent: the security profile decides, every origin under dev and "
         "oauth21, localhost and 127.0.0.1 on any port under stricter-dev. "
         "Present: exactly this list in every profile; an empty list allows "
-        "no origin, and \"*\" every origin. Applied when the server starts.",
+        "no origin, and \"*\" every origin. Entries are exact origins "
+        "(scheme://host[:port]); patterns are refused. Applied when the "
+        "server starts.",
     )
     rate_limit_enabled: bool = Field(default=False, description="Enable rate limiting")
     rate_limit_token_endpoint: str = Field(default="10/minute", description="Rate limit for /token endpoint")
@@ -720,11 +729,23 @@ class Settings(BaseModel):
     @field_validator("cors_allowed_origins")
     @classmethod
     def validate_cors_allowed_origins(cls, v: Optional[List[str]]) -> Optional[List[str]]:
-        """A blank entry is refused rather than dropped: it would match no
-        origin, so keeping it silently is a list that says less than it
-        seems to (#441)."""
-        if v is not None and any(not origin.strip() for origin in v):
-            raise ValueError("cors_allowed_origins entries must not be blank")
+        """Each entry is an exact origin, or "*" alone for every origin.
+
+        A blank entry would match nothing, so keeping it is a list that says
+        less than it seems to. An entry with a regex character is refused
+        because flask-cors would read it as a pattern, matched at the start
+        only: "http://localhost:*" admits http://localhost.evil.test (#441
+        review)."""
+        if v is None:
+            return v
+        for origin in v:
+            if not origin.strip():
+                raise ValueError("cors_allowed_origins entries must not be blank")
+            if origin != "*" and any(ch in origin for ch in "*?[]()^$\\|+{}"):
+                raise ValueError(
+                    f"cors_allowed_origins entry {origin!r} is not an origin: "
+                    'list exact origins such as "http://localhost:3000", or "*" alone'
+                )
         return v
 
     @field_validator("rate_limit_token_endpoint")

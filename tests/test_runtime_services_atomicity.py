@@ -43,6 +43,7 @@ from nanoidp.services.pending_second_factors import (
     PendingSecondFactorStoreFull,
     get_pending_second_factor_store,
 )
+from nanoidp.services.revocation import _DEFAULT_RETENTION_SECONDS
 
 THREADS = 8
 CAP = 5
@@ -986,7 +987,7 @@ class TestRevocations:
         store.revoke("gone-already", expires_at=now - 500)
         kept = self._kept()
 
-        assert kept["jti:default"] == pytest.approx(now + 8 * 24 * 3600, abs=5)
+        assert kept["jti:default"] == pytest.approx(now + _DEFAULT_RETENTION_SECONDS, abs=5)
         assert kept["jti:never"] is None
         assert kept["jti:exactly"] == now + 30 * 24 * 3600
         assert kept["jti:gone-already"] == pytest.approx(now + 60, abs=5)
@@ -1035,7 +1036,9 @@ class TestRevocations:
 
     def test_revoking_again_never_shortens(self):
         store = self._store()
-        far = time.time() + 30 * 24 * 3600
+        # Beyond the default retention, so that a later revoke without an
+        # expiry would shorten it if the store let it
+        far = time.time() + _DEFAULT_RETENTION_SECONDS + 7 * 24 * 3600
         store.revoke("a", expires_at=far)
         store.revoke("a")
         store.revoke("b", expires_at=None)
@@ -1064,7 +1067,7 @@ class TestRevocations:
         store.check_and_claim_refresh("r2", "undying", rotate=True, expires_at=None)
         kept = self._kept()
 
-        assert kept["family:bounded"] == pytest.approx(now + 8 * 24 * 3600, abs=5)
+        assert kept["family:bounded"] == pytest.approx(now + _DEFAULT_RETENTION_SECONDS, abs=5)
         assert kept["family:undying"] is None
         assert (kept["jti:r1"], kept["jti:r2"]) == (now + 100, None)
 
@@ -1134,7 +1137,7 @@ class TestRevocations:
         # Reuse, of a token remembered long enough to still be there.
         store.check_and_claim_refresh("lasting", "f", rotate=True, expires_at=9_000_000.0)
         store.check_and_claim_refresh("lasting", "f", rotate=True, expires_at=9_000_000.0)
-        assert self._kept()["family:f"] == 5_004_000.0 + 8 * 24 * 3600
+        assert self._kept()["family:f"] == 5_004_000.0 + _DEFAULT_RETENTION_SECONDS
 
 
 class TestPendingSecondFactors:
