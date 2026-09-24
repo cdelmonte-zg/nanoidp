@@ -1,0 +1,45 @@
+# Runs the example of the "Test a CLI login with the device authorization
+# flow" use-case page (examples/cli-device-flow): NanoIDP from this checkout
+# with the preset, and the CLI's login against it with the browser step
+# scripted, so the page cannot drift from what works.
+name: Device flow example
+
+on:
+  pull_request:
+    paths:
+      - "examples/cli-device-flow/**"
+      - ".github/workflows/device-flow-example.yml"
+      - "src/nanoidp/**"
+  push:
+    branches: [main]
+    paths:
+      - "examples/cli-device-flow/**"
+      - ".github/workflows/device-flow-example.yml"
+      - "src/nanoidp/**"
+  workflow_dispatch:
+
+jobs:
+  cli-login:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: examples/cli-device-flow
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install ../.. pytest requests
+
+      - name: Start NanoIDP with the preset
+        run: |
+          mkdir -p idp-config && cp settings.yaml users.yaml idp-config/
+          python -m nanoidp --config ./idp-config > nanoidp.log 2>&1 &
+          timeout 30 sh -c 'until curl -fsS --max-time 2 http://localhost:8000/api/health; do sleep 1; done' \
+            || { cat nanoidp.log; exit 1; }
+
+      - run: pytest -v tests
+
+      - if: failure()
+        run: cat nanoidp.log

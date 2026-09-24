@@ -13,7 +13,7 @@ python -m nanoidp --config ./idp-config
 cd sp && mvn -q package -DskipTests && java -jar target/nanoidp-saml-sp-1.0.jar
 
 # The login, admin and non-admin (a third terminal)
-pytest tests
+pip install requests pytest && pytest tests
 ```
 
 Test users: `admin` / `admin` (roles `ADMIN`, `USER`, group
