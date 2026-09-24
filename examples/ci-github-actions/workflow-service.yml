@@ -1,0 +1,22 @@
+# .github/workflows/tests.yml - NanoIDP as a service container
+name: tests
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      nanoidp:
+        image: ghcr.io/cdelmonte-zg/nanoidp:v3.3.0
+        ports:
+          - 8000:8000
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pytest pytest-xdist requests pyjwt
+      - name: Wait for NanoIDP
+        run: timeout 30 sh -c 'until curl -fsS --max-time 2 http://localhost:8000/api/health; do sleep 1; done'
+      - run: pytest -n 4 tests

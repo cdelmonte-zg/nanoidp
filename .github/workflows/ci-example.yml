@@ -1,0 +1,59 @@
+# Runs the example of the "Run an OIDC provider in CI" use-case page
+# (examples/ci-github-actions), so the page cannot drift from what works:
+# once against the code in this checkout, once with the published image as a
+# service container, the way the page shows it.
+name: CI example
+
+on:
+  pull_request:
+    paths:
+      - "examples/ci-github-actions/**"
+      - ".github/workflows/ci-example.yml"
+      - "src/nanoidp/**"
+  push:
+    branches: [main]
+    paths:
+      - "examples/ci-github-actions/**"
+      - ".github/workflows/ci-example.yml"
+      - "src/nanoidp/**"
+  workflow_dispatch:
+
+jobs:
+  from-checkout:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: examples/ci-github-actions
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install ../.. pytest pytest-xdist requests
+      - run: bash ci/start-nanoidp.sh
+      - run: pytest -n 4 tests
+      - if: failure()
+        run: cat nanoidp.log
+
+  service-container:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # The image and tag the page names; bump both together
+    services:
+      nanoidp:
+        image: ghcr.io/cdelmonte-zg/nanoidp:v3.3.0
+        ports:
+          - 8000:8000
+    defaults:
+      run:
+        working-directory: examples/ci-github-actions
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pytest pytest-xdist requests pyjwt
+      - name: Wait for NanoIDP
+        run: timeout 30 sh -c 'until curl -fsS --max-time 2 http://localhost:8000/api/health; do sleep 1; done'
+      - run: pytest -n 4 tests

@@ -10,6 +10,7 @@
 # Use cases
 
 - [Test an SPA login with PKCE](use-cases/spa-login-pkce.md)
+- [Run an OIDC provider in CI](use-cases/oidc-provider-in-ci.md)
 
 # Guides
 
