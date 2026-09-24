@@ -15,6 +15,15 @@ For the login flow itself, see
 Every file on this page is in
 [`examples/ci-github-actions/`](https://github.com/cdelmonte-zg/nanoidp/tree/main/examples/ci-github-actions),
 and the repository's own CI runs it on every change, both ways shown here.
+Copy it into your repository with the same layout, which is the one the
+workflows below expect:
+
+```text
+.github/workflows/tests.yml   one of the two workflows below
+ci/start-nanoidp.sh           start and wait (step 2)
+tests/conftest.py             the test_user fixture (step 3)
+tests/test_identities.py      tests that use it (step 5)
+```
 
 ## 1. Start NanoIDP in the job
 
@@ -47,10 +56,11 @@ it is not enough on its own: if something else already listens on the port,
 the new process fails to bind and exits, and the health check is answered
 by the other process. The tests then run against an IdP that is not the one
 the job configured. The start script refuses a port that is already taken,
-and stops waiting as soon as the process exits:
+even by a process that accepts connections and never answers, stops waiting
+as soon as its own process exits, and bounds every request in time:
 
 ```bash
-{{#include ../../../examples/ci-github-actions/start-nanoidp.sh}}
+{{#include ../../../examples/ci-github-actions/ci/start-nanoidp.sh}}
 ```
 
 On a fresh hosted runner the port is free; on a self-hosted runner or a
@@ -86,6 +96,10 @@ workers (`pytest -n 4`) share one instance:
   teardown, a run of eight parallel tests that each sleep briefly before
   logging in loses one or two of them to a user deleted underneath; deleting
   by name, the same run passes every time.
+- **Check the delete.** A teardown that ignores the answer lets an identity
+  survive a failed delete while the test still passes. The fixture accepts
+  `200`, and `404` for a user the test deleted itself; anything else fails
+  the test.
 
 ## 5. Cleanup, and what deleting does not do
 

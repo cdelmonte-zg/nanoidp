@@ -1,7 +1,7 @@
 import jwt
 import pytest
 import requests
-from conftest import IDP, password_token
+from conftest import IDP, TIMEOUT, password_token
 
 
 @pytest.mark.parametrize("attempt", range(8))
@@ -15,20 +15,20 @@ def test_each_test_gets_its_own_user(test_user, attempt):
 
 
 def test_a_deleted_user_cannot_log_in(test_user):
-    requests.delete(f"{IDP}/api/runtime/users/{test_user['username']}")
+    requests.delete(f"{IDP}/api/runtime/users/{test_user['username']}", timeout=TIMEOUT)
     assert password_token(test_user).json()["error"] == "invalid_grant"
 
 
 def test_deleting_a_user_does_not_revoke_its_tokens(test_user):
     tokens = password_token(test_user, scope="openid offline_access").json()
-    requests.delete(f"{IDP}/api/runtime/users/{test_user['username']}")
+    requests.delete(f"{IDP}/api/runtime/users/{test_user['username']}", timeout=TIMEOUT)
 
     # The access token taken before the delete is still valid until it expires
     introspection = requests.post(f"{IDP}/introspect", auth=("demo-client", "demo-secret"),
-                                  data={"token": tokens["access_token"]}).json()
+                                  data={"token": tokens["access_token"]}, timeout=TIMEOUT).json()
     assert introspection["active"] is True
     # The refresh token is refused
     refreshed = requests.post(f"{IDP}/token", auth=("demo-client", "demo-secret"), data={
         "grant_type": "refresh_token", "refresh_token": tokens["refresh_token"],
-    })
+    }, timeout=TIMEOUT)
     assert refreshed.json()["error"] == "invalid_grant"

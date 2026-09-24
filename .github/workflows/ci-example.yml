@@ -31,7 +31,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install ../.. pytest pytest-xdist requests
-      - run: bash start-nanoidp.sh
+      - run: bash ci/start-nanoidp.sh
       - run: pytest -n 4 tests
       - if: failure()
         run: cat nanoidp.log
@@ -55,5 +55,5 @@ jobs:
           python-version: "3.12"
       - run: pip install pytest pytest-xdist requests pyjwt
       - name: Wait for NanoIDP
-        run: timeout 30 sh -c 'until curl -fsS http://localhost:8000/api/health; do sleep 1; done'
+        run: timeout 30 sh -c 'until curl -fsS --max-time 2 http://localhost:8000/api/health; do sleep 1; done'
       - run: pytest -n 4 tests
