@@ -41,6 +41,9 @@ an API would, and points to Authorization Code with PKCE for a real login.
 - **A SAML service provider, such as a Spring Boot app.** Metadata,
   signed assertions, roles mapped to authorities, a login tested without a
   browser: [Test a Spring Boot SAML service provider without a real IdP](use-cases/spring-boot-saml.md).
+- **Service-to-service calls.** Client credentials, a scope per operation,
+  an audience per API, and the tokens an API must refuse:
+  [Test service-to-service auth with client credentials](use-cases/service-to-service-client-credentials.md).
 - **An MCP server that requires OAuth.** Scoped tools, a token for the
   wrong audience rejected, revocation versus JWKS validation:
   [Testing an MCP client against nanoidp](guides/testing-an-mcp-client.md).

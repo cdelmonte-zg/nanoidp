@@ -1,5 +1,6 @@
 # NanoIDP Settings - Microservices Client Credentials
 # Copy this file to your config directory
+# Guide: https://cdelmonte-zg.github.io/nanoidp/use-cases/service-to-service-client-credentials.html
 
 server:
   host: "127.0.0.1"
@@ -8,26 +9,29 @@ server:
 
 oauth:
   issuer: "http://localhost:8000"
+  # The aud of a token requested without a resource: accepted by no service
   audience: "microservices"
   token_expiry_minutes: 60
+  # Every scope a client may ask for must be in the vocabulary
+  scopes_supported:
+    - openid
+    - profile
+    - email
+    - offline_access
+    - orders:read
+    - inventory:read
+    - inventory:reserve
   clients:
-    # Order Service
+    # Calls the inventory API: reads stock, reserves items
     - client_id: "order-service"
       client_secret: "order-service-secret"
       description: "Order management microservice"
+      allowed_scopes: [inventory:read, inventory:reserve]
+      allowed_resources: ["https://inventory.internal"]
 
-    # Inventory Service
-    - client_id: "inventory-service"
-      client_secret: "inventory-service-secret"
-      description: "Inventory management microservice"
-
-    # Notification Service
+    # Calls the orders API: reads orders to notify about them
     - client_id: "notification-service"
       client_secret: "notification-service-secret"
       description: "Notification delivery microservice"
-
-# Authority prefix mapping
-authority_prefixes:
-  roles: "ROLE_"
-  identity_class: "IDENTITY_"
-  entitlements: "ENT_"
+      allowed_scopes: [orders:read]
+      allowed_resources: ["https://orders.internal"]

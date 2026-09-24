@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **A client credentials example with a real resource server, run by CI.**
+  `examples/microservices-client-credentials` now gives each client its own
+  scopes and API audience (RFC 8707), carries a Spring Boot 4 resource
+  server (`inventory-api/`) and tests of the calls it accepts and refuses;
+  a new workflow, `Client credentials example`, runs them. The preset's
+  README requested scopes the preset did not declare, so its first example
+  failed with `invalid_scope`, and its tokens carried `admin`'s identity and
+  roles through `default_user` (#445); `default_user` is now a user with no
+  roles. The walkthrough is a book page, [Test service-to-service auth with
+  client
+  credentials](https://cdelmonte-zg.github.io/nanoidp/use-cases/service-to-service-client-credentials.html).
+
 - **A SAML example with a real service provider, run by CI.**
   `examples/spring-boot-saml` now carries a Spring Boot 4 SP (`sp/`) and
   tests that drive its SAML login through NanoIDP without a browser; a new
