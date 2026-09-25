@@ -2586,6 +2586,61 @@ class NanoIDPTestAgent:
         except Exception as e:
             return self._add_result("Device Flow", TestCategory.OAUTH, False, str(e))
 
+    def test_timing_and_cors_settings_are_what_clients_see(self) -> TestResult:
+        """What GET /api/config reports for the four #441 settings is what a
+        client meets on the wire: expires_in and interval of a device
+        authorization, the lifetime of a refresh token, and CORS."""
+        name = "Timing and CORS settings reach the wire"
+        try:
+            config = self.session.get(f"{self.base_url}/api/config", timeout=5).json()
+            device = config["device_flow"]
+            refresh_minutes = config["oauth"]["refresh_token_expiry_minutes"]
+            # What the server applies, not what the file declares: CORS is
+            # set up at startup, so after a reload the two can differ
+            origins = config["cors_applied_origins"]
+
+            answer = self.session.post(
+                f"{self.base_url}/device_authorization", data={"scope": "openid"}, timeout=5
+            ).json()
+            device_ok = (
+                answer.get("expires_in") == device["code_expiry_seconds"]
+                and answer.get("interval") == device["polling_interval"]
+            )
+
+            tokens = self.session.post(f"{self.base_url}/token", data={
+                "grant_type": "password", "username": self.username, "password": self.password,
+                "scope": "openid offline_access",
+            }, timeout=5).json()
+            payload = tokens["refresh_token"].split(".")[1]
+            claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+            refresh_ok = claims["exp"] - claims["iat"] == refresh_minutes * 60
+
+            # An origin outside every list is allowed exactly when "*" is in
+            # force; an exact origin in the list, when there is one, is allowed
+            def allow_origin(origin):
+                return requests.get(
+                    f"{self.base_url}/.well-known/openid-configuration",
+                    headers={"Origin": origin}, timeout=5,
+                ).headers.get("Access-Control-Allow-Origin")
+
+            outsider = allow_origin("http://e2e-origin.test")
+            cors_ok = (outsider is not None) == ("*" in origins)
+            exact = [origin for origin in origins if origin.startswith("http") and "(" not in origin]
+            if exact:
+                cors_ok = cors_ok and allow_origin(exact[0]) == exact[0]
+            allowed = outsider
+
+            return self._add_result(
+                name,
+                TestCategory.OAUTH,
+                device_ok and refresh_ok and cors_ok,
+                f"device={device_ok} refresh={refresh_ok} cors={cors_ok}",
+                {"device_flow": device, "refresh_token_expiry_minutes": refresh_minutes,
+                 "cors_allowed_origins": origins, "allow_origin_seen": allowed},
+            )
+        except Exception as e:
+            return self._add_result(name, TestCategory.OAUTH, False, str(e))
+
     def test_public_client_device_flow(self) -> TestResult:
         """A PUBLIC client completes the device flow with client_id alone (#255,
         RFC 8628 §3.1/§3.4): no secret at the device authorization endpoint or
@@ -6475,6 +6530,7 @@ class NanoIDPTestAgent:
                 self.test_id_token_not_accepted_as_access_token,
                 self.test_device_flow,
                 self.test_public_client_device_flow,
+                self.test_timing_and_cors_settings_are_what_clients_see,
                 self.test_device_verification_base_url,
                 self.test_token_decode,
                 self.test_introspection,

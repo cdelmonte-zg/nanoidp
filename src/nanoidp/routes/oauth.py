@@ -55,8 +55,6 @@ from ..services.client_metadata import (
 from ..services.client_metadata import retain_until as retain_cached_client_until
 from ..services.client_metadata_fetch import FetchRefused
 from ..services.device_code import (
-    DEVICE_CODE_EXPIRES_IN,
-    DEVICE_POLL_INTERVAL,
     DeviceCodeStoreBusy,
     DeviceCodeStoreFull,
 )
@@ -673,7 +671,7 @@ def _may_hold_a_refresh_token(
     A client that does not resolve at all answers ``False``, not ``True``:
     this is decided after the grant handler has run, so an entry can go
     between the authorization code being consumed and this question being
-    asked. Handing a seven day credential to a client that has just
+    asked. Handing a long-lived refresh token to a client that has just
     disappeared is exactly the outcome the rule exists to prevent, and the
     conservative answer costs a caller who is still there nothing but a
     second login.
@@ -2373,7 +2371,11 @@ def device_authorization() -> ResponseReturnValue:
     # a Retry-After hint, not a fabricated OAuth token error.
     try:
         device_code, user_code = get_device_code_store().create(
-            client_id, scope, resource=validated_resources
+            client_id,
+            scope,
+            resource=validated_resources,
+            expires_in=loaded.settings.device_code_expiry_seconds,
+            interval=loaded.settings.device_polling_interval,
         )
     except DeviceCodeStoreFull as not_now:
         # At capacity, or (DeviceCodeStoreBusy) no pair could be made right
@@ -2393,7 +2395,7 @@ def device_authorization() -> ResponseReturnValue:
         )
         response = jsonify({"message": message})
         response.status_code = 503
-        response.headers["Retry-After"] = str(DEVICE_POLL_INTERVAL)
+        response.headers["Retry-After"] = str(loaded.settings.device_polling_interval)
         return response
 
     audit_event(
@@ -2422,8 +2424,8 @@ def device_authorization() -> ResponseReturnValue:
             "user_code": user_code,
             "verification_uri": verification_uri,
             "verification_uri_complete": verification_uri_complete,
-            "expires_in": DEVICE_CODE_EXPIRES_IN,
-            "interval": DEVICE_POLL_INTERVAL,
+            "expires_in": settings.device_code_expiry_seconds,
+            "interval": settings.device_polling_interval,
         }
     )
 

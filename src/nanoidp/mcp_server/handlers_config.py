@@ -45,6 +45,12 @@ def _tool_get_settings(arguments: dict[str, Any], config: ConfigManager, loaded:
         "issuer_from_proxy_headers": settings.issuer_from_proxy_headers,
         "audience": settings.audience,
         "token_expiry_minutes": settings.token_expiry_minutes,
+        "refresh_token_expiry_minutes": settings.refresh_token_expiry_minutes,
+        "device_code_expiry_seconds": settings.device_code_expiry_seconds,
+        "device_polling_interval": settings.device_polling_interval,
+        # YAML-only, like scopes_supported below (#441): null means the
+        # security profile decides; applied when the server starts.
+        "cors_allowed_origins": settings.cors_allowed_origins,
         # YAML-only (oauth.scopes_supported / oauth.scope_enforcement, #186)
         # - reported for visibility, like secret_key and require_ui_login,
         # but not in update_settings' input_schema below.
@@ -179,6 +185,9 @@ def _tool_update_settings(arguments: dict[str, Any], config: ConfigManager, load
             "issuer_from_proxy_headers": settings.issuer_from_proxy_headers,
             "audience": settings.audience,
             "token_expiry_minutes": settings.token_expiry_minutes,
+            "refresh_token_expiry_minutes": settings.refresh_token_expiry_minutes,
+            "device_code_expiry_seconds": settings.device_code_expiry_seconds,
+            "device_polling_interval": settings.device_polling_interval,
             "refresh_token_rotation": settings.refresh_token_rotation,
             "require_pkce": settings.require_pkce,
             "login_mode": settings.login_mode,

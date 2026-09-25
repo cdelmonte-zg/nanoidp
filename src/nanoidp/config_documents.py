@@ -21,11 +21,13 @@ must not import it at runtime (import contract, #149), which is why the
 writer receives the defaults it needs as a mapping (``document_defaults``)
 rather than importing this module.
 
-Keys that shipped files carry but the loader never consumed (``cors_allowed_origins``,
-``device_flow``, ``logging.format``, ``oauth.refresh_token_expiry_minutes``,
-``session.permanent``) are declared here so they keep loading without a
-warning; they are still not consumed, exactly as before. Turning any of them
-into behaviour is a separate change, not a side effect of this refactor.
+Five keys used to be declared here only so that files carrying them loaded
+without a warning, with any value, and did nothing (#441). Three of them
+are settings now: ``oauth.refresh_token_expiry_minutes``,
+``cors_allowed_origins`` and the ``device_flow`` section, whose two keys
+are ``code_expiry_seconds`` and ``polling_interval``. ``logging.format``
+and ``session.permanent`` are not declared any more, so they are reported
+like every unknown key.
 """
 
 from __future__ import annotations
@@ -151,6 +153,18 @@ class ClientEntry(BaseModel):
         )
 
 
+class DeviceFlowSection(BaseModel):
+    """``device_flow``: the timing of the device authorization grant (#441).
+
+    The defaults are the values that were hardcoded while this section was
+    accepted and ignored."""
+
+    model_config = _FORBID
+
+    code_expiry_seconds: int = 600
+    polling_interval: int = 5
+
+
 class DynamicRegistrationSection(BaseModel):
     """``oauth.dynamic_registration`` (#190).
 
@@ -217,12 +231,9 @@ class OAuthSection(BaseModel):
     client_id_metadata_documents: ClientIdMetadataDocumentsSection = Field(
         default_factory=ClientIdMetadataDocumentsSection
     )
-    # Present in shipped presets, never consumed by the loader (accepted for
-    # compatibility; see the module docstring).
-    # Accepted for compatibility (shipped presets carry it), never consumed and
-    # therefore never validated: the old loader did not read it at all, so any
-    # value must keep loading (#197 review).
-    refresh_token_expiry_minutes: Any = None
+    # Refresh tokens lived 7 days, hardcoded, while this key was accepted
+    # and ignored (#441); the default keeps those 7 days.
+    refresh_token_expiry_minutes: int = 10080
 
 
 class SamlSection(BaseModel):
@@ -319,8 +330,6 @@ class SessionSection(BaseModel):
     # even as null/empty, means the operator deliberately said "off" and the
     # env vars are not consulted. See "management_secret" in models.py.
     management_secret: Optional[str] = None
-    # Shipped presets carry it; the app sets session.permanent itself.
-    permanent: Any = None  # accepted for compatibility, never consumed
 
 
 class LoggingSection(BaseModel):
@@ -330,8 +339,6 @@ class LoggingSection(BaseModel):
     log_token_requests: bool = True
     log_saml_requests: bool = True
     verbose_logging: bool = True
-    # Shipped presets carry it; logging.basicConfig uses a fixed format.
-    format: Any = None  # accepted for compatibility, never consumed
 
 
 class LoginSection(BaseModel):
@@ -388,7 +395,9 @@ def _validate_plugins_mapping(value: Any) -> Dict[str, Dict[str, Any]]:
 
 
 
-_SECTIONS = ("server", "oauth", "saml", "jwt", "session", "logging", "login", "runtime")
+_SECTIONS = (
+    "server", "oauth", "saml", "jwt", "session", "logging", "login", "runtime", "device_flow",
+)
 
 
 class SettingsDocument(BaseModel):
@@ -407,6 +416,7 @@ class SettingsDocument(BaseModel):
     logging: LoggingSection = Field(default_factory=LoggingSection)
     login: LoginSection = Field(default_factory=LoginSection)
     runtime: RuntimeSection = Field(default_factory=RuntimeSection)
+    device_flow: DeviceFlowSection = Field(default_factory=DeviceFlowSection)
     security_profile: str = "dev"
     # How the loader reacts to an unknown key in this configuration directory
     # (#175 piece 4). "warn" (default) logs it with its dotted path and
@@ -418,14 +428,11 @@ class SettingsDocument(BaseModel):
     config_validation: str = "warn"
     authority_prefixes: Dict[str, str] = Field(default_factory=dict)
     allowed_identity_classes: List[str] = Field(default_factory=list)
-    # Accepted for compatibility, not consumed (module docstring).
-    # Accepted for compatibility, never consumed (the old loader never read it;
-    # CORS stays ["*"]), hence Any: no new validation on an ignored key.
-    cors_allowed_origins: Any = None
-    # Never read by the old loader, so neither the container shape nor its
-    # keys are validated: `device_flow: whatever` and a bare `device_flow:`
-    # loaded before and still do (#197 review).
-    device_flow: Any = None
+    # Absent = the security profile decides, as it always did: every origin
+    # under dev and oauth21, localhost under stricter-dev. None here, not a
+    # default list, so "not declared" stays distinguishable from a declared
+    # list, the empty one included (#441).
+    cors_allowed_origins: Optional[List[str]] = None
     # Extension points (#185). Absent = off.
     hooks: HooksSection = Field(default_factory=HooksSection)
     plugins: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
@@ -488,6 +495,7 @@ class SettingsDocument(BaseModel):
             issuer_from_proxy_headers=self.oauth.issuer_from_proxy_headers,
             audience=self.oauth.audience,
             token_expiry_minutes=self.oauth.token_expiry_minutes,
+            refresh_token_expiry_minutes=self.oauth.refresh_token_expiry_minutes,
             refresh_token_rotation=self.oauth.refresh_token_rotation,
             require_pkce=self.oauth.require_pkce,
             clients=clients,
@@ -540,6 +548,9 @@ class SettingsDocument(BaseModel):
             two_step=self.login.two_step,
             totp=self.login.totp,
             security_profile=self.security_profile,
+            cors_allowed_origins=self.cors_allowed_origins,
+            device_code_expiry_seconds=self.device_flow.code_expiry_seconds,
+            device_polling_interval=self.device_flow.polling_interval,
             authority_prefixes=self.authority_prefixes,
             allowed_identity_classes=self.allowed_identity_classes,
             secret_key=self.session.secret_key,

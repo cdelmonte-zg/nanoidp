@@ -35,7 +35,7 @@ import time
 from dataclasses import dataclass
 from io import StringIO
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, Mapping, Optional
+from typing import TYPE_CHECKING, Any, Dict, Mapping, Optional, Set
 
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap
@@ -406,6 +406,9 @@ def user_to_yaml(user: User) -> Dict[str, Any]:
 # callers hand it in and these two literals only cover legacy call sites.
 _FALLBACK_DEFAULTS: Dict[str, Any] = {
     "security_profile": "dev",
+    "oauth.refresh_token_expiry_minutes": 10080,
+    "device_flow.code_expiry_seconds": 600,
+    "device_flow.polling_interval": 5,
     "login.mode": "password",
     "login.auto_login": False,
     "login.two_step": False,
@@ -468,6 +471,12 @@ OWNED_SETTINGS: tuple[OwnedSetting, ...] = (
     OwnedSetting("oauth", "issuer_from_proxy_headers", "issuer_from_proxy_headers"),
     OwnedSetting("oauth", "audience", "audience"),
     OwnedSetting("oauth", "token_expiry_minutes", "token_expiry_minutes"),
+    # Accepted and ignored until #441, so files that never set them must not
+    # gain them on the next save: written only while they differ from the
+    # default, like the login keys below.
+    OwnedSetting(
+        "oauth", "refresh_token_expiry_minutes", "refresh_token_expiry_minutes", "omit_when_default"
+    ),
     OwnedSetting("oauth", "refresh_token_rotation", "refresh_token_rotation"),
     OwnedSetting("oauth", "require_pkce", "require_pkce"),
     OwnedSetting("oauth", "logos_dir", "logos_dir", "omit_when_falsy", ""),
@@ -494,6 +503,12 @@ OWNED_SETTINGS: tuple[OwnedSetting, ...] = (
     OwnedSetting("saml", "want_authn_requests_signed", "saml_want_authn_requests_signed"),
     OwnedSetting("saml", "sp_certificates", "saml_sp_certificates", "omit_when_falsy", []),
     OwnedSetting("logging", "verbose_logging", "verbose_logging"),
+    OwnedSetting(
+        "device_flow", "code_expiry_seconds", "device_code_expiry_seconds", "omit_when_default"
+    ),
+    OwnedSetting(
+        "device_flow", "polling_interval", "device_polling_interval", "omit_when_default"
+    ),
     # Written only when they differ from the model default, which is what
     # "absent" means for them in the file (#319). The row needs no default
     # of its own: where to look it up is the section and the key.
@@ -513,16 +528,28 @@ def default_lookup_key(field: "OwnedSetting") -> str:
 
 
 def merge_owned_setting_at_default(
-    document: Dict[str, Any], field: "OwnedSetting", value: Any, default: Any
+    document: Dict[str, Any],
+    field: "OwnedSetting",
+    value: Any,
+    default: Any,
+    emptied: Set[str],
 ) -> None:
     """Write a defaults-dependent key, or remove it once it is back at the
     default - the two shapes these keys come in (#319).
 
     A top-level key (``security_profile``) is read and removed on the
     document itself; a key in an optional section (``login.*``) is read
-    through that section, and the section goes with its last entry. Neither
-    is created to be removed again: a document that does not have the
-    section keeps not having it while the value is the default.
+    through that section. Neither is created to be removed again: a
+    document that does not have the section keeps not having it while the
+    value is the default.
+
+    A section this call leaves empty is added to ``emptied``, a required
+    argument so that no caller can forget it, and the caller drops it with
+    ``drop_emptied_sections`` once its whole save is written. Dropped at
+    once, as it was until #450's review, a later key of the same save
+    created the section again at the end of the file, away from its
+    comment (a login block with two_step going and totp coming, a
+    device_flow block with its two keys).
 
     One function for both shapes rather than two: the nested-only helper
     this replaces could not serve a top-level key, since an empty section
@@ -555,7 +582,16 @@ def merge_owned_setting_at_default(
     if section:
         section.pop(field.key, None)
         if not section:
-            document.pop(field.section, None)
+            emptied.add(field.section)
+
+
+def drop_emptied_sections(document: Dict[str, Any], emptied: Set[str]) -> None:
+    """Drop the sections ``merge_owned_setting_at_default`` left empty, once
+    the save that emptied them is complete: those still empty go, those a
+    later write of the same save filled again stay where they were."""
+    for name in emptied:
+        if name in document and not document[name]:
+            document.pop(name)
 
 
 def apply_settings_document(
@@ -584,13 +620,14 @@ def apply_settings_document(
     # "Omit at default" decisions read the loader's defaults (#175 piece 2).
     resolved_defaults = defaults if defaults is not None else _FALLBACK_DEFAULTS
 
+    emptied: Set[str] = set()
     for field in OWNED_SETTINGS:
         value = getattr(settings, field.attr)
         if field.doc_mode == "omit_when_default":
             # Before the section is touched: creating it here would leave a
             # `login: {}` behind for a value that is at its default (#319).
             merge_owned_setting_at_default(
-                document, field, value, resolved_defaults[default_lookup_key(field)]
+                document, field, value, resolved_defaults[default_lookup_key(field)], emptied
             )
             continue
         target = document if not field.section else document.setdefault(field.section, {})
@@ -619,6 +656,7 @@ def apply_settings_document(
         else:
             oauth.pop("clients", None)
 
+    drop_emptied_sections(document, emptied)
     return document
 
 

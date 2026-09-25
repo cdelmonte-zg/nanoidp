@@ -5,7 +5,7 @@ Provides atomic write operations for YAML configuration files.
 
 import logging
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Mapping, Optional
+from typing import Any, Callable, Dict, List, Mapping, Optional, Set
 
 from ..config import ConfigurationRejected, OAuthClient, User, get_config
 from ..config_documents import document_defaults, reject_unloadable
@@ -19,6 +19,7 @@ from ..serialization import (
     client_id_matches,
     client_to_yaml,
     default_lookup_key,
+    drop_emptied_sections,
     is_unchanged,
     load_yaml_document,
     merge_client_entry,
@@ -30,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 
 def _mutate_settings_section(
-    document: Dict[str, Any], section_name: str, provided: Dict[str, Any]
+    document: Dict[str, Any], section_name: str, provided: Dict[str, Any], emptied: Set[str]
 ) -> None:
     """Apply form-provided values for one settings.yaml section to an
     already-loaded document (#214; extracted from
@@ -47,17 +48,34 @@ def _mutate_settings_section(
     the expanded on-disk value actually differs (#127), so untouched
     ``${VAR}`` placeholders and comments survive.
     """
-    section = document.setdefault(section_name, {})
     rows = {f.key: f for f in OWNED_SETTINGS if f.section == section_name}
+    # Built once per call, and only if a defaults-dependent row is provided
+    defaults: Optional[Mapping[str, Any]] = None
     for key, value in provided.items():
         if value is None:
             continue
         field = rows[key]
+        if field.doc_mode == "omit_when_default":
+            # Written only while it differs from its default, the same rule
+            # apply_settings_document follows (#319): a form save must not
+            # add a key at its default to a file that never had it (#441).
+            if defaults is None:
+                defaults = document_defaults()
+            merge_owned_setting_at_default(
+                document, field, value, defaults[default_lookup_key(field)], emptied
+            )
+            continue
+        # Looked up at each write rather than held across the loop, and
+        # created only when something is written to it (#450 review).
+        section = document.get(section_name)
         compare = value if (field.doc_mode == "plain" or value) else field.empty
-        if not is_unchanged(section.get(key), compare):
+        if not is_unchanged((section or {}).get(key), compare):
             if field.doc_mode != "plain" and not value:
-                section.pop(key, None)
+                if section:
+                    section.pop(key, None)
             else:
+                if section is None:
+                    document[section_name] = section = {}
                 section[key] = value
 
 
@@ -81,7 +99,7 @@ def _applied_login_keys(
     ``mode`` means unchanged, since there is no sensible cleared login mode
     (#131), and a ``None`` checkbox means the field was not on the form
     (#250). Everything else is applied, and how it reaches the document is
-    ``_mutate_login_key``'s business.
+    ``_mutate_login_keys``' business.
     """
     applied: Dict[str, Any] = {}
     if mode:
@@ -97,17 +115,35 @@ _LOGIN_ROWS: Dict[str, OwnedSetting] = {
 }
 
 
-def _mutate_login_key(
-    document: Dict[str, Any], key: str, value: Any, defaults: Mapping[str, Any]
+def _mutate_login_keys(
+    document: Dict[str, Any],
+    applied: Mapping[str, Any],
+    defaults: Mapping[str, Any],
+    emptied: Set[str],
 ) -> None:
-    """Write one ``login.*`` key, or remove it once it is back at its
-    default, through the same rule ``apply_settings_document`` uses (#319).
+    """Write the ``login.*`` keys this call applies, each removed once it is
+    back at its default, through the same rule ``apply_settings_document``
+    uses (#319).
 
     Four helpers that were this same line - one per key, each taking its own
-    positional default - stood here before.
+    positional default - stood here before, and later two copies of the loop.
     """
-    row = _LOGIN_ROWS[key]
-    merge_owned_setting_at_default(document, row, value, defaults[default_lookup_key(row)])
+    for key, value in applied.items():
+        row = _LOGIN_ROWS[key]
+        merge_owned_setting_at_default(document, row, value, defaults[default_lookup_key(row)], emptied)
+
+
+def _one_save(document: Dict[str, Any], *steps: "Callable[[Set[str]], None]") -> None:
+    """Run the steps of one save against ``document``, then drop the
+    sections they left empty: once, at the end, whatever step emptied them
+    and whatever step wrote to them later. The one owner of that drop for
+    the writer (#450 review); ``apply_settings_document`` is the other.
+    Dropped any earlier, a later write of the same save created the
+    section again at the end of the file, away from its comment."""
+    emptied: Set[str] = set()
+    for step in steps:
+        step(emptied)
+    drop_emptied_sections(document, emptied)
 
 
 def _login_settings_defaults() -> Mapping[str, Any]:
@@ -378,7 +414,9 @@ class YamlWriter:
         """
         return self._atomic_write(
             self.settings_file,
-            lambda data: _mutate_settings_section(data, section_name, provided),
+            lambda data: _one_save(
+                data, lambda emptied: _mutate_settings_section(data, section_name, provided, emptied)
+            ),
             expected_revision,
         )
 
@@ -391,6 +429,7 @@ class YamlWriter:
         issuer_from_proxy_headers: Optional[bool] = None,
         audience: Optional[str] = None,
         token_expiry_minutes: Optional[int] = None,
+        refresh_token_expiry_minutes: Optional[int] = None,
         require_pkce: Optional[bool] = None,
         refresh_token_rotation: Optional[bool] = None,
         logos_dir: Optional[str] = None,
@@ -412,6 +451,7 @@ class YamlWriter:
                 "issuer_from_proxy_headers": issuer_from_proxy_headers,
                 "audience": audience,
                 "token_expiry_minutes": token_expiry_minutes,
+                "refresh_token_expiry_minutes": refresh_token_expiry_minutes,
                 "require_pkce": require_pkce,
                 "refresh_token_rotation": refresh_token_rotation,
                 "logos_dir": logos_dir,
@@ -519,8 +559,7 @@ class YamlWriter:
         applied = _applied_login_keys(mode, auto_login, two_step, totp)
 
         def mutate(data: Dict[str, Any]) -> None:
-            for key, value in applied.items():
-                _mutate_login_key(data, key, value, defaults)
+            _one_save(data, lambda emptied: _mutate_login_keys(data, applied, defaults, emptied))
 
         return self._atomic_write(self.settings_file, mutate, expected_revision)
 
@@ -576,12 +615,14 @@ class YamlWriter:
         applied = _applied_login_keys(login_mode, auto_login, two_step, totp)
 
         def mutate(data: Dict[str, Any]) -> None:
-            _mutate_settings_section(data, "oauth", oauth_fields)
-            _mutate_settings_section(data, "saml", saml_fields)
             if allowed_identity_classes:
                 _mutate_allowed_identity_classes(data, allowed_identity_classes)
-            for key, value in applied.items():
-                _mutate_login_key(data, key, value, defaults)
+            _one_save(
+                data,
+                lambda emptied: _mutate_settings_section(data, "oauth", oauth_fields, emptied),
+                lambda emptied: _mutate_settings_section(data, "saml", saml_fields, emptied),
+                lambda emptied: _mutate_login_keys(data, applied, defaults, emptied),
+            )
 
         return self._atomic_write(self.settings_file, mutate, expected_revision)
 

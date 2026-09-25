@@ -61,10 +61,22 @@ every `interval` seconds:
 | tokens | done |
 | `access_denied` | the user chose Deny: stop |
 | `invalid_grant` | the device code is unknown or already used: stop |
-| `expired_token`, or its own deadline | the code's 600 seconds are over: start again |
+| `expired_token`, or its own deadline | the code's lifetime is over: start again |
 
 The access token is the user's: its `sub` is the user who approved, with
 that user's roles, and its `client_id` is `cli-tool`.
+
+A device code lives 600 seconds, and clients are told to poll every 5. In
+releases after 3.3.0 both can be set, which makes `expired_token` testable
+in a second:
+
+```yaml
+device_flow:
+  code_expiry_seconds: 1   # default 600
+  polling_interval: 1      # default 5
+```
+
+3.3.0 and earlier accept that section and ignore it.
 
 ## 3. Script the browser step and test the loop
 

@@ -7,7 +7,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Config schema
+- **Four keys that were accepted and ignored are settings now, two are
+  reported as unknown** (#441). No `config_version` bump: none of the six
+  loses a meaning it had, since none had one. Files that do not mention them
+  behave exactly as before.
+  - `oauth.refresh_token_expiry_minutes` (default 10080, 7 days, the
+    lifetime that was hardcoded; 1 to 43200), `device_flow.code_expiry_seconds`
+    (default 600; 1 to 3600) and `device_flow.polling_interval` (default 5;
+    1 to 60) now set what they name, and `cors_allowed_origins` sets the CORS
+    origins in every profile (absent: the profile decides, as before; `[]`
+    allows none). Each entry is an origin, `http(s)://host[:port]` and
+    nothing else, written as a browser sends it in an Origin header, since
+    the two are compared as strings (ignoring case): IPv6 in the URL
+    Standard's form (compressed, IPv4-mapped as `::ffff:7f00:1`, no zone
+    id), IPv4 in dotted decimal, no default port. An entry in another form
+    is refused with the form to write (`https://app.example:443` ->
+    `https://app.example`), since it would never match; an internationalised
+    host must be written in its ASCII (punycode) form, which is not computed
+    for it, since Python's IDNA codec differs from the browsers'; a path, a
+    query,
+    credentials or a pattern such as `http://localhost:*`, which flask-cors
+    would match at the start only, are refused as not an origin. A declared
+    list answers only requests that carry an Origin header: without one,
+    no `Access-Control-Allow-Origin` is sent. A save from the web UI or the MCP server writes them
+    only while they differ from the default.
+  - A revoked refresh token family is remembered for the longest lifetime
+    the setting allows plus a day (31 days), where it was 8 days, sized for
+    the fixed 7-day refresh token. Otherwise a family revoked on reuse would
+    have come back while a descendant with a 30-day lifetime still lived.
+  - They are validated like every other key, so a value that used to load
+    and mean nothing is now an error: `refresh_token_expiry_minutes: "soon"`,
+    a bound exceeded, a bare `device_flow:` line (null is not an empty
+    section, as for every section but `login`), a scalar or a blank entry in
+    `cors_allowed_origins`.
+  - `logging.format` and `session.permanent` are no longer declared: the log
+    format is fixed and the login session is always a permanent cookie. They
+    are reported like any unknown key, a warning by default and a refusal
+    under `config_validation: strict`, and are removed from the shipped
+    `config/settings.yaml` and `examples/agentic-stack`.
+
 ### Added
+- **Refresh token lifetime, device code timing and CORS origins can be set**
+  (#441): see "Config schema" above. `GET /api/config` and the MCP
+  `get_settings` tool report all four, and `/api/config` also reports
+  `cors_applied_origins`, the origins the server applies: CORS is set up at
+  startup, so after a reload that changed the list the two differ until the
+  next start. A `"*"` under `stricter-dev` is logged as a warning; the settings page edits the refresh
+  token lifetime, and MCP `update_settings` the refresh token lifetime and
+  the two device flow values. A short `device_flow.code_expiry_seconds`
+  makes `expired_token` testable in a second, a short refresh lifetime an
+  expired refresh token.
+
 - **A device flow example, run by CI.** `examples/cli-device-flow` now has
   the CLI's side of the device authorization grant (`cli_login.py`) and
   tests that run its polling while a scripted browser step approves or
@@ -56,6 +107,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   includes these files as they are.
 
 ### Fixed
+- **`stricter-dev` CORS is localhost, and nothing that starts like it**
+  (#441 review). The profile's default origins were `http://localhost:*`
+  and `http://127.0.0.1:*`, which flask-cors reads as regular expressions
+  and matches from the start only: `http://localhost.evil.test`,
+  `http://127.0.0.1.nip.io` and `http://127a0b0c1.test` were allowed too,
+  reproduced on the previous code. The patterns are now anchored at both
+  ends, with the dots escaped.
 - **The device verification page says "denied" when the user denies.** After
   **Deny**, `/device` showed "Device authorization denied" inside the
   success box, followed by "The device has been authorized. You can now

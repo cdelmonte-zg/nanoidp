@@ -4,6 +4,7 @@ Flask application factory for NanoIDP.
 
 import logging
 import os
+import re
 from typing import Any, Optional
 
 from flask import Flask, Response, jsonify, make_response, request
@@ -156,19 +157,69 @@ def create_app(
             app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1
         )
 
-    # Configure CORS based on security profile
-    if settings.security_profile == "stricter-dev":
-        # Restricted CORS for stricter-dev profile
-        origins = settings.cors_allowed_origins
-        if origins == ["*"]:
-            # Default to localhost only in stricter-dev
-            origins = ["http://localhost:*", "http://127.0.0.1:*"]
-        CORS(app, resources={r"/*": {"origins": origins}})
-        logger.info(f"  - CORS: restricted to {origins}")
+    # CORS (#441): a declared cors_allowed_origins is the list, in every
+    # profile; absent, the profile decides, as it always did: localhost only
+    # under stricter-dev, every origin otherwise. Read once, at startup.
+    declared = settings.cors_allowed_origins
+    cors_options: dict[str, Any] = {}
+    vary_on_origin = False
+    if declared is not None:
+        # A declared entry is an origin in a browser's form (models.py), and
+        # it must be matched as that string: flask-cors takes a string with
+        # regex characters for a pattern (the brackets of an IPv6 host made
+        # http://[::1]:3000 not match itself and admit http://1:3000). Every
+        # entry goes in escaped and anchored (\Z, not $, which also matches
+        # before a newline), and flask-cors matches it ignoring case, as it
+        # does origins. "*" is flask-cors's own "every origin" (#450 review).
+        applied = list(declared)
+        origins = [origin if origin == "*" else f"^{re.escape(origin)}\\Z" for origin in declared]
+        if "*" not in declared:
+            # Named origins: without an Origin header there is nothing to
+            # answer (flask-cors's always_send would name one entry), and
+            # every response says it depends on the Origin, so a shared cache
+            # does not serve one fetched without it to a browser that sends
+            # one (#450 review). With "*" the list behaves as the permissive
+            # default, which answers every request alike.
+            cors_options["always_send"] = False
+            # Vary is added below, to every response; flask-cors's own would
+            # repeat it as a second header line on the responses it answers
+            cors_options["vary_header"] = False
+            vary_on_origin = True
     else:
-        # Permissive CORS for dev profile
-        CORS(app, resources={r"/*": {"origins": "*"}})
+        # flask-cors reads an entry with regex characters as a pattern and
+        # matches it with re.match, anchored at the start only: the old
+        # "http://localhost:*" also let http://localhost.evil.test through.
+        # Anchored at both ends, with the dots escaped (#441 review).
+        origins = (
+            [r"^http://localhost(:[0-9]+)?\Z", r"^http://127\.0\.0\.1(:[0-9]+)?\Z"]
+            if settings.security_profile == "stricter-dev"
+            else ["*"]
+        )
+        applied = list(origins)
+    CORS(app, resources={r"/*": {"origins": origins}}, **cors_options)
+    if vary_on_origin:
+
+        @app.after_request
+        def _vary_on_origin(response: Any) -> Any:
+            response.vary.add("Origin")
+            return response
+
+    # What is in force until the next start, whatever a reload declares:
+    # GET /api/config reports it next to the declared list, as origins (or
+    # the profile's patterns), not as the escaped form flask-cors is given.
+    app.config["NANOIDP_CORS_ORIGINS"] = applied
+    if settings.security_profile == "stricter-dev" and "*" in (settings.cors_allowed_origins or []):
+        # A declared list wins over the profile, "*" included. Said out loud
+        # because until #441 the key was ignored, so a file carrying "*"
+        # under stricter-dev got localhost only and now gets every origin.
+        logger.warning(
+            "cors_allowed_origins lists \"*\": every origin may call nanoidp from a "
+            "browser, although the security profile is stricter-dev"
+        )
+    if applied == ["*"]:
         logger.info("  - CORS: permissive (all origins)")
+    else:
+        logger.info(f"  - CORS: restricted to {applied}")
 
     # Configure rate limiting
     if settings.rate_limit_enabled:

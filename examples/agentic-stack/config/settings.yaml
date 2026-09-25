@@ -53,9 +53,7 @@ allowed_identity_classes:
 - EXTERNAL
 session:
   secret_key: dev-secret-key-change-in-production
-  permanent: true
 logging:
   level: INFO
-  format: '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
   log_token_requests: true
   log_saml_requests: true

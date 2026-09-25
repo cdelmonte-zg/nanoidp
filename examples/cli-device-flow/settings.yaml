@@ -18,8 +18,9 @@ oauth:
       token_endpoint_auth_method: "none"
       description: "Command-line interface tool"
 
-# Device codes last 600 seconds and the polling interval is 5 seconds; both
-# are fixed in this version
+# Device codes last 600 seconds and clients are told to poll every 5
+# seconds. A device_flow section changes both (code_expiry_seconds,
+# polling_interval) in releases after 3.3.0; 3.3.0 and earlier ignore it
 
 # Authority prefix mapping
 authority_prefixes:

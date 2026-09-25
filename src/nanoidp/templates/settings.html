@@ -89,6 +89,13 @@
                     </div>
 
                     <div class="mb-3">
+                        <label for="refresh_token_expiry_minutes" class="form-label">Refresh Token Expiry (minutes)</label>
+                        <input type="number" class="form-control" id="refresh_token_expiry_minutes" name="refresh_token_expiry_minutes"
+                               value="{{ settings.refresh_token_expiry_minutes }}" min="1" max="43200">
+                        <div class="form-text">How long refresh tokens are valid (default: 10080 minutes, 7 days; at most 30 days). Applies to refresh tokens issued from now on.</div>
+                    </div>
+
+                    <div class="mb-3">
                         <div class="form-check form-switch">
                             <input class="form-check-input" type="checkbox" role="switch"
                                    id="require_pkce" name="require_pkce" value="true"
@@ -419,6 +426,7 @@ function updatePreview() {
             issuer_from_proxy_headers: document.getElementById('issuer_from_proxy_headers').checked,
             audience: document.getElementById('audience').value,
             token_expiry_minutes: parseInt(document.getElementById('token_expiry_minutes').value) || 60,
+            refresh_token_expiry_minutes: parseInt(document.getElementById('refresh_token_expiry_minutes').value) || 10080,
             require_pkce: document.getElementById('require_pkce').checked,
             refresh_token_rotation: document.getElementById('refresh_token_rotation').checked,
             logos_dir: document.getElementById('logos_dir').value.trim()

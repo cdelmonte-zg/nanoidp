@@ -138,10 +138,12 @@ class TestSecurityProfileSettings:
             Settings(security_profile="production")
         assert "Security profile" in str(exc_info.value)
 
-    def test_default_cors_is_permissive(self):
-        """Test that default CORS allows all origins."""
+    def test_default_cors_is_left_to_the_profile(self):
+        """Absent, cors_allowed_origins is None: the profile decides (every
+        origin under dev, localhost under stricter-dev; #441, where the
+        default was a ["*"] nothing could tell from a declared one)."""
         settings = Settings()
-        assert settings.cors_allowed_origins == ["*"]
+        assert settings.cors_allowed_origins is None
 
     def test_cors_can_be_restricted(self):
         """Test that CORS origins can be configured."""

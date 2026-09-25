@@ -54,6 +54,10 @@ logger = logging.getLogger(__name__)
 # confusable 0, O, I, 1, L.
 _USER_CODE_CHARS = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
 
+# The store's own defaults, for callers that do not say. What the server
+# announces and applies comes from settings.yaml's device_flow section
+# (#441), whose defaults these equal (pinned in
+# tests/test_timing_and_cors_settings.py).
 DEVICE_CODE_EXPIRES_IN = 600  # seconds (RFC 8628 leaves this to the AS)
 DEVICE_POLL_INTERVAL = 5  # seconds
 
@@ -62,7 +66,7 @@ DEVICE_POLL_INTERVAL = 5  # seconds
 # create entries with its client_id alone (#255): an unauthenticated device
 # authorization request is cheaper to spam than a credentialed one. The cap is
 # generous for real dev/test use (each entry lives at most
-# DEVICE_CODE_EXPIRES_IN and is pruned on the next create); reaching it refuses
+# device_flow.code_expiry_seconds and is pruned on the next create); reaching it refuses
 # NEW authorizations rather than evicting live ones, so an in-flight legitimate
 # code is never dropped.
 MAX_PENDING_DEVICE_CODES = 10_000

@@ -66,6 +66,8 @@ FLAT_TO_DOCUMENT_PATH = {
     "strict_saml_binding": "saml.strict_binding",
     "default_acs_url": "saml.default_acs_url",
     "login_mode": "login.mode",
+    "device_code_expiry_seconds": "device_flow.code_expiry_seconds",
+    "device_polling_interval": "device_flow.polling_interval",
     "verbose_logging": "logging.verbose_logging",
     "log_token_requests": "logging.log_token_requests",
     "log_saml_requests": "logging.log_saml_requests",

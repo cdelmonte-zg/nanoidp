@@ -104,6 +104,21 @@ async def run(config_dir: str) -> int:
                     f"{settings_payload.get('settings_revision')!r}"
                 )
                 return 1
+            # The four #441 settings reach an agent over stdio as the config
+            # directory declares them, whichever directory this runs on
+            from nanoidp.config import ConfigManager
+
+            declared = ConfigManager(config_dir).settings
+            expected = {
+                "refresh_token_expiry_minutes": declared.refresh_token_expiry_minutes,
+                "device_code_expiry_seconds": declared.device_code_expiry_seconds,
+                "device_polling_interval": declared.device_polling_interval,
+                "cors_allowed_origins": declared.cors_allowed_origins,
+            }
+            seen = {key: settings_payload.get(key, "missing") for key in expected}
+            if seen != expected:
+                print(f"[FAIL] get_settings timing/CORS fields: {seen!r}")
+                return 1
             result = await session.call_tool(
                 "save_config", {"expected_users_revision": "0" * 64}
             )

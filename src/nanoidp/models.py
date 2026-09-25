@@ -8,7 +8,10 @@ the YAML shape coercers used when loading them. Persistence lives in
 which re-exports everything here for compatibility.
 """
 
+import ipaddress
+import re
 from typing import Any, Dict, List, Literal, Optional, Tuple, get_args
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
@@ -355,6 +358,97 @@ class OAuthClient(BaseModel):
         return self.token_endpoint_auth_method == PUBLIC_AUTH_METHOD
 
 
+_ORIGIN_HOST_NAME = re.compile(r"^[a-z0-9_](?:[a-z0-9_-]*[a-z0-9_])?(?:\.[a-z0-9_](?:[a-z0-9_-]*[a-z0-9_])?)*$")
+
+
+def _whatwg_ipv6(address: ipaddress.IPv6Address) -> str:
+    """An IPv6 address the way the URL Standard serializes it, which is the
+    form a browser puts in an Origin header. ``ipaddress``'s ``compressed``
+    is that form, except for IPv4-mapped addresses since Python 3.13, which
+    it writes with a dotted tail (::ffff:127.0.0.1) where the URL Standard
+    keeps hex pieces (::ffff:7f00:1) (#450 review)."""
+    if address.scope_id is not None:
+        # A zone id (fe80::1%eth0) is never part of an Origin header; the
+        # integer value is the address without it
+        address = ipaddress.IPv6Address(int(address))
+    if address.ipv4_mapped is None:
+        return address.compressed
+    high, low = int.from_bytes(address.packed[12:14], "big"), int.from_bytes(address.packed[14:16], "big")
+    return f"::ffff:{high:x}:{low:x}"
+
+
+def canonical_cors_origin(value: str) -> Optional[str]:
+    """The origin a browser would send in an Origin header for a page at
+    ``value``, or None when ``value`` names none.
+
+    An origin is an http or https scheme, a host and an optional port,
+    nothing else. The browser's form is lowercase, with an IPv4 address in
+    dotted decimal, an IPv6 address compressed and without a zone id, and
+    no port when it is the scheme's default. CORS compares an Origin header
+    with a declared entry as strings (ignoring case), so an entry in any
+    other form would never match (#450 review). A value that carries more
+    than an origin - a path, a query, credentials, whitespace urlsplit would
+    drop silently - names none: it is not a formatting slip to rewrite."""
+    # ASCII only: the ASCII form of an internationalised host is not computed
+    # here (see below), and a character such as KELVIN SIGN would otherwise
+    # be lowercased by urlsplit into the "k" of another host
+    if not value.isascii() or any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in value):
+        return None
+    try:
+        parts = urlsplit(value)
+        port = parts.port  # raises for a port that is not a number in range
+    except ValueError:
+        return None
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        return None
+    # The "/" an address bar adds carries nothing and is a slip to correct;
+    # any other path is more than an origin
+    if parts.path not in ("", "/") or parts.query or parts.fragment or "?" in value or "#" in value:
+        return None
+    if "@" in parts.netloc:
+        return None
+    host = parts.hostname  # lowercased by urlsplit
+    if parts.netloc.startswith("["):
+        # The serialization leaves out a zone id, which an Origin header
+        # never carries, so such an entry is refused with the browser's form
+        try:
+            host = f"[{_whatwg_ipv6(ipaddress.IPv6Address(host))}]"
+        except ValueError:
+            return None
+    else:
+        # An internationalised host is not converted here: a browser sends
+        # its UTS #46 ASCII form, which Python's idna codec (IDNA2003) does
+        # not compute - it maps faß.de to fass.de, another host, where a
+        # browser sends xn--fa-hia.de (#450 review). The entry has to be
+        # written in the ASCII form, and the validator says so; the name
+        # pattern admits ASCII only.
+        if not _ORIGIN_HOST_NAME.match(host):
+            return None
+        last_label = host.rsplit(".", 1)[-1]
+        if last_label.isdigit() or last_label.startswith("0x"):
+            # A browser reads this host as an IPv4 address
+            try:
+                host = str(ipaddress.IPv4Address(host))
+            except ValueError:
+                return None
+    default_port = 80 if parts.scheme == "http" else 443
+    return f"{parts.scheme}://{host}" + (f":{port}" if port is not None and port != default_port else "")
+
+
+def is_cors_origin(value: str) -> bool:
+    """Whether ``value`` is an origin as a browser sends it. Case aside:
+    flask-cors compares origins without regard to case, so HTTP://App.Test
+    matches the http://app.test a browser sends."""
+    return canonical_cors_origin(value) == value.lower()
+
+
+# The longest refresh token lifetime oauth.refresh_token_expiry_minutes
+# allows (30 days). The revocation store sizes the memory of a revoked
+# refresh token family from it: a family must stay revoked for as long as
+# any of its tokens can live (#441 review).
+MAX_REFRESH_TOKEN_EXPIRY_MINUTES = 43200
+
+
 class Settings(BaseModel):
     """Application settings with validation."""
     # secret_key and management_secret are validated here; a rejected value
@@ -420,6 +514,30 @@ class Settings(BaseModel):
     )
     audience: str = Field(default="default", min_length=1, description="OAuth audience")
     token_expiry_minutes: int = Field(default=60, gt=0, le=1440, description="Token expiry in minutes")
+    refresh_token_expiry_minutes: int = Field(
+        default=10080,
+        ge=1,
+        le=MAX_REFRESH_TOKEN_EXPIRY_MINUTES,
+        description="Refresh token lifetime in minutes (default 7 days, at most 30). "
+        "Applies to every refresh token issued from now on, a rotated one "
+        "included; tokens already issued keep the lifetime they were issued "
+        "with.",
+    )
+    device_code_expiry_seconds: int = Field(
+        default=600,
+        ge=1,
+        le=3600,
+        description="How long a device code and its user code stay valid, in "
+        "seconds (RFC 8628 expires_in). A short value makes expired_token "
+        "testable.",
+    )
+    device_polling_interval: int = Field(
+        default=5,
+        ge=1,
+        le=60,
+        description="The minimum polling interval announced to device clients, "
+        "in seconds (RFC 8628 interval).",
+    )
     client_id_metadata_documents_enabled: bool = Field(
         default=False,
         description="Accept a Client ID Metadata Document as a client source "
@@ -682,9 +800,55 @@ class Settings(BaseModel):
     security_profile: str = Field(
         default="dev", description="Security profile: dev, stricter-dev or oauth21"
     )
-    cors_allowed_origins: List[str] = Field(default_factory=lambda: ["*"], description="CORS allowed origins")
+    cors_allowed_origins: Optional[List[str]] = Field(
+        default=None,
+        description="Origins allowed to call nanoidp from a browser (CORS). "
+        "Absent: the security profile decides, every origin under dev and "
+        "oauth21, localhost and 127.0.0.1 on any port under stricter-dev. "
+        "Present: exactly this list in every profile; an empty list allows "
+        "no origin, and \"*\" every origin. Entries are exact origins "
+        "(scheme://host[:port]); patterns are refused. Applied when the "
+        "server starts.",
+    )
     rate_limit_enabled: bool = Field(default=False, description="Enable rate limiting")
     rate_limit_token_endpoint: str = Field(default="10/minute", description="Rate limit for /token endpoint")
+
+    @field_validator("cors_allowed_origins")
+    @classmethod
+    def validate_cors_allowed_origins(cls, v: Optional[List[str]]) -> Optional[List[str]]:
+        """Each entry is an origin, http(s)://host[:port] and nothing else,
+        in the form a browser sends it, or "*" alone for every origin (#441,
+        #450 review).
+
+        Checked for its structure, not for characters: a blank entry would
+        match nothing, a path or a query never appears in an Origin header,
+        and a pattern such as "http://localhost:*" would be read by
+        flask-cors as a regex matched at the start only, admitting
+        http://localhost.evil.test. A bracketed IPv6 host is an origin; the
+        server compares it literally (app.py)."""
+        if v is None:
+            return v
+        for origin in v:
+            if origin == "*" or is_cors_origin(origin):
+                continue
+            if not origin.isascii():
+                raise ValueError(
+                    f"cors_allowed_origins entry {origin!r} is not ASCII: a browser "
+                    "sends an internationalised host in its ASCII (punycode) form, "
+                    "xn--..., so write the entry that way"
+                )
+            canonical = canonical_cors_origin(origin)
+            if canonical is not None:
+                raise ValueError(
+                    f"cors_allowed_origins entry {origin!r} is not how a browser "
+                    f"writes this origin, so it would never match: write it as {canonical!r}"
+                )
+            raise ValueError(
+                f"cors_allowed_origins entry {origin!r} is not an origin: "
+                'list origins such as "http://localhost:3000" or '
+                '"http://[::1]:3000", or "*" alone'
+            )
+        return v
 
     @field_validator("rate_limit_token_endpoint")
     @classmethod

@@ -210,6 +210,24 @@
         "title": "ClientIdMetadataDocumentsSection",
         "type": "object"
       },
+      "DeviceFlowSection": {
+        "additionalProperties": false,
+        "description": "``device_flow``: the timing of the device authorization grant (#441).\n\nThe defaults are the values that were hardcoded while this section was\naccepted and ignored.",
+        "properties": {
+          "code_expiry_seconds": {
+            "default": 600,
+            "title": "Code Expiry Seconds",
+            "type": "integer"
+          },
+          "polling_interval": {
+            "default": 5,
+            "title": "Polling Interval",
+            "type": "integer"
+          }
+        },
+        "title": "DeviceFlowSection",
+        "type": "object"
+      },
       "DynamicRegistrationSection": {
         "additionalProperties": false,
         "description": "``oauth.dynamic_registration`` (#190).\n\nDeliberately not in ``serialization.OWNED_SETTINGS``: the settings form\nand the MCP ``update_settings`` tool do not offer it. Opening an\nunauthenticated mutation endpoint on an instance that may be reachable\nfrom a network is a decision for the file, not for a form. Not being on\nthat table means \"not managed by those surfaces\", never \"dropped by the\nnext save\": ``apply_settings_document`` mutates the parsed document and\nleaves every key it does not own alone.",
@@ -358,10 +376,6 @@
       "LoggingSection": {
         "additionalProperties": false,
         "properties": {
-          "format": {
-            "default": null,
-            "title": "Format"
-          },
           "level": {
             "default": "INFO",
             "title": "Level",
@@ -493,8 +507,9 @@
             "title": "Logos Dir"
           },
           "refresh_token_expiry_minutes": {
-            "default": null,
-            "title": "Refresh Token Expiry Minutes"
+            "default": 10080,
+            "title": "Refresh Token Expiry Minutes",
+            "type": "integer"
           },
           "refresh_token_rotation": {
             "default": false,
@@ -726,10 +741,6 @@
             "default": null,
             "title": "Management Secret"
           },
-          "permanent": {
-            "default": null,
-            "title": "Permanent"
-          },
           "require_ui_login": {
             "default": false,
             "title": "Require Ui Login",
@@ -782,12 +793,22 @@
         "title": "Config Version"
       },
       "cors_allowed_origins": {
+        "anyOf": [
+          {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          {
+            "type": "null"
+          }
+        ],
         "default": null,
         "title": "Cors Allowed Origins"
       },
       "device_flow": {
-        "default": null,
-        "title": "Device Flow"
+        "$ref": "#/$defs/DeviceFlowSection"
       },
       "hooks": {
         "$ref": "#/$defs/HooksSection"
