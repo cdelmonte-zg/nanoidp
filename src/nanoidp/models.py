@@ -389,7 +389,10 @@ def canonical_cors_origin(value: str) -> Optional[str]:
     other form would never match (#450 review). A value that carries more
     than an origin - a path, a query, credentials, whitespace urlsplit would
     drop silently - names none: it is not a formatting slip to rewrite."""
-    if any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in value):
+    # ASCII only: the ASCII form of an internationalised host is not computed
+    # here (see below), and a character such as KELVIN SIGN would otherwise
+    # be lowercased by urlsplit into the "k" of another host
+    if not value.isascii() or any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in value):
         return None
     try:
         parts = urlsplit(value)
@@ -413,12 +416,12 @@ def canonical_cors_origin(value: str) -> Optional[str]:
         except ValueError:
             return None
     else:
-        if not host.isascii():
-            # A browser sends an internationalised host in its ASCII form
-            try:
-                host = host.encode("idna").decode("ascii")
-            except UnicodeError:
-                return None
+        # An internationalised host is not converted here: a browser sends
+        # its UTS #46 ASCII form, which Python's idna codec (IDNA2003) does
+        # not compute - it maps faß.de to fass.de, another host, where a
+        # browser sends xn--fa-hia.de (#450 review). The entry has to be
+        # written in the ASCII form, and the validator says so; the name
+        # pattern admits ASCII only.
         if not _ORIGIN_HOST_NAME.match(host):
             return None
         last_label = host.rsplit(".", 1)[-1]
@@ -436,9 +439,7 @@ def is_cors_origin(value: str) -> bool:
     """Whether ``value`` is an origin as a browser sends it. Case aside:
     flask-cors compares origins without regard to case, so HTTP://App.Test
     matches the http://app.test a browser sends."""
-    # ASCII first: KELVIN SIGN lowercases to "k", so a non-ASCII entry could
-    # equal its canonical form case-insensitively while no browser sends it
-    return value.isascii() and canonical_cors_origin(value) == value.lower()
+    return canonical_cors_origin(value) == value.lower()
 
 
 # The longest refresh token lifetime oauth.refresh_token_expiry_minutes
@@ -830,6 +831,12 @@ class Settings(BaseModel):
         for origin in v:
             if origin == "*" or is_cors_origin(origin):
                 continue
+            if not origin.isascii():
+                raise ValueError(
+                    f"cors_allowed_origins entry {origin!r} is not ASCII: a browser "
+                    "sends an internationalised host in its ASCII (punycode) form, "
+                    "xn--..., so write the entry that way"
+                )
             canonical = canonical_cors_origin(origin)
             if canonical is not None:
                 raise ValueError(

@@ -383,13 +383,33 @@ class TestInvalidValuesAreErrors:
         ]:
             assert canonical_cors_origin(written) == browser, written
 
-    def test_an_internationalised_host_gets_its_punycode_form(self, tmp_path):
-        """A browser sends the ASCII form of the host (#450 review, round 5)."""
-        with pytest.raises(ValueError, match="write it as 'https://xn--bcher-kva.example'"):
-            ConfigManager(_write(tmp_path, {"cors_allowed_origins": ["https://bücher.example"]}))
-        assert ConfigManager(_write(tmp_path, {
-            "cors_allowed_origins": ["https://xn--bcher-kva.example"],
-        })).settings.cors_allowed_origins == ["https://xn--bcher-kva.example"]
+    @pytest.mark.parametrize("entry", [
+        "https://bücher.example",
+        # Python's idna codec (IDNA2003) maps this to fass.de, a different
+        # host from the xn--fa-hia.de a browser sends (UTS #46): nothing may
+        # suggest it (#450 review)
+        "https://faß.de",
+        # lowercases to "k", which no browser sends for it either
+        "http://\u212a.example",
+    ])
+    def test_a_non_ascii_host_is_refused_without_a_rewrite(self, tmp_path, entry):
+        """The form a browser sends for an internationalised host is its
+        UTS #46 ASCII form; the entry has to be written that way, and no
+        other conversion is offered in its place."""
+        with pytest.raises(ValueError, match="ASCII") as refused:
+            ConfigManager(_write(tmp_path, {"cors_allowed_origins": [entry]}))
+        assert "write it as" not in str(refused.value)
+        assert "fass.de" not in str(refused.value)
+        # nor does the helper compute a form any other caller could offer
+        from nanoidp.models import canonical_cors_origin
+
+        assert canonical_cors_origin(entry) is None
+
+    def test_the_ascii_form_of_an_internationalised_host_is_accepted(self, tmp_path):
+        for entry in ("https://xn--bcher-kva.example", "https://xn--fa-hia.de"):
+            assert ConfigManager(
+                _write(tmp_path, {"cors_allowed_origins": [entry]})
+            ).settings.cors_allowed_origins == [entry]
 
     def test_a_trailing_slash_gets_the_form_to_write(self, tmp_path):
         """The slash an address bar adds carries nothing: a slip to correct,

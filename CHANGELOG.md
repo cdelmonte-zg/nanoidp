@@ -23,7 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     Standard's form (compressed, IPv4-mapped as `::ffff:7f00:1`, no zone
     id), IPv4 in dotted decimal, no default port. An entry in another form
     is refused with the form to write (`https://app.example:443` ->
-    `https://app.example`), since it would never match; a path, a query,
+    `https://app.example`), since it would never match; an internationalised
+    host must be written in its ASCII (punycode) form, which is not computed
+    for it, since Python's IDNA codec differs from the browsers'; a path, a
+    query,
     credentials or a pattern such as `http://localhost:*`, which flask-cors
     would match at the start only, are refused as not an origin. A declared
     list answers only requests that carry an Origin header: without one,
