@@ -20,6 +20,7 @@ a directory. That is why this module imports ``config_documents`` and
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -237,7 +238,7 @@ def _validate_observation(
         users_document, _ = _validate_file(
             users_path,
             observed[USERS_FILE].data,
-            load_users_document,
+            partial(load_users_document, warn_deprecated=False),
             findings,
             expected_version=settings_version,
         )

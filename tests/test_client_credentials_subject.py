@@ -15,6 +15,8 @@ those tokens answer, not the objects in between.
 import base64
 import json
 import logging
+import subprocess
+import sys
 
 import jwt
 import pytest
@@ -299,6 +301,40 @@ class TestDefaultUserIsDeprecated:
         lines, code = report(validate_config_dir(str(isolated_repo_config)), strict=True)
         assert code == 0
         assert any("default_user" in line for line in lines)
+
+    def test_validate_config_reports_it_once_as_info(self, isolated_repo_config):
+        """The command on its own, in a fresh process with no load before it
+        (#452 review): the loader's startup warning must not reach stderr
+        next to the info line, or the same fact is told twice at two
+        levels."""
+        _edit(isolated_repo_config, "users.yaml", lambda doc: doc.__setitem__("default_user", "admin"))
+        result = subprocess.run(
+            [sys.executable, "-m", "nanoidp", "validate-config",
+             "--config", str(isolated_repo_config), "--strict"],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        told = [line for line in result.stdout.splitlines() if "default_user" in line]
+        assert len(told) == 1 and told[0].startswith("info: ")
+        assert "default_user" not in result.stderr
+        assert "WARNING" not in result.stderr
+
+    def test_validation_does_not_log_the_startup_warning(self, isolated_repo_config, caplog, monkeypatch):
+        from nanoidp import config_documents
+        from nanoidp.config_validation import validate_config_dir
+
+        _edit(isolated_repo_config, "users.yaml", lambda doc: doc.__setitem__("default_user", "admin"))
+        monkeypatch.setattr(config_documents, "_WARNED_DEFAULT_USER", set())
+        with caplog.at_level(logging.WARNING):
+            findings = validate_config_dir(str(isolated_repo_config))
+        assert [f.level for f in findings if "default_user" in f.message] == ["info"]
+        assert not [r for r in caplog.records if "default_user" in r.getMessage()]
+        # and a load afterwards still warns: the validation did not use up
+        # the once-per-file warning
+        with caplog.at_level(logging.WARNING):
+            ConfigManager(str(isolated_repo_config))
+        assert [r for r in caplog.records if "default_user" in r.getMessage()]
 
     def test_warned_once_per_file_not_on_every_load(self, isolated_repo_config, caplog):
         _edit(isolated_repo_config, "users.yaml", lambda doc: doc.__setitem__("default_user", "admin"))

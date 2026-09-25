@@ -786,14 +786,17 @@ def load_users_document(
     *,
     strict: bool = False,
     on_unknown: Optional[Callable[[str], None]] = None,
+    warn_deprecated: bool = True,
 ) -> UsersDocument:
+    """``warn_deprecated=False`` is validate-config's: it reports a
+    deprecated key as a finding of its own, and the log line would tell the
+    same fact a second time, at another level (#452 review)."""
     document = _load_document(
         UsersDocument, data, file_path, strict=strict, on_unknown=on_unknown
     )
-    if "default_user" in document.model_fields_set:
+    if warn_deprecated and "default_user" in document.model_fields_set:
         # Once per file and process: a load, a reload and every
-        # validate-before-write read the file again (#445 review);
-        # validate-config reports it as a finding each time it runs.
+        # validate-before-write read the file again (#445 review).
         key = str(file_path)
         if key not in _WARNED_DEFAULT_USER:
             _WARNED_DEFAULT_USER.add(key)
