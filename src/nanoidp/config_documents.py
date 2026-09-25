@@ -679,16 +679,20 @@ class UsersDocument(BaseModel):
     model_config = _ROOT
 
     config_version: Optional[int] = None
-    default_user: str = "admin"
+    # Deprecated (#445): it named the user a client_credentials token was
+    # issued for, and nothing reads it any more, since that token's subject
+    # is the client. Still declared, so that the users.yaml files generated
+    # for years load without an unknown-key finding, even under strict;
+    # load_users_document warns when a file carries it.
+    default_user: Optional[str] = Field(default=None, json_schema_extra={"deprecated": True})
     # Absent = no users; a bare `users:` (null) is a type error, as before.
     users: Dict[str, UserEntry] = Field(default_factory=dict)
 
-    def to_users(self) -> Tuple[Dict[str, User], str]:
-        users = {
+    def to_users(self) -> Dict[str, User]:
+        return {
             username: entry.to_user(username)
             for username, entry in self.users.items()
         }
-        return users, self.default_user
 
 
 def _dotted(loc: Tuple[Any, ...]) -> str:
@@ -782,10 +786,31 @@ def load_users_document(
     *,
     strict: bool = False,
     on_unknown: Optional[Callable[[str], None]] = None,
+    warn_deprecated: bool = True,
 ) -> UsersDocument:
-    return _load_document(
+    """``warn_deprecated=False`` is validate-config's: it reports a
+    deprecated key as a finding of its own, and the log line would tell the
+    same fact a second time, at another level (#452 review)."""
+    document = _load_document(
         UsersDocument, data, file_path, strict=strict, on_unknown=on_unknown
     )
+    if warn_deprecated and "default_user" in document.model_fields_set:
+        # Once per file and process: a load, a reload and every
+        # validate-before-write read the file again (#445 review).
+        key = str(file_path)
+        if key not in _WARNED_DEFAULT_USER:
+            _WARNED_DEFAULT_USER.add(key)
+            logger.warning(f"{file_path}: {DEFAULT_USER_DEPRECATION}")
+    return document
+
+
+# What a users.yaml carrying default_user is told, by the loader's log and
+# by validate-config (#445)
+DEFAULT_USER_DEPRECATION = (
+    "default_user has no effect since #445 (a client_credentials token's "
+    "subject is the client) and can be removed"
+)
+_WARNED_DEFAULT_USER: set[str] = set()
 
 
 class EntryInvalid(ValueError):
@@ -822,7 +847,7 @@ def parse_user_entry(username: str, data: Any, source: str) -> User:
         document = _load_document(
             UsersDocument, {"users": {username: dict(data)}}, Path(source), strict=True
         )
-        return document.to_users()[0][username]
+        return document.to_users()[username]
     except ValueError as exc:
         raise _entry_error(source, f"users.{username}.", exc) from None
 

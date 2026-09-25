@@ -18,7 +18,7 @@ import pytest
 import yaml
 
 from nanoidp.app import create_app
-from nanoidp.config import OAuthClient, User, get_config
+from nanoidp.config import OAuthClient, get_config
 from nanoidp.services.dynamic_registration import DynamicRegistration
 from nanoidp.services.identities import (
     DeclaredNameCollision,
@@ -630,23 +630,19 @@ class TestEveryResolutionSite:
 
         assert response.status_code == 400 and response.get_json()["error"] == "invalid_scope"
 
-    def test_client_credentials_uses_a_runtime_user_named_as_the_default_user(self, app_client):
-        client, config_dir = app_client
-        users = config_dir / "users.yaml"
-        doc = yaml.safe_load(users.read_text())
-        doc["default_user"] = "ci-service"
-        users.write_text(yaml.safe_dump(doc))
-        assert client.post("/api/config/reload").status_code == 200
-        get_identities().create_runtime_user(
-            User(username="ci-service", password=None, roles=["RUNTIME_SERVICE"])
-        )
+    def test_client_credentials_is_issued_to_a_runtime_client(self, app_client):
+        """The token's subject is the client, a runtime one included (#445:
+        it used to be the default_user, which a runtime user could be)."""
+        client, _ = app_client
 
         token = client.post(
             "/token", data={"grant_type": "client_credentials"}, headers=_basic("ci-app", "app-secret")
         ).get_json()["access_token"]
 
         claims = json.loads(base64.urlsafe_b64decode(token.split(".")[1] + "=="))
-        assert claims["sub"] == "ci-service"
+        assert claims["sub"] == "ci-app"
+        assert claims["client_id"] == "ci-app"
+        assert "roles" not in claims
 
     def test_saml_attribute_query_for_a_runtime_user(self, app_client):
         client, _ = app_client

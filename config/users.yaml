@@ -101,6 +101,3 @@ users:
     attributes:
       service_type: "batch"
       rate_limit: 1000
-
-# Default user for client_credentials grant
-default_user: "admin"

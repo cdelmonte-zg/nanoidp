@@ -83,7 +83,7 @@ class TestUsersYamlSkeletonFidelity:
         assert "default_user" not in on_disk
         assert set(on_disk["users"]) == {"alice"}
 
-    def test_save_user_still_applies_the_old_skeleton_for_a_genuinely_missing_file(
+    def test_save_user_creates_a_missing_file_with_the_users_alone(
         self, tmp_path
     ):
         config_dir = tmp_path / "config"
@@ -96,7 +96,8 @@ class TestUsersYamlSkeletonFidelity:
         writer.save_user(User(username="bob", password="y"))
 
         on_disk = yaml.safe_load((config_dir / "users.yaml").read_text())
-        assert on_disk["default_user"] == "admin"
+        # default_user was part of the skeleton until it was deprecated (#445)
+        assert "default_user" not in on_disk
         assert set(on_disk["users"]) == {"bob"}
 
 

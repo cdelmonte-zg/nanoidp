@@ -42,6 +42,7 @@ from ..config import (
     get_config,
 )
 from ..hooks import HookError
+from ..token_subject import shared_name_warning
 from .audit import get_audit_log
 from .client_metadata import cached_client, cached_entries, looks_like_client_id_url
 from .runtime_repository import Entry, RepositoryTransaction, T
@@ -236,7 +237,10 @@ class IdentityResolver:
                 raise DeclaredNameCollision(f"user {user.username!r} is declared in users.yaml")
             return self.store.users.create(user)
 
-        return self._checked_against_the_declaration(create)
+        created = self._checked_against_the_declaration(create)
+        if self.get_client(created.username) is not None:
+            logger.warning(shared_name_warning(created.username))
+        return created
 
     def _checked_against_the_declaration(self, create: Callable[[], _Created]) -> _Created:
         """A creation whose check against the declared names and whose insert
@@ -365,7 +369,10 @@ class IdentityResolver:
                 )
             return self.store.clients.create_entry(client)
 
-        return self._checked_against_the_declaration(create)
+        created = self._checked_against_the_declaration(create)
+        if self.get_user(client.client_id) is not None:
+            logger.warning(shared_name_warning(client.client_id))
+        return created
 
     # ---- lifecycle (#192) ------------------------------------------------
 

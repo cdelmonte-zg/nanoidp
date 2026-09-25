@@ -95,8 +95,7 @@ class TestDefaultsMatchTheOldLoaderLiterals:
         assert from_file.model_dump() == SettingsDocument().to_settings().model_dump()
 
     def test_user_entry_defaults(self):
-        users, default_user = UsersDocument(users={"alice": {}}).to_users()
-        assert default_user == "admin"
+        users = UsersDocument(users={"alice": {}}).to_users()
         alice = users["alice"]
         assert alice.password is None
         assert alice.email == "alice@example.org"
@@ -204,7 +203,7 @@ class TestUnknownKeysAreReportedNotSwallowed:
         with caplog.at_level(logging.WARNING):
             config = ConfigManager(cfg)
         assert "users.yaml: unknown key defualt_user (ignored)" in caplog.text
-        assert config.default_user == "admin"
+        assert config.users == {}
 
 
 class TestEdgeConventionsPreserved:

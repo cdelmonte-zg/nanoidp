@@ -660,15 +660,14 @@ def apply_settings_document(
     return document
 
 
-def apply_users_document(
-    document: Dict[str, Any], users: Dict[str, User], default_user: str
-) -> Dict[str, Any]:
+def apply_users_document(document: Dict[str, Any], users: Dict[str, User]) -> Dict[str, Any]:
     """Update the users.yaml keys this codebase manages, in place.
 
-    The full user map is owned; unknown top-level keys are preserved.
+    The full user map is owned; unknown top-level keys are preserved, and so
+    is a deprecated ``default_user`` (#445): not written any more, not
+    removed either, which is the operator's edit.
     """
     document["users"] = {username: user_to_yaml(user) for username, user in users.items()}
-    document["default_user"] = default_user
     return document
 
 

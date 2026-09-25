@@ -45,6 +45,40 @@ and flattened into `authorities` via the configured `authority_prefixes`:
 }
 ```
 
+### A client credentials token
+
+A token from the `client_credentials` grant has no user behind it: the
+client acts on its own behalf (RFC 6749 §4.4). Its subject is the client
+(RFC 9068 §2.2), and it carries no user's attributes:
+
+```json
+{
+  "iss": "http://localhost:8000",
+  "sub": "demo-client",
+  "client_id": "demo-client",
+  "aud": "my-app",
+  "scope": "profile",
+  "token_use": "access",
+  "iat": 1704100000,
+  "nbf": 1704100000,
+  "exp": 1704103600,
+  "jti": "..."
+}
+```
+
+- `aud` is the `resource` when the request names one, as for any access
+  token. No refresh token and no ID token are issued.
+- These claims are the grant's: the `extra` parameter can add other claims,
+  but cannot change them, nor add `roles`, `authorities`, `tenant`,
+  `identity_class`, `entitlements`, `groups`, `source_acl` or `attributes`.
+- `/userinfo` answers such a token with `{"sub": ...}` alone, and
+  `/introspect` names no `username`, nor the `openid` scope it reports for a
+  user token issued without one: a token whose `sub` equals its
+  `client_id` is never taken as a user's, even if a user has the client's
+  name. A user named like a client is reported with a warning at load.
+- Until #445 this token was issued for the `default_user` of `users.yaml`,
+  with that user's roles; `default_user` is deprecated and has no effect.
+
 ## ID Token
 
 Issued when the `openid` scope is requested. Its `aud` is the client's

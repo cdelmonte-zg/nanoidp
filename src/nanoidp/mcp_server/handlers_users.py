@@ -39,7 +39,6 @@ def _tool_list_users(arguments: dict[str, Any], config: ConfigManager, loaded: C
     users = [_user_to_dict(user) for user in loaded.users.values()]
     return {
         "count": len(users),
-        "default_user": loaded.default_user,
         # The users.yaml revision this runtime was loaded from (#229 phase
         # 5): pass it to save_config as expected_users_revision to refuse
         # the save if another writer moved the file since.

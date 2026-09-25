@@ -13,8 +13,8 @@ public class SecurityConfig {
     @Bean
     SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
         // Spring turns the token's "scope" claim into SCOPE_ authorities.
-        // Authorize a service on its scopes, never on sub or roles: in a
-        // client_credentials token those are not the calling service's
+        // Authorize a service on its scopes; its sub is its client_id, and a
+        // client_credentials token carries no roles
         http
             .authorizeHttpRequests(auth -> auth
                 .requestMatchers(HttpMethod.GET, "/stock/**").hasAuthority("SCOPE_inventory:read")

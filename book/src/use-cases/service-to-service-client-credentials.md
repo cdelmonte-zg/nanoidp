@@ -58,24 +58,22 @@ The access token's claims include:
   "aud": "https://inventory.internal",
   "client_id": "order-service",
   "scope": "inventory:read",
-  "sub": "service-account"
+  "sub": "order-service"
 }
 ```
 
 No refresh token: the service asks again when the token expires.
 
-> **In NanoIDP, `sub` is not the calling service
-> ([#445](https://github.com/cdelmonte-zg/nanoidp/issues/445)).** A
-> client credentials token is issued for the `default_user` of
-> `users.yaml`, with that user's roles and attributes. The preset's
-> `default_user` is a `service-account` user with no roles, so no human
-> privileges reach a service's token; the service itself is the
-> `client_id`. Authorize services on `client_id`, `scope` and `aud`, which
-> is also what tokens from production identity providers support.
+The token is the service's own: `sub` is the calling client, as RFC 9068
+§2.2 asks for grants with no user, and no user's roles or attributes come
+with it. Authorize services on their scopes and identify them by
+`client_id` or `sub`.
 
-```yaml
-{{#include ../../../examples/microservices-client-credentials/users.yaml}}
-```
+> **In releases up to 3.3.0,** a client credentials token was issued for
+> the `default_user` of `users.yaml`, with that user's roles
+> ([#445](https://github.com/cdelmonte-zg/nanoidp/issues/445)): `sub` was
+> that user's name, not the service. `default_user` is deprecated since, and
+> this preset no longer needs a user for its services.
 
 ## 3. Enforce the checks in the receiving service
 
@@ -129,8 +127,7 @@ API" cases turn into accepted calls: the tests catch it.
   `resource`. A shared audience means any service's token works everywhere.
 - Spring checks the signature and the issuer by itself, the audience only
   when configured. Test that a token for another service is refused.
-- Authorize a service on its scopes, and identify it by `client_id`. In
-  NanoIDP, the `sub` and roles of a client credentials token belong to
-  `default_user` (#445).
+- Authorize a service on its scopes, and identify it by its `sub`, which
+  is its `client_id`. A client credentials token carries no user's roles.
 - Declare scopes in `scopes_supported` and per client in `allowed_scopes`:
   a scope NanoIDP does not know is refused, not silently dropped.

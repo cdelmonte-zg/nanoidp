@@ -9,6 +9,8 @@ token, refusing an ID Token, checking revocation and auditing.
 
 from typing import Any, Dict, Mapping, Optional
 
+from ..token_subject import names_no_end_user
+
 # What the response says a token is, and the scope reported for a token
 # issued before scopes were recorded on one.
 _TOKEN_TYPE = "Bearer"
@@ -37,13 +39,21 @@ def build_introspection_response(
         "active": True,
         "token_type": _TOKEN_TYPE,
         "client_id": payload.get("client_id", caller_client_id),
-        "username": payload.get("sub"),
         "sub": payload.get("sub"),
     }
+    # username is the resource owner's (RFC 7662 §2.2), and a token whose
+    # subject is its client has none (#445)
+    if not names_no_end_user(payload):
+        response["username"] = payload.get("sub")
     for claim in _COPIED_CLAIMS:
         response[claim] = payload.get(claim)
 
     # Presence, not truthiness: a token whose scope is an empty string is
-    # reported with an empty scope, not with the default.
-    response["scope"] = payload["scope"] if "scope" in payload else _DEFAULT_SCOPE
+    # reported with an empty scope, not with the default. The default stands
+    # in only for a user token; a client's token without scope has none
+    # (#445).
+    if "scope" in payload:
+        response["scope"] = payload["scope"]
+    elif not names_no_end_user(payload):
+        response["scope"] = _DEFAULT_SCOPE
     return response

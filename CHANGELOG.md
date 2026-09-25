@@ -106,6 +106,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Actions](https://cdelmonte-zg.github.io/nanoidp/use-cases/oidc-provider-in-ci.html)
   includes these files as they are.
 
+### Deprecated
+- **`default_user` in `users.yaml`** (#445). It named the user a client
+  credentials token was issued for, and nothing reads it any more. A file
+  that carries it loads, in `strict` mode too, with a warning that it can be
+  removed; `validate-config` reports it as `info`, which `--strict` does not
+  fail on; `nanoidp init`, the wizard and the shipped presets no longer write
+  it, a save no longer manages it (nor removes it), MCP `list_users` no
+  longer reports it, and the JSON schema marks it deprecated.
+
 ### Fixed
 - **`stricter-dev` CORS is localhost, and nothing that starts like it**
   (#441 review). The profile's default origins were `http://localhost:*`
@@ -124,6 +133,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   page was wrong.
 
 ### Changed
+- **A client credentials token is the client's own** (#445). It was issued
+  for the `default_user` of `users.yaml`, as if that user had logged in:
+  `sub` was the user's name and the token carried the user's `roles`,
+  `authorities`, `tenant`, `identity_class`, `entitlements`, `groups`,
+  `source_acl` and `attributes`. With the shipped configuration every
+  service's token said `sub: admin` with `ROLE_ADMIN`, and `/userinfo`
+  answered such a token with the admin's profile. Now `sub` is the
+  `client_id` (RFC 9068 §2.2) and the token carries no user claims; the
+  `extra` parameter can add other claims but cannot change the grant's nor
+  add those. `/userinfo` answers a token whose `sub` equals its `client_id`
+  with the subject alone and `/introspect` names no `username` for it, and
+  no `scope` when none was requested, even
+  when a user has the client's name, which is reported with a warning at
+  load and on the runtime API. **A resource server that read roles from
+  these tokens sees none now**; authorize on `scope` and identify the
+  caller by `sub` or `client_id`.
+
 - **The `react-spa-pkce` preset declares a real public client.** `spa-client`
   carried a placeholder secret from before public clients existed (#188); it
   is now `token_endpoint_auth_method: "none"` with its redirect URIs
@@ -757,6 +783,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   declared configuration across processes and belongs to #354.
 
 ### Security
+- **An access token can no longer be spent as a refresh token** (found in
+  #445's review). The refresh grant recognised a refresh token by its
+  `token_type` claim, which the `/token` `extra` parameter can set on any
+  access token: a client could stamp `token_type: refresh` on its own access
+  token and spend it for a new access token and a refresh token, on every
+  grant. With the client credentials grant, which issues for `default_user`
+  up to 3.3.0, that turned a service's token into the default user's, admin
+  and its roles in the shipped configuration, with a long-lived refresh
+  token. The refresh grant now also requires `token_use: refresh`, which the
+  server sets last on every token it issues and `extra` cannot change. The
+  wider question of what `extra` may set is #451.
 - **A registration credential no longer reads or deletes a client recreated
   under its id** (#403). A dynamically registered client is two records, the
   runtime client and the RFC 7592 credential that manages it, linked by

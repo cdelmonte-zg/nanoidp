@@ -20,12 +20,14 @@ a directory. That is why this module imports ``config_documents`` and
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
 from .config_documents import (
+    DEFAULT_USER_DEPRECATION,
     SettingsDocument,
     UsersDocument,
     declared_validation_mode,
@@ -40,6 +42,10 @@ from .serialization import expand_env_vars as _expand_env_vars
 
 ERROR = "error"
 WARNING = "warning"
+#: A note that is never fatal, not even under ``--strict``: a deprecated key
+#: the server still accepts in strict mode must not fail a strict lint of the
+#: same directory, or CI and the server would disagree (#445).
+INFO = "info"
 
 # The three files of a configuration directory. bootstrap.yaml is optional
 # and absent by default; the other two fall back to built-in defaults, which
@@ -232,7 +238,7 @@ def _validate_observation(
         users_document, _ = _validate_file(
             users_path,
             observed[USERS_FILE].data,
-            load_users_document,
+            partial(load_users_document, warn_deprecated=False),
             findings,
             expected_version=settings_version,
         )
@@ -241,6 +247,11 @@ def _validate_observation(
                 users_document.to_users()
             except (ValueError, TypeError) as exc:
                 findings.append(Finding(ERROR, f"{users_path}: {exc}", USERS_FILE))
+            if "default_user" in users_document.model_fields_set:
+                # Accepted, and said: a key that does nothing (#445)
+                findings.append(
+                    Finding(INFO, f"{users_path}: {DEFAULT_USER_DEPRECATION}", USERS_FILE)
+                )
     else:
         findings.append(
             Finding(WARNING, f"{users_path}: not found, the default admin user would be used", USERS_FILE)
@@ -310,11 +321,12 @@ def report(findings: List[Finding], strict: bool) -> Tuple[List[str], int]:
     Exit 0 when clean, or when only warnings were found and ``--strict`` was
     not asked for; 1 on any error, and on any warning under ``--strict`` -
     the same rule the server applies at startup, so CI and the server agree
-    about what the directory is worth.
+    about what the directory is worth. Infos are printed and never counted.
     """
     lines = [finding.format() for finding in findings]
     errors = [f for f in findings if f.level == ERROR]
     warnings = [f for f in findings if f.level == WARNING]
+    infos = [f for f in findings if f.level == INFO]
     if errors:
         code = 1
     elif warnings and strict:
@@ -326,6 +338,7 @@ def report(findings: List[Finding], strict: bool) -> Tuple[List[str], int]:
     else:
         lines.append(
             f"{len(errors)} error(s), {len(warnings)} warning(s)"
+            + (f", {len(infos)} info" if infos else "")
             + (" (strict: warnings fail)" if strict and warnings else "")
         )
     return lines, code
@@ -432,6 +445,7 @@ def validate_config_result(
 __all__ = [
     "ERROR",
     "Finding",
+    "INFO",
     "WARNING",
     "declared_mode",
     "effective_strict",

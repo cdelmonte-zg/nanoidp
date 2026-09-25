@@ -98,7 +98,8 @@ def test_the_caller_is_the_client_id_and_carries_no_user_privileges():
     claims = jwt.decode(access, options={"verify_signature": False})
     assert claims["client_id"] == "order-service"
     assert claims["aud"] == INVENTORY
-    # sub is default_user, not the client (#445): the preset makes that a
-    # user with no roles, so nothing here grants a human's privileges
-    assert claims["sub"] == "service-account"
-    assert not claims.get("roles") and not claims.get("authorities")
+    # The token is the client's own (RFC 9068 §2.2): its subject is the
+    # client, and no user's roles or attributes come with it
+    assert claims["sub"] == "order-service"
+    for user_claim in ("roles", "authorities", "tenant", "entitlements", "groups", "attributes"):
+        assert user_claim not in claims

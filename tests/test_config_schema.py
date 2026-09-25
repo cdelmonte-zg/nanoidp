@@ -287,7 +287,6 @@ class TestDirectoryLoadIsTransactional:
         manager = ConfigManager(str(tmp_path))
         old_settings = manager.settings
         old_users = manager.users
-        old_default = manager.default_user
         old_strict = manager.strict_config
         old_registry = manager.hooks.snapshot()
         old_marker = manager._hooks_snapshot
@@ -309,7 +308,6 @@ class TestDirectoryLoadIsTransactional:
         assert manager.settings is old_settings
         assert manager.settings.audience == "old"
         assert manager.users is old_users
-        assert manager.default_user == old_default
         assert manager.strict_config is old_strict
         assert manager.hooks.snapshot() == old_registry
         assert manager._hooks_snapshot is old_marker

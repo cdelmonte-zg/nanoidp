@@ -34,6 +34,7 @@ import errno
 import fcntl
 import os
 import shutil
+import sys
 import threading
 from pathlib import Path
 
@@ -1103,47 +1104,73 @@ class TestAnOperationReadsOneConfiguration:
     BASIC = {"Authorization": "Basic " + base64.b64encode(b"demo-client:demo-secret").decode()}
 
     @staticmethod
-    def _declare(directory, users, default_user=None):
+    def _declare(directory, users):
         document = yaml.safe_load((directory / "users.yaml").read_text())
         document["users"] = {name: {"password": "pw", "roles": ["user"]} for name in users}
-        if default_user is not None:
-            document["default_user"] = default_user
         (directory / "users.yaml").write_text(yaml.safe_dump(document, sort_keys=False))
+
+    @staticmethod
+    def _declare_scope(directory, scope):
+        """One load's scope policy: `scope` is in the vocabulary and the
+        only one demo-client may ask for. Two loads with different scopes
+        are incompatible: a request asking for the first one's is granted
+        only by a whole answer from that load."""
+        document = yaml.safe_load((directory / "settings.yaml").read_text())
+        document["oauth"]["scopes_supported"] = ["openid", "profile", "email", "offline_access", scope]
+        for client in document["oauth"]["clients"]:
+            if client["client_id"] == "demo-client":
+                client["allowed_scopes"] = [scope]
+        (directory / "settings.yaml").write_text(yaml.safe_dump(document, sort_keys=False))
 
     @pytest.fixture
     def directory_of_two_loads(self, tmp_path):
         directory = tmp_path / "config"
         shutil.copytree(_REPO_CONFIG, directory)
-        self._declare(directory, ["alice"], default_user="alice")
+        self._declare(directory, ["alice"])
+        self._declare_scope(directory, "alpha")
         return directory
 
     def test_a_grant_answers_from_the_configuration_it_began_with(self, directory_of_two_loads, monkeypatch):
-        """Measured before the fix: a load between the read of `default_user`
-        and the lookup of that user made the grant mint for the synthetic
-        `service-account`, a subject neither configuration named."""
+        """A load lands between the grant's lookup of the client and its
+        reading of the scope vocabulary. The client is the first load's,
+        which allows `alpha`; a vocabulary read from the next load, which
+        has no `alpha`, would refuse it. The grant reads both from the
+        configuration it began with.
+
+        Until #445 this window was the one between the read of
+        `default_user` and the lookup of that user, measured to mint for a
+        subject neither configuration named; the grant no longer reads
+        users at all."""
         from nanoidp.app import create_app
         from nanoidp.config import get_config
         from nanoidp.services import identities as identities_module
 
         app = create_app(str(directory_of_two_loads))
         client = app.test_client()
-        real = identities_module.IdentityResolver.get_user
+        real = identities_module.IdentityResolver.get_client
         in_the_window = threading.Event()
 
-        def load_between_the_two_reads(resolver, username):
-            if not in_the_window.is_set():
+        def load_after_the_client_lookup(resolver, *arguments, **named):
+            found = real(resolver, *arguments, **named)
+            # The grant's own lookup, not the client authentication's, which
+            # comes before the dispatch (#445 review): the window is inside
+            # the grant, between its client and its scope vocabulary
+            called_by = sys._getframe(1).f_code.co_name
+            if called_by == "_grant_client_credentials" and not in_the_window.is_set():
                 in_the_window.set()
-                self._declare(directory_of_two_loads, ["bob"], default_user="bob")
+                self._declare_scope(directory_of_two_loads, "beta")
                 get_config().reload_local()
-            return real(resolver, username)
+            return found
 
-        monkeypatch.setattr(identities_module.IdentityResolver, "get_user", load_between_the_two_reads)
-        answer = client.post("/token", data={"grant_type": "client_credentials"}, headers=self.BASIC)
+        monkeypatch.setattr(identities_module.IdentityResolver, "get_client", load_after_the_client_lookup)
+        answer = client.post(
+            "/token", data={"grant_type": "client_credentials", "scope": "alpha"}, headers=self.BASIC
+        )
 
         assert in_the_window.is_set(), "the load was never placed in the window"
         assert answer.status_code == 200, answer.data
         claims = jwt.decode(answer.get_json()["access_token"], options={"verify_signature": False})
-        assert claims["sub"] == "alice", "the answer pairs the configuration it began with and the next"
+        assert claims["scope"] == "alpha", "the answer pairs the configuration it began with and the next"
 
     def test_a_grant_answers_from_the_configuration_the_request_chose(self, directory_of_two_loads, monkeypatch):
         """Not the one it was dispatched with: the load lands before the
@@ -1167,21 +1194,23 @@ class TestAnOperationReadsOneConfiguration:
                 document = yaml.safe_load((directory_of_two_loads / "settings.yaml").read_text())
                 document["oauth"]["audience"] = "an-audience-of-the-next-load"
                 (directory_of_two_loads / "settings.yaml").write_text(yaml.safe_dump(document, sort_keys=False))
-                # The default user moves too: the grant reads it from the
+                # The scope policy moves too: the grant reads it from the
                 # context, and the token is built from the service's
                 # configuration, so both sides of the answer are pinned.
-                self._declare(directory_of_two_loads, ["bob"], default_user="bob")
+                self._declare_scope(directory_of_two_loads, "beta")
                 get_config().reload_local()
             return real(*arguments, **named)
 
         monkeypatch.setattr(oauth_module, "_enforce_token_endpoint_auth", load_before_the_context_is_built)
-        answer = client.post("/token", data={"grant_type": "client_credentials"}, headers=self.BASIC)
+        answer = client.post(
+            "/token", data={"grant_type": "client_credentials", "scope": "alpha"}, headers=self.BASIC
+        )
 
         assert in_the_window.is_set(), "the load was never placed in the window"
         assert answer.status_code == 200, answer.data
         claims = jwt.decode(answer.get_json()["access_token"], options={"verify_signature": False})
         assert claims["aud"] == began_with, "the token was built from a load the request did not choose"
-        assert claims["sub"] == "alice", "the grant read a default user the request did not choose"
+        assert claims["scope"] == "alpha", "the grant read a scope policy the request did not choose"
 
     def test_a_load_between_the_choice_and_the_handler_is_not_read(self, directory_of_two_loads):
         """The choice is made in the freshness hook, and the handler is not
@@ -1201,18 +1230,18 @@ class TestAnOperationReadsOneConfiguration:
                 document = yaml.safe_load((directory_of_two_loads / "settings.yaml").read_text())
                 document["oauth"]["audience"] = "an-audience-of-the-next-load"
                 (directory_of_two_loads / "settings.yaml").write_text(yaml.safe_dump(document, sort_keys=False))
-                self._declare(directory_of_two_loads, ["bob"], default_user="bob")
+                self._declare_scope(directory_of_two_loads, "beta")
                 get_config().reload_local()
             return None
 
         answer = app.test_client().post(
-            "/token", data={"grant_type": "client_credentials"}, headers=self.BASIC
+            "/token", data={"grant_type": "client_credentials", "scope": "alpha"}, headers=self.BASIC
         )
 
         assert began_with, "the load was never placed in the window"
         assert answer.status_code == 200, answer.data
         claims = jwt.decode(answer.get_json()["access_token"], options={"verify_signature": False})
-        assert (claims["sub"], claims["aud"]) == ("alice", began_with[0])
+        assert (claims["scope"], claims["aud"]) == ("alpha", began_with[0])
 
     def test_no_token_for_a_user_declared_after_the_request_began(self, directory_of_two_loads):
         """The strict rule at an endpoint (#406, review): a user the request's
@@ -1228,7 +1257,7 @@ class TestAnOperationReadsOneConfiguration:
         def declare_someone_after_the_choice():
             if not loaded_again:
                 loaded_again.append(True)
-                self._declare(directory_of_two_loads, ["alice", "declared-later"], default_user="alice")
+                self._declare(directory_of_two_loads, ["alice", "declared-later"])
                 get_config().reload_local()
             return None
 
@@ -1557,7 +1586,7 @@ class TestAnOperationReadsOneConfiguration:
         def load_while_it_renders(hooks):
             if not in_the_window.is_set():
                 in_the_window.set()
-                self._declare(directory_of_two_loads, ["alice", "bob"], default_user="alice")
+                self._declare(directory_of_two_loads, ["alice", "bob"])
                 get_config().reload_local()
             return describe(hooks)
 

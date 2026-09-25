@@ -28,5 +28,3 @@ users:
     tenant: "default"
     source_acl:
       - "ACL_READ"
-
-default_user: "admin"

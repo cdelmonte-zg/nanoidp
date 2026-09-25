@@ -289,17 +289,6 @@ class YamlWriter:
         """
 
         def mutate(data: Dict[str, Any]) -> None:
-            # Match _load_users_yaml's old skeleton exactly (#229 phase 3
-            # review, blocking 1): only a users.yaml that does not exist
-            # at all gets {"users": {}, "default_user": "admin"} - an
-            # existing file (even an empty one, or one simply missing the
-            # key) must not gain a default_user it never had. Checked
-            # here, inside mutate, because the lock is already held by
-            # the time compare_and_replace calls this, so "does the file
-            # exist" is accurate for the same load this mutation applies to.
-            if not self.users_file.exists():
-                data["users"] = {}
-                data["default_user"] = "admin"
             data.setdefault("users", {})
             if is_new and user.username in data["users"]:
                 raise EntryAlreadyExists(f"User '{user.username}' already exists")
@@ -318,35 +307,15 @@ class YamlWriter:
         """
 
         def mutate(data: Dict[str, Any]) -> None:
-            # Same missing-vs-existing distinction as save_user's mutate
-            # above (#229 phase 3 review, blocking 1).
-            if not self.users_file.exists():
-                data["users"] = {}
-                data["default_user"] = "admin"
             data.setdefault("users", {})
             if username not in data["users"]:
                 raise ValueError(f"User '{username}' not found")
             del data["users"][username]
-
-            # If deleted user was the default, update default_user
-            if data.get("default_user") == username:
-                remaining_users = list(data["users"].keys())
-                data["default_user"] = remaining_users[0] if remaining_users else ""
+            # A deprecated default_user naming this user stays as it is:
+            # nothing reads it any more, and removing it is the operator's
+            # edit (#445)
 
         return self._atomic_write(self.users_file, mutate, expected_revision)
-
-    def set_default_user(self, username: str, expected_revision: Optional[str] = None) -> str:
-        """Set the default user for client_credentials grant."""
-
-        def mutate(data: Dict[str, Any]) -> None:
-            data.setdefault("users", {})
-            if username not in data["users"]:
-                raise ValueError(f"User '{username}' not found")
-            data["default_user"] = username
-
-        return self._atomic_write(self.users_file, mutate, expected_revision)
-
-    # ==================== OAuth Client Operations ====================
 
     def save_client(
         self, client: OAuthClient, is_new: bool = False, expected_revision: Optional[str] = None
