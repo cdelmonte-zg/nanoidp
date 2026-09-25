@@ -215,6 +215,27 @@ class TestCorsAllowedOrigins:
         assert self._allowed(client, "http://[::2]:3000") is None
         assert self._allowed(client, "http://[::1]:3001") is None
 
+    def test_mixed_case_entries_admit_the_origin_a_browser_sends(self, isolated_repo_config):
+        """Accepted at load because the server compares ignoring case, which
+        is checked here on the server and not only at load (#450 review)."""
+        client = _client(
+            isolated_repo_config,
+            cors_allowed_origins=["HTTP://App.Test:3000", "HTTP://[::1]:3000"],
+        )
+        assert self._allowed(client, "http://app.test:3000") == "http://app.test:3000"
+        assert self._allowed(client, "http://[::1]:3000") == "http://[::1]:3000"
+        assert self._allowed(client, "http://other.test") is None
+
+    def test_a_declared_list_answers_only_requests_that_carry_an_origin(self, isolated_repo_config):
+        """No Access-Control-Allow-Origin without an Origin header, for any
+        declared entry: flask-cors's always_send would otherwise pick one of
+        them, depending on how the entry is written (#450 review)."""
+        client = _client(
+            isolated_repo_config, cors_allowed_origins=["http://b.test", "http://a.test", "http://[::1]:3000"],
+        )
+        response = client.get("/.well-known/openid-configuration")
+        assert response.headers.get("Access-Control-Allow-Origin") is None
+
     def test_an_empty_list_allows_no_origin(self, isolated_repo_config):
         client = _client(isolated_repo_config, cors_allowed_origins=[])
         assert self._allowed(client, "http://localhost:5173") is None
@@ -283,6 +304,8 @@ class TestInvalidValuesAreErrors:
         ({"cors_allowed_origins": ["http://[fe80::1%25eth0]:3000"]}, "cors_allowed_origins"),
         ({"cors_allowed_origins": ["http://127.1"]}, "cors_allowed_origins"),
         ({"cors_allowed_origins": ["http://app.example:"]}, "cors_allowed_origins"),
+        # lowercases to ASCII (KELVIN SIGN), but no browser sends it
+        ({"cors_allowed_origins": ["http://\u212a.example"]}, "cors_allowed_origins"),
     ])
     def test_refused(self, tmp_path, settings, path):
         with pytest.raises(ValueError, match=path.replace(".", r"\.")):
@@ -338,6 +361,12 @@ class TestInvalidValuesAreErrors:
             ("http://[1:0:2:3:4:5:6:7]", "http://[1:0:2:3:4:5:6:7]"),
         ]:
             assert canonical_cors_origin(written) == browser, written
+
+    def test_a_trailing_slash_gets_the_form_to_write(self, tmp_path):
+        """The slash an address bar adds carries nothing: a slip to correct,
+        not a path (#450 review, round 4)."""
+        with pytest.raises(ValueError, match="write it as 'https://app.example'"):
+            ConfigManager(_write(tmp_path, {"cors_allowed_origins": ["https://app.example/"]}))
 
     def test_a_non_canonical_origin_is_refused_with_the_form_to_write(self, tmp_path):
         with pytest.raises(ValueError, match="write it as 'https://app.example'"):

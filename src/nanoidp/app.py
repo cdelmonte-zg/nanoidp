@@ -9,7 +9,6 @@ from typing import Any, Optional
 
 from flask import Flask, Response, jsonify, make_response, request
 from flask_cors import CORS
-from flask_cors.core import probably_regex
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from werkzeug.middleware.proxy_fix import ProxyFix
@@ -162,22 +161,21 @@ def create_app(
     # profile; absent, the profile decides, as it always did: localhost only
     # under stricter-dev, every origin otherwise. Read once, at startup.
     declared = settings.cors_allowed_origins
+    cors_options: dict[str, Any] = {}
     if declared is not None:
         # A declared entry is an origin in a browser's form (models.py), and
-        # it must be matched as that string. flask-cors compares a plain
-        # string as one, ignoring case, but takes a string it thinks is a
-        # regex for a pattern: the brackets of an IPv6 host made
-        # http://[::1]:3000 not match itself and admit http://1:3000. What
-        # flask-cors itself would read as a regex goes in escaped and
-        # anchored (\Z, not $, which also matches before a newline);
-        # everything else stays a plain string, which keeps flask-cors's
-        # always_send behaviour for it (#450 review).
+        # it must be matched as that string: flask-cors takes a string with
+        # regex characters for a pattern (the brackets of an IPv6 host made
+        # http://[::1]:3000 not match itself and admit http://1:3000). Every
+        # entry goes in escaped and anchored (\Z, not $, which also matches
+        # before a newline), and flask-cors matches it ignoring case, as it
+        # does origins. "*" is flask-cors's own "every origin" (#450 review).
         applied = list(declared)
-        origins = [
-            # "*" is flask-cors's own "every origin", not a pattern to escape
-            origin if origin == "*" or not probably_regex(origin) else f"^{re.escape(origin)}\\Z"
-            for origin in declared
-        ]
+        origins = [origin if origin == "*" else f"^{re.escape(origin)}\\Z" for origin in declared]
+        # Without an Origin header there is nothing to answer: flask-cors's
+        # always_send would name one declared entry, and only one written
+        # without regex characters (#450 review)
+        cors_options["always_send"] = False
     else:
         # flask-cors reads an entry with regex characters as a pattern and
         # matches it with re.match, anchored at the start only: the old
@@ -189,7 +187,7 @@ def create_app(
             else ["*"]
         )
         applied = list(origins)
-    CORS(app, resources={r"/*": {"origins": origins}})
+    CORS(app, resources={r"/*": {"origins": origins}}, **cors_options)
     # What is in force until the next start, whatever a reload declares:
     # GET /api/config reports it next to the declared list, as origins (or
     # the profile's patterns), not as the escaped form flask-cors is given.

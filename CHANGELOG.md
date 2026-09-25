@@ -25,7 +25,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     is refused with the form to write (`https://app.example:443` ->
     `https://app.example`), since it would never match; a path, a query,
     credentials or a pattern such as `http://localhost:*`, which flask-cors
-    would match at the start only, are refused as not an origin. A save from the web UI or the MCP server writes them
+    would match at the start only, are refused as not an origin. A declared
+    list answers only requests that carry an Origin header: without one,
+    no `Access-Control-Allow-Origin` is sent. A save from the web UI or the MCP server writes them
     only while they differ from the default.
   - A revoked refresh token family is remembered for the longest lifetime
     the setting allows plus a day (31 days), where it was 8 days, sized for

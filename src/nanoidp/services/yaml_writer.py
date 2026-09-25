@@ -5,7 +5,7 @@ Provides atomic write operations for YAML configuration files.
 
 import logging
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Mapping, Optional
+from typing import Any, Callable, Dict, List, Mapping, Optional, Set
 
 from ..config import ConfigurationRejected, OAuthClient, User, get_config
 from ..config_documents import document_defaults, reject_unloadable
@@ -51,7 +51,7 @@ def _mutate_settings_section(
     rows = {f.key: f for f in OWNED_SETTINGS if f.section == section_name}
     # Built once per call, and only if a defaults-dependent row is provided
     defaults: Optional[Mapping[str, Any]] = None
-    emptied = []
+    emptied: Set[str] = set()
     for key, value in provided.items():
         if value is None:
             continue
@@ -62,8 +62,8 @@ def _mutate_settings_section(
             # add a key at its default to a file that never had it (#441).
             if defaults is None:
                 defaults = document_defaults()
-            emptied.append(
-                merge_owned_setting_at_default(document, field, value, defaults[default_lookup_key(field)])
+            merge_owned_setting_at_default(
+                document, field, value, defaults[default_lookup_key(field)], emptied
             )
             continue
         # Looked up at each write rather than held across the loop, and
@@ -104,7 +104,7 @@ def _applied_login_keys(
     ``mode`` means unchanged, since there is no sensible cleared login mode
     (#131), and a ``None`` checkbox means the field was not on the form
     (#250). Everything else is applied, and how it reaches the document is
-    ``_mutate_login_key``'s business.
+    ``_mutate_login_keys``' business.
     """
     applied: Dict[str, Any] = {}
     if mode:
@@ -120,17 +120,21 @@ _LOGIN_ROWS: Dict[str, OwnedSetting] = {
 }
 
 
-def _mutate_login_key(
-    document: Dict[str, Any], key: str, value: Any, defaults: Mapping[str, Any]
-) -> Optional[str]:
-    """Write one ``login.*`` key, or remove it once it is back at its
-    default, through the same rule ``apply_settings_document`` uses (#319).
+def _mutate_login_keys(
+    document: Dict[str, Any], applied: Mapping[str, Any], defaults: Mapping[str, Any]
+) -> None:
+    """Write the ``login.*`` keys this call applies, each removed once it is
+    back at its default, through the same rule ``apply_settings_document``
+    uses (#319); the section they leave empty goes after all of them.
 
     Four helpers that were this same line - one per key, each taking its own
-    positional default - stood here before.
+    positional default - stood here before, and later two copies of the loop.
     """
-    row = _LOGIN_ROWS[key]
-    return merge_owned_setting_at_default(document, row, value, defaults[default_lookup_key(row)])
+    emptied: Set[str] = set()
+    for key, value in applied.items():
+        row = _LOGIN_ROWS[key]
+        merge_owned_setting_at_default(document, row, value, defaults[default_lookup_key(row)], emptied)
+    drop_emptied_sections(document, emptied)
 
 
 def _login_settings_defaults() -> Mapping[str, Any]:
@@ -544,9 +548,7 @@ class YamlWriter:
         applied = _applied_login_keys(mode, auto_login, two_step, totp)
 
         def mutate(data: Dict[str, Any]) -> None:
-            drop_emptied_sections(
-                data, [_mutate_login_key(data, key, value, defaults) for key, value in applied.items()]
-            )
+            _mutate_login_keys(data, applied, defaults)
 
         return self._atomic_write(self.settings_file, mutate, expected_revision)
 
@@ -606,9 +608,7 @@ class YamlWriter:
             _mutate_settings_section(data, "saml", saml_fields)
             if allowed_identity_classes:
                 _mutate_allowed_identity_classes(data, allowed_identity_classes)
-            drop_emptied_sections(
-                data, [_mutate_login_key(data, key, value, defaults) for key, value in applied.items()]
-            )
+            _mutate_login_keys(data, applied, defaults)
 
         return self._atomic_write(self.settings_file, mutate, expected_revision)
 

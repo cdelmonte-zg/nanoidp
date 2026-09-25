@@ -363,31 +363,17 @@ _ORIGIN_HOST_NAME = re.compile(r"^[a-z0-9_](?:[a-z0-9_-]*[a-z0-9_])?(?:\.[a-z0-9
 
 def _whatwg_ipv6(address: ipaddress.IPv6Address) -> str:
     """An IPv6 address the way the URL Standard serializes it, which is the
-    form a browser puts in an Origin header: lowercase hex pieces without
-    leading zeros, the first longest run of two or more zero pieces as
-    "::", and no dotted IPv4 tail. Not ``ipaddress``'s ``compressed``,
-    which writes IPv4-mapped addresses as ::ffff:127.0.0.1 since Python
-    3.13 (#450 review)."""
-    # From the bytes: exploded, like compressed, writes a dotted IPv4 tail
-    # for IPv4-mapped addresses since Python 3.13
-    packed = address.packed
-    pieces = [int.from_bytes(packed[offset:offset + 2], "big") for offset in range(0, 16, 2)]
-    run_start, run_length, index = -1, 0, 0
-    while index < 8:
-        if pieces[index]:
-            index += 1
-            continue
-        end = index
-        while end < 8 and not pieces[end]:
-            end += 1
-        if end - index > run_length and end - index >= 2:
-            run_start, run_length = index, end - index
-        index = end
-    if run_start < 0:
-        return ":".join(f"{piece:x}" for piece in pieces)
-    left = ":".join(f"{piece:x}" for piece in pieces[:run_start])
-    right = ":".join(f"{piece:x}" for piece in pieces[run_start + run_length:])
-    return f"{left}::{right}"
+    form a browser puts in an Origin header. ``ipaddress``'s ``compressed``
+    is that form, except for IPv4-mapped addresses since Python 3.13, which
+    it writes with a dotted tail (::ffff:127.0.0.1) where the URL Standard
+    keeps hex pieces (::ffff:7f00:1) (#450 review)."""
+    if address.scope_id is not None:
+        # A zone id (fe80::1%eth0) is never part of an Origin header
+        address = ipaddress.IPv6Address(address.compressed.split("%", 1)[0])
+    if address.ipv4_mapped is None:
+        return address.compressed
+    high, low = int.from_bytes(address.packed[12:14], "big"), int.from_bytes(address.packed[14:16], "big")
+    return f"::ffff:{high:x}:{low:x}"
 
 
 def canonical_cors_origin(value: str) -> Optional[str]:
@@ -402,7 +388,7 @@ def canonical_cors_origin(value: str) -> Optional[str]:
     other form would never match (#450 review). A value that carries more
     than an origin - a path, a query, credentials, whitespace urlsplit would
     drop silently - names none: it is not a formatting slip to rewrite."""
-    if any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in value):
+    if not value.isascii() or any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in value):
         return None
     try:
         parts = urlsplit(value)
@@ -411,15 +397,16 @@ def canonical_cors_origin(value: str) -> Optional[str]:
         return None
     if parts.scheme not in ("http", "https") or not parts.hostname:
         return None
-    if parts.path or parts.query or parts.fragment or "?" in value or "#" in value:
+    # The "/" an address bar adds carries nothing and is a slip to correct;
+    # any other path is more than an origin
+    if parts.path not in ("", "/") or parts.query or parts.fragment or "?" in value or "#" in value:
         return None
     if "@" in parts.netloc:
         return None
     host = parts.hostname  # lowercased by urlsplit
     if parts.netloc.startswith("["):
-        # A zone id (fe80::1%eth0) is never in an Origin header; the
-        # serialization below leaves it out, so such an entry is refused
-        # with the form a browser would send
+        # The serialization leaves out a zone id, which an Origin header
+        # never carries, so such an entry is refused with the browser's form
         try:
             host = f"[{_whatwg_ipv6(ipaddress.IPv6Address(host))}]"
         except ValueError:

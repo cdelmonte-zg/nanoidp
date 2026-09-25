@@ -35,7 +35,7 @@ import time
 from dataclasses import dataclass
 from io import StringIO
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, Iterable, Mapping, Optional
+from typing import TYPE_CHECKING, Any, Dict, Mapping, Optional, Set
 
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap
@@ -528,8 +528,12 @@ def default_lookup_key(field: "OwnedSetting") -> str:
 
 
 def merge_owned_setting_at_default(
-    document: Dict[str, Any], field: "OwnedSetting", value: Any, default: Any
-) -> Optional[str]:
+    document: Dict[str, Any],
+    field: "OwnedSetting",
+    value: Any,
+    default: Any,
+    emptied: Set[str],
+) -> None:
     """Write a defaults-dependent key, or remove it once it is back at the
     default - the two shapes these keys come in (#319).
 
@@ -539,10 +543,11 @@ def merge_owned_setting_at_default(
     document that does not have the section keeps not having it while the
     value is the default.
 
-    Returns the name of a section this call left empty, which the caller
-    drops with ``drop_emptied_sections`` once its whole save is written.
-    Dropped at once, as it was until #450's review, a later key of the same
-    save created the section again at the end of the file, away from its
+    A section this call leaves empty is added to ``emptied``, a required
+    argument so that no caller can forget it, and the caller drops it with
+    ``drop_emptied_sections`` once its whole save is written. Dropped at
+    once, as it was until #450's review, a later key of the same save
+    created the section again at the end of the file, away from its
     comment (a login block with two_step going and totp coming, a
     device_flow block with its two keys).
 
@@ -557,35 +562,34 @@ def merge_owned_setting_at_default(
         current = document.get(field.key, default)
 
     if is_unchanged(current, value):
-        return None
+        return
 
     if value != default:
         if not field.section:
             document[field.key] = value
-            return None
+            return
         # Not `setdefault`: a bare `login:` line is the key present with a
         # None value, which setdefault would hand back unchanged.
         if document.get(field.section) is None:
             document[field.section] = {}
         document[field.section][field.key] = value
-        return None
+        return
 
     if not field.section:
         document.pop(field.key, None)
-        return None
+        return
     section = document.get(field.section)
     if section:
         section.pop(field.key, None)
         if not section:
-            return field.section
-    return None
+            emptied.add(field.section)
 
 
-def drop_emptied_sections(document: Dict[str, Any], emptied: Iterable[Optional[str]]) -> None:
+def drop_emptied_sections(document: Dict[str, Any], emptied: Set[str]) -> None:
     """Drop the sections ``merge_owned_setting_at_default`` left empty, once
     the save that emptied them is complete: those still empty go, those a
     later write of the same save filled again stay where they were."""
-    for name in {name for name in emptied if name}:
+    for name in emptied:
         if name in document and not document[name]:
             document.pop(name)
 
@@ -616,16 +620,14 @@ def apply_settings_document(
     # "Omit at default" decisions read the loader's defaults (#175 piece 2).
     resolved_defaults = defaults if defaults is not None else _FALLBACK_DEFAULTS
 
-    emptied = []
+    emptied: Set[str] = set()
     for field in OWNED_SETTINGS:
         value = getattr(settings, field.attr)
         if field.doc_mode == "omit_when_default":
             # Before the section is touched: creating it here would leave a
             # `login: {}` behind for a value that is at its default (#319).
-            emptied.append(
-                merge_owned_setting_at_default(
-                    document, field, value, resolved_defaults[default_lookup_key(field)]
-                )
+            merge_owned_setting_at_default(
+                document, field, value, resolved_defaults[default_lookup_key(field)], emptied
             )
             continue
         target = document if not field.section else document.setdefault(field.section, {})
