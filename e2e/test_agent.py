@@ -3338,12 +3338,18 @@ class NanoIDPTestAgent:
 
                         parsing_ok = in_response_to == request_id
 
+                        # The Audience is the SP this request came from, the
+                        # AuthnRequest's Issuer (#443), not oauth.audience
+                        audience_match = re.search(r'<saml2:Audience>([^<]+)</saml2:Audience>', saml_response_xml)
+                        audience = audience_match.group(1) if audience_match else None
+                        audience_ok = audience == "test-sp"
+
                         return self._add_result(
                             "SAML SSO (POST binding)",
                             TestCategory.SAML,
-                            parsing_ok and acs_in_response,
-                            f"HTTP-POST binding: InResponseTo={'OK' if parsing_ok else 'FAIL'}, ACS={'OK' if acs_in_response else 'FAIL'}",
-                            {"binding": "HTTP-POST", "request_id": request_id, "in_response_to": in_response_to, "parsing_ok": parsing_ok}
+                            parsing_ok and acs_in_response and audience_ok,
+                            f"HTTP-POST binding: InResponseTo={'OK' if parsing_ok else 'FAIL'}, ACS={'OK' if acs_in_response else 'FAIL'}, Audience={'OK' if audience_ok else audience}",
+                            {"binding": "HTTP-POST", "request_id": request_id, "in_response_to": in_response_to, "parsing_ok": parsing_ok, "audience": audience}
                         )
 
                 # Got login form instead of SAML response
@@ -3442,12 +3448,16 @@ class NanoIDPTestAgent:
 
                         parsing_ok = in_response_to == request_id
 
+                        audience_match = re.search(r'<saml2:Audience>([^<]+)</saml2:Audience>', saml_response_xml)
+                        audience = audience_match.group(1) if audience_match else None
+                        audience_ok = audience == "test-sp"  # the AuthnRequest's Issuer (#443)
+
                         return self._add_result(
                             "SAML SSO (Redirect binding)",
                             TestCategory.SAML,
-                            parsing_ok and acs_in_response,
-                            f"HTTP-Redirect binding: InResponseTo={'OK' if parsing_ok else 'FAIL'}, ACS={'OK' if acs_in_response else 'FAIL'}",
-                            {"binding": "HTTP-Redirect", "request_id": request_id, "in_response_to": in_response_to, "parsing_ok": parsing_ok}
+                            parsing_ok and acs_in_response and audience_ok,
+                            f"HTTP-Redirect binding: InResponseTo={'OK' if parsing_ok else 'FAIL'}, ACS={'OK' if acs_in_response else 'FAIL'}, Audience={'OK' if audience_ok else audience}",
+                            {"binding": "HTTP-Redirect", "request_id": request_id, "in_response_to": in_response_to, "parsing_ok": parsing_ok, "audience": audience}
                         )
 
                 # Got login form instead of SAML response

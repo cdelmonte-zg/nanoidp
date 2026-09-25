@@ -1527,7 +1527,9 @@ class TestAnOperationReadsOneConfiguration:
         """The assertion's entity id, audience and signing policy, and the
         canonicalisation the builder uses, are one configuration's: the
         builder took its own, so a load landing while the response was built
-        signed one document with two loads' rules (#406)."""
+        signed one document with two loads' rules (#406). The observable is
+        the entity id: since #443 the audience of a request that names its
+        Issuer is the service provider's, not a setting."""
         import base64 as b64
         import urllib.parse
 
@@ -1549,9 +1551,9 @@ class TestAnOperationReadsOneConfiguration:
 
         def load_while_it_is_built(*arguments, **named):
             if not began_with:
-                began_with.append(get_config().snapshot.settings.audience)
+                began_with.append(saml_module.effective_saml_entity_id(get_config().snapshot.settings))
                 document = yaml.safe_load((directory_of_two_loads / "settings.yaml").read_text())
-                document["oauth"]["audience"] = "an-audience-of-the-next-load"
+                document.setdefault("saml", {})["entity_id"] = "http://the-next-load/saml"
                 (directory_of_two_loads / "settings.yaml").write_text(yaml.safe_dump(document, sort_keys=False))
                 get_config().reload_local()
             return real(*arguments, **named)
@@ -1567,8 +1569,10 @@ class TestAnOperationReadsOneConfiguration:
         page = answer.get_data(as_text=True)
         posted = urllib.parse.unquote(page.split('name="SAMLResponse" value="')[1].split('"')[0])
         assertion = b64.b64decode(posted).decode()
-        assert began_with[0] in assertion, "the assertion carries an audience the response was not built from"
-        assert "an-audience-of-the-next-load" not in assertion
+        assert f"<saml2:Issuer>{began_with[0]}</saml2:Issuer>" in assertion, (
+            "the assertion carries an entity id the response was not built from"
+        )
+        assert "the-next-load" not in assertion
 
     def test_the_reported_configuration_is_one_load(self, directory_of_two_loads, monkeypatch):
         """GET /api/config reads the settings, the version, the strictness

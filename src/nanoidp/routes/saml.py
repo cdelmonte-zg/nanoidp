@@ -208,8 +208,12 @@ def _parse_saml_request(
         request_id = root.get("ID")
         acs_url = root.get("AssertionConsumerServiceURL")
 
+        # The request's own Issuer, a direct child (SAML Core 3.2.1), is the
+        # requesting service provider (Profiles 4.1.4.1) and decides the
+        # Audience since #443; an Issuer nested anywhere below (an
+        # Extensions payload, say) is not the request's
         issuer = None
-        issuer_el = root.find(".//{urn:oasis:names:tc:SAML:2.0:assertion}Issuer")
+        issuer_el = root.find("./{urn:oasis:names:tc:SAML:2.0:assertion}Issuer")
         if issuer_el is not None and issuer_el.text:
             issuer = issuer_el.text.strip()
 
@@ -253,8 +257,9 @@ def _build_saml_response(
     # The envelope, the Issuer pair, the Status and the assertion's head are
     # the same document in all three builders here (#317). The Destination
     # is not: only a login assertion is delivered to an ACS. InResponseTo is
-    # set after it, and only when there is a request to answer: an
-    # IdP-initiated login has none.
+    # set after it, when the request's ID is known: /saml/sso answers no
+    # login without a SAMLRequest, but one that did not parse, or that
+    # carries no ID, is still answered without it.
     response_id = f"_{uuid.uuid4().hex}"
     assertion_id = f"_{uuid.uuid4().hex}"
     resp = build_response_envelope(
@@ -722,8 +727,13 @@ def _sso_authenticate_inline(
 
 def _sso_parse_request(
     loaded: ConfigSnapshot, saml_request_b64: str
-) -> tuple[Optional[str], Optional[str], Optional[ResponseReturnValue]]:
-    """Parse the SAMLRequest: (acs_url, in_response_to, None) or (None, None, error).
+) -> tuple[Optional[str], Optional[str], Optional[str], Optional[ResponseReturnValue]]:
+    """Parse the SAMLRequest: (acs_url, in_response_to, sp_issuer, None) or
+    (None, None, None, error).
+
+    ``sp_issuer`` is the requesting service provider's identifier, the
+    AuthnRequest's Issuer (SAML Profiles §4.1.4.1), which the assertion's
+    Audience must name (§4.1.4.2, #443); None when the request carries none.
 
     Signature verification (when enabled) already happened in
     _verify_authn_request_signature (#69); without the opt-in,
@@ -735,7 +745,7 @@ def _sso_parse_request(
     """
     form_verb = request.form.get("saml_original_verb")
     if form_verb and form_verb.upper() not in ("GET", "POST"):
-        return None, None, abort(400, description="invalid saml_original_verb")
+        return None, None, None, abort(400, description="invalid saml_original_verb")
     original_verb = (form_verb or request.method or "POST").upper()
     saml_info = _parse_saml_request(
         saml_request_b64, http_verb=original_verb, strict=loaded.settings.strict_saml_binding
@@ -744,7 +754,8 @@ def _sso_parse_request(
     requested_acs = saml_info.get("acs_url") if saml_info else None
     acs_url = requested_acs or loaded.settings.default_acs_url
     in_response_to = saml_info.get("id") if saml_info else None
-    return acs_url, in_response_to, None
+    sp_issuer = (saml_info.get("issuer") if saml_info else None) or None
+    return acs_url, in_response_to, sp_issuer, None
 
 
 def _sso_success_response(
@@ -752,6 +763,7 @@ def _sso_success_response(
     username: str,
     acs_url: str,
     in_response_to: Optional[str],
+    sp_issuer: Optional[str],
     relay_state: str,
 ) -> ResponseReturnValue:
     """Build, audit and auto-submit the SAML Response for an authenticated user."""
@@ -770,12 +782,17 @@ def _sso_success_response(
     # absent-means-password default live in _auth (#301, extended #348).
     authn_context = session_auth_method().saml_context
 
+    # The Audience is the requesting service provider (SAML Profiles
+    # §4.1.4.2, #443): the AuthnRequest's Issuer. A request that names none
+    # is outside the profile; it is answered as before, with oauth.audience.
+    audience = sp_issuer or loaded.settings.audience
+
     # Generate SAML Response
     xml = _build_saml_response(
         loaded,
         acs_url=acs_url,
         issuer=effective_saml_entity_id(loaded.settings),
-        audience=loaded.settings.audience,
+        audience=audience,
         name_id=name_id,
         attributes={k: v for k, v in saml_attrs.items() if v is not None},
         in_response_to=in_response_to,
@@ -789,7 +806,9 @@ def _sso_success_response(
         "success",
         endpoint="/saml/sso",
         username=username,
-        details={"acs_url": acs_url},
+        # Both the Issuer received and the Audience issued: with the
+        # fallback the second is not implied by the first
+        details={"acs_url": acs_url, "sp_issuer": sp_issuer, "audience": audience},
     )
 
     if loaded.settings.log_saml_requests:
@@ -856,7 +875,7 @@ def sso() -> ResponseReturnValue:
         )
         return abort(401, description=f"user '{username}' not found")
 
-    acs_url, in_response_to, invalid = _sso_parse_request(loaded, saml_request_b64)
+    acs_url, in_response_to, sp_issuer, invalid = _sso_parse_request(loaded, saml_request_b64)
     if invalid is not None:
         return invalid
 
@@ -885,7 +904,7 @@ def sso() -> ResponseReturnValue:
             "and saml.default_acs_url is not configured",
         )
 
-    return _sso_success_response(user, username, acs_url, in_response_to, relay_state)
+    return _sso_success_response(user, username, acs_url, in_response_to, sp_issuer, relay_state)
 
 
 def _build_attribute_query_error_response(request_id: str, issuer_url: str) -> str:

@@ -116,6 +116,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   longer reports it, and the JSON schema marks it deprecated.
 
 ### Fixed
+- **A SAML assertion's `Audience` is the requesting service provider**
+  (#443). Every SSO assertion carried `oauth.audience`, whichever service
+  provider asked, where the Web Browser SSO profile requires the provider's
+  own identifier (SAML Profiles §4.1.4.2); a provider that checks the
+  audience, Spring Security among them, rejected the response unless its
+  entity ID happened to equal that setting, and the `spring-boot-saml`
+  example set Spring's `entity-id` to it as a workaround. The `Audience` is
+  now the AuthnRequest's `Issuer`; a request that names none, outside the
+  profile, is answered as before with `oauth.audience`. The audit event
+  records the Issuer received and the Audience issued. The example uses
+  Spring's default entity ID again.
 - **`stricter-dev` CORS is localhost, and nothing that starts like it**
   (#441 review). The profile's default origins were `http://localhost:*`
   and `http://127.0.0.1:*`, which flask-cors reads as regular expressions
