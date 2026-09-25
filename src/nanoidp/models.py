@@ -358,36 +358,53 @@ class OAuthClient(BaseModel):
         return self.token_endpoint_auth_method == PUBLIC_AUTH_METHOD
 
 
-_ORIGIN_HOST_NAME = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)*$")
+_ORIGIN_HOST_NAME = re.compile(r"^[a-z0-9_](?:[a-z0-9_-]*[a-z0-9_])?(?:\.[a-z0-9_](?:[a-z0-9_-]*[a-z0-9_])?)*$")
 
 
-def is_cors_origin(value: str) -> bool:
-    """Whether ``value`` is a web origin as a browser sends it in an Origin
-    header: an http or https scheme, a host (a DNS name, an IPv4 address or
-    a bracketed IPv6 address), an optional port, and nothing else."""
+def canonical_cors_origin(value: str) -> Optional[str]:
+    """The origin a browser would send in an Origin header for a page at
+    ``value``, or None when ``value`` names none.
+
+    An origin is an http or https scheme, a host and an optional port,
+    nothing else. The browser's form is lowercase, with an IPv4 address in
+    dotted decimal, an IPv6 address compressed and without a zone id, and
+    no port when it is the scheme's default. CORS compares an Origin header
+    with a declared entry as strings, so an entry that is not already in
+    that form would never match (#450 review). Anything else in ``value``
+    (a path, credentials, a tab urlsplit drops silently) is simply not in
+    the result, which is why ``is_cors_origin`` compares the two."""
     try:
         parts = urlsplit(value)
         port = parts.port  # raises for a port that is not a number in range
     except ValueError:
-        return False
-    if parts.scheme not in ("http", "https") or value != value.strip():
-        return False
-    if parts.path or parts.query or parts.fragment or "?" in value or "#" in value:
-        return False
-    if not parts.hostname:
-        return False
-    # Credentials (user@host) need no check of their own: the netloc must be
-    # exactly the host and the port, below.
-    netloc = parts.netloc
-    if netloc.startswith("["):
+        return None
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        return None
+    host = parts.hostname  # lowercased by urlsplit
+    if parts.netloc.startswith("["):
+        if "%" in host:  # a zone id is never part of an Origin header
+            return None
         try:
-            ipaddress.IPv6Address(parts.hostname)
+            host = f"[{ipaddress.IPv6Address(host).compressed}]"
         except ValueError:
-            return False
-        expected = f"[{parts.hostname}]" + (f":{port}" if port is not None else "")
-        return netloc.lower() == expected.lower()
-    expected = parts.hostname + (f":{port}" if port is not None else "")
-    return netloc.lower() == expected and bool(_ORIGIN_HOST_NAME.match(parts.hostname))
+            return None
+    else:
+        if not _ORIGIN_HOST_NAME.match(host):
+            return None
+        last_label = host.rsplit(".", 1)[-1]
+        if last_label.isdigit() or last_label.startswith("0x"):
+            # A browser reads this host as an IPv4 address
+            try:
+                host = str(ipaddress.IPv4Address(host))
+            except ValueError:
+                return None
+    default_port = 80 if parts.scheme == "http" else 443
+    return f"{parts.scheme}://{host}" + (f":{port}" if port is not None and port != default_port else "")
+
+
+def is_cors_origin(value: str) -> bool:
+    """Whether ``value`` is an origin exactly as a browser sends it."""
+    return canonical_cors_origin(value) == value
 
 
 # The longest refresh token lifetime oauth.refresh_token_expiry_minutes
@@ -765,7 +782,8 @@ class Settings(BaseModel):
     @classmethod
     def validate_cors_allowed_origins(cls, v: Optional[List[str]]) -> Optional[List[str]]:
         """Each entry is an origin, http(s)://host[:port] and nothing else,
-        or "*" alone for every origin (#441, #450 review).
+        in the form a browser sends it, or "*" alone for every origin (#441,
+        #450 review).
 
         Checked for its structure, not for characters: a blank entry would
         match nothing, a path or a query never appears in an Origin header,
@@ -776,12 +794,19 @@ class Settings(BaseModel):
         if v is None:
             return v
         for origin in v:
-            if origin != "*" and not is_cors_origin(origin):
+            if origin == "*" or is_cors_origin(origin):
+                continue
+            canonical = canonical_cors_origin(origin)
+            if canonical is not None:
                 raise ValueError(
-                    f"cors_allowed_origins entry {origin!r} is not an origin: "
-                    'list origins such as "http://localhost:3000" or '
-                    '"http://[::1]:3000", or "*" alone'
+                    f"cors_allowed_origins entry {origin!r} is not how a browser "
+                    f"writes this origin, so it would never match: write it as {canonical!r}"
                 )
+            raise ValueError(
+                f"cors_allowed_origins entry {origin!r} is not an origin: "
+                'list origins such as "http://localhost:3000" or '
+                '"http://[::1]:3000", or "*" alone'
+            )
         return v
 
     @field_validator("rate_limit_token_endpoint")

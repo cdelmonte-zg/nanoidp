@@ -160,31 +160,32 @@ def create_app(
     # CORS (#441): a declared cors_allowed_origins is the list, in every
     # profile; absent, the profile decides, as it always did: localhost only
     # under stricter-dev, every origin otherwise. Read once, at startup.
-    origins = settings.cors_allowed_origins
-    if origins is not None:
-        # A declared entry is an origin, validated as one (models.py). One
-        # with characters flask-cors takes for a regex - the brackets of an
-        # IPv6 host - would be matched as a pattern: http://[::1]:3000 would
-        # not match itself and would admit http://1:3000. Those go in as the
-        # escaped, anchored literal (#450 review).
-        origins = [
-            origin if origin == "*" or not any(ch in origin for ch in "[]") else f"^{re.escape(origin)}$"
-            for origin in origins
-        ]
+    declared = settings.cors_allowed_origins
+    if declared is not None:
+        # A declared entry is an origin in a browser's form (models.py), and
+        # it is matched as exactly that string: flask-cors takes a string
+        # with regex characters for a pattern (the brackets of an IPv6 host
+        # made http://[::1]:3000 not match itself and admit http://1:3000),
+        # so every entry goes in escaped and anchored, whatever it contains
+        # (#450 review). \Z, not $, which also matches before a newline.
+        applied = list(declared)
+        origins = [origin if origin == "*" else f"^{re.escape(origin)}\\Z" for origin in declared]
     else:
         # flask-cors reads an entry with regex characters as a pattern and
         # matches it with re.match, anchored at the start only: the old
         # "http://localhost:*" also let http://localhost.evil.test through.
         # Anchored at both ends, with the dots escaped (#441 review).
         origins = (
-            [r"^http://localhost(:[0-9]+)?$", r"^http://127\.0\.0\.1(:[0-9]+)?$"]
+            [r"^http://localhost(:[0-9]+)?\Z", r"^http://127\.0\.0\.1(:[0-9]+)?\Z"]
             if settings.security_profile == "stricter-dev"
             else ["*"]
         )
+        applied = list(origins)
     CORS(app, resources={r"/*": {"origins": origins}})
     # What is in force until the next start, whatever a reload declares:
-    # GET /api/config reports it next to the declared list.
-    app.config["NANOIDP_CORS_ORIGINS"] = list(origins)
+    # GET /api/config reports it next to the declared list, as origins (or
+    # the profile's patterns), not as the escaped form flask-cors is given.
+    app.config["NANOIDP_CORS_ORIGINS"] = applied
     if settings.security_profile == "stricter-dev" and "*" in (settings.cors_allowed_origins or []):
         # A declared list wins over the profile, "*" included. Said out loud
         # because until #441 the key was ignored, so a file carrying "*"
@@ -193,10 +194,10 @@ def create_app(
             "cors_allowed_origins lists \"*\": every origin may call nanoidp from a "
             "browser, although the security profile is stricter-dev"
         )
-    if origins == ["*"]:
+    if applied == ["*"]:
         logger.info("  - CORS: permissive (all origins)")
     else:
-        logger.info(f"  - CORS: restricted to {origins}")
+        logger.info(f"  - CORS: restricted to {applied}")
 
     # Configure rate limiting
     if settings.rate_limit_enabled:

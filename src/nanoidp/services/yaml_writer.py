@@ -50,7 +50,15 @@ def _mutate_settings_section(
     rows = {f.key: f for f in OWNED_SETTINGS if f.section == section_name}
     # Built once per call, and only if a defaults-dependent row is provided
     defaults: Optional[Mapping[str, Any]] = None
-    for key, value in provided.items():
+    # The defaults-dependent rows last: returning one to its default removes
+    # the section when it is its last key, and a section removed and
+    # created again by a later write moves to the end of the file, away
+    # from its comment (#450 review). Written after the others, it is never
+    # the last key while anything else of this save is still to come.
+    ordered = sorted(
+        provided.items(), key=lambda item: rows[item[0]].doc_mode == "omit_when_default"
+    )
+    for key, value in ordered:
         if value is None:
             continue
         field = rows[key]

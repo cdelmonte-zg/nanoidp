@@ -209,6 +209,8 @@ class TestCorsAllowedOrigins:
         http://1:3000 (#450 review)."""
         client = _client(isolated_repo_config, cors_allowed_origins=["http://[::1]:3000"])
         assert self._allowed(client, "http://[::1]:3000") == "http://[::1]:3000"
+        # reported as the origin it is, not as the pattern that matches it
+        assert client.get("/api/config").get_json()["cors_applied_origins"] == ["http://[::1]:3000"]
         assert self._allowed(client, "http://1:3000") is None
         assert self._allowed(client, "http://[::2]:3000") is None
         assert self._allowed(client, "http://[::1]:3001") is None
@@ -270,6 +272,18 @@ class TestInvalidValuesAreErrors:
         ({"cors_allowed_origins": ["http://[not-ipv6]:3000"]}, "cors_allowed_origins"),
         # accepted by urlsplit (an IPvFuture literal), not an IPv6 address
         ({"cors_allowed_origins": ["http://[v1.fe]:3000"]}, "cors_allowed_origins"),
+        # characters urlsplit drops silently (#450 review, round 2)
+        ({"cors_allowed_origins": ["http://loc\talhost:3000"]}, "cors_allowed_origins"),
+        ({"cors_allowed_origins": ["http://a.exa\nmple"]}, "cors_allowed_origins"),
+        # forms a browser never sends: the origin would never match
+        ({"cors_allowed_origins": ["https://app.example:443"]}, "cors_allowed_origins"),
+        ({"cors_allowed_origins": ["http://app.example:80"]}, "cors_allowed_origins"),
+        ({"cors_allowed_origins": ["http://[0::1]:3000"]}, "cors_allowed_origins"),
+        ({"cors_allowed_origins": ["http://[::ffff:127.0.0.1]"]}, "cors_allowed_origins"),
+        ({"cors_allowed_origins": ["http://[fe80::1%25eth0]:3000"]}, "cors_allowed_origins"),
+        ({"cors_allowed_origins": ["http://127.1"]}, "cors_allowed_origins"),
+        ({"cors_allowed_origins": ["HTTP://App.Example"]}, "cors_allowed_origins"),
+        ({"cors_allowed_origins": ["http://app.example:"]}, "cors_allowed_origins"),
     ])
     def test_refused(self, tmp_path, settings, path):
         with pytest.raises(ValueError, match=path.replace(".", r"\.")):
@@ -281,13 +295,26 @@ class TestInvalidValuesAreErrors:
             "device_flow": {"code_expiry_seconds": 3600, "polling_interval": 60},
             "cors_allowed_origins": ["*"],
         })).settings
-        assert ConfigManager(_write(tmp_path, {"cors_allowed_origins": [
-            "http://localhost:3000", "https://app.example", "http://[::1]:3000", "http://127.0.0.1",
-        ]})).settings.cors_allowed_origins[2] == "http://[::1]:3000"
         assert settings.refresh_token_expiry_minutes == 43200
         assert settings.device_code_expiry_seconds == 3600
         assert settings.device_polling_interval == 60
         assert settings.cors_allowed_origins == ["*"]
+        accepted = [
+            "http://localhost:3000", "https://app.example", "http://[::1]:3000", "http://127.0.0.1",
+            # Compose-style service names, which browsers do send
+            "http://web_app:3000",
+            "http://[::ffff:7f00:1]",
+            "https://app.example:8443",
+        ]
+        assert ConfigManager(
+            _write(tmp_path, {"cors_allowed_origins": accepted})
+        ).settings.cors_allowed_origins == accepted
+
+    def test_a_non_canonical_origin_is_refused_with_the_form_to_write(self, tmp_path):
+        with pytest.raises(ValueError, match="write it as 'https://app.example'"):
+            ConfigManager(_write(tmp_path, {"cors_allowed_origins": ["https://app.example:443"]}))
+        with pytest.raises(ValueError, match=r"write it as 'http://\[::1\]:3000'"):
+            ConfigManager(_write(tmp_path, {"cors_allowed_origins": ["http://[0::1]:3000"]}))
 
 
 class TestTheTwoKeysNothingReads:
@@ -415,14 +442,13 @@ class TestWrittenOnlyWhileNotAtTheDefault:
         writer.update_oauth_settings(refresh_token_expiry_minutes=10080)
         assert "refresh_token_expiry_minutes" not in self._document(isolated_repo_config)["oauth"]
 
-    def test_a_return_to_the_default_does_not_drop_the_fields_saved_with_it(
-        self, isolated_repo_config, client
-    ):
+    def test_a_return_to_the_default_does_not_drop_the_fields_saved_with_it(self, isolated_repo_config):
         """The key back at its default can be the last one of its section,
         and removing it removes the section: the fields written after it in
         the same save must still reach the file (#450 review)."""
         path = isolated_repo_config / "settings.yaml"
         document = yaml.safe_load(path.read_text())
+        # the only key of its section: removing it removes the section
         document["oauth"] = {"refresh_token_expiry_minutes": 90}
         path.write_text(yaml.safe_dump(document))
 
@@ -434,10 +460,31 @@ class TestWrittenOnlyWhileNotAtTheDefault:
         oauth = self._document(isolated_repo_config)["oauth"]
         assert oauth == {"require_pkce": True, "refresh_token_rotation": True}
 
+    def test_the_section_keeps_its_place_and_its_comment(self, tmp_path):
+        """Writing the other fields first means the key returned to its
+        default is never the section's last when anything else is written:
+        the section is not removed and re-created at the end of the file,
+        away from its comment (#450 review, round 2)."""
+        from nanoidp.services.yaml_writer import YamlWriter
+
+        (tmp_path / "users.yaml").write_text("users: {}\n")
+        (tmp_path / "settings.yaml").write_text(
+            "server:\n  port: 8000\n# the OAuth block\noauth:\n  refresh_token_expiry_minutes: 90\n"
+            "saml:\n  sign_responses: true\n"
+        )
+        YamlWriter(str(tmp_path)).update_oauth_settings(
+            refresh_token_expiry_minutes=10080, require_pkce=True,
+        )
+        text = (tmp_path / "settings.yaml").read_text()
+        assert text.index("# the OAuth block") < text.index("oauth:") < text.index("saml:")
+        assert "require_pkce: true" in text and "refresh_token_expiry_minutes" not in text
+
     def test_the_same_through_a_partial_settings_form(self, isolated_repo_config):
         path = isolated_repo_config / "settings.yaml"
         document = yaml.safe_load(path.read_text())
-        document["oauth"] = {"refresh_token_expiry_minutes": 90}
+        document["oauth"] = {
+            "refresh_token_expiry_minutes": 90, "clients": document["oauth"]["clients"],
+        }
         path.write_text(yaml.safe_dump(document))
         client = create_app().test_client()
 
@@ -451,6 +498,7 @@ class TestWrittenOnlyWhileNotAtTheDefault:
         assert oauth.get("require_pkce") is True
         assert oauth.get("refresh_token_rotation") is True
         assert "refresh_token_expiry_minutes" not in oauth
+        assert oauth["clients"][0]["client_id"] == "demo-client"
 
     def test_the_settings_page_round_trip(self, isolated_repo_config, client):
         page = client.get("/settings")
