@@ -208,8 +208,12 @@ def _parse_saml_request(
         request_id = root.get("ID")
         acs_url = root.get("AssertionConsumerServiceURL")
 
+        # The request's own Issuer, a direct child (SAML Core 3.2.1), is the
+        # requesting service provider (Profiles 4.1.4.1) and decides the
+        # Audience since #443; an Issuer nested anywhere below (an
+        # Extensions payload, say) is not the request's
         issuer = None
-        issuer_el = root.find(".//{urn:oasis:names:tc:SAML:2.0:assertion}Issuer")
+        issuer_el = root.find("./{urn:oasis:names:tc:SAML:2.0:assertion}Issuer")
         if issuer_el is not None and issuer_el.text:
             issuer = issuer_el.text.strip()
 
@@ -253,9 +257,9 @@ def _build_saml_response(
     # The envelope, the Issuer pair, the Status and the assertion's head are
     # the same document in all three builders here (#317). The Destination
     # is not: only a login assertion is delivered to an ACS. InResponseTo is
-    # set after it, and only when the request's ID is known: /saml/sso
-    # answers no login without a SAMLRequest, but one that did not parse is
-    # still answered at saml.default_acs_url, without it.
+    # set after it, when the request's ID is known: /saml/sso answers no
+    # login without a SAMLRequest, but one that did not parse, or that
+    # carries no ID, is still answered without it.
     response_id = f"_{uuid.uuid4().hex}"
     assertion_id = f"_{uuid.uuid4().hex}"
     resp = build_response_envelope(

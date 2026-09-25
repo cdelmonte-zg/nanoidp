@@ -115,6 +115,41 @@ class TestARequestThatNamesNoIssuer:
         assert _audience(root) == [oauth_audience]
 
 
+class TestOnlyTheRequestsOwnIssuerCounts:
+    """SAML Core 3.2.1: the request's Issuer is a direct child. An Issuer
+    nested below, in an Extensions payload for instance, is not the
+    requesting service provider and must not become the Audience (#454
+    review)."""
+
+    NESTED = (
+        '<samlp:Extensions><ext:Something xmlns:ext="urn:ext">'
+        "<saml:Issuer>urn:not-the-requesting-sp</saml:Issuer>"
+        "</ext:Something></samlp:Extensions>"
+    )
+
+    def _request(self, direct_issuer):
+        issuer_el = f"<saml:Issuer>{direct_issuer}</saml:Issuer>" if direct_issuer else ""
+        xml = (
+            '<samlp:AuthnRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" '
+            'xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="_nested" Version="2.0" '
+            f'IssueInstant="2025-01-01T00:00:00Z" AssertionConsumerServiceURL="{ACS}">'
+            f"{issuer_el}{self.NESTED}</samlp:AuthnRequest>"
+        )
+        return base64.b64encode(xml.encode()).decode("ascii")
+
+    def test_a_nested_issuer_alone_is_no_issuer(self, client, app):
+        with app.app_context():
+            oauth_audience = get_config().settings.audience
+        root = _response_of(_sso(client, self._request(direct_issuer=None)))
+        assert _audience(root) == [oauth_audience]
+        entry = get_audit_log().get_entries(limit=5, event_type="saml_request")[0]
+        assert entry["details"]["sp_issuer"] is None
+
+    def test_the_direct_issuer_wins_over_a_nested_one(self, client):
+        root = _response_of(_sso(client, self._request(direct_issuer=SP)))
+        assert _audience(root) == [SP]
+
+
 class TestThroughTheInlineLogin:
     """The login form re-POSTs the SAMLRequest it was shown for; the
     Issuer travels with it, whichever binding the request arrived by."""

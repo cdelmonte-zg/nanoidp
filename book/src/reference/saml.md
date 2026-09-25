@@ -209,7 +209,7 @@ remaining differences are deliberate:
 | `AudienceRestriction` | the requesting service provider: the AuthnRequest's `Issuer` (SAML Profiles §4.1.4.2); `oauth.audience` for a request that names none | absent | the query requester's audience is unknown (the endpoint is unauthenticated by design) |
 | `Conditions` validity | 5 minutes | 1 hour | a login assertion is spent immediately at an ACS; a backend lookup is not. The two windows have never been decided to be one policy, so they are stated here rather than shared behind an argument |
 | `Response/@Destination` | the ACS URL | absent | only a login assertion is delivered to an endpoint the IdP was told about |
-| `InResponseTo` | the AuthnRequest's ID; absent only when the request could not be parsed | always | `/saml/sso` answers no login without an AuthnRequest; an attribute query always answers one |
+| `InResponseTo` | the AuthnRequest's ID when available; absent when no usable request ID is available | always | `/saml/sso` answers no login without an AuthnRequest; an attribute query always answers one |
 | `ds` namespace | declared on the envelope | absent | the SSO document is signed in place, and the prefix is declared whether or not signing runs |
 | Serialization | bytes, with an XML declaration | unicode, pretty-printed | historical, and part of what the SP receives, so it is pinned rather than unified |
 | Signing | inline in the builder | a separate `_sign_attribute_query_response` | the query surface signs after serializing, by reparsing its own output |
