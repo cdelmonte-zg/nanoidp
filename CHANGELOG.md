@@ -110,7 +110,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`default_user` in `users.yaml`** (#445). It named the user a client
   credentials token was issued for, and nothing reads it any more. A file
   that carries it loads, in `strict` mode too, with a warning that it can be
-  removed; `nanoidp init`, the wizard and the shipped presets no longer write
+  removed; `validate-config` reports it as `info`, which `--strict` does not
+  fail on; `nanoidp init`, the wizard and the shipped presets no longer write
   it, a save no longer manages it (nor removes it), MCP `list_users` no
   longer reports it, and the JSON schema marks it deprecated.
 
@@ -142,7 +143,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `client_id` (RFC 9068 §2.2) and the token carries no user claims; the
   `extra` parameter can add other claims but cannot change the grant's nor
   add those. `/userinfo` answers a token whose `sub` equals its `client_id`
-  with the subject alone and `/introspect` names no `username` for it, even
+  with the subject alone and `/introspect` names no `username` for it, and
+  no `scope` when none was requested, even
   when a user has the client's name, which is reported with a warning at
   load and on the runtime API. **A resource server that read roles from
   these tokens sees none now**; authorize on `scope` and identify the

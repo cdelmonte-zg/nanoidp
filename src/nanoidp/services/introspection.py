@@ -49,6 +49,11 @@ def build_introspection_response(
         response[claim] = payload.get(claim)
 
     # Presence, not truthiness: a token whose scope is an empty string is
-    # reported with an empty scope, not with the default.
-    response["scope"] = payload["scope"] if "scope" in payload else _DEFAULT_SCOPE
+    # reported with an empty scope, not with the default. The default stands
+    # in only for a user token; a client's token without scope has none
+    # (#445).
+    if "scope" in payload:
+        response["scope"] = payload["scope"]
+    elif not names_no_end_user(payload):
+        response["scope"] = _DEFAULT_SCOPE
     return response

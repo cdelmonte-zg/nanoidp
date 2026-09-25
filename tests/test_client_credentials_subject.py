@@ -202,6 +202,24 @@ class TestNoEndUserBehindIt:
         assert answer["sub"] == "demo-client"
         assert "username" not in answer
 
+    def test_introspection_reports_no_scope_the_token_does_not_have(self, client):
+        """RFC 7662: scope, when present, is the token's. A client's token
+        requested without scope has none, and is not reported with the
+        openid default a user token issued before scopes were recorded
+        gets (#452 review)."""
+        token = _client_credentials(client)["access_token"]
+        answer = client.post("/introspect", headers=DEMO, data={"token": token}).get_json()
+        assert "scope" not in answer
+
+    def test_introspection_reports_the_scope_a_client_token_has(self, client):
+        token = _client_credentials(client, scope="profile")["access_token"]
+        answer = client.post("/introspect", headers=DEMO, data={"token": token}).get_json()
+        assert answer["scope"] == "profile"
+
+    def test_a_user_token_without_scope_keeps_the_openid_default(self, client):
+        answer = client.post("/introspect", headers=DEMO, data={"token": _password_token(client)}).get_json()
+        assert answer["scope"] == "openid"
+
     def test_a_user_token_keeps_its_username(self, client):
         answer = client.post("/introspect", headers=DEMO, data={"token": _password_token(client)}).get_json()
         assert answer["username"] == "admin"
@@ -267,7 +285,20 @@ class TestDefaultUserIsDeprecated:
         _edit(isolated_repo_config, "users.yaml", lambda doc: doc.__setitem__("default_user", "admin"))
         findings = validate_config_dir(str(isolated_repo_config))
         default_user = [f for f in findings if "default_user" in f.message]
-        assert [f.level for f in default_user] == ["warning"]
+        assert [f.level for f in default_user] == ["info"]
+
+    def test_validate_strict_agrees_with_a_strict_server(self, isolated_repo_config):
+        """A strict server starts with default_user in the file; a strict
+        validation must not fail the same directory (#452 review): the
+        finding is a note, never fatal."""
+        from nanoidp.config_validation import report, validate_config_dir, validate_config_result
+
+        _edit(isolated_repo_config, "users.yaml", lambda doc: doc.__setitem__("default_user", "admin"))
+        ConfigManager(str(isolated_repo_config), strict_config=True)
+        assert validate_config_result(str(isolated_repo_config), True)["valid"] is True
+        lines, code = report(validate_config_dir(str(isolated_repo_config)), strict=True)
+        assert code == 0
+        assert any("default_user" in line for line in lines)
 
     def test_warned_once_per_file_not_on_every_load(self, isolated_repo_config, caplog):
         _edit(isolated_repo_config, "users.yaml", lambda doc: doc.__setitem__("default_user", "admin"))

@@ -72,7 +72,8 @@ client acts on its own behalf (RFC 6749 §4.4). Its subject is the client
   but cannot change them, nor add `roles`, `authorities`, `tenant`,
   `identity_class`, `entitlements`, `groups`, `source_acl` or `attributes`.
 - `/userinfo` answers such a token with `{"sub": ...}` alone, and
-  `/introspect` names no `username`: a token whose `sub` equals its
+  `/introspect` names no `username`, nor the `openid` scope it reports for a
+  user token issued without one: a token whose `sub` equals its
   `client_id` is never taken as a user's, even if a user has the client's
   name. A user named like a client is reported with a warning at load.
 - Until #445 this token was issued for the `default_user` of `users.yaml`,
