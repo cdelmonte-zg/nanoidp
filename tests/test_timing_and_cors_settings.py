@@ -235,6 +235,27 @@ class TestCorsAllowedOrigins:
         )
         response = client.get("/.well-known/openid-configuration")
         assert response.headers.get("Access-Control-Allow-Origin") is None
+        # and says it depends on the Origin, so that a cache does not serve
+        # this response to a browser that sends one (#450 review, round 5)
+        assert "Origin" in response.headers.get("Vary", "")
+        with_origin = client.get("/.well-known/openid-configuration", headers={"Origin": "http://a.test"})
+        assert with_origin.headers.getlist("Vary") == ["Origin"]
+
+    def test_a_declared_star_behaves_as_the_permissive_default(self, isolated_repo_config):
+        declared = _client(isolated_repo_config, cors_allowed_origins=["*"])
+        _set(isolated_repo_config, cors_allowed_origins=None)
+        document = yaml.safe_load((isolated_repo_config / "settings.yaml").read_text())
+        document.pop("cors_allowed_origins")
+        (isolated_repo_config / "settings.yaml").write_text(yaml.safe_dump(document))
+        absent = _client(isolated_repo_config)
+        for headers in ({}, {"Origin": "http://any.test"}):
+            got = [
+                client.get("/.well-known/openid-configuration", headers=headers).headers.get(
+                    "Access-Control-Allow-Origin"
+                )
+                for client in (declared, absent)
+            ]
+            assert got[0] == got[1] and got[0] is not None, (headers, got)
 
     def test_an_empty_list_allows_no_origin(self, isolated_repo_config):
         client = _client(isolated_repo_config, cors_allowed_origins=[])
@@ -361,6 +382,14 @@ class TestInvalidValuesAreErrors:
             ("http://[1:0:2:3:4:5:6:7]", "http://[1:0:2:3:4:5:6:7]"),
         ]:
             assert canonical_cors_origin(written) == browser, written
+
+    def test_an_internationalised_host_gets_its_punycode_form(self, tmp_path):
+        """A browser sends the ASCII form of the host (#450 review, round 5)."""
+        with pytest.raises(ValueError, match="write it as 'https://xn--bcher-kva.example'"):
+            ConfigManager(_write(tmp_path, {"cors_allowed_origins": ["https://bücher.example"]}))
+        assert ConfigManager(_write(tmp_path, {
+            "cors_allowed_origins": ["https://xn--bcher-kva.example"],
+        })).settings.cors_allowed_origins == ["https://xn--bcher-kva.example"]
 
     def test_a_trailing_slash_gets_the_form_to_write(self, tmp_path):
         """The slash an address bar adds carries nothing: a slip to correct,

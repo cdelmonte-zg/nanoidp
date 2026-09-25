@@ -368,8 +368,9 @@ def _whatwg_ipv6(address: ipaddress.IPv6Address) -> str:
     it writes with a dotted tail (::ffff:127.0.0.1) where the URL Standard
     keeps hex pieces (::ffff:7f00:1) (#450 review)."""
     if address.scope_id is not None:
-        # A zone id (fe80::1%eth0) is never part of an Origin header
-        address = ipaddress.IPv6Address(address.compressed.split("%", 1)[0])
+        # A zone id (fe80::1%eth0) is never part of an Origin header; the
+        # integer value is the address without it
+        address = ipaddress.IPv6Address(int(address))
     if address.ipv4_mapped is None:
         return address.compressed
     high, low = int.from_bytes(address.packed[12:14], "big"), int.from_bytes(address.packed[14:16], "big")
@@ -388,7 +389,7 @@ def canonical_cors_origin(value: str) -> Optional[str]:
     other form would never match (#450 review). A value that carries more
     than an origin - a path, a query, credentials, whitespace urlsplit would
     drop silently - names none: it is not a formatting slip to rewrite."""
-    if not value.isascii() or any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in value):
+    if any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in value):
         return None
     try:
         parts = urlsplit(value)
@@ -412,6 +413,12 @@ def canonical_cors_origin(value: str) -> Optional[str]:
         except ValueError:
             return None
     else:
+        if not host.isascii():
+            # A browser sends an internationalised host in its ASCII form
+            try:
+                host = host.encode("idna").decode("ascii")
+            except UnicodeError:
+                return None
         if not _ORIGIN_HOST_NAME.match(host):
             return None
         last_label = host.rsplit(".", 1)[-1]
@@ -429,7 +436,9 @@ def is_cors_origin(value: str) -> bool:
     """Whether ``value`` is an origin as a browser sends it. Case aside:
     flask-cors compares origins without regard to case, so HTTP://App.Test
     matches the http://app.test a browser sends."""
-    return canonical_cors_origin(value) == value.lower()
+    # ASCII first: KELVIN SIGN lowercases to "k", so a non-ASCII entry could
+    # equal its canonical form case-insensitively while no browser sends it
+    return value.isascii() and canonical_cors_origin(value) == value.lower()
 
 
 # The longest refresh token lifetime oauth.refresh_token_expiry_minutes

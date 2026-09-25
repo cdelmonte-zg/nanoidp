@@ -162,6 +162,7 @@ def create_app(
     # under stricter-dev, every origin otherwise. Read once, at startup.
     declared = settings.cors_allowed_origins
     cors_options: dict[str, Any] = {}
+    vary_on_origin = False
     if declared is not None:
         # A declared entry is an origin in a browser's form (models.py), and
         # it must be matched as that string: flask-cors takes a string with
@@ -172,10 +173,18 @@ def create_app(
         # does origins. "*" is flask-cors's own "every origin" (#450 review).
         applied = list(declared)
         origins = [origin if origin == "*" else f"^{re.escape(origin)}\\Z" for origin in declared]
-        # Without an Origin header there is nothing to answer: flask-cors's
-        # always_send would name one declared entry, and only one written
-        # without regex characters (#450 review)
-        cors_options["always_send"] = False
+        if "*" not in declared:
+            # Named origins: without an Origin header there is nothing to
+            # answer (flask-cors's always_send would name one entry), and
+            # every response says it depends on the Origin, so a shared cache
+            # does not serve one fetched without it to a browser that sends
+            # one (#450 review). With "*" the list behaves as the permissive
+            # default, which answers every request alike.
+            cors_options["always_send"] = False
+            # Vary is added below, to every response; flask-cors's own would
+            # repeat it as a second header line on the responses it answers
+            cors_options["vary_header"] = False
+            vary_on_origin = True
     else:
         # flask-cors reads an entry with regex characters as a pattern and
         # matches it with re.match, anchored at the start only: the old
@@ -188,6 +197,13 @@ def create_app(
         )
         applied = list(origins)
     CORS(app, resources={r"/*": {"origins": origins}}, **cors_options)
+    if vary_on_origin:
+
+        @app.after_request
+        def _vary_on_origin(response: Any) -> Any:
+            response.vary.add("Origin")
+            return response
+
     # What is in force until the next start, whatever a reload declares:
     # GET /api/config reports it next to the declared list, as origins (or
     # the profile's patterns), not as the escaped form flask-cors is given.

@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 
 def _mutate_settings_section(
-    document: Dict[str, Any], section_name: str, provided: Dict[str, Any]
+    document: Dict[str, Any], section_name: str, provided: Dict[str, Any], emptied: Set[str]
 ) -> None:
     """Apply form-provided values for one settings.yaml section to an
     already-loaded document (#214; extracted from
@@ -51,7 +51,6 @@ def _mutate_settings_section(
     rows = {f.key: f for f in OWNED_SETTINGS if f.section == section_name}
     # Built once per call, and only if a defaults-dependent row is provided
     defaults: Optional[Mapping[str, Any]] = None
-    emptied: Set[str] = set()
     for key, value in provided.items():
         if value is None:
             continue
@@ -78,10 +77,6 @@ def _mutate_settings_section(
                 if section is None:
                     document[section_name] = section = {}
                 section[key] = value
-    # A section a returned default left empty goes only now, after the rest
-    # of the save: dropped at once, a later write created it again at the
-    # end of the file (#450 review)
-    drop_emptied_sections(document, emptied)
 
 
 def _mutate_allowed_identity_classes(document: Dict[str, Any], classes: List[str]) -> None:
@@ -121,19 +116,33 @@ _LOGIN_ROWS: Dict[str, OwnedSetting] = {
 
 
 def _mutate_login_keys(
-    document: Dict[str, Any], applied: Mapping[str, Any], defaults: Mapping[str, Any]
+    document: Dict[str, Any],
+    applied: Mapping[str, Any],
+    defaults: Mapping[str, Any],
+    emptied: Set[str],
 ) -> None:
     """Write the ``login.*`` keys this call applies, each removed once it is
     back at its default, through the same rule ``apply_settings_document``
-    uses (#319); the section they leave empty goes after all of them.
+    uses (#319).
 
     Four helpers that were this same line - one per key, each taking its own
     positional default - stood here before, and later two copies of the loop.
     """
-    emptied: Set[str] = set()
     for key, value in applied.items():
         row = _LOGIN_ROWS[key]
         merge_owned_setting_at_default(document, row, value, defaults[default_lookup_key(row)], emptied)
+
+
+def _one_save(document: Dict[str, Any], *steps: "Callable[[Set[str]], None]") -> None:
+    """Run the steps of one save against ``document``, then drop the
+    sections they left empty: once, at the end, whatever step emptied them
+    and whatever step wrote to them later. The one owner of that drop for
+    the writer (#450 review); ``apply_settings_document`` is the other.
+    Dropped any earlier, a later write of the same save created the
+    section again at the end of the file, away from its comment."""
+    emptied: Set[str] = set()
+    for step in steps:
+        step(emptied)
     drop_emptied_sections(document, emptied)
 
 
@@ -405,7 +414,9 @@ class YamlWriter:
         """
         return self._atomic_write(
             self.settings_file,
-            lambda data: _mutate_settings_section(data, section_name, provided),
+            lambda data: _one_save(
+                data, lambda emptied: _mutate_settings_section(data, section_name, provided, emptied)
+            ),
             expected_revision,
         )
 
@@ -548,7 +559,7 @@ class YamlWriter:
         applied = _applied_login_keys(mode, auto_login, two_step, totp)
 
         def mutate(data: Dict[str, Any]) -> None:
-            _mutate_login_keys(data, applied, defaults)
+            _one_save(data, lambda emptied: _mutate_login_keys(data, applied, defaults, emptied))
 
         return self._atomic_write(self.settings_file, mutate, expected_revision)
 
@@ -604,11 +615,14 @@ class YamlWriter:
         applied = _applied_login_keys(login_mode, auto_login, two_step, totp)
 
         def mutate(data: Dict[str, Any]) -> None:
-            _mutate_settings_section(data, "oauth", oauth_fields)
-            _mutate_settings_section(data, "saml", saml_fields)
             if allowed_identity_classes:
                 _mutate_allowed_identity_classes(data, allowed_identity_classes)
-            _mutate_login_keys(data, applied, defaults)
+            _one_save(
+                data,
+                lambda emptied: _mutate_settings_section(data, "oauth", oauth_fields, emptied),
+                lambda emptied: _mutate_settings_section(data, "saml", saml_fields, emptied),
+                lambda emptied: _mutate_login_keys(data, applied, defaults, emptied),
+            )
 
         return self._atomic_write(self.settings_file, mutate, expected_revision)
 
