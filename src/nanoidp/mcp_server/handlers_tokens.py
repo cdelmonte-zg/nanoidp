@@ -10,6 +10,7 @@ import jwt as pyjwt
 
 from ..config import ConfigManager, ConfigSnapshot
 from ..services import TokenService, get_crypto_service
+from ..services.token import extra_refusal, forbidden_extra_claims
 from .normalize import _normalize_str_list
 
 
@@ -29,11 +30,22 @@ def _tool_generate_token(arguments: dict[str, Any], config: ConfigManager, loade
     if client_id is not None and not declared:
         return {"success": False, "error": f"Client '{client_id}' not found"}
 
+    # extra_claims adds claims, it never changes what this tool or the user
+    # store decided (#451): the same refusal as /token's extra. _execute_tool
+    # is reachable without call_tool's schema validation, so the shape is
+    # checked here too.
+    extra_claims = arguments.get("extra_claims")
+    if extra_claims is not None and not isinstance(extra_claims, dict):
+        return {"success": False, "error": "'extra_claims' must be an object"}
+    forbidden = forbidden_extra_claims(extra_claims)
+    if forbidden:
+        return {"success": False, "error": extra_refusal("extra_claims", forbidden)}
+
     token_service = TokenService(config, loaded)
     token_response = token_service.create_token(
         user=user,
         exp_minutes=arguments.get("expires_in_minutes", loaded.settings.token_expiry_minutes),
-        extra_claims=arguments.get("extra_claims"),
+        extra_claims=extra_claims,
         # BOUNDARY (#279): like `resource` below, `scope` is passed through
         # with no scopes_supported vocabulary check and no allowed_scopes
         # ceiling, even when client_id is given - this tool mints a token

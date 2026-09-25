@@ -67,6 +67,7 @@ from ..services.redirect_uri import (
 )
 from ..services.resource import resolve_resources
 from ..services.scope import resolve_scope
+from ..services.token import extra_refusal, forbidden_extra_claims
 from ..services.userinfo import build_userinfo_response
 from ..token_subject import end_user_of
 from ._audit import audit_event
@@ -1754,6 +1755,21 @@ def token() -> ResponseReturnValue:
                 details={"reason": "'extra' is not a JSON object", "grant_type": grant_type},
             )
             return oauth_error("invalid_request", "'extra' must be a JSON object")
+        # extra adds claims, it never changes what the grant decided (#451):
+        # a request naming a registered, protocol or user-identity claim is
+        # refused here, before the grant, so no code or refresh token is
+        # consumed by it. The token service strips the same set as well.
+        forbidden = forbidden_extra_claims(parsed_extra)
+        if forbidden:
+            refusal = extra_refusal("extra", forbidden)
+            audit_event(
+                "token_request",
+                "failed",
+                endpoint="/token",
+                client_id=client_id,
+                details={"reason": refusal, "grant_type": grant_type},
+            )
+            return oauth_error("invalid_request", refusal)
         extra_claims = parsed_extra
 
     # Per-grant dispatch

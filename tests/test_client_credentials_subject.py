@@ -17,6 +17,7 @@ import json
 import logging
 import subprocess
 import sys
+import time
 
 import jwt
 import pytest
@@ -105,35 +106,37 @@ class TestTheTokenIsTheClients:
 
 
 class TestExtraCannotMakeItSomeoneElse:
-    """`extra` is applied after the claims the server sets; on this path it
-    may add claims of its own, never change who or what the token is for,
-    nor give it a user's identity (#445; the other grants are #451)."""
+    """`extra` may add claims of its own, never change who or what the token
+    is for, nor give it a user's identity (#445). Since #451 a request that
+    tries is refused on every grant, this one included; the service strips
+    the same names for a direct caller (test_extra_claims_boundary)."""
 
-    def test_the_owned_claims_and_the_user_claims_are_not_taken_from_extra(self, client):
+    def test_the_owned_claims_and_the_user_claims_are_refused(self, client):
         forged = {
             "sub": "root", "iss": "http://evil", "aud": "other-api", "exp": 4102444800,
             "iat": 1, "nbf": 1, "jti": "fixed", "client_id": "someone-else",
             "scope": "admin", "token_use": "id",
             **{claim: ["FORGED"] for claim in USER_CLAIMS},
         }
-        claims = _claims(_client_credentials(client, extra=json.dumps(forged))["access_token"])
-        assert claims["sub"] == "demo-client"
-        assert claims["client_id"] == "demo-client"
-        assert claims["iss"] == "http://localhost:8000"
-        assert claims["aud"] != "other-api"
-        assert claims["exp"] != 4102444800 and claims["jti"] != "fixed"
-        assert claims["token_use"] == "access"
-        assert "scope" not in claims
-        assert [claim for claim in USER_CLAIMS if claim in claims] == []
+        refused = client.post("/token", headers=DEMO, data={
+            "grant_type": "client_credentials", "extra": json.dumps(forged),
+        })
+        assert refused.status_code == 400
+        body = refused.get_json()
+        assert body["error"] == "invalid_request"
+        assert body["error_description"] == "'extra' cannot set: " + ", ".join(sorted(forged))
 
-    def test_nor_a_standard_identity_claim_or_one_the_server_reads_back(self, client):
+    def test_so_is_a_standard_identity_claim_or_one_the_server_reads_back(self, client):
         forged = {
             "email": "admin@example.org", "email_verified": True, "preferred_username": "admin",
             "name": "Admin", "username": "admin",
             "token_type": "refresh", "rt_family": "f", "resource": ["https://x"],
         }
-        claims = _claims(_client_credentials(client, extra=json.dumps(forged))["access_token"])
-        assert [claim for claim in forged if claim in claims] == []
+        refused = client.post("/token", headers=DEMO, data={
+            "grant_type": "client_credentials", "extra": json.dumps(forged),
+        })
+        assert refused.status_code == 400
+        assert refused.get_json()["error_description"] == "'extra' cannot set: " + ", ".join(sorted(forged))
 
     def test_a_custom_claim_passes(self, client):
         claims = _claims(_client_credentials(client, extra=json.dumps({"x-test-run": "42"}))["access_token"])
@@ -146,24 +149,32 @@ class TestAnAccessTokenIsNeverARefreshToken:
     credentials one included, could then be spent for a new access token and
     a refresh token, a same-named user's with #445 and default_user's before
     it (measured on main). The refresh grant now also requires the
-    token_use the server sets last, which no extra can change."""
+    token_use the server sets last, which no extra can change. Since #451
+    /token refuses token_type in extra outright, so the access token that
+    carries it is signed here with the IdP key: the guard on the refresh
+    grant must hold whatever /token would have refused."""
 
-    @pytest.mark.parametrize("grant", [
-        {"grant_type": "client_credentials"},
-        {"grant_type": "password", "username": "user1", "password": "password"},
-    ])
-    def test_refused_whatever_extra_stamped_on_it(self, isolated_repo_config, grant):
+    @pytest.mark.parametrize("subject", ["demo-client", "user1"])
+    def test_refused_whatever_the_access_token_carries(self, isolated_repo_config, subject):
         # A user named like the client: what the refresh grant would have
         # resolved the client credentials token's sub to
         _edit(isolated_repo_config, "users.yaml", lambda doc: doc["users"].__setitem__(
             "demo-client", {"password": "pw", "roles": ["ADMIN"]},
         ))
-        client = create_app().test_client()
-        issued = client.post("/token", headers=DEMO, data={
-            **grant, "extra": json.dumps({"token_type": "refresh", "rt_family": "f"}),
-        }).get_json()
-        spent = client.post("/token", headers=DEMO, data={
-            "grant_type": "refresh_token", "refresh_token": issued["access_token"],
+        app = create_app()
+        with app.app_context():
+            from nanoidp.config import get_config
+            from nanoidp.services import get_crypto_service
+
+            settings = get_config().settings
+            access_token = jwt.encode({
+                "sub": subject, "iss": settings.issuer, "aud": settings.audience,
+                "jti": f"stamped-{subject}", "exp": int(time.time()) + 300,
+                "client_id": "demo-client", "token_use": "access",
+                "token_type": "refresh", "rt_family": "f",
+            }, get_crypto_service().priv_pem, algorithm="RS256")
+        spent = app.test_client().post("/token", headers=DEMO, data={
+            "grant_type": "refresh_token", "refresh_token": access_token,
         })
         assert spent.status_code == 400
         assert spent.get_json()["error"] == "invalid_grant"
