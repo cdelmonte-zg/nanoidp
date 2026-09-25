@@ -19,6 +19,7 @@ from ..serialization import (
     client_id_matches,
     client_to_yaml,
     default_lookup_key,
+    drop_emptied_sections,
     is_unchanged,
     load_yaml_document,
     merge_client_entry,
@@ -50,15 +51,8 @@ def _mutate_settings_section(
     rows = {f.key: f for f in OWNED_SETTINGS if f.section == section_name}
     # Built once per call, and only if a defaults-dependent row is provided
     defaults: Optional[Mapping[str, Any]] = None
-    # The defaults-dependent rows last: returning one to its default removes
-    # the section when it is its last key, and a section removed and
-    # created again by a later write moves to the end of the file, away
-    # from its comment (#450 review). Written after the others, it is never
-    # the last key while anything else of this save is still to come.
-    ordered = sorted(
-        provided.items(), key=lambda item: rows[item[0]].doc_mode == "omit_when_default"
-    )
-    for key, value in ordered:
+    emptied = []
+    for key, value in provided.items():
         if value is None:
             continue
         field = rows[key]
@@ -68,12 +62,12 @@ def _mutate_settings_section(
             # add a key at its default to a file that never had it (#441).
             if defaults is None:
                 defaults = document_defaults()
-            merge_owned_setting_at_default(document, field, value, defaults[default_lookup_key(field)])
+            emptied.append(
+                merge_owned_setting_at_default(document, field, value, defaults[default_lookup_key(field)])
+            )
             continue
-        # Looked up at each write, never held across the loop: a key returned
-        # to its default above can take the section with it when it was the
-        # last one, and a reference kept from before would receive the rest
-        # of the save while the document no longer contains it (#450 review).
+        # Looked up at each write rather than held across the loop, and
+        # created only when something is written to it (#450 review).
         section = document.get(section_name)
         compare = value if (field.doc_mode == "plain" or value) else field.empty
         if not is_unchanged((section or {}).get(key), compare):
@@ -84,6 +78,10 @@ def _mutate_settings_section(
                 if section is None:
                     document[section_name] = section = {}
                 section[key] = value
+    # A section a returned default left empty goes only now, after the rest
+    # of the save: dropped at once, a later write created it again at the
+    # end of the file (#450 review)
+    drop_emptied_sections(document, emptied)
 
 
 def _mutate_allowed_identity_classes(document: Dict[str, Any], classes: List[str]) -> None:
@@ -124,7 +122,7 @@ _LOGIN_ROWS: Dict[str, OwnedSetting] = {
 
 def _mutate_login_key(
     document: Dict[str, Any], key: str, value: Any, defaults: Mapping[str, Any]
-) -> None:
+) -> Optional[str]:
     """Write one ``login.*`` key, or remove it once it is back at its
     default, through the same rule ``apply_settings_document`` uses (#319).
 
@@ -132,7 +130,7 @@ def _mutate_login_key(
     positional default - stood here before.
     """
     row = _LOGIN_ROWS[key]
-    merge_owned_setting_at_default(document, row, value, defaults[default_lookup_key(row)])
+    return merge_owned_setting_at_default(document, row, value, defaults[default_lookup_key(row)])
 
 
 def _login_settings_defaults() -> Mapping[str, Any]:
@@ -546,8 +544,9 @@ class YamlWriter:
         applied = _applied_login_keys(mode, auto_login, two_step, totp)
 
         def mutate(data: Dict[str, Any]) -> None:
-            for key, value in applied.items():
-                _mutate_login_key(data, key, value, defaults)
+            drop_emptied_sections(
+                data, [_mutate_login_key(data, key, value, defaults) for key, value in applied.items()]
+            )
 
         return self._atomic_write(self.settings_file, mutate, expected_revision)
 
@@ -607,8 +606,9 @@ class YamlWriter:
             _mutate_settings_section(data, "saml", saml_fields)
             if allowed_identity_classes:
                 _mutate_allowed_identity_classes(data, allowed_identity_classes)
-            for key, value in applied.items():
-                _mutate_login_key(data, key, value, defaults)
+            drop_emptied_sections(
+                data, [_mutate_login_key(data, key, value, defaults) for key, value in applied.items()]
+            )
 
         return self._atomic_write(self.settings_file, mutate, expected_revision)
 

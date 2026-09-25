@@ -9,6 +9,7 @@ from typing import Any, Optional
 
 from flask import Flask, Response, jsonify, make_response, request
 from flask_cors import CORS
+from flask_cors.core import probably_regex
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from werkzeug.middleware.proxy_fix import ProxyFix
@@ -163,13 +164,20 @@ def create_app(
     declared = settings.cors_allowed_origins
     if declared is not None:
         # A declared entry is an origin in a browser's form (models.py), and
-        # it is matched as exactly that string: flask-cors takes a string
-        # with regex characters for a pattern (the brackets of an IPv6 host
-        # made http://[::1]:3000 not match itself and admit http://1:3000),
-        # so every entry goes in escaped and anchored, whatever it contains
-        # (#450 review). \Z, not $, which also matches before a newline.
+        # it must be matched as that string. flask-cors compares a plain
+        # string as one, ignoring case, but takes a string it thinks is a
+        # regex for a pattern: the brackets of an IPv6 host made
+        # http://[::1]:3000 not match itself and admit http://1:3000. What
+        # flask-cors itself would read as a regex goes in escaped and
+        # anchored (\Z, not $, which also matches before a newline);
+        # everything else stays a plain string, which keeps flask-cors's
+        # always_send behaviour for it (#450 review).
         applied = list(declared)
-        origins = [origin if origin == "*" else f"^{re.escape(origin)}\\Z" for origin in declared]
+        origins = [
+            # "*" is flask-cors's own "every origin", not a pattern to escape
+            origin if origin == "*" or not probably_regex(origin) else f"^{re.escape(origin)}\\Z"
+            for origin in declared
+        ]
     else:
         # flask-cors reads an entry with regex characters as a pattern and
         # matches it with re.match, anchored at the start only: the old

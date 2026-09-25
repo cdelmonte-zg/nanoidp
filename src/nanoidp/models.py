@@ -361,6 +361,35 @@ class OAuthClient(BaseModel):
 _ORIGIN_HOST_NAME = re.compile(r"^[a-z0-9_](?:[a-z0-9_-]*[a-z0-9_])?(?:\.[a-z0-9_](?:[a-z0-9_-]*[a-z0-9_])?)*$")
 
 
+def _whatwg_ipv6(address: ipaddress.IPv6Address) -> str:
+    """An IPv6 address the way the URL Standard serializes it, which is the
+    form a browser puts in an Origin header: lowercase hex pieces without
+    leading zeros, the first longest run of two or more zero pieces as
+    "::", and no dotted IPv4 tail. Not ``ipaddress``'s ``compressed``,
+    which writes IPv4-mapped addresses as ::ffff:127.0.0.1 since Python
+    3.13 (#450 review)."""
+    # From the bytes: exploded, like compressed, writes a dotted IPv4 tail
+    # for IPv4-mapped addresses since Python 3.13
+    packed = address.packed
+    pieces = [int.from_bytes(packed[offset:offset + 2], "big") for offset in range(0, 16, 2)]
+    run_start, run_length, index = -1, 0, 0
+    while index < 8:
+        if pieces[index]:
+            index += 1
+            continue
+        end = index
+        while end < 8 and not pieces[end]:
+            end += 1
+        if end - index > run_length and end - index >= 2:
+            run_start, run_length = index, end - index
+        index = end
+    if run_start < 0:
+        return ":".join(f"{piece:x}" for piece in pieces)
+    left = ":".join(f"{piece:x}" for piece in pieces[:run_start])
+    right = ":".join(f"{piece:x}" for piece in pieces[run_start + run_length:])
+    return f"{left}::{right}"
+
+
 def canonical_cors_origin(value: str) -> Optional[str]:
     """The origin a browser would send in an Origin header for a page at
     ``value``, or None when ``value`` names none.
@@ -369,10 +398,12 @@ def canonical_cors_origin(value: str) -> Optional[str]:
     nothing else. The browser's form is lowercase, with an IPv4 address in
     dotted decimal, an IPv6 address compressed and without a zone id, and
     no port when it is the scheme's default. CORS compares an Origin header
-    with a declared entry as strings, so an entry that is not already in
-    that form would never match (#450 review). Anything else in ``value``
-    (a path, credentials, a tab urlsplit drops silently) is simply not in
-    the result, which is why ``is_cors_origin`` compares the two."""
+    with a declared entry as strings (ignoring case), so an entry in any
+    other form would never match (#450 review). A value that carries more
+    than an origin - a path, a query, credentials, whitespace urlsplit would
+    drop silently - names none: it is not a formatting slip to rewrite."""
+    if any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in value):
+        return None
     try:
         parts = urlsplit(value)
         port = parts.port  # raises for a port that is not a number in range
@@ -380,12 +411,17 @@ def canonical_cors_origin(value: str) -> Optional[str]:
         return None
     if parts.scheme not in ("http", "https") or not parts.hostname:
         return None
+    if parts.path or parts.query or parts.fragment or "?" in value or "#" in value:
+        return None
+    if "@" in parts.netloc:
+        return None
     host = parts.hostname  # lowercased by urlsplit
     if parts.netloc.startswith("["):
-        if "%" in host:  # a zone id is never part of an Origin header
-            return None
+        # A zone id (fe80::1%eth0) is never in an Origin header; the
+        # serialization below leaves it out, so such an entry is refused
+        # with the form a browser would send
         try:
-            host = f"[{ipaddress.IPv6Address(host).compressed}]"
+            host = f"[{_whatwg_ipv6(ipaddress.IPv6Address(host))}]"
         except ValueError:
             return None
     else:
@@ -403,8 +439,10 @@ def canonical_cors_origin(value: str) -> Optional[str]:
 
 
 def is_cors_origin(value: str) -> bool:
-    """Whether ``value`` is an origin exactly as a browser sends it."""
-    return canonical_cors_origin(value) == value
+    """Whether ``value`` is an origin as a browser sends it. Case aside:
+    flask-cors compares origins without regard to case, so HTTP://App.Test
+    matches the http://app.test a browser sends."""
+    return canonical_cors_origin(value) == value.lower()
 
 
 # The longest refresh token lifetime oauth.refresh_token_expiry_minutes

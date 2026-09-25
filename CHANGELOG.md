@@ -18,13 +18,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     1 to 60) now set what they name, and `cors_allowed_origins` sets the CORS
     origins in every profile (absent: the profile decides, as before; `[]`
     allows none). Each entry is an origin, `http(s)://host[:port]` and
-    nothing else, written as a browser sends it in an Origin header, and is
-    matched as exactly that string: lowercase, IPv6 compressed and without a
-    zone id, IPv4 in dotted decimal, no default port. An entry in another
-    form is refused with the form to write (`https://app.example:443` ->
-    `https://app.example`), since it would never match; a path, credentials
-    or a pattern such as `http://localhost:*`, which flask-cors would match
-    at the start only, are refused too. A save from the web UI or the MCP server writes them
+    nothing else, written as a browser sends it in an Origin header, since
+    the two are compared as strings (ignoring case): IPv6 in the URL
+    Standard's form (compressed, IPv4-mapped as `::ffff:7f00:1`, no zone
+    id), IPv4 in dotted decimal, no default port. An entry in another form
+    is refused with the form to write (`https://app.example:443` ->
+    `https://app.example`), since it would never match; a path, a query,
+    credentials or a pattern such as `http://localhost:*`, which flask-cors
+    would match at the start only, are refused as not an origin. A save from the web UI or the MCP server writes them
     only while they differ from the default.
   - A revoked refresh token family is remembered for the longest lifetime
     the setting allows plus a day (31 days), where it was 8 days, sized for

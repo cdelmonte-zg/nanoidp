@@ -282,7 +282,6 @@ class TestInvalidValuesAreErrors:
         ({"cors_allowed_origins": ["http://[::ffff:127.0.0.1]"]}, "cors_allowed_origins"),
         ({"cors_allowed_origins": ["http://[fe80::1%25eth0]:3000"]}, "cors_allowed_origins"),
         ({"cors_allowed_origins": ["http://127.1"]}, "cors_allowed_origins"),
-        ({"cors_allowed_origins": ["HTTP://App.Example"]}, "cors_allowed_origins"),
         ({"cors_allowed_origins": ["http://app.example:"]}, "cors_allowed_origins"),
     ])
     def test_refused(self, tmp_path, settings, path):
@@ -305,10 +304,40 @@ class TestInvalidValuesAreErrors:
             "http://web_app:3000",
             "http://[::ffff:7f00:1]",
             "https://app.example:8443",
+            # flask-cors compares origins case-insensitively
+            "HTTP://App.Example",
         ]
         assert ConfigManager(
             _write(tmp_path, {"cors_allowed_origins": accepted})
         ).settings.cors_allowed_origins == accepted
+
+    @pytest.mark.parametrize("entry", [
+        "https://app.example/callback",
+        "https://app.example?x=1",
+        "http://user:pw@app.example",
+        "http://loc\talhost:3000",
+    ])
+    def test_what_is_more_than_an_origin_is_not_rewritten_into_one(self, tmp_path, entry):
+        """A path or credentials are not a formatting slip: the message says
+        the entry is not an origin, instead of offering a wider one."""
+        with pytest.raises(ValueError, match="is not an origin") as refused:
+            ConfigManager(_write(tmp_path, {"cors_allowed_origins": [entry]}))
+        assert "write it as" not in str(refused.value)
+
+    def test_the_ipv6_form_is_the_browsers_whatever_the_python(self):
+        """WHATWG serialization, which browsers use for the Origin header;
+        Python 3.13 changed ipaddress's compressed form of IPv4-mapped
+        addresses to ::ffff:127.0.0.1 (#450 review)."""
+        from nanoidp.models import canonical_cors_origin
+
+        for written, browser in [
+            ("http://[::ffff:127.0.0.1]", "http://[::ffff:7f00:1]"),
+            ("http://[0:0:0:0:0:0:0:1]:3000", "http://[::1]:3000"),
+            ("http://[2001:DB8:0:0:1:0:0:1]", "http://[2001:db8::1:0:0:1]"),
+            ("http://[1:0:0:2:0:0:0:3]", "http://[1:0:0:2::3]"),
+            ("http://[1:0:2:3:4:5:6:7]", "http://[1:0:2:3:4:5:6:7]"),
+        ]:
+            assert canonical_cors_origin(written) == browser, written
 
     def test_a_non_canonical_origin_is_refused_with_the_form_to_write(self, tmp_path):
         with pytest.raises(ValueError, match="write it as 'https://app.example'"):
@@ -479,12 +508,14 @@ class TestWrittenOnlyWhileNotAtTheDefault:
         assert text.index("# the OAuth block") < text.index("oauth:") < text.index("saml:")
         assert "require_pkce: true" in text and "refresh_token_expiry_minutes" not in text
 
-    def test_the_same_through_a_partial_settings_form(self, isolated_repo_config):
+    @pytest.mark.parametrize("with_clients", [False, True])
+    def test_the_same_through_a_partial_settings_form(self, isolated_repo_config, with_clients):
         path = isolated_repo_config / "settings.yaml"
         document = yaml.safe_load(path.read_text())
-        document["oauth"] = {
-            "refresh_token_expiry_minutes": 90, "clients": document["oauth"]["clients"],
-        }
+        oauth = {"refresh_token_expiry_minutes": 90}
+        if with_clients:
+            oauth["clients"] = document["oauth"]["clients"]
+        document["oauth"] = oauth
         path.write_text(yaml.safe_dump(document))
         client = create_app().test_client()
 
@@ -494,11 +525,70 @@ class TestWrittenOnlyWhileNotAtTheDefault:
             "refresh_token_rotation": "true", "refresh_token_rotation__on_form": "1",
         }, follow_redirects=True)
         assert b"Settings updated successfully" in page.data
-        oauth = self._document(isolated_repo_config)["oauth"]
-        assert oauth.get("require_pkce") is True
-        assert oauth.get("refresh_token_rotation") is True
-        assert "refresh_token_expiry_minutes" not in oauth
-        assert oauth["clients"][0]["client_id"] == "demo-client"
+        saved = self._document(isolated_repo_config)["oauth"]
+        assert saved.get("require_pkce") is True
+        assert saved.get("refresh_token_rotation") is True
+        assert "refresh_token_expiry_minutes" not in saved
+        assert ("clients" in saved) is with_clients
+
+    def _commented_file(self, tmp_path, block):
+        (tmp_path / "users.yaml").write_text("users: {}\n")
+        (tmp_path / "settings.yaml").write_text(
+            "server:\n  port: 8000\n# the block\n" + block + "saml:\n  sign_responses: true\n"
+        )
+
+    def _assert_in_place(self, tmp_path, section):
+        text = (tmp_path / "settings.yaml").read_text()
+        assert text.index("# the block") < text.index(f"{section}:") < text.index("saml:"), text
+
+    def test_a_form_save_that_empties_the_section_removes_it(self, isolated_repo_config):
+        """Nothing else of the save to write: the emptied section goes, as
+        it did before a later write could re-create it (#319)."""
+        from nanoidp.services.yaml_writer import YamlWriter
+
+        path = isolated_repo_config / "settings.yaml"
+        document = yaml.safe_load(path.read_text())
+        document["oauth"] = {"refresh_token_expiry_minutes": 90}
+        path.write_text(yaml.safe_dump(document))
+        YamlWriter(str(isolated_repo_config)).update_oauth_settings(refresh_token_expiry_minutes=10080)
+        assert "oauth" not in self._document(isolated_repo_config)
+
+    def test_login_keeps_its_place_when_one_key_goes_and_another_comes(self, tmp_path):
+        """Two defaults-dependent keys in one section: removing the first
+        emptied the section, which was dropped at once and created again by
+        the second at the end of the file (on main too, since #319; #450
+        review). A section left empty is now dropped once the whole save is
+        written."""
+        from nanoidp.services.yaml_writer import YamlWriter
+
+        self._commented_file(tmp_path, "login:\n  two_step: true\n")
+        YamlWriter(str(tmp_path)).update_login_settings(two_step=False, totp=True)
+        self._assert_in_place(tmp_path, "login")
+        assert yaml.safe_load((tmp_path / "settings.yaml").read_text())["login"] == {"totp": True}
+
+    def test_device_flow_keeps_its_place_through_a_config_save(self, tmp_path):
+        self._commented_file(tmp_path, "device_flow:\n  code_expiry_seconds: 900\n")
+        config = ConfigManager(str(tmp_path))
+        config.settings.device_code_expiry_seconds = 600
+        config.settings.device_polling_interval = 10
+        config.save()
+        self._assert_in_place(tmp_path, "device_flow")
+        assert yaml.safe_load((tmp_path / "settings.yaml").read_text())["device_flow"] == {
+            "polling_interval": 10
+        }
+
+    def test_a_section_the_save_leaves_empty_is_still_removed(self, tmp_path):
+        from nanoidp.services.yaml_writer import YamlWriter
+
+        self._commented_file(tmp_path, "login:\n  two_step: true\n")
+        YamlWriter(str(tmp_path)).update_login_settings(two_step=False)
+        assert "login" not in yaml.safe_load((tmp_path / "settings.yaml").read_text())
+
+        self._commented_file(tmp_path, "device_flow:\n  code_expiry_seconds: 900\n")
+        config = ConfigManager(str(tmp_path))
+        config.settings.device_code_expiry_seconds = 600
+        config.save()
+        assert "device_flow" not in yaml.safe_load((tmp_path / "settings.yaml").read_text())
 
     def test_the_settings_page_round_trip(self, isolated_repo_config, client):
         page = client.get("/settings")

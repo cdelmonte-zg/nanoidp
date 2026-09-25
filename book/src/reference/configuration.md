@@ -748,13 +748,14 @@ so a file that does not mention them behaves as it always did.
   `oauth21`, `localhost` and `127.0.0.1` on any port under `stricter-dev`.
   Present, it is the list in every profile: `[]` allows no origin, `"*"`
   every origin, and each entry is an origin written the way a browser
-  sends it in an Origin header: `http` or `https`, a lowercase host (a
-  name, an IPv4 address, or a compressed IPv6 address in brackets such as
-  `[::1]`) and a port only when it is not the scheme's default. Entries are
-  compared as exact strings, so one in another form would never match and
-  is refused with the form to write instead (`https://app.example:443`
-  becomes `https://app.example`); a path, credentials or a pattern such as
-  `http://localhost:*` is refused too. A `"*"`
+  sends it in an Origin header: `http` or `https`, a host (a name, an IPv4
+  address, or a compressed IPv6 address in brackets such as `[::1]`) and a
+  port only when it is not the scheme's default. Entries are compared with
+  the Origin header as strings, ignoring case, so one in another form
+  would never match and is refused with the form to write instead
+  (`https://app.example:443` becomes `https://app.example`); a path,
+  credentials or a pattern such as `http://localhost:*` is refused as not
+  an origin. A `"*"`
   under `stricter-dev` is logged as a warning at startup: the list wins
   over the profile. CORS is set up when the
   server starts, so a change takes effect at the next restart, not at a
