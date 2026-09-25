@@ -9,9 +9,6 @@ server:
 
 oauth:
   issuer: "http://localhost:8000"
-  # Also the Audience of every SAML assertion (#443): the service provider's
-  # entity ID must equal this value, which is why the example sets Spring's
-  # entity-id to it
   audience: "spring-boot-app"
 
 saml:

@@ -20,8 +20,7 @@ Test users: `admin` / `admin` (roles `ADMIN`, `USER`, group
 `ADMINISTRATORS`), `user` / `user` (role `USER`), `readonly` / `readonly`
 (role `VIEWER`).
 
-The SP sets its entity ID to `oauth.audience` as a workaround for #443.
-The guide explains that and the rest, from the Maven setup to mapping
-roles to Spring authorities:
+The guide explains the rest, from the Maven setup to mapping roles to
+Spring authorities:
 [Test a Spring Boot SAML service provider without a real IdP](https://cdelmonte-zg.github.io/nanoidp/use-cases/spring-boot-saml.html).
 The repository runs this directory in `.github/workflows/saml-example.yml`.

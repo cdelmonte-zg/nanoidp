@@ -55,15 +55,11 @@ endpoint, both bindings and the signing certificate:
 {{#include ../../../examples/spring-boot-saml/sp/src/main/resources/application.yml}}
 ```
 
-> **The `entity-id` line is a workaround for
-> [#443](https://github.com/cdelmonte-zg/nanoidp/issues/443).** NanoIDP
-> puts `oauth.audience` in every assertion's `Audience`, where the SAML
-> profile requires the service provider's own entity ID. Spring checks the
-> audience, so with its default entity ID it rejects every response and
-> sends the browser to `/login?error`; the log says only `Found 1
-> validation errors in SAML response`. Setting the SP's entity ID to the
-> value of `oauth.audience` makes the two agree. Once #443 is fixed, the
-> line goes.
+Spring's default entity ID, `{baseUrl}/saml2/service-provider-metadata/nanoidp`,
+is what the SP sends as the AuthnRequest's `Issuer`, and NanoIDP puts that
+value in the assertion's `Audience` (SAML Profiles §4.1.4.2), so the two
+agree without configuration. Up to 3.3.0 every assertion carried
+`oauth.audience` instead, and the SP's `entity-id` had to be set to it.
 
 ## 3. Turn SAML roles into Spring authorities
 
@@ -117,16 +113,12 @@ is the standard SAML Web Browser SSO profile over the HTTP-POST binding.
 |---|---|
 | `user` opens `/admin` | `403`: the login works, the role is missing |
 | a wrong password | NanoIDP shows its form again; no SAMLResponse reaches the SP |
-| the SP's entity ID differs from `oauth.audience` (#443) | Spring rejects the response and redirects to `/login?error` |
 
 ## Limits to know
 
 - **No single logout.** NanoIDP's metadata has no `SingleLogoutService`, so
   `saml2Logout()` has nothing to talk to. Log out locally with Spring's
   ordinary `logout()`.
-- **The audience** is NanoIDP's `oauth.audience` for every service
-  provider, until [#443](https://github.com/cdelmonte-zg/nanoidp/issues/443)
-  is fixed.
 
 ## Takeaways
 
@@ -136,6 +128,7 @@ is the standard SAML Web Browser SSO profile over the HTTP-POST binding.
   sends, and accept values without `xsi:type`.
 - An SP that rejects every response with "validation errors" is most often
   an audience mismatch. Compare the assertion's `Audience` with the SP's
-  entity ID.
+  entity ID: NanoIDP takes it from the AuthnRequest's `Issuer`, so the two
+  differ only when the SP sends one identifier and expects another.
 - The login is scriptable end to end, so SAML can be tested in CI like
   anything else.
