@@ -212,8 +212,6 @@ users:
     source_acl:
       - "ACL_READ"
       - "ACL_WRITE"
-
-default_user: "{admin_user}"
 """
 
     # settings.yaml

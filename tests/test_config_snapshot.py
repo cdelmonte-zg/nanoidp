@@ -37,7 +37,6 @@ from nanoidp.config import ConfigManager
 _PUBLISHED = (
     "settings",
     "users",
-    "default_user",
     "strict_config",
     "config_version",
     "users_revision",
@@ -61,7 +60,6 @@ def config_dir(tmp_path):
 def _declare(directory: Path, username: str) -> None:
     users = yaml.safe_load((directory / "users.yaml").read_text())
     users["users"] = {username: {"password": "pw", "roles": ["user"]}}
-    users["default_user"] = username
     (directory / "users.yaml").write_text(yaml.safe_dump(users, sort_keys=False))
 
 
@@ -104,7 +102,7 @@ class TestOnePublication:
         config.reload_local()
 
         assert config.snapshot is not before
-        assert config.default_user == "bob"
+        assert set(config.users) == {"bob"}
 
     def test_a_holder_of_one_carrier_is_not_moved_by_a_load(self, config_dir):
         """What step B rests on: a request that took the carrier reads the
@@ -116,7 +114,6 @@ class TestOnePublication:
         _declare(config_dir, "bob")
         config.reload_local()
 
-        assert held.default_user != "bob"
         assert held.users == held_users
         assert "bob" not in held.users
         assert config.snapshot.users.keys() != held.users.keys()
@@ -125,7 +122,7 @@ class TestOnePublication:
         config = ConfigManager(str(config_dir))
 
         with pytest.raises(FrozenInstanceError):
-            config.snapshot.default_user = "someone-else"
+            config.snapshot.users = {}
 
     def test_the_manager_refuses_to_publish_a_field_on_its_own(self, config_dir):
         """The way a load used to change one field is gone: what a reader
@@ -133,7 +130,7 @@ class TestOnePublication:
         config = ConfigManager(str(config_dir))
 
         with pytest.raises(AttributeError):
-            config.default_user = "someone-else"
+            config.users = {}
 
 
 class TestOneObservationPerAnswer:

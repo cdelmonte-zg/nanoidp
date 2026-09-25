@@ -15,8 +15,6 @@ from typing import Any, Callable, Dict, Iterator, Optional, Tuple, TypeVar
 
 import yaml
 
-# Re-exported for compatibility: the models were defined here until #86, and
-# every consumer (routes, services, MCP, tests) imports them from this module.
 from .config_documents import (
     HooksSection,
     SettingsDocument,
@@ -49,6 +47,10 @@ from .serialization import (
     check_config_version,
 )
 from .serialization import expand_env_vars as _expand_env_vars
+
+# Re-exported for compatibility: the models were defined here until #86, and
+# every consumer (routes, services, MCP, tests) imports them from this module.
+from .token_subject import shared_name_warning
 
 logger = logging.getLogger(__name__)
 
@@ -196,7 +198,6 @@ class ConfigSnapshot:
 
     settings: Settings
     users: Dict[str, User]
-    default_user: str
     strict_config: bool
     config_version: int
     # The values the file declared for the fields a --profile forces, kept
@@ -350,7 +351,6 @@ class ConfigManager:
         self._snapshot = ConfigSnapshot(
             settings=Settings(),
             users={},
-            default_user="admin",
             strict_config=self._effective_strict(self._declared_mode_of(pre_load["settings.yaml"])),
             # Effective config schema version of the loaded files (#175):
             # the declared value, or 1 when a file carries no
@@ -456,7 +456,7 @@ class ConfigManager:
         into candidates first, and only when both are valid does anything
         touch the runtime. A failed load (strict unknown key in either file,
         wrong types, version mismatch, strict plugin failure) leaves
-        settings, users, default_user, strict_config, config_version, the
+        settings, users, strict_config, config_version, the
         profile hardening and the hook registry exactly as they were.
         """
         with self._load_lock:
@@ -540,10 +540,6 @@ class ConfigManager:
     @property
     def users(self) -> Dict[str, User]:
         return self._snapshot.users
-
-    @property
-    def default_user(self) -> str:
-        return self._snapshot.default_user
 
     @property
     def strict_config(self) -> bool:
@@ -645,7 +641,7 @@ class ConfigManager:
         users_file = self.config_dir / "users.yaml"
         if not users_observed.exists:
             logger.warning(f"Users file not found: {users_file}, using defaults")
-            staged["users"], staged["default_user"] = self._default_users(), "admin"
+            staged["users"] = self._default_users()
             staged["users_revision"] = users_observed.revision
         else:
             uraw = users_observed.data
@@ -662,7 +658,7 @@ class ConfigManager:
                     f"configuration directory follows one contract version"
                 )
             udata = _expand_env_vars(udata)
-            staged["users"], staged["default_user"] = load_users_document(
+            staged["users"] = load_users_document(
                 udata, users_file, strict=staged["strict"]
             ).to_users()
         return staged
@@ -689,6 +685,10 @@ class ConfigManager:
             self._configure_hooks_from(staged["hooks_section"], staged["plugins"])
         if publish is not None:
             publish()
+        # A user and a client of the same name load, and are said (#445)
+        client_ids = {client.client_id for client in staged["settings"].clients}
+        for name in sorted(client_ids & set(staged["users"])):
+            logger.warning(shared_name_warning(name))
         # One assignment (#406): a reader takes the whole configuration or
         # the whole previous one, never a pair of the two. The revisions in
         # it are those of the bytes this runtime was loaded from (#229
@@ -702,7 +702,6 @@ class ConfigManager:
         self._snapshot = ConfigSnapshot(
             settings=staged["settings"],
             users=staged["users"],
-            default_user=staged["default_user"],
             strict_config=staged["strict"],
             config_version=staged["version"],
             declared=staged["declared"],
@@ -1138,7 +1137,7 @@ class ConfigManager:
                 (
                     "users.yaml",
                     expected_users_revision,
-                    lambda doc: apply_users_document(doc, loaded.users, loaded.default_user),
+                    lambda doc: apply_users_document(doc, loaded.users),
                 ),
                 (
                     "settings.yaml",
@@ -1198,7 +1197,7 @@ class ConfigManager:
         compare_and_replace(
             users_file,
             expected_revision,
-            lambda doc: apply_users_document(doc, loaded.users, loaded.default_user),
+            lambda doc: apply_users_document(doc, loaded.users),
             validate=reject_unloadable,
         )
         self.notify_saved(users_file, "users")

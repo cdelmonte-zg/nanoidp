@@ -29,6 +29,14 @@ _AUTHORITATIVE_CLAIMS = ("scope", "req_userinfo_claims", "req_id_token_claims")
 # them (``create_jwt`` applies ``payload.update(extra)`` after the registered
 # claims), e.g. a user attribute ``aud``/``exp`` hijacking the ID Token. None of
 # these are legitimately requestable, so the resolver refuses them outright.
+# What a user grant puts in an access token about the user. A token with no
+# end user behind it (client_credentials) carries none of them, and cannot be
+# given them through ``extra`` either (#445).
+USER_IDENTITY_CLAIMS = frozenset({
+    "roles", "authorities", "tenant", "identity_class", "entitlements",
+    "groups", "source_acl", "attributes",
+})
+
 _RESERVED_CLAIMS = frozenset({
     # registered JWT claims (RFC 7519)
     "iss", "sub", "aud", "exp", "iat", "nbf", "jti",
@@ -533,6 +541,68 @@ class TokenService:
         if id_token is not None:
             response["id_token"] = id_token
 
+        return response
+
+    def create_client_credentials_token(
+        self,
+        client_id: str,
+        exp_minutes: Optional[int] = None,
+        extra_claims: Optional[Dict[str, Any]] = None,
+        scope: Optional[str] = None,
+        issuer: Optional[str] = None,
+        resource: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """An access token whose subject is the client (client_credentials,
+        #445).
+
+        No end user takes part in this grant (RFC 6749 §4.4), so ``sub`` is
+        the ``client_id`` (RFC 9068 §2.2) and the token carries no user
+        claims. It used to be issued for ``default_user`` through
+        ``create_token``, as if that user had logged in.
+
+        This path owns, whatever ``extra_claims`` says: the registered claims
+        (``iss``, ``sub``, ``aud``, ``exp``, ``iat``, ``nbf``, ``jti``) and
+        the protocol claims (``client_id``, ``scope``, ``token_use`` and the
+        rest of ``_RESERVED_CLAIMS``), and no user-identity claim can be
+        added through it; any other custom claim passes. No refresh token
+        (RFC 6749 §4.4.3, #239) and no ID token, as before.
+        """
+        settings = self.loaded.settings
+        crypto = self.crypto
+        effective_issuer = issuer or settings.issuer
+        if exp_minutes is None:
+            exp_minutes = settings.token_expiry_minutes
+
+        extra: Dict[str, Any] = {
+            name: value
+            for name, value in (extra_claims or {}).items()
+            if name not in _RESERVED_CLAIMS and name not in USER_IDENTITY_CLAIMS
+        }
+        # client_id and token_use are set after the merge, so no copy in
+        # extra survives them
+        if scope:
+            extra["scope"] = scope
+        extra["client_id"] = client_id
+        extra["token_use"] = "access"
+
+        audience: Union[str, List[str]] = settings.audience
+        if resource:
+            audience = resource[0] if len(resource) == 1 else list(resource)
+
+        token = crypto.create_jwt(
+            sub=client_id,
+            issuer=effective_issuer,
+            audience=audience,
+            extra=extra,
+            exp_minutes=exp_minutes,
+        )
+        response: Dict[str, Any] = {
+            "access_token": token,
+            "token_type": "Bearer",
+            "expires_in": exp_minutes * 60,
+        }
+        if scope:
+            response["scope"] = scope
         return response
 
 

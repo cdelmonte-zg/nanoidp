@@ -37,5 +37,3 @@ users:
     roles:
     - "USER"
     tenant: "default"
-
-default_user: "admin"

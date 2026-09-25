@@ -248,26 +248,6 @@ class TestSettings:
         assert "entitlements" in prefixes
 
 
-class TestDefaultUser:
-    """Tests for default user configuration."""
-
-    def test_default_user_is_set(self, app):
-        """Test that default_user is configured."""
-        with app.app_context():
-            config = get_config()
-
-        assert config.default_user is not None
-        assert len(config.default_user) > 0
-
-    def test_default_user_exists(self, app):
-        """Test that default_user refers to an existing user."""
-        with app.app_context():
-            config = get_config()
-            user = config.get_user(config.default_user)
-
-        assert user is not None
-
-
 class TestUserDataclass:
     """Tests for the User dataclass."""
 

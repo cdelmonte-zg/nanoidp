@@ -975,9 +975,17 @@
         "title": "Config Version"
       },
       "default_user": {
-        "default": "admin",
-        "title": "Default User",
-        "type": "string"
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "deprecated": true,
+        "title": "Default User"
       },
       "users": {
         "additionalProperties": {

@@ -1,19 +1,13 @@
 # NanoIDP Users - Microservices Client Credentials
 # Copy this file to your config directory
+#
+# A client_credentials token is the client's own: its sub is the client_id
+# and it carries no user's roles or attributes, so the services below need
+# no user at all. This one is for the web UI.
 
 users:
-  # The identity every client_credentials token is issued for (#445): a user
-  # with no roles, so no human privileges end up in a service's token.
-  # Services are told apart by the token's client_id, not by its sub
-  service-account:
-    email: "service-account@example.org"
-    roles: []
-
-  # For the web UI
   admin:
     password: "admin"
     email: "admin@example.org"
     roles:
       - "ADMIN"
-
-default_user: "service-account"

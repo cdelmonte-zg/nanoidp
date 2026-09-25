@@ -68,7 +68,8 @@ class TestWizardHappyPath:
         client = manager.get_client("demo-client")
         assert client is not None and client.client_secret == "demo-secret"
         assert identities_for(manager, manager.snapshot).authenticate("admin", "admin") is not None
-        assert manager.default_user == "admin"
+        # default_user is deprecated and no longer written (#445)
+        assert "default_user" not in (tmp_path / "wizard-config" / "users.yaml").read_text()
         assert (tmp_path / "wizard-config" / "keys").is_dir()
 
     def test_custom_answers_land_in_the_config(self, tmp_path, feed):

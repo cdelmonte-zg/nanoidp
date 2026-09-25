@@ -52,8 +52,6 @@ users:
     roles:
       - "USER"
     tenant: "default"
-
-default_user: "admin"
 """
 
 DEFAULT_SETTINGS_YAML = """# NanoIDP Settings Configuration

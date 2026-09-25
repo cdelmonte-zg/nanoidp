@@ -503,12 +503,23 @@ class NanoIDPTestAgent:
             if response.status_code == 200:
                 data = response.json()
                 expires = data.get("expires_in", "?")
-                # Decode to check default user
+                # The token is the client's own (#445, RFC 9068 §2.2): its
+                # subject is the client, and no user's claims come with it
                 token = data.get("access_token")
                 sub = "?"
+                decoded = {}
                 if jwt and token:
                     decoded = jwt.decode(token, options={"verify_signature": False})
                     sub = decoded.get("sub", "?")
+                user_claims = [claim for claim in ("roles", "authorities", "tenant") if claim in decoded]
+                if decoded and (sub != self.client_id or user_claims):
+                    return self._add_result(
+                        "Client Credentials",
+                        TestCategory.OAUTH,
+                        False,
+                        f"The token is not the client's own: sub={sub}, user claims {user_claims}",
+                        {"expires_in": expires, "subject": sub},
+                    )
                 # RFC 6749 §4.4.3: no refresh token for this grant (#239).
                 if "refresh_token" in data:
                     return self._add_result(

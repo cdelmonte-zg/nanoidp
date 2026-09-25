@@ -23,8 +23,7 @@ pip install requests pytest && pytest tests
 | `order-service` | `order-service-secret` | `inventory:read`, `inventory:reserve` | `https://inventory.internal` |
 | `notification-service` | `notification-service-secret` | `orders:read` | `https://orders.internal` |
 
-`default_user` is a user with no roles, a workaround for #445: a
-client_credentials token is issued for that user. The guide explains it and
-the rest:
+A client_credentials token's subject is the client (`sub` equals
+`client_id`), and it carries no user claims. The guide explains the rest:
 [Test service-to-service auth with client credentials](https://cdelmonte-zg.github.io/nanoidp/use-cases/service-to-service-client-credentials.html).
 The repository runs this directory in `.github/workflows/client-credentials-example.yml`.

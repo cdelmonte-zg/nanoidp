@@ -206,8 +206,6 @@ users:
     source_acl:
       - "ACL_READ"
       - "ACL_WRITE"
-
-default_user: "admin"
 ```
 
 `description` is optional and display-only: it's shown next to the username

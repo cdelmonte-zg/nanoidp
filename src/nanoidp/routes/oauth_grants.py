@@ -36,8 +36,11 @@ from ._oauth_error import oauth_error as _oauth_error
 class _GrantOutcome:
     """Issuance parameters a grant handler hands back to token()."""
 
-    user: User
-    username: str
+    # None for client_credentials: no end user takes part (#445)
+    user: Optional[User]
+    # Who the token is about: the user's name for the user grants, the
+    # client_id for client_credentials (RFC 9068 §2.2)
+    subject: str
     nonce: Optional[str] = None
     scope: Optional[str] = None
     auth_time: Optional[int] = None
@@ -435,7 +438,7 @@ def _grant_refresh_token(ctx: _GrantContext) -> GrantResult:
 
     return _GrantOutcome(
         user=user,
-        username=username,
+        subject=username,
         scope=scope,
         auth_time=auth_time,
         amr=amr,
@@ -537,7 +540,7 @@ def _grant_password(ctx: _GrantContext) -> GrantResult:
         return resource_error
     return _GrantOutcome(
         user=user,
-        username=username,
+        subject=username,
         nonce=request.form.get("nonce") or None,
         scope=requested_scope,
         resource=resource,
@@ -657,7 +660,7 @@ def _grant_authorization_code(ctx: _GrantContext) -> GrantResult:
     requested_claims = auth_code.claims or {}
     return _GrantOutcome(
         user=user,
-        username=username,
+        subject=username,
         nonce=auth_code.nonce if auth_code.nonce is not None else None,
         scope=code_scope,
         # The user authenticated at the login page when the code was created,
@@ -723,30 +726,20 @@ def _grant_client_credentials(ctx: _GrantContext) -> GrantResult:
             remaining = [t for t in requested_scope.split() if t != "openid"]
             requested_scope = " ".join(remaining) or None
 
-    # Use default user for client credentials
-    default_username = ctx.loaded.default_user
-    user = ctx.identities.get_user(default_username)
-    if not user:
-        # Create a minimal service account user. No password: it never
-        # authenticates with one, and User.password rejects "" since #158
-        # (min_length=1) - the old empty string made this path a 500 (#241).
-        user = User(
-            username="service-account",
-            password=None,
-            roles=["user"],
-            tenant="default",
-        )
+    # The token is the client's own: no end user takes part in this grant,
+    # so none is looked up and its subject is the client_id (RFC 9068 §2.2,
+    # RFC 6749 §4.4). It used to be issued for default_user, as if that user
+    # had logged in, roles and attributes included (#445).
     # RFC 6749 §4.4.3: "A refresh token SHOULD NOT be included." The client
     # authenticates itself on every request; a refresh token here would be a
-    # second, long-lived credential bound to the default user (or the synthetic
-    # service account) that the grant never authenticated, spendable at
-    # grant_type=refresh_token to obtain user-context tokens (#239).
+    # second, long-lived credential the grant never authenticated, spendable
+    # at grant_type=refresh_token (#239).
     resource, resource_error = _resolve_token_resource(ctx, client, None)
     if resource_error is not None:
         return resource_error
     return _GrantOutcome(
-        user=user,
-        username=user.username,
+        user=None,
+        subject=ctx.client_id,
         scope=requested_scope,
         issue_refresh_token=False,
         resource=resource,
@@ -874,7 +867,7 @@ def _grant_device_code(ctx: _GrantContext) -> GrantResult:
             return resource_error
         return _GrantOutcome(
             user=user,
-            username=user.username,
+            subject=user.username,
             scope=device_scope,
             auth_time=grant.auth_time,
             # How the /device login authenticated (#348) - set by

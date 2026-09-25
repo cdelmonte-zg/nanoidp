@@ -79,7 +79,7 @@ class TestClientCredentialsResponse:
     def test_grant_outcome_defaults_to_issuing_a_refresh_token(self):
         """Only client_credentials opts out; a new handler gets a refresh token
         unless it says otherwise."""
-        outcome = _GrantOutcome(user=User(username="u", password="p"), username="u")
+        outcome = _GrantOutcome(user=User(username="u", password="p"), subject="u")
 
         assert outcome.issue_refresh_token is True
 
