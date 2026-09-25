@@ -45,6 +45,42 @@ and flattened into `authorities` via the configured `authority_prefixes`:
 }
 ```
 
+### The `exp` and `extra` parameters
+
+Two form parameters of `/token`, on every grant, exist for testing and
+have no counterpart in RFC 6749:
+
+- `exp` is the lifetime **in minutes**, 1 to 1440, of the access token and
+  of any ID token issued with it, in place of `oauth.token_expiry_minutes`.
+  It does not affect refresh tokens (`oauth.refresh_token_expiry_minutes`).
+  It is not the JWT `exp` claim: the claim is computed from it.
+- `extra` is a JSON object of custom claims to add to the access token
+  (never to the ID token or the refresh token). It adds, it never changes:
+  a request that names a claim the grant or the user store decides is
+  refused with `invalid_request` and the names, before the grant runs, so
+  an authorization code, a device code or a refresh token is not consumed
+  by it. Refused names: the registered claims (`iss`, `sub`, `aud`, `exp`,
+  `iat`, `nbf`, `jti`), the protocol claims (`client_id`, `scope`,
+  `token_use`, `azp`, `nonce`, `auth_time`, `amr`, `at_hash`, `req_*`),
+  the claims the server reads back (`token_type`, `rt_family`, `resource`),
+  and the claims about the user (`roles`, `authorities`, `tenant`,
+  `groups`, `entitlements`, `identity_class`, `source_acl`, `attributes`,
+  `username` and the OIDC standard claims such as `email` or `name`). So
+  `extra={"exp": ...}` is refused where `exp=15` is a lifetime. A token
+  for a user with other roles is obtained by creating that user (a runtime
+  user, or MCP `create_user`), not through `extra`.
+
+```text
+POST /token  grant_type=password ... exp=15 extra={"tenant_plan":"trial"}
+-> access token with tenant_plan and a 15 minute lifetime
+
+POST /token  grant_type=password ... extra={"sub":"root","roles":["ADMIN"]}
+-> 400 {"error":"invalid_request","error_description":"'extra' cannot set: roles, sub"}
+```
+
+The MCP tool `generate_token` applies the same rule to its `extra_claims`
+argument.
+
 ### A client credentials token
 
 A token from the `client_credentials` grant has no user behind it: the
@@ -68,9 +104,9 @@ client acts on its own behalf (RFC 6749 §4.4). Its subject is the client
 
 - `aud` is the `resource` when the request names one, as for any access
   token. No refresh token and no ID token are issued.
-- These claims are the grant's: the `extra` parameter can add other claims,
-  but cannot change them, nor add `roles`, `authorities`, `tenant`,
-  `identity_class`, `entitlements`, `groups`, `source_acl` or `attributes`.
+- These claims are the grant's: the `extra` parameter can add other claims
+  and nothing else, as on every grant (see above); a request that names one
+  of them, or a claim about a user, is refused.
 - `/userinfo` answers such a token with `{"sub": ...}` alone, and
   `/introspect` names no `username`, nor the `openid` scope it reports for a
   user token issued without one: a token whose `sub` equals its

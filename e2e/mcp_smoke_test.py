@@ -96,6 +96,21 @@ async def run(config_dir: str) -> int:
             if len(users_revision) != 64:
                 print(f"[FAIL] list_users users_revision not a sha256 hex: {users_revision!r}")
                 return 1
+            # extra_claims adds, never changes (#451): the tool refuses a
+            # claim the grant or the user store decides, with the names.
+            users = users_payload.get("users") or []
+            first_user = users[0]["username"] if isinstance(users, list) else next(iter(users))
+            result = await session.call_tool(
+                "generate_token",
+                {"username": first_user, "extra_claims": {"client_id": "x", "sub": "root"}},
+            )
+            refused = json.loads(result.content[0].text)
+            if refused.get("success") is not False or refused.get("error") != (
+                "'extra_claims' cannot set: client_id, sub"
+            ):
+                print(f"[FAIL] generate_token did not refuse a forged extra_claims: {refused!r}")
+                return 1
+            print("[OK] generate_token refuses forged extra_claims")
             result = await session.call_tool("get_settings", {})
             settings_payload = json.loads(result.content[0].text)
             if len(settings_payload.get("settings_revision", "")) != 64:

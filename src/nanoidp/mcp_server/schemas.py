@@ -163,7 +163,14 @@ _TOOLS: list[Tool] = [
                         "token, fine for a one-shot test"),
                 "extra_claims": {
                     "type": "object",
-                    "description": "Additional claims to include in the token",
+                    "description": (
+                        "Custom claims to add to the access token. They add, "
+                        "never change: a registered claim (sub, aud, exp, ...), "
+                        "a protocol claim (client_id, scope, token_use, ...) or "
+                        "a claim about the user (roles, tenant, email, ...) is "
+                        "refused (#451); a user with other roles is created "
+                        "instead"
+                    ),
                 },
                 "scope": {
                     "type": "string",

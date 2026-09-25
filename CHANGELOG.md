@@ -783,6 +783,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   declared configuration across processes and belongs to #354.
 
 ### Security
+- **`extra` can no longer change what the grant decided** (#451). The
+  `extra` parameter of `/token` was merged into the access token after the
+  registered claims on every grant except client credentials (#445): a
+  client could mint itself a token with another `sub`, `iss`, `aud`, an
+  `exp` in 2100, a `jti` of its choosing, other `roles` or `tenant`, and
+  `/introspect` reported it active for that subject. The MCP tool
+  `generate_token` had one case of its own: unbound, its `extra_claims`
+  could add a `client_id` no binding decided. Now `extra` adds claims and
+  nothing else: a request that names a registered claim, a protocol claim
+  (`client_id` included), a claim the server reads back or a claim about
+  the user is refused with `invalid_request` and the names, before the
+  grant runs, so no code or refresh token is consumed; the token service
+  strips the same set for any caller that reaches it directly. **A test
+  that set `roles` or `exp` through `extra` gets a 400 now**; a user with
+  other roles is created instead, and the form parameter `exp` (a lifetime
+  in minutes) is unchanged. `extra` and `exp` are documented in the tokens
+  reference.
 - **An access token can no longer be spent as a refresh token** (found in
   #445's review). The refresh grant recognised a refresh token by its
   `token_type` claim, which the `/token` `extra` parameter can set on any

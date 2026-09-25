@@ -2694,6 +2694,51 @@ class NanoIDPTestAgent:
         except Exception as e:
             return self._add_result("Public Client Device Flow", TestCategory.OAUTH, False, str(e))
 
+    def test_extra_cannot_forge_the_token(self) -> TestResult:
+        """`extra` adds claims and never changes the grant's (#451): a
+        request naming sub, aud, exp or roles is refused before the grant,
+        and a custom claim still passes."""
+        name = "Extra Cannot Forge The Token"
+        try:
+            forged = self.session.post(
+                f"{self.base_url}/token",
+                data={
+                    "grant_type": "password", "username": "admin", "password": "admin",
+                    "extra": json.dumps({"sub": "root", "roles": ["SUPERUSER"], "exp": 4102444800}),
+                },
+                timeout=5,
+            )
+            body = forged.json() if forged.headers.get("content-type", "").startswith("application/json") else {}
+            expected = "'extra' cannot set: exp, roles, sub"
+            if forged.status_code != 400 or body.get("error") != "invalid_request" \
+                    or body.get("error_description") != expected:
+                return self._add_result(
+                    name, TestCategory.OAUTH, False,
+                    f"A forged extra was not refused as expected: {forged.status_code} {body}",
+                )
+            allowed = self.session.post(
+                f"{self.base_url}/token",
+                data={
+                    "grant_type": "password", "username": "admin", "password": "admin",
+                    "extra": json.dumps({"tenant_plan": "trial"}),
+                },
+                timeout=5,
+            )
+            decoded = {}
+            if allowed.status_code == 200 and jwt:
+                decoded = jwt.decode(allowed.json()["access_token"], options={"verify_signature": False})
+            if allowed.status_code != 200 or (decoded and (decoded.get("tenant_plan") != "trial" or decoded.get("sub") != "admin")):
+                return self._add_result(
+                    name, TestCategory.OAUTH, False,
+                    f"A permitted extra did not pass: {allowed.status_code}, sub={decoded.get('sub')}",
+                )
+            return self._add_result(
+                name, TestCategory.OAUTH, True,
+                "sub/roles/exp through extra refused with the names; a custom claim passes",
+            )
+        except Exception as e:
+            return self._add_result(name, TestCategory.OAUTH, False, f"Error: {e}")
+
     def test_token_decode(self) -> TestResult:
         """Decode and validate JWT structure."""
         if not self.access_token:
@@ -6523,6 +6568,7 @@ class NanoIDPTestAgent:
                 self.test_jwks,
                 self.test_password_grant,
                 self.test_client_credentials,
+                self.test_extra_cannot_forge_the_token,
                 self.test_issuer_from_request,
                 self.test_issuer_from_proxy_headers,
                 self.test_authorization_code_pkce,

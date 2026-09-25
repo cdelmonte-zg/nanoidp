@@ -7,7 +7,7 @@ import hashlib
 import logging
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Sequence, Union
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Union
 
 from ..config import ConfigManager, ConfigSnapshot, Settings, User, get_config
 from .crypto import CryptoService, get_crypto_service
@@ -38,8 +38,7 @@ USER_IDENTITY_CLAIMS = frozenset({
 
 # Claims the server reads back from a token it issued, beyond
 # _RESERVED_CLAIMS: what makes a token a refresh token and binds it to a
-# family and to resources. Not settable through ``extra`` on the client
-# credentials path (#445 review); the other grants are #451.
+# family and to resources.
 _SERVER_READ_CLAIMS = frozenset({"token_type", "rt_family", "resource"})
 
 # Claim names a client must never be able to request through the OIDC ``claims``
@@ -52,10 +51,34 @@ _SERVER_READ_CLAIMS = frozenset({"token_type", "rt_family", "resource"})
 _RESERVED_CLAIMS = frozenset({
     # registered JWT claims (RFC 7519)
     "iss", "sub", "aud", "exp", "iat", "nbf", "jti",
-    # nanoidp protocol claims
-    "token_use", "auth_time", "at_hash", "azp", "nonce", "amr",
+    # nanoidp protocol claims; client_id since #451: an unbound token has no
+    # binding to restore over a forged one, so the name is refused outright
+    "token_use", "auth_time", "at_hash", "azp", "nonce", "amr", "client_id",
     *_AUTHORITATIVE_CLAIMS,
 })
+
+# What ``extra`` (the /token parameter, the MCP ``extra_claims`` argument)
+# cannot set, on any grant (#451): ``extra`` adds claims, it never changes
+# what the grant or the user store decided. The boundaries refuse a request
+# that names one of these (forbidden_extra_claims); create_token and
+# create_client_credentials_token strip them as well, so no caller that
+# reaches the service directly can mint a forged token.
+EXTRA_FORBIDDEN_CLAIMS = _RESERVED_CLAIMS | _SERVER_READ_CLAIMS | USER_IDENTITY_CLAIMS
+
+
+def forbidden_extra_claims(extra: Optional[Mapping[str, Any]]) -> List[str]:
+    """The names in ``extra`` that ``extra`` cannot set, sorted, so the
+    route, the MCP tool and the tests word the same refusal."""
+    return sorted(name for name in (extra or {}) if name in EXTRA_FORBIDDEN_CLAIMS)
+
+
+def extra_refusal(parameter: str, names: Sequence[str]) -> str:
+    """The one sentence a refused ``extra`` gets: ``'extra' cannot set: aud, sub``."""
+    return f"'{parameter}' cannot set: {', '.join(names)}"
+
+
+def _permitted_extra(extra: Optional[Mapping[str, Any]]) -> Dict[str, Any]:
+    return {name: value for name, value in (extra or {}).items() if name not in EXTRA_FORBIDDEN_CLAIMS}
 
 
 def sanitize_claim_names(value: Any) -> Optional[List[str]]:
@@ -388,18 +411,13 @@ class TokenService:
         if authorities:
             extra["authorities"] = authorities
 
-        # Merge extra claims
-        if extra_claims:
-            extra.update(extra_claims)
-
-        # The authoritative claims must reflect the actual grant, never a
-        # caller-supplied `extra`. Drop any spoofed copy the merge may have
-        # introduced before setting them below. Without this, a request like
-        # extra={"scope": "openid email"} or extra={"req_userinfo_claims":
-        # ["email"]} would smuggle scope-gated claims past /userinfo when the
-        # authoritative value is absent (#102/#104 hardening).
-        for reserved in _AUTHORITATIVE_CLAIMS:
-            extra.pop(reserved, None)
+        # Merge what extra may add (#451): never a registered, protocol or
+        # user-identity claim. The boundaries refused such a request already;
+        # here the same set is stripped for any caller that did not ask them.
+        # Before #451 only _AUTHORITATIVE_CLAIMS were dropped (#102/#104),
+        # so extra={"scope": "openid email"} could not smuggle scope-gated
+        # claims past /userinfo, but extra={"sub": ...} rewrote the subject.
+        extra.update(_permitted_extra(extra_claims))
 
         # Advertise the granted scope on the access token (RFC 9068 §2.2.3), so
         # resource endpoints (e.g. /userinfo, /introspect) can gate scope-based
@@ -565,12 +583,12 @@ class TokenService:
         claims. It used to be issued for ``default_user`` through
         ``create_token``, as if that user had logged in.
 
-        This path owns, whatever ``extra_claims`` says: the registered claims
-        (``iss``, ``sub``, ``aud``, ``exp``, ``iat``, ``nbf``, ``jti``) and
+        ``extra_claims`` can add claims and nothing else, the same rule as
+        every grant (EXTRA_FORBIDDEN_CLAIMS, #451): not the registered claims
+        (``iss``, ``sub``, ``aud``, ``exp``, ``iat``, ``nbf``, ``jti``), not
         the protocol claims (``client_id``, ``scope``, ``token_use`` and the
-        rest of ``_RESERVED_CLAIMS``), and no user-identity claim can be
-        added through it; any other custom claim passes. No refresh token
-        (RFC 6749 §4.4.3, #239) and no ID token, as before.
+        rest of ``_RESERVED_CLAIMS``), and no user-identity claim. No refresh
+        token (RFC 6749 §4.4.3, #239) and no ID token, as before.
         """
         settings = self.loaded.settings
         crypto = self.crypto
@@ -578,13 +596,7 @@ class TokenService:
         if exp_minutes is None:
             exp_minutes = settings.token_expiry_minutes
 
-        extra: Dict[str, Any] = {
-            name: value
-            for name, value in (extra_claims or {}).items()
-            if name not in _RESERVED_CLAIMS
-            and name not in USER_IDENTITY_CLAIMS
-            and name not in _SERVER_READ_CLAIMS
-        }
+        extra = _permitted_extra(extra_claims)
         # client_id and token_use are set after the merge, so no copy in
         # extra survives them
         if scope:
