@@ -50,9 +50,10 @@ and flattened into `authorities` via the configured `authority_prefixes`:
 Two form parameters of `/token`, on every grant, exist for testing and
 have no counterpart in RFC 6749:
 
-- `exp` is the access token's lifetime **in minutes**, 1 to 1440, in place
-  of `oauth.token_expiry_minutes`. It is not the JWT `exp` claim: the
-  claim is computed from it.
+- `exp` is the lifetime **in minutes**, 1 to 1440, of the access token and
+  of any ID token issued with it, in place of `oauth.token_expiry_minutes`.
+  It does not affect refresh tokens (`oauth.refresh_token_expiry_minutes`).
+  It is not the JWT `exp` claim: the claim is computed from it.
 - `extra` is a JSON object of custom claims to add to the access token
   (never to the ID token or the refresh token). It adds, it never changes:
   a request that names a claim the grant or the user store decides is
