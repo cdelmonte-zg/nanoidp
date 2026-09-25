@@ -47,7 +47,6 @@ def _mutate_settings_section(
     the expanded on-disk value actually differs (#127), so untouched
     ``${VAR}`` placeholders and comments survive.
     """
-    section = document.setdefault(section_name, {})
     rows = {f.key: f for f in OWNED_SETTINGS if f.section == section_name}
     # Built once per call, and only if a defaults-dependent row is provided
     defaults: Optional[Mapping[str, Any]] = None
@@ -63,11 +62,19 @@ def _mutate_settings_section(
                 defaults = document_defaults()
             merge_owned_setting_at_default(document, field, value, defaults[default_lookup_key(field)])
             continue
+        # Looked up at each write, never held across the loop: a key returned
+        # to its default above can take the section with it when it was the
+        # last one, and a reference kept from before would receive the rest
+        # of the save while the document no longer contains it (#450 review).
+        section = document.get(section_name)
         compare = value if (field.doc_mode == "plain" or value) else field.empty
-        if not is_unchanged(section.get(key), compare):
+        if not is_unchanged((section or {}).get(key), compare):
             if field.doc_mode != "plain" and not value:
-                section.pop(key, None)
+                if section:
+                    section.pop(key, None)
             else:
+                if section is None:
+                    document[section_name] = section = {}
                 section[key] = value
 
 

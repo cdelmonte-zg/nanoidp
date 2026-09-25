@@ -4,6 +4,7 @@ Flask application factory for NanoIDP.
 
 import logging
 import os
+import re
 from typing import Any, Optional
 
 from flask import Flask, Response, jsonify, make_response, request
@@ -160,7 +161,17 @@ def create_app(
     # profile; absent, the profile decides, as it always did: localhost only
     # under stricter-dev, every origin otherwise. Read once, at startup.
     origins = settings.cors_allowed_origins
-    if origins is None:
+    if origins is not None:
+        # A declared entry is an origin, validated as one (models.py). One
+        # with characters flask-cors takes for a regex - the brackets of an
+        # IPv6 host - would be matched as a pattern: http://[::1]:3000 would
+        # not match itself and would admit http://1:3000. Those go in as the
+        # escaped, anchored literal (#450 review).
+        origins = [
+            origin if origin == "*" or not any(ch in origin for ch in "[]") else f"^{re.escape(origin)}$"
+            for origin in origins
+        ]
+    else:
         # flask-cors reads an entry with regex characters as a pattern and
         # matches it with re.match, anchored at the start only: the old
         # "http://localhost:*" also let http://localhost.evil.test through.

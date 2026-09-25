@@ -17,9 +17,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     (default 600; 1 to 3600) and `device_flow.polling_interval` (default 5;
     1 to 60) now set what they name, and `cors_allowed_origins` sets the CORS
     origins in every profile (absent: the profile decides, as before; `[]`
-    allows none; entries are exact origins, and a pattern such as
-    `http://localhost:*` is refused, because flask-cors would match it at
-    the start only). A save from the web UI or the MCP server writes them
+    allows none; each entry is an origin, `http(s)://host[:port]` with a
+    DNS name, an IPv4 address or a bracketed IPv6 address and nothing else,
+    matched literally; a path, credentials or a pattern such as
+    `http://localhost:*`, which flask-cors would match at the start only,
+    are refused). A save from the web UI or the MCP server writes them
     only while they differ from the default.
   - A revoked refresh token family is remembered for the longest lifetime
     the setting allows plus a day (31 days), where it was 8 days, sized for

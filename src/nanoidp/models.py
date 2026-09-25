@@ -8,7 +8,10 @@ the YAML shape coercers used when loading them. Persistence lives in
 which re-exports everything here for compatibility.
 """
 
+import ipaddress
+import re
 from typing import Any, Dict, List, Literal, Optional, Tuple, get_args
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
@@ -353,6 +356,38 @@ class OAuthClient(BaseModel):
     def is_public(self) -> bool:
         """Public client (issue #188): identified by client_id alone."""
         return self.token_endpoint_auth_method == PUBLIC_AUTH_METHOD
+
+
+_ORIGIN_HOST_NAME = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)*$")
+
+
+def is_cors_origin(value: str) -> bool:
+    """Whether ``value`` is a web origin as a browser sends it in an Origin
+    header: an http or https scheme, a host (a DNS name, an IPv4 address or
+    a bracketed IPv6 address), an optional port, and nothing else."""
+    try:
+        parts = urlsplit(value)
+        port = parts.port  # raises for a port that is not a number in range
+    except ValueError:
+        return False
+    if parts.scheme not in ("http", "https") or value != value.strip():
+        return False
+    if parts.path or parts.query or parts.fragment or "?" in value or "#" in value:
+        return False
+    if not parts.hostname:
+        return False
+    # Credentials (user@host) need no check of their own: the netloc must be
+    # exactly the host and the port, below.
+    netloc = parts.netloc
+    if netloc.startswith("["):
+        try:
+            ipaddress.IPv6Address(parts.hostname)
+        except ValueError:
+            return False
+        expected = f"[{parts.hostname}]" + (f":{port}" if port is not None else "")
+        return netloc.lower() == expected.lower()
+    expected = parts.hostname + (f":{port}" if port is not None else "")
+    return netloc.lower() == expected and bool(_ORIGIN_HOST_NAME.match(parts.hostname))
 
 
 # The longest refresh token lifetime oauth.refresh_token_expiry_minutes
@@ -729,22 +764,23 @@ class Settings(BaseModel):
     @field_validator("cors_allowed_origins")
     @classmethod
     def validate_cors_allowed_origins(cls, v: Optional[List[str]]) -> Optional[List[str]]:
-        """Each entry is an exact origin, or "*" alone for every origin.
+        """Each entry is an origin, http(s)://host[:port] and nothing else,
+        or "*" alone for every origin (#441, #450 review).
 
-        A blank entry would match nothing, so keeping it is a list that says
-        less than it seems to. An entry with a regex character is refused
-        because flask-cors would read it as a pattern, matched at the start
-        only: "http://localhost:*" admits http://localhost.evil.test (#441
-        review)."""
+        Checked for its structure, not for characters: a blank entry would
+        match nothing, a path or a query never appears in an Origin header,
+        and a pattern such as "http://localhost:*" would be read by
+        flask-cors as a regex matched at the start only, admitting
+        http://localhost.evil.test. A bracketed IPv6 host is an origin; the
+        server compares it literally (app.py)."""
         if v is None:
             return v
         for origin in v:
-            if not origin.strip():
-                raise ValueError("cors_allowed_origins entries must not be blank")
-            if origin != "*" and any(ch in origin for ch in "*?[]()^$\\|+{}"):
+            if origin != "*" and not is_cors_origin(origin):
                 raise ValueError(
                     f"cors_allowed_origins entry {origin!r} is not an origin: "
-                    'list exact origins such as "http://localhost:3000", or "*" alone'
+                    'list origins such as "http://localhost:3000" or '
+                    '"http://[::1]:3000", or "*" alone'
                 )
         return v
 

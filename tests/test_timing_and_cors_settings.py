@@ -203,6 +203,16 @@ class TestCorsAllowedOrigins:
         client = _client(isolated_repo_config, security_profile="stricter-dev")
         assert (self._allowed(client, origin) == origin) is allowed
 
+    def test_an_ipv6_origin_is_matched_literally(self, isolated_repo_config):
+        """[::1] is an origin, and to flask-cors also a regex character
+        class: passed as is, it would not match itself and would match
+        http://1:3000 (#450 review)."""
+        client = _client(isolated_repo_config, cors_allowed_origins=["http://[::1]:3000"])
+        assert self._allowed(client, "http://[::1]:3000") == "http://[::1]:3000"
+        assert self._allowed(client, "http://1:3000") is None
+        assert self._allowed(client, "http://[::2]:3000") is None
+        assert self._allowed(client, "http://[::1]:3001") is None
+
     def test_an_empty_list_allows_no_origin(self, isolated_repo_config):
         client = _client(isolated_repo_config, cors_allowed_origins=[])
         assert self._allowed(client, "http://localhost:5173") is None
@@ -248,6 +258,18 @@ class TestInvalidValuesAreErrors:
         ({"cors_allowed_origins": ["http://localhost:*"]}, "cors_allowed_origins"),
         ({"cors_allowed_origins": ["http://*.example.test"]}, "cors_allowed_origins"),
         ({"cors_allowed_origins": ["^http://a.test$"]}, "cors_allowed_origins"),
+        # not an origin: scheme://host[:port] and nothing else (#450 review)
+        ({"cors_allowed_origins": ["not an origin"]}, "cors_allowed_origins"),
+        ({"cors_allowed_origins": ["https://app.example/path"]}, "cors_allowed_origins"),
+        ({"cors_allowed_origins": ["https://app.example/"]}, "cors_allowed_origins"),
+        ({"cors_allowed_origins": ["https://app.example?x=1"]}, "cors_allowed_origins"),
+        ({"cors_allowed_origins": ["https://user@app.example"]}, "cors_allowed_origins"),
+        ({"cors_allowed_origins": ["ftp://app.example"]}, "cors_allowed_origins"),
+        ({"cors_allowed_origins": ["http://"]}, "cors_allowed_origins"),
+        ({"cors_allowed_origins": ["http://app.example:99999"]}, "cors_allowed_origins"),
+        ({"cors_allowed_origins": ["http://[not-ipv6]:3000"]}, "cors_allowed_origins"),
+        # accepted by urlsplit (an IPvFuture literal), not an IPv6 address
+        ({"cors_allowed_origins": ["http://[v1.fe]:3000"]}, "cors_allowed_origins"),
     ])
     def test_refused(self, tmp_path, settings, path):
         with pytest.raises(ValueError, match=path.replace(".", r"\.")):
@@ -259,6 +281,9 @@ class TestInvalidValuesAreErrors:
             "device_flow": {"code_expiry_seconds": 3600, "polling_interval": 60},
             "cors_allowed_origins": ["*"],
         })).settings
+        assert ConfigManager(_write(tmp_path, {"cors_allowed_origins": [
+            "http://localhost:3000", "https://app.example", "http://[::1]:3000", "http://127.0.0.1",
+        ]})).settings.cors_allowed_origins[2] == "http://[::1]:3000"
         assert settings.refresh_token_expiry_minutes == 43200
         assert settings.device_code_expiry_seconds == 3600
         assert settings.device_polling_interval == 60
@@ -389,6 +414,43 @@ class TestWrittenOnlyWhileNotAtTheDefault:
         assert self._document(isolated_repo_config)["oauth"]["refresh_token_expiry_minutes"] == 90
         writer.update_oauth_settings(refresh_token_expiry_minutes=10080)
         assert "refresh_token_expiry_minutes" not in self._document(isolated_repo_config)["oauth"]
+
+    def test_a_return_to_the_default_does_not_drop_the_fields_saved_with_it(
+        self, isolated_repo_config, client
+    ):
+        """The key back at its default can be the last one of its section,
+        and removing it removes the section: the fields written after it in
+        the same save must still reach the file (#450 review)."""
+        path = isolated_repo_config / "settings.yaml"
+        document = yaml.safe_load(path.read_text())
+        document["oauth"] = {"refresh_token_expiry_minutes": 90}
+        path.write_text(yaml.safe_dump(document))
+
+        from nanoidp.services.yaml_writer import YamlWriter
+
+        YamlWriter(str(isolated_repo_config)).update_oauth_settings(
+            refresh_token_expiry_minutes=10080, require_pkce=True, refresh_token_rotation=True,
+        )
+        oauth = self._document(isolated_repo_config)["oauth"]
+        assert oauth == {"require_pkce": True, "refresh_token_rotation": True}
+
+    def test_the_same_through_a_partial_settings_form(self, isolated_repo_config):
+        path = isolated_repo_config / "settings.yaml"
+        document = yaml.safe_load(path.read_text())
+        document["oauth"] = {"refresh_token_expiry_minutes": 90}
+        path.write_text(yaml.safe_dump(document))
+        client = create_app().test_client()
+
+        page = client.post("/settings", data={
+            "refresh_token_expiry_minutes": "10080",
+            "require_pkce": "true", "require_pkce__on_form": "1",
+            "refresh_token_rotation": "true", "refresh_token_rotation__on_form": "1",
+        }, follow_redirects=True)
+        assert b"Settings updated successfully" in page.data
+        oauth = self._document(isolated_repo_config)["oauth"]
+        assert oauth.get("require_pkce") is True
+        assert oauth.get("refresh_token_rotation") is True
+        assert "refresh_token_expiry_minutes" not in oauth
 
     def test_the_settings_page_round_trip(self, isolated_repo_config, client):
         page = client.get("/settings")
