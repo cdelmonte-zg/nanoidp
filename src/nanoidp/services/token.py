@@ -22,6 +22,26 @@ logger = logging.getLogger(__name__)
 # the reserved list cannot drift apart.
 _AUTHORITATIVE_CLAIMS = ("scope", "req_userinfo_claims", "req_id_token_claims")
 
+# Claims about a user: what a user grant puts in an access token (the
+# attributes of users.yaml), and the standard OpenID Connect claims about the
+# end user (OIDC Core §5.1) with the username. A token with no end user
+# behind it (client_credentials) carries none of them, and cannot be given
+# them through ``extra`` either (#445).
+USER_IDENTITY_CLAIMS = frozenset({
+    "roles", "authorities", "tenant", "identity_class", "entitlements",
+    "groups", "source_acl", "attributes", "username",
+    "name", "given_name", "family_name", "middle_name", "nickname",
+    "preferred_username", "profile", "picture", "website", "email",
+    "email_verified", "gender", "birthdate", "zoneinfo", "locale",
+    "phone_number", "phone_number_verified", "address", "updated_at",
+})
+
+# Claims the server reads back from a token it issued, beyond
+# _RESERVED_CLAIMS: what makes a token a refresh token and binds it to a
+# family and to resources. Not settable through ``extra`` on the client
+# credentials path (#445 review); the other grants are #451.
+_SERVER_READ_CLAIMS = frozenset({"token_type", "rt_family", "resource"})
+
 # Claim names a client must never be able to request through the OIDC ``claims``
 # parameter (#110). Registered JWT claims are set by ``create_jwt`` and the
 # protocol claims are set authoritatively by ``create_token``; letting a
@@ -29,14 +49,6 @@ _AUTHORITATIVE_CLAIMS = ("scope", "req_userinfo_claims", "req_id_token_claims")
 # them (``create_jwt`` applies ``payload.update(extra)`` after the registered
 # claims), e.g. a user attribute ``aud``/``exp`` hijacking the ID Token. None of
 # these are legitimately requestable, so the resolver refuses them outright.
-# What a user grant puts in an access token about the user. A token with no
-# end user behind it (client_credentials) carries none of them, and cannot be
-# given them through ``extra`` either (#445).
-USER_IDENTITY_CLAIMS = frozenset({
-    "roles", "authorities", "tenant", "identity_class", "entitlements",
-    "groups", "source_acl", "attributes",
-})
-
 _RESERVED_CLAIMS = frozenset({
     # registered JWT claims (RFC 7519)
     "iss", "sub", "aud", "exp", "iat", "nbf", "jti",
@@ -414,14 +426,7 @@ class TokenService:
         # overridden by caller-supplied extra_claims.
         extra["token_use"] = "access"
 
-        # Access token audience (#187, RFC 8707): when the request bound one
-        # or more resource indicators, the aud IS those resources (a plain
-        # string for one, an array for several), so a token minted for
-        # resource A is rejected by resource server B. With no resource, the
-        # aud stays oauth.audience - no change for existing clients.
-        access_audience: Union[str, List[str]] = settings.audience
-        if resource:
-            access_audience = resource[0] if len(resource) == 1 else list(resource)
+        access_audience = _access_token_audience(settings, resource)
 
         # Create access token JWT
         token = crypto.create_jwt(
@@ -576,7 +581,9 @@ class TokenService:
         extra: Dict[str, Any] = {
             name: value
             for name, value in (extra_claims or {}).items()
-            if name not in _RESERVED_CLAIMS and name not in USER_IDENTITY_CLAIMS
+            if name not in _RESERVED_CLAIMS
+            and name not in USER_IDENTITY_CLAIMS
+            and name not in _SERVER_READ_CLAIMS
         }
         # client_id and token_use are set after the merge, so no copy in
         # extra survives them
@@ -585,14 +592,10 @@ class TokenService:
         extra["client_id"] = client_id
         extra["token_use"] = "access"
 
-        audience: Union[str, List[str]] = settings.audience
-        if resource:
-            audience = resource[0] if len(resource) == 1 else list(resource)
-
         token = crypto.create_jwt(
             sub=client_id,
             issuer=effective_issuer,
-            audience=audience,
+            audience=_access_token_audience(settings, resource),
             extra=extra,
             exp_minutes=exp_minutes,
         )
@@ -604,6 +607,17 @@ class TokenService:
         if scope:
             response["scope"] = scope
         return response
+
+
+def _access_token_audience(settings: Settings, resource: Optional[List[str]]) -> Union[str, List[str]]:
+    """An access token's audience (#187, RFC 8707), for every grant: when the
+    request bound one or more resource indicators, the aud IS those resources
+    (a plain string for one, an array for several), so a token minted for
+    resource A is rejected by resource server B. With no resource, the aud
+    stays oauth.audience - no change for existing clients."""
+    if resource:
+        return resource[0] if len(resource) == 1 else list(resource)
+    return settings.audience
 
 
 def get_token_service(loaded: ConfigSnapshot) -> TokenService:

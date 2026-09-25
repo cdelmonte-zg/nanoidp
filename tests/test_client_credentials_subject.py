@@ -124,9 +124,57 @@ class TestExtraCannotMakeItSomeoneElse:
         assert "scope" not in claims
         assert [claim for claim in USER_CLAIMS if claim in claims] == []
 
+    def test_nor_a_standard_identity_claim_or_one_the_server_reads_back(self, client):
+        forged = {
+            "email": "admin@example.org", "email_verified": True, "preferred_username": "admin",
+            "name": "Admin", "username": "admin",
+            "token_type": "refresh", "rt_family": "f", "resource": ["https://x"],
+        }
+        claims = _claims(_client_credentials(client, extra=json.dumps(forged))["access_token"])
+        assert [claim for claim in forged if claim in claims] == []
+
     def test_a_custom_claim_passes(self, client):
         claims = _claims(_client_credentials(client, extra=json.dumps({"x-test-run": "42"}))["access_token"])
         assert claims["x-test-run"] == "42"
+
+
+class TestAnAccessTokenIsNeverARefreshToken:
+    """`extra` could stamp token_type=refresh on an access token, and the
+    refresh grant read that claim alone: any access token, a client
+    credentials one included, could then be spent for a new access token and
+    a refresh token, a same-named user's with #445 and default_user's before
+    it (measured on main). The refresh grant now also requires the
+    token_use the server sets last, which no extra can change."""
+
+    @pytest.mark.parametrize("grant", [
+        {"grant_type": "client_credentials"},
+        {"grant_type": "password", "username": "user1", "password": "password"},
+    ])
+    def test_refused_whatever_extra_stamped_on_it(self, isolated_repo_config, grant):
+        # A user named like the client: what the refresh grant would have
+        # resolved the client credentials token's sub to
+        _edit(isolated_repo_config, "users.yaml", lambda doc: doc["users"].__setitem__(
+            "demo-client", {"password": "pw", "roles": ["ADMIN"]},
+        ))
+        client = create_app().test_client()
+        issued = client.post("/token", headers=DEMO, data={
+            **grant, "extra": json.dumps({"token_type": "refresh", "rt_family": "f"}),
+        }).get_json()
+        spent = client.post("/token", headers=DEMO, data={
+            "grant_type": "refresh_token", "refresh_token": issued["access_token"],
+        })
+        assert spent.status_code == 400
+        assert spent.get_json()["error"] == "invalid_grant"
+
+    def test_a_real_refresh_token_still_works(self, client):
+        issued = client.post("/token", headers=DEMO, data={
+            "grant_type": "password", "username": "user1", "password": "password",
+            "scope": "openid offline_access",
+        }).get_json()
+        spent = client.post("/token", headers=DEMO, data={
+            "grant_type": "refresh_token", "refresh_token": issued["refresh_token"],
+        })
+        assert spent.status_code == 200, spent.get_data(as_text=True)
 
 
 class TestNoEndUserBehindIt:
@@ -157,6 +205,17 @@ class TestNoEndUserBehindIt:
     def test_a_user_token_keeps_its_username(self, client):
         answer = client.post("/introspect", headers=DEMO, data={"token": _password_token(client)}).get_json()
         assert answer["username"] == "admin"
+
+    def test_no_audit_names_the_client_as_a_user(self, client):
+        """userinfo, introspection and revocation of a client's token record
+        the client, not a user named like it (#445 review)."""
+        token = _client_credentials(client)["access_token"]
+        client.get("/userinfo", headers={"Authorization": f"Bearer {token}"})
+        client.post("/introspect", headers=DEMO, data={"token": token})
+        client.post("/revoke", headers=DEMO, data={"token": token})
+        for event in ("userinfo_request", "introspection_request", "revocation_request"):
+            entry = get_audit_log().get_entries(limit=5, event_type=event)[0]
+            assert not entry.get("username"), (event, entry)
 
     def test_the_audit_names_the_client_and_no_user(self, client):
         _client_credentials(client)
@@ -199,6 +258,24 @@ class TestDefaultUserIsDeprecated:
         with caplog.at_level(logging.WARNING):
             ConfigManager(str(isolated_repo_config))
         assert "default_user" in caplog.text and "no effect" in caplog.text
+
+    def test_validate_reports_it(self, isolated_repo_config):
+        """What #441 set out to report: a key that is accepted and does
+        nothing. Not an error, in either mode."""
+        from nanoidp.config_validation import validate_config_dir
+
+        _edit(isolated_repo_config, "users.yaml", lambda doc: doc.__setitem__("default_user", "admin"))
+        findings = validate_config_dir(str(isolated_repo_config))
+        default_user = [f for f in findings if "default_user" in f.message]
+        assert [f.level for f in default_user] == ["warning"]
+
+    def test_warned_once_per_file_not_on_every_load(self, isolated_repo_config, caplog):
+        _edit(isolated_repo_config, "users.yaml", lambda doc: doc.__setitem__("default_user", "admin"))
+        with caplog.at_level(logging.WARNING):
+            config = ConfigManager(str(isolated_repo_config))
+            config.reload_local()
+            config.reload_local()
+        assert caplog.text.count("default_user has no effect") == 1
 
     def test_a_file_without_it_is_not(self, isolated_repo_config, caplog):
         _edit(isolated_repo_config, "users.yaml", lambda doc: doc.pop("default_user", None))

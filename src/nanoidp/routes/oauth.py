@@ -68,7 +68,7 @@ from ..services.redirect_uri import (
 from ..services.resource import resolve_resources
 from ..services.scope import resolve_scope
 from ..services.userinfo import build_userinfo_response
-from ..token_subject import names_no_end_user
+from ..token_subject import end_user_of
 from ._audit import audit_event
 from ._auth import (
     PENDING_SECOND_FACTOR_FIELD,
@@ -1928,12 +1928,8 @@ def userinfo() -> ResponseReturnValue:
 
     # Get user info. A token whose subject is its client has no end user
     # behind it, and is never resolved as a user of the same name (#445).
-    username = payload.get("sub")
-    user = (
-        identities_for(config, request_config()).get_user(username)
-        if username and not names_no_end_user(payload)
-        else None
-    )
+    username = end_user_of(payload)
+    user = identities_for(config, request_config()).get_user(username) if username else None
 
     # What this token's bearer may see is domain policy, and lives in
     # services/userinfo.py since #303: scope-to-claim gating, the claims
@@ -1941,7 +1937,7 @@ def userinfo() -> ResponseReturnValue:
     # passthrough, and the `claims` request parameter.
     response = build_userinfo_response(
         user,
-        subject=username,
+        subject=payload.get("sub"),
         granted_scope=payload.get("scope"),
         scope_gating_active=settings.userinfo_scope_gating_active,
         requested_claims=payload.get("req_userinfo_claims"),
@@ -2049,7 +2045,7 @@ def introspect() -> ResponseReturnValue:
         "success",
         endpoint="/introspect",
         client_id=client_id,
-        username=payload.get("sub"),
+        username=end_user_of(payload),
         details={"active": True},
     )
 
@@ -2150,7 +2146,7 @@ def revoke() -> ResponseReturnValue:
             "success",
             endpoint="/revoke",
             client_id=client_id,
-            username=payload.get("sub"),
+            username=end_user_of(payload),
             details={"revoked": True},
         )
 

@@ -5,7 +5,7 @@ so that the configuration loader, the pure services (``introspection``) and
 the routes can share the one rule across the import layers.
 """
 
-from typing import Any, Mapping
+from typing import Any, Mapping, Optional
 
 
 def names_no_end_user(payload: Mapping[str, Any]) -> bool:
@@ -18,6 +18,12 @@ def names_no_end_user(payload: Mapping[str, Any]) -> bool:
     ambiguous user, never disclosing a user's profile to a client."""
     subject = payload.get("sub")
     return subject is not None and subject == payload.get("client_id")
+
+
+def end_user_of(payload: Mapping[str, Any]) -> Optional[str]:
+    """The user a token is about, for the lookups and the audit trail:
+    its ``sub``, or None when the token is its client's own."""
+    return None if names_no_end_user(payload) else payload.get("sub")
 
 
 def shared_name_warning(name: str) -> str:

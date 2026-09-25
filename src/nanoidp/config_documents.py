@@ -791,11 +791,23 @@ def load_users_document(
         UsersDocument, data, file_path, strict=strict, on_unknown=on_unknown
     )
     if "default_user" in document.model_fields_set:
-        logger.warning(
-            f"{file_path}: default_user has no effect since #445 (a "
-            "client_credentials token's subject is the client) and can be removed"
-        )
+        # Once per file and process: a load, a reload and every
+        # validate-before-write read the file again (#445 review);
+        # validate-config reports it as a finding each time it runs.
+        key = str(file_path)
+        if key not in _WARNED_DEFAULT_USER:
+            _WARNED_DEFAULT_USER.add(key)
+            logger.warning(f"{file_path}: {DEFAULT_USER_DEPRECATION}")
     return document
+
+
+# What a users.yaml carrying default_user is told, by the loader's log and
+# by validate-config (#445)
+DEFAULT_USER_DEPRECATION = (
+    "default_user has no effect since #445 (a client_credentials token's "
+    "subject is the client) and can be removed"
+)
+_WARNED_DEFAULT_USER: set[str] = set()
 
 
 class EntryInvalid(ValueError):

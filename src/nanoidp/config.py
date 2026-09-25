@@ -15,6 +15,8 @@ from typing import Any, Callable, Dict, Iterator, Optional, Tuple, TypeVar
 
 import yaml
 
+# Re-exported for compatibility: the models were defined here until #86, and
+# every consumer (routes, services, MCP, tests) imports them from this module.
 from .config_documents import (
     HooksSection,
     SettingsDocument,
@@ -47,9 +49,6 @@ from .serialization import (
     check_config_version,
 )
 from .serialization import expand_env_vars as _expand_env_vars
-
-# Re-exported for compatibility: the models were defined here until #86, and
-# every consumer (routes, services, MCP, tests) imports them from this module.
 from .token_subject import shared_name_warning
 
 logger = logging.getLogger(__name__)

@@ -26,6 +26,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import yaml
 
 from .config_documents import (
+    DEFAULT_USER_DEPRECATION,
     SettingsDocument,
     UsersDocument,
     declared_validation_mode,
@@ -241,6 +242,11 @@ def _validate_observation(
                 users_document.to_users()
             except (ValueError, TypeError) as exc:
                 findings.append(Finding(ERROR, f"{users_path}: {exc}", USERS_FILE))
+            if "default_user" in users_document.model_fields_set:
+                # Accepted, and said: a key that does nothing (#445)
+                findings.append(
+                    Finding(WARNING, f"{users_path}: {DEFAULT_USER_DEPRECATION}", USERS_FILE)
+                )
     else:
         findings.append(
             Finding(WARNING, f"{users_path}: not found, the default admin user would be used", USERS_FILE)

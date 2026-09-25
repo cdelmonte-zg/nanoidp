@@ -212,8 +212,12 @@ def _grant_refresh_token(ctx: _GrantContext) -> GrantResult:
             400,
         )
 
-    # Check if it's actually a refresh token
-    if payload.get("token_type") != "refresh":
+    # Check if it's actually a refresh token. token_type alone is not
+    # enough: `extra` could stamp it on an access token, which could then be
+    # spent here for a new access token and a refresh token (measured). The
+    # server sets token_use last on every token it issues, access tokens
+    # included, where no extra can change it (#445 review).
+    if payload.get("token_type") != "refresh" or payload.get("token_use") != "refresh":
         audit_event(
             "token_request",
             "failed",

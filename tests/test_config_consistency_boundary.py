@@ -34,6 +34,7 @@ import errno
 import fcntl
 import os
 import shutil
+import sys
 import threading
 from pathlib import Path
 
@@ -1151,7 +1152,11 @@ class TestAnOperationReadsOneConfiguration:
 
         def load_after_the_client_lookup(resolver, *arguments, **named):
             found = real(resolver, *arguments, **named)
-            if not in_the_window.is_set():
+            # The grant's own lookup, not the client authentication's, which
+            # comes before the dispatch (#445 review): the window is inside
+            # the grant, between its client and its scope vocabulary
+            called_by = sys._getframe(1).f_code.co_name
+            if called_by == "_grant_client_credentials" and not in_the_window.is_set():
                 in_the_window.set()
                 self._declare_scope(directory_of_two_loads, "beta")
                 get_config().reload_local()
