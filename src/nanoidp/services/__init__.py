@@ -5,12 +5,14 @@ from .audit import AuditLog, get_audit_log
 from .auth_code import AuthCodeStore, AuthorizationCode, get_auth_code_store
 from .crypto import (
     EXTERNAL_KEYS_NOT_ROTATABLE,
+    EXTERNAL_KEYS_NOT_ROTATABLE_KIND,
     KEYS_DIRECTORY_LOCK_UNAVAILABLE,
     KEYS_DIRECTORY_NOT_WRITABLE,
     CryptoService,
     ExternalKeysNotRotatable,
     activate_crypto_service,
     get_crypto_service,
+    rotation_refusal,
 )
 from .device_code import (
     DeviceCodeGrant,
@@ -32,8 +34,10 @@ __all__ = [
     "identities_for",
     "CryptoService",
     "EXTERNAL_KEYS_NOT_ROTATABLE",
+    "EXTERNAL_KEYS_NOT_ROTATABLE_KIND",
     "KEYS_DIRECTORY_LOCK_UNAVAILABLE",
     "KEYS_DIRECTORY_NOT_WRITABLE",
+    "rotation_refusal",
     "ExternalKeysNotRotatable",
     "get_crypto_service",
     "activate_crypto_service",

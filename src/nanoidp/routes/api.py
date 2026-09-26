@@ -8,17 +8,17 @@ from flask import Blueprint, current_app, jsonify, request
 from flask.typing import ResponseReturnValue
 
 from ..config import ConfigurationRejected, get_config
-from ..config_writer import LockNamespaceUnavailable, LockUnavailableError
+from ..config_writer import LockUnavailableError
 from ..hooks import HookError
 from ..services import (
     EXTERNAL_KEYS_NOT_ROTATABLE,
-    KEYS_DIRECTORY_LOCK_UNAVAILABLE,
-    KEYS_DIRECTORY_NOT_WRITABLE,
+    EXTERNAL_KEYS_NOT_ROTATABLE_KIND,
     ExternalKeysNotRotatable,
     get_audit_log,
     get_crypto_service,
     get_token_service,
     identities_for,
+    rotation_refusal,
 )
 from ..services.runtime_store import runtime_store_report
 from ._auth import management_secret_required_for_api
@@ -300,27 +300,22 @@ def rotate_keys() -> ResponseReturnValue:
     except ExternalKeysNotRotatable:
         # Operator-provided keys (#358): nothing was rotated. The fixed
         # message, not the exception's text.
-        return jsonify({"success": False, "error": EXTERNAL_KEYS_NOT_ROTATABLE}), 409
-    except LockNamespaceUnavailable as not_here:
-        # A keys directory this process cannot write (a read-only mount, a
-        # volume of another user's): it signs with the keys and cannot
-        # rotate them, now or later. Nothing was rotated. The exception
-        # names the directory; that stays in the log, the body carries a
-        # fixed message and the kind (CodeQL 32/33): keys_directory_not_writable
-        # for a directory whose lock file is there and cannot be written,
-        # lock_namespace_unavailable for one whose lock file cannot exist.
-        logger.warning("Key rotation refused: %s", not_here)
-        return jsonify({"success": False, "error": KEYS_DIRECTORY_NOT_WRITABLE, "kind": not_here.kind}), 409
-    except LockUnavailableError as busy:
-        # The keys directory is shared (#420) and its lock could not be had
-        # in time (lock_timeout: another process is starting or rotating,
-        # coming back is what to do) or cannot be taken at all on this
-        # filesystem (lock_unsupported). Nothing was rotated. The message
-        # claims no cause; the kind says which.
-        logger.warning("Key rotation refused: %s", busy)
-        response = jsonify({"success": False, "error": KEYS_DIRECTORY_LOCK_UNAVAILABLE, "kind": busy.kind})
-        response.status_code = 503
-        response.headers["Retry-After"] = "5"
+        return (
+            jsonify({"success": False, "error": EXTERNAL_KEYS_NOT_ROTATABLE, "kind": EXTERNAL_KEYS_NOT_ROTATABLE_KIND}),
+            409,
+        )
+    except LockUnavailableError as refused:
+        # The keys directory refused (#420): one this process cannot write
+        # (409, permanent) or a lock it could not take (503). The exception
+        # names the directory; that stays in the log, the body carries the
+        # fixed message and the kind (CodeQL 32/33). Retry-After on the
+        # 503 as before, whatever the kind.
+        logger.warning("Key rotation refused: %s", refused)
+        message, kind, permanent = rotation_refusal(refused)
+        response = jsonify({"success": False, "error": message, "kind": kind})
+        response.status_code = 409 if permanent else 503
+        if not permanent:
+            response.headers["Retry-After"] = "5"
         return response
 
     # Log to audit

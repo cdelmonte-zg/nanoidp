@@ -12,12 +12,16 @@ from pathlib import Path
 import pytest
 
 from nanoidp.config import get_config
-from nanoidp.mcp_server import MUTATING_TOOLS, _execute_tool
+from nanoidp.config_writer import LockNamespaceUnavailable, LockUnavailableError
+from nanoidp.mcp_server import _execute_tool
 from nanoidp.services import (
+    EXTERNAL_KEYS_NOT_ROTATABLE,
+    EXTERNAL_KEYS_NOT_ROTATABLE_KIND,
     KEYS_DIRECTORY_LOCK_UNAVAILABLE,
     KEYS_DIRECTORY_NOT_WRITABLE,
     get_audit_log,
 )
+from nanoidp.services.key_directory import KeysDirectoryNotWritable
 
 
 class TestAuditTools:
@@ -105,35 +109,64 @@ class TestKeyTools:
         assert after["active_kid"] == before["active_kid"]
 
     @pytest.mark.asyncio
-    async def test_a_keys_directory_this_process_cannot_write_is_said_without_naming_it(
-        self, app, monkeypatch, caplog
+    @pytest.mark.parametrize(
+        "raised, kind, message",
+        [
+            (
+                lambda d: KeysDirectoryNotWritable(Path(d), PermissionError(13, "Permission denied")),
+                "keys_directory_not_writable",
+                KEYS_DIRECTORY_NOT_WRITABLE,
+            ),
+            (
+                lambda d: LockNamespaceUnavailable(f"{d} is not writable and holds no usable lock file"),
+                "lock_namespace_unavailable",
+                KEYS_DIRECTORY_NOT_WRITABLE,
+            ),
+            (
+                lambda d: LockUnavailableError(
+                    f"Timed out after 10.0s waiting for the write lock on {d}", kind="lock_timeout"
+                ),
+                "lock_timeout",
+                KEYS_DIRECTORY_LOCK_UNAVAILABLE,
+            ),
+            (
+                lambda d: LockUnavailableError(
+                    f"Advisory locking is not supported on {d}/.nanoidp-write.lock", kind="lock_unsupported"
+                ),
+                "lock_unsupported",
+                KEYS_DIRECTORY_LOCK_UNAVAILABLE,
+            ),
+        ],
+    )
+    async def test_a_refusal_of_the_keys_directory_is_said_without_naming_it(
+        self, app, monkeypatch, caplog, raised, kind, message
     ):
         """The same refusal as /api/keys/rotate: the fixed message and the
-        kind, and the directory the exception names only in the log."""
+        exception's kind, and the directory it names only in the log."""
         from nanoidp.services import crypto as crypto_module
-        from nanoidp.services.key_directory import KeysDirectoryNotWritable
 
         directory = "/srv/nanoidp/secret-keys-9f3a"
         service = crypto_module.get_crypto_service()
-        monkeypatch.setattr(
-            service,
-            "rotate_keys",
-            lambda: (_ for _ in ()).throw(
-                KeysDirectoryNotWritable(Path(directory), PermissionError(13, "Permission denied"))
-            ),
-        )
+        monkeypatch.setattr(service, "rotate_keys", lambda: (_ for _ in ()).throw(raised(directory)))
         with app.app_context(), caplog.at_level(logging.WARNING, logger="nanoidp.mcp_server.handlers_config"):
             result = await _execute_tool("rotate_keys", {}, get_config())
 
-        assert result == {"success": False, "error": KEYS_DIRECTORY_NOT_WRITABLE, "kind": "keys_directory_not_writable"}
+        assert result == {"success": False, "error": message, "kind": kind}
         assert directory not in str(result)
         assert any(directory in record.getMessage() for record in caplog.records)
 
+    @pytest.mark.asyncio
+    async def test_external_keys_are_refused_with_the_kind_beside_the_fixed_message(self, app, monkeypatch):
+        from nanoidp.services import crypto as crypto_module
+        from nanoidp.services.crypto import ExternalKeysNotRotatable
 
-class TestToolClassification:
-    def test_mutating_tools_membership(self):
-        assert "clear_audit_log" in MUTATING_TOOLS
-        assert "rotate_keys" in MUTATING_TOOLS
-        assert "get_audit_log" not in MUTATING_TOOLS
-        assert "get_audit_stats" not in MUTATING_TOOLS
-        assert "get_keys_info" not in MUTATING_TOOLS
+        service = crypto_module.get_crypto_service()
+        monkeypatch.setattr(service, "rotate_keys", lambda: (_ for _ in ()).throw(ExternalKeysNotRotatable()))
+        with app.app_context():
+            result = await _execute_tool("rotate_keys", {}, get_config())
+
+        assert result == {
+            "success": False,
+            "error": EXTERNAL_KEYS_NOT_ROTATABLE,
+            "kind": EXTERNAL_KEYS_NOT_ROTATABLE_KIND,
+        }

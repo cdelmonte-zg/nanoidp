@@ -11,16 +11,16 @@ from typing import Any, Optional
 from ..config import ConfigManager, ConfigSnapshot, ConfigurationRejected, ReloadAfterSaveError
 from ..config_documents import DocumentRejected
 from ..config_validation import UNAVAILABLE, validate_config_result
-from ..config_writer import ConflictError, LockNamespaceUnavailable, LockUnavailableError
+from ..config_writer import ConflictError, LockUnavailableError
 from ..hooks import HookError
 from ..services import (
     EXTERNAL_KEYS_NOT_ROTATABLE,
-    KEYS_DIRECTORY_LOCK_UNAVAILABLE,
-    KEYS_DIRECTORY_NOT_WRITABLE,
+    EXTERNAL_KEYS_NOT_ROTATABLE_KIND,
     ExternalKeysNotRotatable,
     build_discovery_document,
     get_audit_log,
     get_crypto_service,
+    rotation_refusal,
 )
 from ..services.runtime_store import runtime_store_report
 from .normalize import _UPDATE_SETTINGS_FIELDS, _UPDATE_SETTINGS_NORMALIZERS
@@ -331,18 +331,14 @@ def _tool_rotate_keys(arguments: dict[str, Any], config: ConfigManager, loaded: 
         result = crypto.rotate_keys()
     except ExternalKeysNotRotatable:
         # Operator-provided keys (#358): nothing was rotated.
-        return {"success": False, "error": EXTERNAL_KEYS_NOT_ROTATABLE}
-    except LockNamespaceUnavailable as not_here:
-        # A keys directory this process cannot write: nothing was rotated,
-        # now or later. The directory it names goes to the log, the answer
-        # carries the fixed message and the kind, like /api/keys/rotate.
-        logger.warning("Key rotation refused: %s", not_here)
-        return {"success": False, "error": KEYS_DIRECTORY_NOT_WRITABLE, "kind": not_here.kind}
-    except LockUnavailableError as busy:
-        # The shared keys directory's lock could not be had (#420): nothing
-        # was rotated. lock_timeout is worth a retry, lock_unsupported not.
-        logger.warning("Key rotation refused: %s", busy)
-        return {"success": False, "error": KEYS_DIRECTORY_LOCK_UNAVAILABLE, "kind": busy.kind}
+        return {"success": False, "error": EXTERNAL_KEYS_NOT_ROTATABLE, "kind": EXTERNAL_KEYS_NOT_ROTATABLE_KIND}
+    except LockUnavailableError as refused:
+        # The keys directory refused (#420): nothing was rotated. The same
+        # fixed message and kind as /api/keys/rotate; the directory the
+        # exception names goes to the log.
+        logger.warning("Key rotation refused: %s", refused)
+        message, kind, _ = rotation_refusal(refused)
+        return {"success": False, "error": message, "kind": kind}
     get_audit_log().log(
         event_type="key_rotation",
         endpoint="mcp:rotate_keys",

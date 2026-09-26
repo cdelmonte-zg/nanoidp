@@ -36,7 +36,7 @@ readonly mode, and the exposure warnings, see the
 | `get_audit_stats` | Get audit statistics |
 | `clear_audit_log` | Clear the audit log |
 | `get_keys_info` | Get signing key info (active kid, previous keys) |
-| `rotate_keys` | Rotate signing keys (old key stays valid for verification) |
+| `rotate_keys` | Rotate signing keys (old key stays valid for verification). A refusal answers `success: false` with a fixed `error` and a `kind`, the same as `POST /api/keys/rotate`: `external_keys_not_rotatable`, `keys_directory_not_writable`, `lock_namespace_unavailable`, `lock_timeout` (worth a retry) or `lock_unsupported` |
 
 ## Tool arguments and the domain models
 

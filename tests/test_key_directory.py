@@ -30,8 +30,13 @@ from cryptography.hazmat.primitives import serialization
 
 from nanoidp import serialization as nanoidp_serialization
 from nanoidp.config_writer import LockNamespaceUnavailable, LockUnavailableError
-from nanoidp.routes import api as api_module
-from nanoidp.services import key_directory
+from nanoidp.services import (
+    EXTERNAL_KEYS_NOT_ROTATABLE,
+    EXTERNAL_KEYS_NOT_ROTATABLE_KIND,
+    KEYS_DIRECTORY_LOCK_UNAVAILABLE,
+    KEYS_DIRECTORY_NOT_WRITABLE,
+    key_directory,
+)
 from nanoidp.services.crypto import CryptoService
 
 _REPO = Path(__file__).resolve().parent.parent
@@ -608,7 +613,7 @@ class TestADirectoryThisProcessCannotWrite:
         # The real path's kind, and the directory only in the log.
         assert response.get_json() == {
             "success": False,
-            "error": api_module.KEYS_DIRECTORY_NOT_WRITABLE,
+            "error": KEYS_DIRECTORY_NOT_WRITABLE,
             "kind": "keys_directory_not_writable",
         }
         assert str(keys_dir) not in response.get_data(as_text=True)
@@ -780,7 +785,7 @@ class TestADirectoryThisProcessCannotWrite:
         assert "Retry-After" not in response.headers
         assert response.get_json() == {
             "success": False,
-            "error": api_module.KEYS_DIRECTORY_NOT_WRITABLE,
+            "error": KEYS_DIRECTORY_NOT_WRITABLE,
             "kind": "lock_namespace_unavailable",
         }
         assert str(keys_dir) not in response.get_data(as_text=True)
@@ -874,7 +879,7 @@ class TestRotationsComeOneAfterTheOther:
         assert response.status_code == 503
         assert response.headers["Retry-After"]
         body = response.get_json()
-        assert body == {"success": False, "error": api_module.KEYS_DIRECTORY_LOCK_UNAVAILABLE, "kind": "lock_timeout"}
+        assert body == {"success": False, "error": KEYS_DIRECTORY_LOCK_UNAVAILABLE, "kind": "lock_timeout"}
 
     def test_rotating_keeps_as_many_previous_keys_as_it_is_told(self, tmp_path):
         keys_dir = tmp_path / "keys"
@@ -900,13 +905,13 @@ class TestTheRotateEndpointKeepsTheDirectoryOutOfTheBody:
                 lambda d: LockNamespaceUnavailable(f"{d} is not writable and holds no usable lock file"),
                 409,
                 "lock_namespace_unavailable",
-                api_module.KEYS_DIRECTORY_NOT_WRITABLE,
+                KEYS_DIRECTORY_NOT_WRITABLE,
             ),
             (
                 lambda d: key_directory.KeysDirectoryNotWritable(Path(d), PermissionError(13, "Permission denied")),
                 409,
                 "keys_directory_not_writable",
-                api_module.KEYS_DIRECTORY_NOT_WRITABLE,
+                KEYS_DIRECTORY_NOT_WRITABLE,
             ),
             (
                 lambda d: LockUnavailableError(
@@ -916,7 +921,7 @@ class TestTheRotateEndpointKeepsTheDirectoryOutOfTheBody:
                 ),
                 503,
                 "lock_timeout",
-                api_module.KEYS_DIRECTORY_LOCK_UNAVAILABLE,
+                KEYS_DIRECTORY_LOCK_UNAVAILABLE,
             ),
             (
                 lambda d: LockUnavailableError(
@@ -924,7 +929,7 @@ class TestTheRotateEndpointKeepsTheDirectoryOutOfTheBody:
                 ),
                 503,
                 "lock_unsupported",
-                api_module.KEYS_DIRECTORY_LOCK_UNAVAILABLE,
+                KEYS_DIRECTORY_LOCK_UNAVAILABLE,
             ),
         ],
     )
@@ -949,3 +954,19 @@ class TestTheRotateEndpointKeepsTheDirectoryOutOfTheBody:
             assert response.headers["Retry-After"] == "5"
         else:
             assert "Retry-After" not in response.headers
+
+    def test_external_keys_are_refused_with_the_kind_beside_the_fixed_message(self, client, monkeypatch):
+        from nanoidp.services import crypto as crypto_module
+        from nanoidp.services.crypto import ExternalKeysNotRotatable
+
+        service = crypto_module.get_crypto_service()
+        monkeypatch.setattr(service, "rotate_keys", lambda: (_ for _ in ()).throw(ExternalKeysNotRotatable()))
+
+        response = client.post("/api/keys/rotate")
+
+        assert response.status_code == 409 and "Retry-After" not in response.headers
+        assert response.get_json() == {
+            "success": False,
+            "error": EXTERNAL_KEYS_NOT_ROTATABLE,
+            "kind": EXTERNAL_KEYS_NOT_ROTATABLE_KIND,
+        }

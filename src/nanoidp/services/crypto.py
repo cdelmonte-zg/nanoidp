@@ -35,6 +35,7 @@ from cryptography.hazmat.primitives.serialization import (
 from cryptography.x509.oid import NameOID
 
 from ..config import Settings, get_config
+from ..config_writer import LockNamespaceUnavailable, LockUnavailableError
 from . import key_directory
 
 logger = logging.getLogger(__name__)
@@ -85,6 +86,20 @@ KEYS_DIRECTORY_NOT_WRITABLE = (
     "The keys directory is not writable through this process, so keys cannot be rotated here"
 )
 KEYS_DIRECTORY_LOCK_UNAVAILABLE = "The keys directory lock could not be taken: nothing was rotated"
+EXTERNAL_KEYS_NOT_ROTATABLE_KIND = "external_keys_not_rotatable"
+
+
+def rotation_refusal(refused: LockUnavailableError) -> Tuple[str, str, bool]:
+    """What a surface answers for a rotation the keys directory refused: the
+    fixed message, the kind, and whether the refusal is permanent. A
+    directory this process cannot write (LockNamespaceUnavailable, and its
+    subclass for one whose lock file is there) is permanent; a lock that was
+    not had is not, and its kind says whether coming back may help
+    (lock_timeout) or the filesystem cannot lock at all (lock_unsupported).
+    The HTTP route and the MCP tool both answer through here."""
+    permanent = isinstance(refused, LockNamespaceUnavailable)
+    message = KEYS_DIRECTORY_NOT_WRITABLE if permanent else KEYS_DIRECTORY_LOCK_UNAVAILABLE
+    return message, refused.kind, permanent
 
 
 class ExternalKeysNotRotatable(ValueError):
