@@ -7,8 +7,10 @@ from .crypto import (
     EXTERNAL_KEYS_NOT_ROTATABLE,
     CryptoService,
     ExternalKeysNotRotatable,
+    RotationRefusal,
     activate_crypto_service,
     get_crypto_service,
+    rotation_refusal,
 )
 from .device_code import (
     DeviceCodeGrant,
@@ -30,6 +32,8 @@ __all__ = [
     "identities_for",
     "CryptoService",
     "EXTERNAL_KEYS_NOT_ROTATABLE",
+    "RotationRefusal",
+    "rotation_refusal",
     "ExternalKeysNotRotatable",
     "get_crypto_service",
     "activate_crypto_service",

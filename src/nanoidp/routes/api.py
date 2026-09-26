@@ -8,15 +8,15 @@ from flask import Blueprint, current_app, jsonify, request
 from flask.typing import ResponseReturnValue
 
 from ..config import ConfigurationRejected, get_config
-from ..config_writer import LockNamespaceUnavailable, LockUnavailableError
+from ..config_writer import LockUnavailableError
 from ..hooks import HookError
 from ..services import (
-    EXTERNAL_KEYS_NOT_ROTATABLE,
     ExternalKeysNotRotatable,
     get_audit_log,
     get_crypto_service,
     get_token_service,
     identities_for,
+    rotation_refusal,
 )
 from ..services.runtime_store import runtime_store_report
 from ._auth import management_secret_required_for_api
@@ -25,6 +25,7 @@ from ._identity_views import user_summary
 from ._issuer import effective_issuer, effective_saml_entity_id, effective_saml_sso_url
 
 logger = logging.getLogger(__name__)
+
 
 api_bp = Blueprint("api", __name__, url_prefix="/api")
 api_bp.before_request(management_secret_required_for_api)
@@ -294,22 +295,19 @@ def rotate_keys() -> ResponseReturnValue:
 
     try:
         result = crypto.rotate_keys()
-    except ExternalKeysNotRotatable:
-        # Operator-provided keys (#358): nothing was rotated. The fixed
-        # message, not the exception's text.
-        return jsonify({"success": False, "error": EXTERNAL_KEYS_NOT_ROTATABLE}), 409
-    except LockNamespaceUnavailable as not_here:
-        # A keys directory this process cannot write (a read-only mount, a
-        # volume of another user's): it signs with the keys and cannot
-        # rotate them, now or later. Nothing was rotated.
-        return jsonify({"success": False, "error": str(not_here)}), 409
-    except LockUnavailableError as busy:
-        # The keys directory is shared (#420) and its lock could not be had
-        # in time: another process is starting or rotating. Nothing was
-        # rotated, and coming back is what to do.
-        response = jsonify({"success": False, "error": str(busy)})
-        response.status_code = 503
-        response.headers["Retry-After"] = "5"
+    except (ExternalKeysNotRotatable, LockUnavailableError) as refused:
+        # Nothing was rotated: operator keys (#358), a keys directory this
+        # process cannot write (409, permanent), or a lock it could not
+        # take (503, #420). The exception may name the directory; that
+        # stays in the log (the helper writes it), the body carries the
+        # fixed message and the kind (CodeQL 32/33). Retry-After only when
+        # coming back may help: a lock another process holds, not a
+        # filesystem that cannot lock.
+        refusal = rotation_refusal(refused)
+        response = jsonify({"success": False, "error": refusal.message, "kind": refusal.kind})
+        response.status_code = 409 if refusal.permanent else 503
+        if refusal.retryable:
+            response.headers["Retry-After"] = "5"
         return response
 
     # Log to audit

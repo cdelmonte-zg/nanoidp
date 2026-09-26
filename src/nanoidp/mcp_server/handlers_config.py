@@ -13,11 +13,11 @@ from ..config_validation import UNAVAILABLE, validate_config_result
 from ..config_writer import ConflictError, LockUnavailableError
 from ..hooks import HookError
 from ..services import (
-    EXTERNAL_KEYS_NOT_ROTATABLE,
     ExternalKeysNotRotatable,
     build_discovery_document,
     get_audit_log,
     get_crypto_service,
+    rotation_refusal,
 )
 from ..services.runtime_store import runtime_store_report
 from .normalize import _UPDATE_SETTINGS_FIELDS, _UPDATE_SETTINGS_NORMALIZERS
@@ -324,13 +324,13 @@ def _tool_rotate_keys(arguments: dict[str, Any], config: ConfigManager, loaded: 
     crypto = get_crypto_service()
     try:
         result = crypto.rotate_keys()
-    except ExternalKeysNotRotatable:
-        # Operator-provided keys (#358): nothing was rotated.
-        return {"success": False, "error": EXTERNAL_KEYS_NOT_ROTATABLE}
-    except LockUnavailableError as busy:
-        # The shared keys directory's lock could not be had (#420): nothing
-        # was rotated.
-        return {"success": False, "error": str(busy)}
+    except (ExternalKeysNotRotatable, LockUnavailableError) as refused:
+        # Nothing was rotated: operator keys (#358), a keys directory this
+        # process cannot write, or a lock it could not take (#420). The
+        # same fixed message and kind as /api/keys/rotate; the directory
+        # the exception may name goes to the log, written by the helper.
+        refusal = rotation_refusal(refused)
+        return {"success": False, "error": refusal.message, "kind": refusal.kind}
     get_audit_log().log(
         event_type="key_rotation",
         endpoint="mcp:rotate_keys",

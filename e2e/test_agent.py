@@ -4789,6 +4789,17 @@ class NanoIDPTestAgent:
 
             rotate = self.session.post(f"{self.base_url}/api/keys/rotate", timeout=10)
             checks["rotation_refused_409"] = rotate.status_code == 409
+            # The refusal's shape: a fixed message and a kind, nothing that
+            # names a directory (the same contract the lock refusals have).
+            refusal = rotate.json() if rotate.headers.get("Content-Type", "").startswith("application/json") else {}
+            checks["refusal_has_fixed_message_and_kind"] = refusal == {
+                "success": False,
+                "kind": "external_keys_not_rotatable",
+                "error": (
+                    "The signing keys come from jwt.external_keys: to change them, point it at a new "
+                    "key pair and reload (a key replaced at the same paths is read at the next start)"
+                ),
+            }
             after = self.session.get(f"{self.base_url}/api/keys/info", timeout=5)
             checks["kid_unchanged_after_refusal"] = (
                 after.status_code == 200 and after.json().get("active_kid") == expected_kid

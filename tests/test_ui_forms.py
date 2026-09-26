@@ -525,6 +525,43 @@ class TestKeysPages:
         # post-rotation tokens stop verifying against JWKS.
         assert (tmp_path / "keys" / "kid.txt").read_text().strip() == kid_after
 
+    def test_a_refused_regeneration_shows_the_fixed_message_and_not_the_directory(self, keys_client, monkeypatch):
+        """The same refusal as /api/keys/rotate: the page shows the fixed
+        message; the directory the exception names stays in the log."""
+        from nanoidp.services import get_crypto_service
+        from nanoidp.services.crypto import KEYS_DIRECTORY_NOT_WRITABLE
+        from nanoidp.services.key_directory import KeysDirectoryNotWritable
+
+        app, client = keys_client
+        directory = "/srv/nanoidp/secret-keys-9f3a"
+        with app.app_context():
+            service = get_crypto_service()
+        monkeypatch.setattr(
+            service,
+            "rotate_keys",
+            lambda: (_ for _ in ()).throw(KeysDirectoryNotWritable(Path(directory), PermissionError(13, "denied"))),
+        )
+
+        page = client.post("/keys/regenerate", follow_redirects=True).get_data(as_text=True)
+
+        assert KEYS_DIRECTORY_NOT_WRITABLE in page
+        assert directory not in page
+
+    def test_an_unexpected_failure_of_regeneration_is_not_quoted_on_the_page(self, keys_client, monkeypatch):
+        from nanoidp.services import get_crypto_service
+
+        app, client = keys_client
+        with app.app_context():
+            service = get_crypto_service()
+        monkeypatch.setattr(
+            service, "rotate_keys", lambda: (_ for _ in ()).throw(RuntimeError("disk /srv/nanoidp/keys-3f2 is on fire"))
+        )
+
+        page = client.post("/keys/regenerate", follow_redirects=True).get_data(as_text=True)
+
+        assert "Failed to regenerate keys: see the server log" in page
+        assert "on fire" not in page and "/srv/nanoidp" not in page
+
     def test_download_public_key_and_certificate(self, keys_client):
         app, client = keys_client
         resp = client.get("/keys/download/public_key")

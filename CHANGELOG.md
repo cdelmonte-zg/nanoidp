@@ -144,6 +144,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   page was wrong.
 
 ### Changed
+- **`POST /api/keys/rotate` and the MCP `rotate_keys` tool refuse with a
+  fixed message and a `kind`**: `external_keys_not_rotatable` (`409`, as
+  before, the kind is new); `keys_directory_not_writable`, or
+  `lock_namespace_unavailable` when the lock file cannot even exist, for a
+  keys directory this process cannot write (`409`); `lock_timeout` or
+  `lock_unsupported` for a lock that could not be taken (`503`). The body
+  used to carry the exception's text, which names the keys directory; that
+  now goes to the server log, as the HTTP handler for a configuration
+  directory's lock already did, and the web UI's **Regenerate keys** shows the same fixed message where
+  it showed the exception's text (any other failure there is "see the
+  server log"). Status codes are unchanged; `Retry-After` on the `503` is
+  sent for `lock_timeout` only, no longer for `lock_unsupported`, which a
+  retry does not help and which the configuration endpoints already
+  answered without it (CodeQL alerts 32 and 33).
 - **A process that finds the configuration directory's lock taken tries
   again after 1 ms, then 2, 4, up to 50 ms between tries** (#426, point 3).
   It waited a fixed 50 ms after every miss, so a request that met a 7 ms

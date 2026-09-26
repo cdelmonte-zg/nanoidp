@@ -16,6 +16,7 @@ second part.
 """
 
 import json
+import logging
 import multiprocessing
 import os
 import stat
@@ -28,8 +29,15 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 
 from nanoidp import serialization as nanoidp_serialization
+from nanoidp.config_writer import LockNamespaceUnavailable, LockUnavailableError
 from nanoidp.services import key_directory
-from nanoidp.services.crypto import CryptoService
+from nanoidp.services.crypto import (
+    EXTERNAL_KEYS_NOT_ROTATABLE,
+    EXTERNAL_KEYS_NOT_ROTATABLE_KIND,
+    KEYS_DIRECTORY_LOCK_UNAVAILABLE,
+    KEYS_DIRECTORY_NOT_WRITABLE,
+    CryptoService,
+)
 
 _REPO = Path(__file__).resolve().parent.parent
 _SPAWN = multiprocessing.get_context("spawn")
@@ -602,6 +610,13 @@ class TestADirectoryThisProcessCannotWrite:
         response = app.test_client().post("/api/keys/rotate")
 
         assert response.status_code == 409 and "Retry-After" not in response.headers
+        # The real path's kind, and the directory only in the log.
+        assert response.get_json() == {
+            "success": False,
+            "error": KEYS_DIRECTORY_NOT_WRITABLE,
+            "kind": "keys_directory_not_writable",
+        }
+        assert str(keys_dir) not in response.get_data(as_text=True)
         assert _snapshot(keys_dir) == before
         assert sorted(file.name for file in keys_dir.iterdir() if not file.name.startswith(".nanoidp")) == sorted(before)
 
@@ -768,7 +783,12 @@ class TestADirectoryThisProcessCannotWrite:
 
         assert response.status_code == 409
         assert "Retry-After" not in response.headers
-        assert "not writable" in response.get_json()["error"]
+        assert response.get_json() == {
+            "success": False,
+            "error": KEYS_DIRECTORY_NOT_WRITABLE,
+            "kind": "lock_namespace_unavailable",
+        }
+        assert str(keys_dir) not in response.get_data(as_text=True)
 
     def test_a_rotation_found_under_way_and_never_ending_is_said_not_loaded(self, read_only, monkeypatch):
         keys_dir, _ = read_only
@@ -859,7 +879,7 @@ class TestRotationsComeOneAfterTheOther:
         assert response.status_code == 503
         assert response.headers["Retry-After"]
         body = response.get_json()
-        assert body["success"] is False and "keys directory lock" in body["error"]
+        assert body == {"success": False, "error": KEYS_DIRECTORY_LOCK_UNAVAILABLE, "kind": "lock_timeout"}
 
     def test_rotating_keeps_as_many_previous_keys_as_it_is_told(self, tmp_path):
         keys_dir = tmp_path / "keys"
@@ -872,3 +892,87 @@ class TestRotationsComeOneAfterTheOther:
 
         assert [key.kid for key in loaded.previous_keys] == [kids[3], kids[2]]
         assert sorted(file.name for file in (keys_dir / "previous").iterdir()) == sorted(f"{kid}_public.pem" for kid in kids[2:4])
+
+
+class TestTheRotateEndpointKeepsTheDirectoryOutOfTheBody:
+    """The lock exceptions name the keys directory, which is for the log:
+    the endpoint answers a fixed message and the kind (CodeQL 32/33)."""
+
+    @pytest.mark.parametrize(
+        "raised, status, kind, message",
+        [
+            (
+                lambda d: LockNamespaceUnavailable(f"{d} is not writable and holds no usable lock file"),
+                409,
+                "lock_namespace_unavailable",
+                KEYS_DIRECTORY_NOT_WRITABLE,
+            ),
+            (
+                lambda d: key_directory.KeysDirectoryNotWritable(Path(d), PermissionError(13, "Permission denied")),
+                409,
+                "keys_directory_not_writable",
+                KEYS_DIRECTORY_NOT_WRITABLE,
+            ),
+            (
+                lambda d: LockUnavailableError(
+                    f"Timed out after 10.0s waiting for the write lock on {d} - another process may "
+                    "be stuck holding it",
+                    kind="lock_timeout",
+                ),
+                503,
+                "lock_timeout",
+                KEYS_DIRECTORY_LOCK_UNAVAILABLE,
+            ),
+            (
+                lambda d: LockUnavailableError(
+                    f"Advisory locking is not supported on {d}/.nanoidp-write.lock", kind="lock_unsupported"
+                ),
+                503,
+                "lock_unsupported",
+                KEYS_DIRECTORY_LOCK_UNAVAILABLE,
+            ),
+        ],
+    )
+    def test_the_directory_named_by_the_exception_is_logged_and_not_answered(
+        self, client, monkeypatch, caplog, raised, status, kind, message
+    ):
+        from nanoidp.services import crypto as crypto_module
+
+        directory = "/srv/nanoidp/secret-keys-9f3a"
+        service = crypto_module.get_crypto_service()
+        monkeypatch.setattr(service, "rotate_keys", lambda: (_ for _ in ()).throw(raised(directory)))
+
+        with caplog.at_level(logging.WARNING, logger="nanoidp.services.crypto"):
+            response = client.post("/api/keys/rotate")
+
+        body = response.get_json()
+        assert response.status_code == status
+        assert body == {"success": False, "error": message, "kind": kind}
+        assert directory not in response.get_data(as_text=True)
+        assert any(directory in record.getMessage() for record in caplog.records)
+        # Retry-After only where coming back may help: a lock another
+        # process holds. Not for a permanent refusal, nor for a filesystem
+        # that cannot lock, the classification the configuration handlers use.
+        if kind == "lock_timeout":
+            assert response.headers["Retry-After"] == "5"
+        else:
+            assert "Retry-After" not in response.headers
+
+    def test_external_keys_are_refused_with_the_kind_beside_the_fixed_message(self, client, monkeypatch, caplog):
+        """A documented configuration state: answered, not warned about."""
+        from nanoidp.services import crypto as crypto_module
+        from nanoidp.services.crypto import ExternalKeysNotRotatable
+
+        service = crypto_module.get_crypto_service()
+        monkeypatch.setattr(service, "rotate_keys", lambda: (_ for _ in ()).throw(ExternalKeysNotRotatable()))
+
+        with caplog.at_level(logging.WARNING, logger="nanoidp.services.crypto"):
+            response = client.post("/api/keys/rotate")
+
+        assert response.status_code == 409 and "Retry-After" not in response.headers
+        assert not [r for r in caplog.records if "Key rotation refused" in r.getMessage()]
+        assert response.get_json() == {
+            "success": False,
+            "error": EXTERNAL_KEYS_NOT_ROTATABLE,
+            "kind": EXTERNAL_KEYS_NOT_ROTATABLE_KIND,
+        }

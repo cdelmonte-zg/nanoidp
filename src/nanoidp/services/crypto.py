@@ -35,6 +35,7 @@ from cryptography.hazmat.primitives.serialization import (
 from cryptography.x509.oid import NameOID
 
 from ..config import Settings, get_config
+from ..config_writer import LockNamespaceUnavailable, LockUnavailableError
 from . import key_directory
 
 logger = logging.getLogger(__name__)
@@ -78,9 +79,53 @@ EXTERNAL_KEYS_NOT_ROTATABLE = (
     "key pair and reload (a key replaced at the same paths is read at the next start)"
 )
 
+# What a surface answers when the keys directory refuses a rotation: fixed
+# text, since the exceptions name the directory and that belongs in the log,
+# not in an HTTP body (CodeQL 32/33). The kind beside it says which.
+KEYS_DIRECTORY_NOT_WRITABLE = (
+    "The keys directory is not writable through this process, so keys cannot be rotated here"
+)
+KEYS_DIRECTORY_LOCK_UNAVAILABLE = "The keys directory lock could not be taken: nothing was rotated"
+EXTERNAL_KEYS_NOT_ROTATABLE_KIND = "external_keys_not_rotatable"
+
 
 class ExternalKeysNotRotatable(ValueError):
-    """Rotation was requested for operator-provided signing keys (#358)."""
+    """Rotation was requested for operator-provided signing keys (#358).
+    Same shape as the lock exceptions (``kind``), so one refusal helper
+    answers for all three."""
+
+    kind = EXTERNAL_KEYS_NOT_ROTATABLE_KIND
+
+
+@dataclass(frozen=True)
+class RotationRefusal:
+    """What a surface answers for a rotation that was refused: the fixed
+    message, the kind, whether the refusal is permanent (a 409 rather than
+    a 503) and whether coming back may help (Retry-After)."""
+
+    message: str
+    kind: str
+    permanent: bool
+    retryable: bool
+
+
+def rotation_refusal(refused: Union[ExternalKeysNotRotatable, LockUnavailableError]) -> RotationRefusal:
+    """Operator keys are never rotated; a directory this process cannot
+    write (LockNamespaceUnavailable, and its subclass for one whose lock
+    file is there) is permanent too. A lock that was not had is not
+    permanent: another process holding it (lock_timeout) is worth coming
+    back for, a filesystem without advisory locks (lock_unsupported) is
+    not, which is how the configuration handlers classify the two kinds
+    as well. The lock exceptions name the keys directory: it is logged
+    here, once, and never answered. The HTTP route, the MCP tool and the
+    UI all answer through here."""
+    if isinstance(refused, ExternalKeysNotRotatable):
+        # A documented configuration state, not something to warn about.
+        return RotationRefusal(EXTERNAL_KEYS_NOT_ROTATABLE, refused.kind, permanent=True, retryable=False)
+    logger.warning("Key rotation refused: %s", refused)
+    permanent = isinstance(refused, LockNamespaceUnavailable)
+    message = KEYS_DIRECTORY_NOT_WRITABLE if permanent else KEYS_DIRECTORY_LOCK_UNAVAILABLE
+    return RotationRefusal(message, refused.kind, permanent=permanent, retryable=refused.kind == "lock_timeout")
 
 
 def _signing_inputs(
@@ -344,7 +389,7 @@ class CryptoService:
                     now = self._keys
                     certificate = self._certificate_for(now.priv_pem, now.pub_pem)
                 key_directory.replace_certificate(self.keys_dir, certificate, name)
-        except key_directory.LockNamespaceUnavailable:
+        except LockNamespaceUnavailable:
             logger.warning(f"{self.keys_dir} is not writable: the SAML certificate was not saved")
         return certificate
 
