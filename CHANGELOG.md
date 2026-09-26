@@ -58,8 +58,8 @@ named.
   among the active key and the previous ones kept, as the documentation
   always said; the private key is written with mode `0600`; `POST
   /api/keys/rotate` and the MCP `rotate_keys` tool refuse with a fixed
-  message and a `kind`, `Retry-After` on the `503` for a lock another
-  process holds only. *Migration:* a test that expected the refresh grant
+  message and a `kind`, `Retry-After` only on the retryable `lock_timeout`
+  `503`, not on `lock_unsupported`. *Migration:* a test that expected the refresh grant
   or `/userinfo` to fail right after a rotation expects the opposite now;
   a client that matched on the refusal's text matches on `kind`.
 - **For code that embeds nanoidp**, the runtime state moved behind one
@@ -132,9 +132,10 @@ named.
     first: a `stat` is the fast negative, the revision of their bytes the
     answer, and files that changed are reloaded before the operation
     reads anything. One check at a time does that; the others wait for it
-    up to 0.5 s and then answer from what it established, or `503`
-    `configuration_unavailable` (`freshness_in_progress`, `Retry-After:
-    1`) while it waits for a peer's lock. Files that changed and do not
+    up to 0.5 s and use what it established if it finishes, otherwise
+    they answer `503` `configuration_unavailable` (`freshness_in_progress`,
+    `Retry-After: 1`). The check itself may wait for the configuration
+    directory's lock, up to 10 s. Files that changed and do not
     load leave the loaded configuration in force and are said once in the
     log; a creation of a runtime user or client checks its name against
     the files under the directory lock every writer of nanoidp takes, and
@@ -349,9 +350,9 @@ named.
   `0600`** (it followed the umask). The layout and the file names are
   unchanged.
 
-- **`POST /api/keys/rotate`, the MCP `rotate_keys` tool and the web UI's
-  Regenerate keys refuse with a fixed message and a `kind`**:
-  `external_keys_not_rotatable` (`409`, as before, the kind is new);
+- **`POST /api/keys/rotate` and the MCP `rotate_keys` tool refuse with a
+  fixed message and a `kind`; the web UI's Regenerate keys shows the same
+  fixed message**: `external_keys_not_rotatable` (`409`, as before, the kind is new);
   `keys_directory_not_writable`, or `lock_namespace_unavailable` when the
   lock file cannot even exist, for a keys directory this process cannot
   write (`409`); `lock_timeout` or `lock_unsupported` for a lock that could
