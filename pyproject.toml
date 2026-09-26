@@ -132,6 +132,13 @@ layers = [
     "nanoidp.config",
 ]
 
+[[tool.mypy.overrides]]
+# Deprecated 3.0.0 (2026-09-26, Python >= 3.12 only) uses the `type`
+# statement, which mypy refuses under the 3.10 target while following
+# limits' imports into it. Its internals are not ours to check.
+module = ["deprecated", "deprecated.*"]
+follow_imports = "skip"
+
 [tool.black]
 line-length = 100
 target-version = ["py310", "py311", "py312"]
