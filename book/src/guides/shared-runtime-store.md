@@ -104,9 +104,11 @@ MCP, rather than making up an answer. Both mean the same thing: ask again.
 With a shared runtime store, a request that reads the configuration first
 checks whether another process changed the files: a `stat` of the two files,
 and a read under the configuration directory's lock only when they changed,
-or were changed within the last two seconds. That lock is the writers' lock,
-the one a save from the web UI, an MCP `save_config` or a promotion takes.
-One freshness check in a process may wait for it, for up to 10 seconds,
+or were changed within the last two seconds. That is the configuration
+directory's coordination lock: configuration writers such as a save from
+the web UI, an MCP `save_config` or a promotion take it, and operations
+such as the creation of a runtime identity may take it too, while they check
+a declared name against the current files. One freshness check in a process may wait for it, for up to 10 seconds,
 while another process holds it; the other requests of that process wait for
 that check for up to 0.5 seconds and then answer `503 configuration_unavailable`
 (`freshness_in_progress`) with `Retry-After: 1`, and the check that waited
