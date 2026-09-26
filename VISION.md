@@ -99,18 +99,18 @@ implicitly throughout the project's history; this writes them down.
   way to react to configuration events from outside (mirror, notify,
   bootstrap): nanoidp provides the extension points, the deploy provides
   whatever sits behind them.
-- **Production persistence and distributed state.** Runtime state
-  (authorization transactions and codes, device codes, token revocations
-  and refresh-token families, the audit log, runtime-created clients and
-  users) is in memory today and ends with the process. Runtime-created
-  users and clients are disposable test state, kept apart from the
-  declared configuration: one becomes part of the operator's files only
-  when it is explicitly promoted. The direction below adds an optional
-  local SQLite runtime store, so that several nanoidp processes on one
-  host (HTTP workers and the separate `nanoidp-mcp` process alike) share
-  that state and a test run can outlive a restart; it is a store for one
-  host and one test environment, not a distributed one. Distributed
-  databases, HA and multi-node state coordination are not goals.
+- **Production persistence and distributed state.** Runtime protocol
+  state (authorization transactions and codes, device codes, token
+  revocations and refresh-token families, the audit log, runtime-created
+  clients and users) lives behind a runtime store: in memory by default,
+  ending with the process, or in local SQLite files that several nanoidp
+  processes on one host share, HTTP workers and a separate `nanoidp-mcp`
+  process alike. The SQLite store can let disposable test state survive a
+  process restart, but carries no durability promise: it is state you can
+  rebuild or throw away. Runtime-created users and clients stay separate
+  from the declared configuration, which remains the files; one becomes
+  declared only when explicitly promoted. Distributed databases, HA and
+  multi-node state coordination are not goals.
 - **Real identity backends.** No LDAP/AD federation, no social login.
 - **Spec completeness for its own sake.** Extensions are added when they
   help someone test a client, not to fill a compliance matrix.
@@ -158,25 +158,36 @@ named here:
    principle 4 applied to the code that predated it, so that each protocol
    rule lives in one place and the routes, the UI and the MCP tools
    delegate to it.
+8. **[Shared runtime state](https://github.com/cdelmonte-zg/nanoidp/milestone/18)**:
+   the protocol and test state that processes need to share lives behind
+   one runtime-store boundary, with an optional SQLite store for processes
+   on one host. The configuration files remain their common source of
+   truth: freshness is established at the start of an operation, creations
+   and promotions use a cross-process critical section, and claims left by
+   a dead writer can be recovered. Generated signing keys are coherent
+   across processes, and each operation reads one published configuration.
+   The Streamable HTTP transport once planned as the third step of this
+   milestone ([#193](https://github.com/cdelmonte-zg/nanoidp/issues/193))
+   was closed without code: the shared store removed the architectural
+   reason it had been scheduled, because a separate stdio MCP process can
+   now observe the same runtime state as the HTTP server. A remote MCP
+   transport remains a separate idea for a concrete use case.
 
 ### What comes next
 
-One direction is written down, as a chain in which each step only makes
-sense after the one before it:
+The shared store settled the direction that used to be written here as
+a chain. What follows from it is concrete and tracked:
 
-1. [#363](https://github.com/cdelmonte-zg/nanoidp/issues/363): the rest of
-   the execution state (authorization and device codes, revocations, the
-   audit log) moves behind the runtime store boundary that today holds
-   runtime users and clients.
-2. [#354](https://github.com/cdelmonte-zg/nanoidp/issues/354): an optional
-   local SQLite runtime store behind that boundary, so that several
-   nanoidp processes on one host share runtime state. Memory stays the
-   default.
-3. [#193](https://github.com/cdelmonte-zg/nanoidp/issues/193): an MCP
-   Streamable HTTP transport for nanoidp's own MCP server, a separate
-   process and the first consumer of the shared store.
+- [#432](https://github.com/cdelmonte-zg/nanoidp/issues/432): the MCP
+  surface catches up with the store: runtime identities created, promoted,
+  removed and reset through MCP tools, which refuse when the store is
+  process-local rather than operate on state nobody else can see.
+- [#402](https://github.com/cdelmonte-zg/nanoidp/issues/402): stateful
+  identity test scenarios: an identity evolves deterministically during a
+  test in response to the application's own protocol operations, without
+  turning nanoidp into a general request/response scripting engine.
 
-Beyond that chain the project stays open to extension, and the test for
+Beyond these the project stays open to extension, and the test for
 an extension is principle 1 rather than a feature freeze: it belongs when
 it makes nanoidp a better instrument for testing a client, a server or an
 agent, and it does not when its purpose is to operate an identity
