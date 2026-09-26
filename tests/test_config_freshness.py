@@ -8,6 +8,7 @@ in the same critical section as the insert. With the in-memory store nothing
 changes: the store is this process's alone.
 """
 
+import logging
 import multiprocessing
 import os
 import shutil
@@ -18,6 +19,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from nanoidp.app import CONFIGURATION_UNAVAILABLE_TEXT, CONFIGURATION_UNLOADABLE_TEXT
 from nanoidp.config import ConfigManager, User
 from nanoidp.config_writer import LockUnavailableError
 from nanoidp.services import runtime_store
@@ -1408,7 +1410,52 @@ class TestTheCriticalCreation:
         response = client.post(path, json=body)
 
         assert response.status_code == 503
-        assert response.get_json()["error"] == "configuration_unloadable"
+        # Fixed text: the exception names the directory and the file that
+        # does not load, which is for the log, not for the body.
+        assert response.get_json() == {
+            "error": "configuration_unloadable",
+            "error_description": CONFIGURATION_UNLOADABLE_TEXT,
+        }
+        assert str(config_dir) not in response.get_data(as_text=True)
+        assert "Retry-After" not in response.headers
+
+    @pytest.mark.parametrize(
+        "path, body",
+        [("/api/runtime/users", {"username": "x", "password": "pw"}), ("/register", {"redirect_uris": ["https://a/cb"]})],
+    )
+    def test_files_that_cannot_be_read_are_said_without_naming_them(self, tmp_path, monkeypatch, caplog, path, body):
+        """The temporary case, with a directory the exception names: in the
+        log, since that is now the only place it lands, and not in the body."""
+        from nanoidp.app import create_app
+        from nanoidp.config import ConfigManager, DeclaredConfigurationUnloadable
+
+        config_dir = _config_dir(tmp_path)
+        _set_setting(config_dir, "oauth", "dynamic_registration", {"enabled": True})
+        runtime_store.publish_runtime_store(SqliteRuntimeStore(tmp_path / "runtime.db"), ("memory",))
+        application = create_app(str(config_dir))
+        application.config["TESTING"] = True
+        client = application.test_client()
+        sentinel = "/srv/nanoidp/secret-config-7c1e"
+
+        def unreadable(self, act):
+            raise DeclaredConfigurationUnloadable(
+                f"the configuration files in {sentinel} could not be read, so this cannot be checked "
+                "against them: [Errno 5] Input/output error",
+                temporary=True,
+            )
+
+        monkeypatch.setattr(ConfigManager, "act_on_current_files", unreadable)
+
+        with caplog.at_level(logging.WARNING):
+            response = client.post(path, json=body)
+
+        assert any(sentinel in record.getMessage() for record in caplog.records)
+        assert response.status_code == 503 and response.headers["Retry-After"] == "5"
+        assert response.get_json() == {
+            "error": "configuration_unavailable",
+            "error_description": CONFIGURATION_UNAVAILABLE_TEXT,
+        }
+        assert sentinel not in response.get_data(as_text=True)
 
     def test_a_lock_that_cannot_be_taken_creates_nothing(self, shared, monkeypatch):
         from nanoidp import config_writer

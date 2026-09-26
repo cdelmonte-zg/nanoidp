@@ -28,6 +28,21 @@ from .services.identities import identities_for, reconcile_runtime_identities
 from .services.runtime_repository import RuntimeStoreUnavailable
 from .services.runtime_store import fresh_configuration
 
+# What the 503s for a configuration or a store that cannot be used right now
+# say to the caller: fixed text. The exceptions name the configuration
+# directory, the file that does not load or the store's failure, which is
+# for the server log (the handlers write it), not for a body that reaches
+# every client of every endpoint.
+CONFIGURATION_UNAVAILABLE_TEXT = (
+    "The configuration files changed and could not be loaded right now; the configuration "
+    "loaded before stays in force. Try again."
+)
+CONFIGURATION_UNLOADABLE_TEXT = (
+    "The configuration files changed and do not load; the configuration loaded before stays "
+    "in force until they are fixed."
+)
+RUNTIME_STORE_UNAVAILABLE_TEXT = "The runtime store is held by another process; try again."
+
 # Global limiter instance (initialized in create_app)
 limiter: Optional[Limiter] = None
 
@@ -311,7 +326,8 @@ def create_app(
         configuration_unloadable, and no Retry-After."""
         app.logger.warning("Refused against a configuration that does not load: %s", exc)
         error = "configuration_unavailable" if exc.temporary else "configuration_unloadable"
-        response = jsonify({"error": error, "error_description": str(exc)})
+        text = CONFIGURATION_UNAVAILABLE_TEXT if exc.temporary else CONFIGURATION_UNLOADABLE_TEXT
+        response = jsonify({"error": error, "error_description": text})
         response.status_code = 503
         if exc.temporary:
             response.headers["Retry-After"] = "5"
@@ -324,7 +340,7 @@ def create_app(
         resolves, and not a fault, which a 500 would say. Only contention
         is this; a store that is broken is an error of its own."""
         app.logger.warning("Runtime store unavailable: %s", exc)
-        response = jsonify({"error": "runtime_store_unavailable", "error_description": str(exc)})
+        response = jsonify({"error": "runtime_store_unavailable", "error_description": RUNTIME_STORE_UNAVAILABLE_TEXT})
         response.status_code = 503
         response.headers["Retry-After"] = "1"
         return response
