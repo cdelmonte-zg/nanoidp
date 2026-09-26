@@ -34,7 +34,7 @@ from .services.runtime_store import fresh_configuration
 # for the server log (the handlers write it), not for a body that reaches
 # every client of every endpoint.
 CONFIGURATION_UNAVAILABLE_TEXT = (
-    "The configuration files changed and could not be loaded right now; the configuration "
+    "The configuration files could not be read or loaded right now; the configuration "
     "loaded before stays in force. Try again."
 )
 CONFIGURATION_UNLOADABLE_TEXT = (
@@ -340,7 +340,12 @@ def create_app(
         resolves, and not a fault, which a 500 would say. Only contention
         is this; a store that is broken is an error of its own."""
         app.logger.warning("Runtime store unavailable: %s", exc)
-        response = jsonify({"error": "runtime_store_unavailable", "error_description": RUNTIME_STORE_UNAVAILABLE_TEXT})
+        response = jsonify(
+            {
+                "error": "runtime_store_unavailable",
+                "error_description": RUNTIME_STORE_UNAVAILABLE_TEXT,
+            }
+        )
         response.status_code = 503
         response.headers["Retry-After"] = "1"
         return response

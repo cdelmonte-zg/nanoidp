@@ -1424,10 +1424,11 @@ class TestTheCriticalCreation:
         [("/api/runtime/users", {"username": "x", "password": "pw"}), ("/register", {"redirect_uris": ["https://a/cb"]})],
     )
     def test_files_that_cannot_be_read_are_said_without_naming_them(self, tmp_path, monkeypatch, caplog, path, body):
-        """The temporary case, with a directory the exception names: in the
+        """The temporary case, through the real raise site: the files cannot
+        be read under the lock. The directory the exception names is in the
         log, since that is now the only place it lands, and not in the body."""
         from nanoidp.app import create_app
-        from nanoidp.config import ConfigManager, DeclaredConfigurationUnloadable
+        from nanoidp.config_store import ConfigFileStore
 
         config_dir = _config_dir(tmp_path)
         _set_setting(config_dir, "oauth", "dynamic_registration", {"enabled": True})
@@ -1435,27 +1436,22 @@ class TestTheCriticalCreation:
         application = create_app(str(config_dir))
         application.config["TESTING"] = True
         client = application.test_client()
-        sentinel = "/srv/nanoidp/secret-config-7c1e"
 
-        def unreadable(self, act):
-            raise DeclaredConfigurationUnloadable(
-                f"the configuration files in {sentinel} could not be read, so this cannot be checked "
-                "against them: [Errno 5] Input/output error",
-                temporary=True,
-            )
+        def unreadable(self, names):
+            raise OSError(5, "Input/output error")
 
-        monkeypatch.setattr(ConfigManager, "act_on_current_files", unreadable)
+        monkeypatch.setattr(ConfigFileStore, "read_snapshot_within_lock", unreadable)
 
         with caplog.at_level(logging.WARNING):
             response = client.post(path, json=body)
 
-        assert any(sentinel in record.getMessage() for record in caplog.records)
+        assert any(str(config_dir) in record.getMessage() for record in caplog.records)
         assert response.status_code == 503 and response.headers["Retry-After"] == "5"
         assert response.get_json() == {
             "error": "configuration_unavailable",
             "error_description": CONFIGURATION_UNAVAILABLE_TEXT,
         }
-        assert sentinel not in response.get_data(as_text=True)
+        assert str(config_dir) not in response.get_data(as_text=True)
 
     def test_a_lock_that_cannot_be_taken_creates_nothing(self, shared, monkeypatch):
         from nanoidp import config_writer
