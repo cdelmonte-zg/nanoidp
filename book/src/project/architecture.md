@@ -46,7 +46,7 @@ Entry points:
 
 | Module | What it is |
 |---|---|
-| `app.py` | `create_app()`: Flask app factory, blueprint registration, session cookie policy, startup warnings |
+| `app.py` | `create_app()`: configures the process-wide Flask application (one instance per process, see CONTRIBUTING), blueprint registration, session cookie policy, startup warnings |
 | `__main__.py` | The `nanoidp` CLI: serve, `init`, `wizard`, `validate-config`, `config-schema`, `plugins` |
 | `mcp_server/` | The `nanoidp-mcp` stdio server: tool declarations and handlers. It keeps no configuration of its own: the tools resolve the process's `ConfigManager` (see `config.py`) |
 | `wizard.py` | The `nanoidp wizard` interactive configuration builder |
