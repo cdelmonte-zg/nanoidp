@@ -150,9 +150,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   write, or a write that met a 0.1 ms freshness read, paid the poll and not
   the section: measured on one host, the p99 latency of a token request
   under two file writes a second was 82 ms against 31 ms at rest, and 157 ms
-  under twenty; with the doubling pause, 45 ms and 59 ms, the p99 at rest unchanged (31 ms). The 10 s deadline, the 0.5 s wait of the
-  other requests and the error shapes are unchanged; the keys directory's
-  lock is the same primitive and tries again the same way. The measurements
+  under twenty; with the doubling pause, 45 ms and 59 ms, the p99 at rest
+  unchanged (31 ms). The "Waiting for the write lock" warning is logged
+  once the pauses have reached 50 ms, not on the first miss, since under a
+  shared store a collision absorbed by the short pauses is routine. The
+  10 s deadline, the 0.5 s wait of the other requests and the error shapes
+  are unchanged; the keys directory's lock is the same primitive and tries
+  again the same way, while a read-only view's own wait for a rotation to
+  finish is not this lock and keeps its fixed pause. The measurements
   behind this, and the policies decided against on their basis (a shorter
   reader timeout, a cooldown after a timeout, a backoff shared between
   processes), are recorded in #426.

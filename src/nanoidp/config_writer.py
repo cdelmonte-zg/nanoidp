@@ -322,8 +322,9 @@ def _cross_process_lock(directory: Path, deadline: Optional[float] = None) -> It
     is never read for content, only locked).
 
     Acquisition polls ``_try_lock_exclusive`` rather than blocking
-    indefinitely, pausing 1 ms after the first miss and twice as long after
-    each next one up to 50 ms (``_poll_pauses``), so a stuck peer is a bounded, logged wait
+    indefinitely, pausing 1 ms after the first miss and twice as long
+    after each next one up to 50 ms (``_poll_pauses``), so a stuck peer is
+    a bounded wait, logged once the pauses have reached the cap
     (``LockUnavailableError`` after ``_LOCK_TIMEOUT_SECONDS``) instead of
     an indefinite hang with no explanation. An ``OSError`` that isn't
     "someone else holds it" means the filesystem itself does not support
@@ -392,18 +393,27 @@ def _cross_process_lock(directory: Path, deadline: Optional[float] = None) -> It
                     "without advisory-lock support (e.g. NFS without lockd)",
                     kind="lock_unsupported",
                 ) from exc
-            if time.monotonic() >= deadline:
+            # One reading of the clock for the check and the pause: read
+            # twice, the deadline could pass in between and the pause go
+            # negative, which time.sleep refuses.
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
                 raise LockUnavailableError(
                     f"Timed out after {_LOCK_TIMEOUT_SECONDS}s waiting for "
                     f"the write lock on {directory} - another process may "
                     "be stuck holding it",
                     kind="lock_timeout",
                 )
-            if not warned:
+            pause = next(pauses)
+            if not warned and pause >= _LOCK_POLL_MAX_SECONDS:
+                # Once the pauses have reached the cap (63 ms in): a peer
+                # holding the lock for longer than a section takes, not the
+                # collision with a read or a write that the short pauses
+                # absorb, which under a shared store is routine.
                 logger.warning(f"Waiting for the write lock on {directory}...")
                 warned = True
             # Never past the deadline: the last pause is what is left of it.
-            time.sleep(min(next(pauses), deadline - time.monotonic()))
+            time.sleep(min(pause, remaining))
         try:
             yield
         finally:
