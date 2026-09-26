@@ -7,895 +7,456 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Config schema
-- **Four keys that were accepted and ignored are settings now, two are
-  reported as unknown** (#441). No `config_version` bump: none of the six
-  loses a meaning it had, since none had one. Files that do not mention them
-  behave exactly as before.
-  - `oauth.refresh_token_expiry_minutes` (default 10080, 7 days, the
-    lifetime that was hardcoded; 1 to 43200), `device_flow.code_expiry_seconds`
-    (default 600; 1 to 3600) and `device_flow.polling_interval` (default 5;
-    1 to 60) now set what they name, and `cors_allowed_origins` sets the CORS
-    origins in every profile (absent: the profile decides, as before; `[]`
-    allows none). Each entry is an origin, `http(s)://host[:port]` and
-    nothing else, written as a browser sends it in an Origin header, since
-    the two are compared as strings (ignoring case): IPv6 in the URL
-    Standard's form (compressed, IPv4-mapped as `::ffff:7f00:1`, no zone
-    id), IPv4 in dotted decimal, no default port. An entry in another form
-    is refused with the form to write (`https://app.example:443` ->
-    `https://app.example`), since it would never match; an internationalised
-    host must be written in its ASCII (punycode) form, which is not computed
-    for it, since Python's IDNA codec differs from the browsers'; a path, a
-    query,
-    credentials or a pattern such as `http://localhost:*`, which flask-cors
-    would match at the start only, are refused as not an origin. A declared
-    list answers only requests that carry an Origin header: without one,
-    no `Access-Control-Allow-Origin` is sent. A save from the web UI or the MCP server writes them
-    only while they differ from the default.
-  - A revoked refresh token family is remembered for the longest lifetime
-    the setting allows plus a day (31 days), where it was 8 days, sized for
-    the fixed 7-day refresh token. Otherwise a family revoked on reuse would
-    have come back while a descendant with a 30-day lifetime still lived.
-  - They are validated like every other key, so a value that used to load
-    and mean nothing is now an error: `refresh_token_expiry_minutes: "soon"`,
-    a bound exceeded, a bare `device_flow:` line (null is not an empty
-    section, as for every section but `login`), a scalar or a blank entry in
-    `cors_allowed_origins`.
-  - `logging.format` and `session.permanent` are no longer declared: the log
-    format is fixed and the login session is always a permanent cookie. They
-    are reported like any unknown key, a warning by default and a refusal
-    under `config_validation: strict`, and are removed from the shipped
-    `config/settings.yaml` and `examples/agentic-stack`.
+### Migration notes
+
+This release stays a minor. Its largest addition, a runtime store that
+several NanoIDP processes on one host share, is opt-in (`runtime.store:
+sqlite`) and changes nothing for a configuration that does not ask for
+it. What changes for an existing deployment is a set of corrections:
+tokens, assertions and settings that said or did something other than
+what the specifications and the documentation promised. What may need a
+hand on upgrade is collected here, with the details under the entries
+named.
+
+- **A client credentials token is the client's own** (#445, under
+  Changed). It was issued for the `default_user` of `users.yaml`, with
+  that user's `sub`, roles, groups, tenant and attributes; now `sub` is
+  the `client_id` and the token carries no user claims. *Migration:* a
+  resource server that read roles from these tokens sees none now:
+  authorise on `scope` and identify the caller by `sub` or `client_id`.
+  `default_user` is deprecated (under Deprecated): a file that carries it
+  still loads, with a warning.
+- **`extra` adds claims to an access token and changes nothing the grant
+  decided** (#451, under Security). A request that names a registered
+  claim, a protocol claim, a claim the server reads back or a claim about
+  the user is refused with `invalid_request`. *Migration:* a test that set
+  `roles` or `exp` through `extra` gets a `400` now; create a user with
+  the roles wanted instead, and use the form parameter `exp` (a lifetime
+  in minutes) for the expiry.
+- **A SAML assertion's `Audience` is the requesting service provider**
+  (#443, under Fixed), the AuthnRequest's `Issuer`, where it was
+  `oauth.audience` for every provider. *Migration:* a provider whose
+  entity ID had been set to `oauth.audience` to make the check pass can
+  use its own again; a request that names no `Issuer` is answered as
+  before.
+- **Four settings keys that were accepted and ignored now take effect,
+  two are reported as unknown** (#441, under Added). A `settings.yaml`
+  that carries `oauth.refresh_token_expiry_minutes`,
+  `device_flow.code_expiry_seconds`, `device_flow.polling_interval` or
+  `cors_allowed_origins` starts applying them on upgrade, and a value the
+  loader used to accept and drop is now validated: `"soon"` as a
+  lifetime, a bound exceeded, a blank entry or a pattern such as
+  `http://localhost:*` in the origins fail the load. `logging.format` and
+  `session.permanent` are unknown keys, a warning by default and a
+  refusal under `config_validation: strict`. *Migration:* run `nanoidp
+  validate-config` against the directory before upgrading, and check
+  that a `cors_allowed_origins` list names the origins meant (they apply
+  in every profile now). A revoked refresh token family is remembered for
+  31 days, where it was 8.
+- **A token minted before a key rotation stays valid after it, and a
+  rotation has a shape** (#420, under Changed). Verification is by `kid`
+  among the active key and the previous ones kept, as the documentation
+  always said; the private key is written with mode `0600`; `POST
+  /api/keys/rotate` and the MCP `rotate_keys` tool refuse with a fixed
+  message and a `kind`, `Retry-After` on the `503` for a lock another
+  process holds only. *Migration:* a test that expected the refresh grant
+  or `/userinfo` to fail right after a rotation expects the opposite now;
+  a client that matched on the refusal's text matches on `kind`.
+- **For code that embeds nanoidp**, the runtime state moved behind one
+  store boundary and some names went with it (under Changed):
+  `services/runtime_identities.py` is `services/runtime_store.py`,
+  `MemoryRuntimeIdentityStore` is `MemoryRuntimeStore` and
+  `get_runtime_identity_store()` is `get_runtime_store()`, with no alias;
+  `AuditLog()` no longer takes `max_entries`; `get_auth_code_store()`
+  returns a view each time; `DeviceCodeGrant` takes its `device_code` as a
+  required keyword; `IdentityResolver.runtime_client_lifecycle()` is
+  removed and `create_runtime_client_entry()` returns the stored entry
+  with its `instance_id`; `repository(name, key_of, codec)` takes the
+  codec; `services.activate_services` is the activation both the app and
+  the MCP server pass to `init_config`. `create_app()` configures the
+  process and is not a factory of independent applications, which the
+  docstring and CONTRIBUTING now state (#407).
 
 ### Added
-- **Refresh token lifetime, device code timing and CORS origins can be set**
-  (#441): see "Config schema" above. `GET /api/config` and the MCP
-  `get_settings` tool report all four, and `/api/config` also reports
-  `cors_applied_origins`, the origins the server applies: CORS is set up at
-  startup, so after a reload that changed the list the two differ until the
-  next start. A `"*"` under `stricter-dev` is logged as a warning; the settings page edits the refresh
-  token lifetime, and MCP `update_settings` the refresh token lifetime and
-  the two device flow values. A short `device_flow.code_expiry_seconds`
-  makes `expired_token` testable in a second, a short refresh lifetime an
-  expired refresh token.
 
-- **A device flow example, run by CI.** `examples/cli-device-flow` now has
-  the CLI's side of the device authorization grant (`cli_login.py`) and
-  tests that run its polling while a scripted browser step approves or
-  denies, including the rotation and reuse detection of refresh tokens; a
-  new workflow, `Device flow example`, runs them. The preset's CLI is now a
-  public client, where it held a client secret it cannot keep, and the
-  preset drops `refresh_token_expiry_minutes` and `device_flow`, which the
-  loader never reads (#441); the README showed an access token with an
-  `email` and a `device_code_used` claim it does not have. The walkthrough
-  is a book page, [Test a CLI login with the device authorization
-  flow](https://cdelmonte-zg.github.io/nanoidp/use-cases/cli-device-flow.html).
+- **Several NanoIDP processes on one host can share one runtime state**
+  (#354, with #363, #404, #405, #420 and #406 behind it): `runtime.store:
+  sqlite` with `runtime.path` in `settings.yaml`, for HTTP workers and a
+  separate `nanoidp-mcp` process alike. Memory stays the default and
+  behaves as before. The guide [Two processes, one runtime
+  state](https://cdelmonte-zg.github.io/nanoidp/guides/shared-runtime-store.html)
+  says when a second process is worth it and what is promised; the
+  `shared-store-e2e` job starts two servers over one configuration
+  directory and one store and asserts through real HTTP that a runtime
+  user created at one logs in at the other, that a code issued by one is
+  redeemed at the other and refused the second time at both, that a token
+  revoked at one is refused by the other, that a promotion made at one is
+  declared for the other, and that the audit of both reads as one.
+  - **What the store holds.** Runtime users and clients, authorization
+    transactions and codes, device codes, pending second factors, the
+    client metadata cache, refresh families and revocations, dynamic
+    registration records and the audit, all behind one runtime store
+    boundary (#363, #404); the browser leg too, since the login session is
+    a signed cookie every process accepts. What stays each process's own:
+    the rate limiter's counters, the metadata fetch budget, plugin
+    dispatch.
+  - **Choosing it.** `path` is required with `sqlite` and refused with
+    `memory`; a relative one is relative to the configuration directory,
+    not to the working directory, since it is the identity of a store the
+    processes share, and one starting with `~` is refused for the same
+    reason. None of the store's files may lie in the configuration
+    directory. The store is chosen when the process starts: a reload that
+    asks for another store or another file is refused (`422`, kind
+    `activation`). `GET /api/config` and MCP `get_settings` report
+    `runtime.store` and the file the process opened. Audit events recorded
+    before the activation are not carried into a SQLite store, and a
+    warning says how many.
+  - **The files.** A pair, `runtime.db` and `runtime-audit.db` (the audit
+    does not wait for the repositories, and a SQLite file has one writer),
+    plus the owners' leases under `runtime-owners/`, all private (`0600`,
+    the directory `0700`); a file that is not a NanoIDP runtime store, or
+    one of another schema version, is refused and left as it was; SQLite
+    3.24 or later is required. WAL with `synchronous=NORMAL`: atomicity,
+    consistency and isolation, and only a commit's survival of a power
+    loss given up, which a disposable file never promised. One connection
+    per thread and none across a fork, with an at-fork hook that closes
+    every connection first, so a pre-fork server started through Python
+    (gunicorn `--preload`) can share the store. Processes creating one
+    store together all get it. A store held by another process for longer
+    than it waits is `503` `runtime_store_unavailable` with `Retry-After`
+    over HTTP and `MCP_RUNTIME_STORE_UNAVAILABLE` with `retryable: true`
+    in MCP, the first call included.
+  - **The configuration files are the truth the processes agree on.**
+    When the store is shared, every request (`/health`, `/api/health` and
+    static files excepted) and every MCP tool call looks at the two files
+    first: a `stat` is the fast negative, the revision of their bytes the
+    answer, and files that changed are reloaded before the operation
+    reads anything. One check at a time does that; the others wait for it
+    up to 0.5 s and then answer from what it established, or `503`
+    `configuration_unavailable` (`freshness_in_progress`, `Retry-After:
+    1`) while it waits for a peer's lock. Files that changed and do not
+    load leave the loaded configuration in force and are said once in the
+    log; a creation of a runtime user or client checks its name against
+    the files under the directory lock every writer of nanoidp takes, and
+    against files that do not load it is refused (`503`
+    `configuration_unloadable`, or `configuration_unavailable` with
+    `Retry-After` when what failed is outside the bytes). An editor that
+    does not take the lock is noticed at the next operation, and nothing
+    linearizable is promised against it.
+  - **A promotion whose writer died is recovered, and only then** (#405).
+    A promotion's claim on its runtime object is a hold in the store, seen
+    from any process, and names its owner, which holds an exclusive OS
+    lock on a lease file for as long as it lives. A peer that can take
+    that lock, or finds the lease gone, has proved the owner dead; nothing
+    else is a proof, and a claim whose owner is alive is never recovered,
+    however old. The recovery is audited as
+    `runtime_identity_promotion_recovered` with its outcome, never as a
+    promotion. With the in-memory store claims have no owner and nothing
+    changes.
+  - **Measured**, median per call, memory to SQLite on ext4: a login 0.27
+    to 0.34 ms, a password grant 73 to 74 ms (the same signing work in
+    both), creating an authorization code 15 to 66 us, redeeming it 17 to
+    51 us, an audit append 2.3 to 20 us; four processes appending together
+    reach 13,000 appends a second. The stat of the two configuration files
+    costs 3.6 us, reading and hashing them 18 us.
 
-- **A client credentials example with a real resource server, run by CI.**
-  `examples/microservices-client-credentials` now gives each client its own
-  scopes and API audience (RFC 8707), carries a Spring Boot 4 resource
-  server (`inventory-api/`) and tests of the calls it accepts and refuses;
-  a new workflow, `Client credentials example`, runs them. The preset's
-  README requested scopes the preset did not declare, so its first example
-  failed with `invalid_scope`, and its tokens carried `admin`'s identity and
-  roles through `default_user` (#445); `default_user` is now a user with no
-  roles. The walkthrough is a book page, [Test service-to-service auth with
-  client
-  credentials](https://cdelmonte-zg.github.io/nanoidp/use-cases/service-to-service-client-credentials.html).
+- **Refresh token lifetime, device code timing and CORS origins can be
+  set** (#441). `oauth.refresh_token_expiry_minutes` (default 10080, 7
+  days, the lifetime that was hardcoded; 1 to 43200),
+  `device_flow.code_expiry_seconds` (default 600; 1 to 3600) and
+  `device_flow.polling_interval` (default 5; 1 to 60) now set what they
+  name, and `cors_allowed_origins` sets the CORS origins in every profile
+  (absent: the profile decides, as before; `[]` allows none). Each entry
+  is an origin, `http(s)://host[:port]` and nothing else, written as a
+  browser sends it: IPv6 in the URL Standard's form, IPv4 in dotted
+  decimal, no default port, an internationalised host in its ASCII form;
+  an entry in another form is refused with the form to write, and a path,
+  a query, credentials or a pattern are refused as not an origin. A
+  declared list answers only requests that carry an Origin header. `GET
+  /api/config` and MCP `get_settings` report all four, and `/api/config`
+  also reports `cors_applied_origins`, the origins the server applies,
+  since CORS is set up at startup; a `"*"` under `stricter-dev` is logged
+  as a warning. The settings page edits the refresh token lifetime, MCP
+  `update_settings` that and the two device flow values. A short
+  `device_flow.code_expiry_seconds` makes `expired_token` testable in a
+  second, a short refresh lifetime an expired refresh token. A save from
+  the web UI or the MCP server writes them only while they differ from
+  the default. No `config_version` bump: none of the six keys loses a
+  meaning it had.
 
-- **A SAML example with a real service provider, run by CI.**
-  `examples/spring-boot-saml` now carries a Spring Boot 4 SP (`sp/`) and
-  tests that drive its SAML login through NanoIDP without a browser; a new
-  workflow, `SAML example`, builds and runs them. The preset's README
-  described single logout, which NanoIDP does not implement, attributes the
-  login assertion does not carry (`tenant`, `authorities`), and a role check
-  that fails without a mapping; it is replaced by a book page, [Test a
-  Spring Boot SAML service provider without a real
-  IdP](https://cdelmonte-zg.github.io/nanoidp/use-cases/spring-boot-saml.html).
-  The preset drops an OAuth client SAML does not use. Writing it found #443:
-  the SSO assertion's audience is `oauth.audience` rather than the SP's
-  entity ID, which the example works around.
-
-- **A CI example, run by CI.** `examples/ci-github-actions` sets up NanoIDP
-  inside a GitHub Actions job, from PyPI or as a service container, with a
-  readiness check that refuses a port another process holds, a pytest
-  fixture that gives each test its own runtime user and deletes it by name,
-  and tests that pin what deleting a user does not revoke. A new workflow,
-  `CI example`, runs it against this checkout and against the published
-  image, and the book's new page [Run a real OIDC provider in CI with GitHub
-  Actions](https://cdelmonte-zg.github.io/nanoidp/use-cases/oidc-provider-in-ci.html)
-  includes these files as they are.
+- **Four use-case pages, each with an example that CI runs.**
+  - [Test a CLI login with the device authorization
+    flow](https://cdelmonte-zg.github.io/nanoidp/use-cases/cli-device-flow.html):
+    `examples/cli-device-flow` has the CLI's side of the grant
+    (`cli_login.py`) and tests that run its polling while a scripted
+    browser step approves or denies, including the rotation and reuse
+    detection of refresh tokens. The preset's CLI is a public client, where
+    it held a client secret it cannot keep.
+  - [Test service-to-service auth with client
+    credentials](https://cdelmonte-zg.github.io/nanoidp/use-cases/service-to-service-client-credentials.html):
+    `examples/microservices-client-credentials` gives each client its own
+    scopes and API audience (RFC 8707) and carries a Spring Boot 4
+    resource server (`inventory-api/`) with tests of the calls it accepts
+    and refuses. The preset's README requested scopes the preset did not
+    declare, and its tokens carried `admin`'s identity through
+    `default_user` (#445).
+  - [Test a Spring Boot SAML service provider without a real
+    IdP](https://cdelmonte-zg.github.io/nanoidp/use-cases/spring-boot-saml.html):
+    `examples/spring-boot-saml` carries a Spring Boot 4 SP (`sp/`) and
+    tests that drive its SAML login through NanoIDP without a browser. The
+    preset's README described single logout, which NanoIDP does not
+    implement, and attributes the assertion does not carry; writing the
+    page found #443.
+  - [Run a real OIDC provider in CI with GitHub
+    Actions](https://cdelmonte-zg.github.io/nanoidp/use-cases/oidc-provider-in-ci.html):
+    `examples/ci-github-actions` sets up NanoIDP inside a job, from PyPI
+    or as a service container, with a readiness check that refuses a port
+    another process holds, a fixture that gives each test its own runtime
+    user, and tests that pin what deleting a user does not revoke; the
+    workflow runs it against the checkout and against the published image.
 
 ### Deprecated
+
 - **`default_user` in `users.yaml`** (#445). It named the user a client
   credentials token was issued for, and nothing reads it any more. A file
-  that carries it loads, in `strict` mode too, with a warning that it can be
-  removed; `validate-config` reports it as `info`, which `--strict` does not
-  fail on; `nanoidp init`, the wizard and the shipped presets no longer write
-  it, a save no longer manages it (nor removes it), MCP `list_users` no
-  longer reports it, and the JSON schema marks it deprecated.
-
-### Fixed
-- **A SAML assertion's `Audience` is the requesting service provider**
-  (#443). Every SSO assertion carried `oauth.audience`, whichever service
-  provider asked, where the Web Browser SSO profile requires the provider's
-  own identifier (SAML Profiles §4.1.4.2); a provider that checks the
-  audience, Spring Security among them, rejected the response unless its
-  entity ID happened to equal that setting, and the `spring-boot-saml`
-  example set Spring's `entity-id` to it as a workaround. The `Audience` is
-  now the AuthnRequest's `Issuer`; a request that names none, outside the
-  profile, is answered as before with `oauth.audience`. The audit event
-  records the Issuer received and the Audience issued. The example uses
-  Spring's default entity ID again.
-- **`stricter-dev` CORS is localhost, and nothing that starts like it**
-  (#441 review). The profile's default origins were `http://localhost:*`
-  and `http://127.0.0.1:*`, which flask-cors reads as regular expressions
-  and matches from the start only: `http://localhost.evil.test`,
-  `http://127.0.0.1.nip.io` and `http://127a0b0c1.test` were allowed too,
-  reproduced on the previous code. The patterns are now anchored at both
-  ends, with the dots escaped.
-- **The device verification page says "denied" when the user denies.** After
-  **Deny**, `/device` showed "Device authorization denied" inside the
-  success box, followed by "The device has been authorized. You can now
-  return to your device.": both outcomes went through one success message,
-  and the template's text was the authorization's. The route now passes the
-  decision itself, and the page shows each with its own heading, icon and
-  text. The polling answer was always right (`access_denied`); only the
-  page was wrong.
+  that carries it loads, in `strict` mode too, with a warning that it can
+  be removed; `validate-config` reports it as `info`, which `--strict`
+  does not fail on; `nanoidp init`, the wizard and the shipped presets no
+  longer write it, a save no longer manages it, MCP `list_users` no longer
+  reports it, and the JSON schema marks it deprecated.
 
 ### Changed
-- **The `503`s for a configuration that cannot be used right now say so in
-  fixed words.** `configuration_unavailable`, `configuration_unloadable`
-  and `runtime_store_unavailable` carried the exception's text in
-  `error_description`: the configuration directory, the file that does not
-  load with the reason, or the store's failure. The first two answer a
-  runtime identity creation and `/register`; the third answers wherever
-  the runtime store is used, `/token` included. The text now goes to the
-  server log, where it already was, and the body carries a fixed sentence
-  per error. `error`, status codes and `Retry-After` are unchanged.
-- **`POST /api/keys/rotate` and the MCP `rotate_keys` tool refuse with a
-  fixed message and a `kind`**: `external_keys_not_rotatable` (`409`, as
-  before, the kind is new); `keys_directory_not_writable`, or
-  `lock_namespace_unavailable` when the lock file cannot even exist, for a
-  keys directory this process cannot write (`409`); `lock_timeout` or
-  `lock_unsupported` for a lock that could not be taken (`503`). The body
-  used to carry the exception's text, which names the keys directory; that
-  now goes to the server log, as the HTTP handler for a configuration
-  directory's lock already did, and the web UI's **Regenerate keys** shows the same fixed message where
-  it showed the exception's text (any other failure there is "see the
-  server log"). Status codes are unchanged; `Retry-After` on the `503` is
-  sent for `lock_timeout` only, no longer for `lock_unsupported`, which a
-  retry does not help and which the configuration endpoints already
-  answered without it (CodeQL alerts 32 and 33).
-- **A process that finds the configuration directory's lock taken tries
-  again after 1 ms, then 2, 4, up to 50 ms between tries** (#426, point 3).
-  It waited a fixed 50 ms after every miss, so a request that met a 7 ms
-  write, or a write that met a 0.1 ms freshness read, paid the poll and not
-  the section: measured on one host, the p99 latency of a token request
-  under two file writes a second was 82 ms against 31 ms at rest, and 157 ms
-  under twenty; with the doubling pause, 45 ms and 59 ms, the p99 at rest
-  unchanged (31 ms); a Linux host, and on Windows before Python 3.11 a
-  pause shorter than about 16 ms lasts that long. The "Waiting for the write lock" warning is logged
-  once the pauses have reached 50 ms, not on the first miss, since under a
-  shared store a collision absorbed by the short pauses is routine. The
-  10 s deadline, the 0.5 s wait of the other requests and the error shapes
-  are unchanged; the keys directory's lock is the same primitive and tries
-  again the same way, while a read-only view's own wait for a rotation to
-  finish is not this lock and keeps its fixed pause. The measurements
-  behind this, and the policies decided against on their basis (a shorter
-  reader timeout, a cooldown after a timeout, a backoff shared between
-  processes), are recorded in #426.
+
 - **A client credentials token is the client's own** (#445). It was issued
   for the `default_user` of `users.yaml`, as if that user had logged in:
   `sub` was the user's name and the token carried the user's `roles`,
   `authorities`, `tenant`, `identity_class`, `entitlements`, `groups`,
-  `source_acl` and `attributes`. With the shipped configuration every
+  `source_acl` and `attributes`; with the shipped configuration every
   service's token said `sub: admin` with `ROLE_ADMIN`, and `/userinfo`
   answered such a token with the admin's profile. Now `sub` is the
-  `client_id` (RFC 9068 §2.2) and the token carries no user claims; the
-  `extra` parameter can add other claims but cannot change the grant's nor
-  add those. `/userinfo` answers a token whose `sub` equals its `client_id`
-  with the subject alone and `/introspect` names no `username` for it, and
-  no `scope` when none was requested, even
-  when a user has the client's name, which is reported with a warning at
-  load and on the runtime API. **A resource server that read roles from
-  these tokens sees none now**; authorize on `scope` and identify the
-  caller by `sub` or `client_id`.
+  `client_id` (RFC 9068 §2.2) and the token carries no user claims;
+  `/userinfo` answers a token whose `sub` equals its `client_id` with the
+  subject alone, and `/introspect` names no `username` for it, and no
+  `scope` when none was requested, even when a user has the client's
+  name, which is reported with a warning at load and on the runtime API.
 
-- **The `react-spa-pkce` preset declares a real public client.** `spa-client`
-  carried a placeholder secret from before public clients existed (#188); it
-  is now `token_endpoint_auth_method: "none"` with its redirect URIs
-  registered, so PKCE `S256` is required and `/authorize` matches the
-  redirect URI exactly. The access token's `aud` is `spa-api`, the API the
-  SPA calls, instead of the client's own id. The preset no longer sets
-  `cors_allowed_origins` and `oauth.refresh_token_expiry_minutes`, which the
-  loader has never read. Its walkthrough is a new page of the book, [Test an
-  SPA login with Authorization Code and
+- **An operation reads one configuration, the one it began with** (#406).
+  A load published what it had read as eleven separate assignments, and a
+  request read the manager again at each use, so a load landing between
+  two reads gave an operation a configuration that never existed: measured
+  at `/token`, where a load between the read of `default_user` and the
+  lookup of that user minted for a subject neither configuration named, in
+  a token that verifies. A loaded configuration is now one frozen value,
+  assigned once; an externally visible operation chooses one published
+  configuration right after freshness is established (an HTTP request in
+  the hook that establishes it, an MCP tool call at the start of the call)
+  and carries that reference through the identity resolver, the token
+  service, the management gate, the declared clients, the issuer and the
+  expiry it defaults to, the SAML builders, the web UI's pages and the
+  listings of users and clients. The signing service stays outside the
+  value and keeps its own order (#359): a request may pair older settings
+  with the newer service, never the reverse. What stays deliberately
+  current says so where it is: whether the client-metadata and
+  dynamic-registration capabilities are offered at all, and the check that
+  refuses a runtime name the files declare right now. **A contract changes
+  with it:** a lookup, or a listing, that spans a load which declares a
+  name and reconciles its runtime object away could once find one of the
+  two, because both sides were read live; the declared side is now the
+  operation's, with no fallback to the current declaration, since "neither
+  has it" does not establish that a reconciliation happened. Such an
+  operation answers that the name is unknown, or leaves it out of the
+  listing; the operation after it reads the new declaration. Continuity
+  across a reconciliation is tracked in #435.
+
+- **The protocol state lives in the runtime store, behind a contract for
+  operations that must be whole** (#363, #404). `AuthCodeStore`,
+  `DeviceCodeStore`, `RevocationStore` and `AuditLog` kept dictionaries
+  and locks of their own; each is now a view, with no state, over
+  repositories the runtime store lends, and the authorization
+  transactions, the pending second factors and the client metadata cache
+  keep their operations whole through the repository rather than through
+  a module lock, so that they hold for whoever shares the store and not
+  only for the threads of one process. `services/runtime_repository.py`
+  states the contract: each object is kept in an entry with an
+  `instance_id` the store generates and never reuses, so that an object
+  and the one created under its name afterwards can be told apart, an
+  optional hold, and an `expires_at` that means "removable by a cleanup"
+  and nothing else; `transact(decide)` runs one decision against a view
+  of one repository, and its changes become visible together or not at
+  all; `replace`, `consume`, `delete_if` and `create_within` are written
+  once on top of it. The suite runs every decision twice and takes every
+  stored value through its codec and JSON and back. Deliberate
+  corrections on the way:
+  - **the audit reads in the order events were recorded**, where it sorted
+    by timestamp; **a negative `limit` is none at all**, where `-1` dropped
+    the last event; audit state is by value; the bound is the backend's
+    (`audit_store.MAX_AUDIT_ENTRIES`) and every `AuditLog()` is a view of
+    the one audit. The details of an event are a JSON object.
+  - **a user code that is already taken is refused and another pair is
+    made**, where the second grant silently took the code over; when no
+    pair can be made, `/device_authorization` answers `503` with
+    `Retry-After`, as for a full store. A grant past its time still
+    answers `expired_token` for as long as it is there.
+  - **an expiry that is no time is remembered for ever** (a NaN was
+    remembered until the next sweep, a number too large for a float raised
+    out of `/revoke`); **a revocation id that is not text is refused**
+    instead of becoming the text of itself, so a `"jti": 5` in a logout
+    hint revokes nothing rather than the token `"5"`. Revoking again never
+    shortens.
+  - a PKCE verifier that is not ASCII is the `invalid_grant` any wrong
+    verifier gets, where it was a `500`; a list given as `amr` is kept as
+    a tuple, so that a code written down by a backend reads back equal.
+  - a cached metadata document that is fetched again keeps its place in
+    the listing instead of moving to the end.
+  - dynamic registration rests on instance identity, not on a lock: see
+    Security (#403).
+  - **a promotion's outcome is kept with the object, not in the process
+    that started it** (#405): the claim is a hold on the object's entry, so
+    a delete, a reset and a second promotion see it from any process,
+    whoever retires the object records the one `runtime_identity_promoted`,
+    and a name declared by somebody else while the object is claimed makes
+    the promotion answer `409`, as before.
+  - **a cleanup of the in-memory repository costs what is due, not what is
+    kept** (#417): a lazy heap of the expiries, so that a write at ten
+    thousand entries with one coming due costs 130 to 150 us where it cost
+    460 to 540, and a revocation or a refresh claim at ten thousand markers
+    0.055 ms.
+
+- **Generated signing keys are one bundle for every process that shares the
+  keys directory, and a token is verified against the key its `kid`
+  names** (#420). Measured before: two processes cold-starting on one
+  empty `jwt.keys_dir` ended with different signing keys, twelve times out
+  of twelve; a process killed in the middle of a rotation left `kid.txt`
+  naming one key over the private key of another; after one process
+  rotated, it and a running peer refused each other's tokens for as long
+  as the peer ran; and in a single process a token minted before a
+  rotation was refused after it, `verify_jwt` decoding against the active
+  key whatever the token named, while the documentation said "old key
+  stays valid for verification". Now a lock across processes covers a cold
+  start and a rotation; a rotation is a small journaled transaction in the
+  directory, with `kid.txt` as the commit point and a recovery for what a
+  dead process left in `.rotation/`; the keys of a service are one value,
+  replaced whole; verification is by `kid` among the active key and the
+  previous ones kept, no wider than `jwt.max_previous_keys` and so the
+  same set the JWKS shows, a `kid` that is nobody's being an invalid token
+  and a token with no `kid` checked against the active key, as before;
+  external keys verify with their one key whatever `kid` a token names. A
+  peer's rotation is noticed in `get_crypto_service()`, through a `stat`
+  of `kid.txt` (about two microseconds when nothing changed) and a load
+  of the bundle under the directory's lock only when the marker names
+  another key. A keys directory this process cannot write still boots, and
+  a rotation there is refused. **The private key is written with mode
+  `0600`** (it followed the umask). The layout and the file names are
+  unchanged.
+
+- **`POST /api/keys/rotate`, the MCP `rotate_keys` tool and the web UI's
+  Regenerate keys refuse with a fixed message and a `kind`**:
+  `external_keys_not_rotatable` (`409`, as before, the kind is new);
+  `keys_directory_not_writable`, or `lock_namespace_unavailable` when the
+  lock file cannot even exist, for a keys directory this process cannot
+  write (`409`); `lock_timeout` or `lock_unsupported` for a lock that could
+  not be taken (`503`). The body used to carry the exception's text, which
+  names the keys directory; that now goes to the server log. `Retry-After`
+  on the `503` is sent for `lock_timeout` only, which a retry may help
+  (CodeQL alerts 32 and 33).
+
+- **The `503`s for a configuration or a store that cannot be used right now
+  say so in fixed words.** `configuration_unavailable`,
+  `configuration_unloadable` and `runtime_store_unavailable` carried the
+  exception's text in `error_description`: the configuration directory,
+  the file that does not load with the reason, or the store's failure. The
+  text now goes to the server log, where it already was, and the body
+  carries a fixed sentence per error. `error`, status codes and
+  `Retry-After` are unchanged.
+
+- **A process that finds the configuration directory's lock taken tries
+  again after 1 ms, then 2, 4, up to 50 ms between tries** (#426, point
+  3). It waited a fixed 50 ms after every miss, so a request that met a
+  7 ms write, or a write that met a 0.1 ms freshness read, paid the poll
+  and not the section: measured on one Linux host, the p99 latency of a
+  token request under two file writes a second was 82 ms against 31 ms at
+  rest, and 157 ms under twenty; with the doubling pause, 45 ms and 59 ms,
+  the p99 at rest unchanged. The "Waiting for the write lock" warning is
+  logged once the pauses have reached 50 ms, not on the first miss. The
+  10 s deadline, the 0.5 s wait of the other requests and the error shapes
+  are unchanged; the keys directory's lock is the same primitive. The
+  measurements, and the policies decided against on their basis (a
+  shorter reader timeout, a cooldown after a timeout, a backoff shared
+  between processes), are recorded in #426.
+
+- **The `react-spa-pkce` preset declares a real public client.**
+  `spa-client` carried a placeholder secret from before public clients
+  existed (#188); it is now `token_endpoint_auth_method: "none"` with its
+  redirect URIs registered, so PKCE `S256` is required and `/authorize`
+  matches the redirect URI exactly. The access token's `aud` is `spa-api`,
+  the API the SPA calls. Its walkthrough is a new page of the book, [Test
+  an SPA login with Authorization Code and
   PKCE](https://cdelmonte-zg.github.io/nanoidp/use-cases/spa-login-pkce.html).
 
-- **SAML, the web UI and the listings read the configuration their operation
-  began with** (#406, last of three steps). The step before made the OAuth and
-  MCP surfaces read one configuration per operation; these were left, and read
-  the manager again at each use. A SAML response could be built with one
-  load's entity id and another's canonicalisation, a metadata document or a
-  dashboard could be rendered from two, and an attribute query could export
-  the attributes of a load its answer was not about. The builders now receive
-  the configuration the response is built from, the pages take it once, and
-  the listings of users and clients compose that declaration with the store as
-  it is, the way the lookups do. **The listings change contract with it,** as
-  the lookups did: one rendered for an operation that began before a load
-  which declares a runtime object's name and reconciles it away leaves that
-  name out, where both sides used to be live and one of the two was always
-  shown; composing them would be a listing of no configuration, and the
-  listing after it shows the declared object. Restoring continuity across a
-  reconciliation, without that transient, is a contract of its own and is
-  tracked separately.
+### Fixed
 
-- **An operation reads one configuration, the one it began with** (#406,
-  second of two steps). A request read the manager again at each use, so a
-  load landing between two of those reads gave it a configuration that never
-  existed: measured at `/token`, where a load between the read of
-  `default_user` and the lookup of that user made the grant mint for the
-  synthetic `service-account`, a subject neither configuration named, in a
-  token that verifies. An externally visible operation now chooses one
-  published configuration, right after freshness is established, and carries
-  that reference through: an HTTP request in the hook that establishes
-  freshness, an MCP tool call at the start of the call, which are the two
-  implementations of one rule rather than two rules. The identity resolver
-  and the token service take it, so nothing resolves a user or builds a
-  response from a load the rest of the operation never read, and the
-  management gate reads it too, rather than deciding on one load while the
-  handler it guards works from another. Declared clients come from it as
-  well, so a record that changed under an operation is not half of its
-  answer, and so do the issuer a token carries and the expiry it defaults
-  to. `GET /api/config` and the MCP
-  `get_settings` tool serialise that one reference instead of four separate
-  reads. What stays deliberately current is unchanged and says so where it
-  is: whether the client-metadata and dynamic-registration capabilities are
-  offered at all, and the check that refuses a runtime name the files declare
-  right now. **A contract changes with it:** a
-  lookup that spans a load which declares a name and reconciles its runtime
-  object away could once find one of the two, because both sides were read
-  live; the declared side is now the operation's, with no fallback, because
-  "neither has it" does not establish that a reconciliation happened - it
-  holds just as well for a name simply declared afterwards, and answering
-  from the current declaration would pair a new identity with the issuer,
-  expiry and policy the operation had already read. So an operation that
-  began before such a load may resolve nothing where it once resolved the
-  runtime object, and answers that the name is unknown; the operation after
-  it reads the new declaration.
-
-- **A loaded configuration is published as one value** (#406, first of two
-  steps). A load was transactional on the way in and not on the way out: it
-  validated both files before changing anything, and then published what it
-  had read as eleven separate assignments, with the order between them as the
-  only rule. A reader that took two of those fields across a load could pair
-  one load's users with another's settings. They are published as one frozen
-  value now, assigned once, and the manager's attributes read through to it,
-  so nothing outside changes. `persistable_settings()`, which composed the
-  settings with the values the file declared from two reads, takes one, and
-  so do the writers: a coordinated save cannot write the users of one load
-  with the settings of another. What
-  is immutable is the value, not the objects it refers to: a load builds new
-  ones, while the surfaces that edit a configuration in memory before saving
-  it still change those in place, and where that boundary lies belongs to the
-  second step. The signing service stays outside the value and keeps its own
-  order (#359): a request may pair older settings with the newer service,
-  never the reverse.
-  This step alone does not make a request consistent, because a request still
-  reads the manager several times; that is the second step.
-
-- **A guide for the shared runtime store, and an end-to-end job that runs two
-  processes over one** (#354, fifth and last step). The SQLite runtime store
-  has been selectable since the previous step, but nothing described what it
-  is for, and no test composed two real servers over one store. The guide
-  "Two processes, one runtime state" says when a second process is worth it,
-  what the two share (runtime identities, authorization and device codes,
-  refresh families and revocations, the audit, and the browser leg, since the
-  login session is a signed cookie both accept and the transaction behind
-  `/authorize` is in the store) and what stays each process's own (the rate
-  limiter's counters, the metadata fetch budget, plugin dispatch), that
-  `jwt.keys_dir` is relative to the working
-  directory where `runtime.path` is relative to the configuration directory,
-  and how to start afresh with the processes stopped. It also states the
-  limit plainly: a store that survives a restart is not a store NanoIDP
-  promises to keep, and it coordinates processes on one host only. The
-  `shared-store-e2e` job starts two servers from different working
-  directories over one configuration directory and one store, and asserts
-  through real HTTP that a runtime user created at one logs in at the other,
-  that a code issued by one is redeemed at the other and refused the second
-  time at both, that a token revoked at one is refused by the other, that a
-  promotion made at one is declared for the other, and that the audit of
-  both reads as one. Two statements that the store had made untrue are
-  corrected with it: the architecture page said runtime state lives in
-  memory and is lost on restart by design, and the Helm chart gave "no
-  coordination between instances" as the reason for its single replica,
-  which now says what would actually be needed for more than one.
-- **Processes creating one SQLite runtime store together all get it**
-  (#354, found in CI). The store puts a new file in WAL, which needs the file
-  to itself for a moment, and SQLite answers contention there in two ways:
-  against a plain reader the busy handler waits, and a single attempt can
-  spend the whole timeout; against a connection that has written, and so
-  holds the file reserved, the switch fails at once, with no waiting at all.
-  Several processes creating one store together are the second shape, so one
-  of them could fail to start with "the runtime store is held by another
-  process", although the store was there and nothing was wrong with it. The
-  switch is now waited for where the rest of the contention is: a file a peer
-  already put in WAL needs nothing, and otherwise the store tries again until
-  the file is briefly its own, within the same budget as any other wait
-  (`busy_timeout`). Past that budget the answer is what it always was, the
-  store held; a failure that is not contention is still itself, at once.
-
-- **The runtime repository has a contract for operations that must be whole**
-  (#404, first of four steps). Until now a repository offered create, get,
-  list and delete, and every operation that needed more than one of them
-  (consume exactly once, change in place, create under a cap) was made
-  atomic by a lock of the caller's own, which holds for threads and for
-  nothing else. `services/runtime_repository.py` now states the contract a
-  durable backend (#354) will have to meet: each object is kept in an entry
-  with an `instance_id` the store generates and never reuses, so that an
-  object and the one created under its name afterwards can be told apart,
-  and an optional hold; a repository keeps any type its codec can copy,
-  write down and read back, declared by the service that owns the type, so
-  the dataclasses of the protocol state (#363) fit and a backend that
-  serializes never has to guess a type; `transact(decide)` runs one
-  decision against a view
-  of one repository, and its changes become visible together or, if it
-  raises, not at all; `replace`, `consume`, `delete_if` and `create_within`
-  are written once on top of it. A decision may use its view and nothing
-  else, and only while it runs: the in-memory backend refuses a repository
-  reached from inside a decision and a view used after it, accepts as a
-  hold's payload only a JSON object, as a backend that writes it down
-  would, and for the tests it can run every decision twice, to catch one
-  that is not safe to repeat, and take every stored value through its
-  codec and JSON and back, which the whole suite now does. Nothing uses
-  the new
-  operations yet and no behaviour changes: `get()` and `list()` return what
-  they returned, and the identity is not a field of `User` or `OAuthClient`.
-  The one change for code that borrows a repository from the runtime store
-  is that `repository(name, key_of, codec)` now takes the codec.
-
-- **Authorization transactions, pending second factors and the client
-  metadata cache keep their operations whole through the repository, not
-  through a lock of their own** (#404, second of four steps). Creating
-  under the cap, consuming or discarding exactly once, recording or taking
-  back a verified password, remembering a metadata document (sweep, evict,
-  replace) and extending its protection are each one decision of the
-  repository's, so they are whole for whoever shares the store and not only
-  for the threads of one process. The three module locks are gone. Reads
-  no longer take the transitions' lock, only the repository's own for the
-  length of one look: a record is now changed in place, so there is no
-  moment at which a live one is absent for a read to wait out. Expiry is
-  judged inside the decision, after any wait for the store, as it was under
-  the locks. No endpoint behaves differently, with one exception nobody
-  should notice: a cached metadata document that is fetched again, or whose
-  protection is extended, keeps its place in the listing instead of moving
-  to the end (and, inside the store, its identity). CI's second pass over
-  the suite now runs every decision twice, which is how an effect outside
-  a decision's view would show before a backend that retries.
-
-- **Dynamic registration rests on instance identity, not on a lock** (#404,
-  third of four steps). The first fix for #403 made every operation on a
-  client and its registration record one critical section of the process.
-  That section is gone: see the Security entry for what replaced it. For
-  code that embeds nanoidp, `IdentityResolver.runtime_client_lifecycle()`
-  is removed, `create_runtime_client_entry()` returns the stored entry with
-  its `instance_id`, `delete_runtime_client()` takes the instance that is
-  meant and returns the entry removed, and in
-  `services.dynamic_registration` a record is made from the client's entry
-  (`record_registration(entry, ...)`) and dropped with
-  `forget_registration_of(entry)`.
-
-- **The SQLite runtime store can be chosen in settings.yaml** (#354, fourth
-  step, third part): `runtime.store: sqlite` with `runtime.path`, for several
-  NanoIDP processes on one host. `path` is required with `sqlite` and refused
-  with `memory`, and a relative one is relative to the configuration
-  directory, not to the working directory: it is the identity of a store the
-  processes share, and the same `settings.yaml` must name the same store
-  however each was started; a path starting with `~` is refused for the
-  same reason, since it would depend on each process's `HOME`. None of the
-  store's files (the database, its
-  audit, its owners' leases) may lie in the configuration directory, symlinks
-  resolved. The store is chosen when the process starts: a reload that asks
-  for another store or another file is refused (`422`, kind `activation`),
-  while the same file named otherwise is no change. The activation is given
-  the configuration directory for this. Audit events recorded before the
-  activation are not carried into a SQLite store, and a warning says how
-  many, once the load can no longer fail. `GET /api/config` and MCP
-  `get_settings` report the file the process opened. In MCP a store held by
-  another process past its wait is `MCP_RUNTIME_STORE_UNAVAILABLE` with
-  `retryable: true`, no longer an internal error, the first call (which
-  opens the store) included. Measured with the Flask
-  test client, median of 400 requests, memory -> SQLite: a login 0.27 ->
-  0.34 ms, a password grant 73 -> 74 ms (the same signing work in both), a
-  `/userinfo` 0.32 -> 0.43 ms.
-- **A promotion whose writer died is recovered, and only then** (#354,
-  fourth step, second part). A promotion claims its runtime object with a
-  `writing` hold that only its writing thread resolves; with a store several
-  processes share, that thread can die with its process, and the object
-  stayed claimed for ever, refused to every delete, reset and promotion. The
-  claim now names its owner: the process, which holds an exclusive OS lock
-  on a lease file (`runtime-owners/<id>.lock` next to the store, `0700` and
-  `0600`) for as long as it lives, made before any claim names it. A peer
-  that can take that lock, or finds the lease gone, has proved the owner
-  dead; nothing else is a proof, and a claim whose owner is alive is never
-  recovered, however old, and while it lives an operation that meets its
-  claim answers as it always did, without going through the files. A lease
-  is looked at again once its lock is held, so that a peer's removal of the
-  dead ones never takes a lease being made. The recovery runs with the files the loaded
-  configuration's, the proof outside any repository decision, then one
-  decision on that very claim, so of two peers one decides: declared, the
-  object goes; not declared, the claim is released and the object stays
-  runtime. It is audited as `runtime_identity_promotion_recovered` with its
-  outcome, never as a promotion, since nobody can tell whose the declaration
-  was. A delete, a promotion or a reset that meets such a claim recovers it
-  and goes on (a reset counts only what it removed itself); a load recovers
-  it too, only while the files are still the ones it read, and never loads
-  again from inside itself. The leases of owners proved dead are removed; a
-  forked child is an owner of its own, and every lease operation (making a
-  lease, looking at one, a proof for as long as it is held) is an activity
-  of the fork gate, so no fork hands a child a lock it does not know it
-  holds; a lease that cannot be locked at all is said as such, as the
-  configuration directory's is. A lease is removed once the entry is
-  decided and its descriptor closed (Windows removes no open file), and a
-  removal that fails leaves it unlocked, proving its owner dead all the
-  same. With the in-memory store claims have
-  no owner and nothing changes. A writing thread that dies in a process that
-  lives on is not recovered: its owner is alive, and restarting it is the
-  remedy.
-- **Processes that share a runtime store see the configuration files as
-  they are** (#354, fourth step, first part). Nothing checked, per
-  operation, that the loaded configuration was still the files': a process
-  saw another's write only at its own reload, so a process could create a
-  runtime user under a name another had just declared (measured). Now, when
-  the runtime store is shared with other processes, every request (before
-  any blueprint's guard; `/health`, `/api/health` and static files excepted,
-  since they read no configuration and a probe must not fail because a peer
-  holds a lock) and every MCP tool call (before the read-only and
-  admin checks) looks at the files first: a stat of the two files is the
-  fast negative, taken from the very files the loaded bytes came from and
-  not trusted while their modification time is within 2 s of the read (a
-  write in place within the timestamp's tick leaves the stat unchanged:
-  what git calls racily clean), and the revision of their bytes is the
-  answer, with whether the file is there
-  at all (a missing `users.yaml` and an empty one have the same revision and
-  do not load the same). Files that changed are reloaded. One check at a
-  time does that: the others wait for it up to 0.5 s and then answer from
-  what it established, reloading nothing again; while it waits for a peer's
-  lock they are answered `503` `configuration_unavailable` of kind
-  `freshness_in_progress` (retryable in MCP), instead of queueing behind
-  it. A `503` for the configuration is JSON everywhere but the UI's pages,
-  and carries `Retry-After: 1` when trying again can help. Files that changed and do not load leave the loaded
-  configuration in force and are said once in the log: when the bytes alone
-  refuse the load (they do not parse or validate) they are not tried again
-  until they change; when it failed on something outside them (an I/O
-  error, an activation whose external key is not there yet, a plugin) they
-  are tried again, not sooner than 5 s later, and at once if the bytes
-  change. Files that cannot even be read (a permission, an I/O error)
-  leave the loaded configuration in force too, and are looked at again in
-  5 s. A directory lock that cannot be taken is neither, and a failure after
-  the load was committed is raised as it is. The creation of a runtime user or client
-  checks its name against the files under the directory lock every writer
-  of nanoidp takes, and commits before it releases it: the lock is not
-  reentrant, so when the files moved it is released for the reload and
-  taken again. A creation against files that do not load is refused, for
-  `/api/runtime` and dynamic registration alike: `503`
-  `configuration_unloadable` when the bytes do not parse or validate, `503`
-  `configuration_unavailable` with `Retry-After` when what failed is outside
-  them, or when the files could not be read at all. A directory lock held by a peer is `503` over HTTP, as
-  before, and `MCP_CONFIGURATION_UNAVAILABLE` with `retryable` in MCP. With
-  the in-memory store nothing changes. An editor that does not take the
-  lock is noticed at the next operation, and nothing linearizable is
-  promised against it. Measured on the repository's configuration: the
-  stat of the two files costs 3.6 us, reading and hashing them 18 us.
-- **The SQLite runtime store keeps the audit too, in a file of its own**
-  (#354, third step). A SQLite file has one writer, and the audit's contract
-  says it does not wait for the repositories: an append on the store's file
-  while a decision holds it waits, and fails past the busy timeout
-  (measured). So the store is a pair of files, `runtime.db` and
-  `runtime-audit.db` (named after it), each with its own marker, neither
-  usable as the other, both private; what exists is opened before what is
-  missing is made, so a refusal of either leaves no new file behind. An
-  append is one transaction: the event, the delete of what is past the bound
-  (1000), and one upsert per counter named, a name given twice counting
-  twice; the event is checked and dumped before the file is locked. The
-  bound is the file's, written in it when it is made: the audit is one for
-  every process that appends to it, and a process given another bound is
-  refused, instead of cutting the history of the others and reading it cut. The
-  audit's contract now says what it always assumed: the details of an event
-  are a JSON object. A backend that writes events down refuses anything
-  else before any event or counter changes; that the in-memory backend
-  copies a set or a tuple is its own behaviour, not the contract's. The
-  suite's `verify_codecs` is one switch for the audit and the repositories.
-  SQLite 3.24 or later is required (the counters' upsert), and an older one
-  is refused before any file is made. Measured, median per call at the bound,
-  memory -> SQLite: an append 2.3 -> 20 us, the latest hundred events 80 ->
-  297 us, a filtered read about 34 us either way; four processes appending
-  together reach 13,000 appends a second, p99 0.08 ms. `SqliteRuntimeStore`
-  takes no audit any more: it has its own.
-- **A runtime store in a SQLite file, not selectable yet** (#354, second
-  step). `SqliteRuntimeStore` keeps users, clients and every repository a
-  service is lent in one SQLite file, for several NanoIDP processes on one
-  host, and runs the whole repository contract, like the memory store: the
-  contract tests now run over both backends. One table for every repository,
-  its rows in the order of creation (a replace keeps its place, a delete and
-  a create take a new one); a partial index on what has a time and is not
-  held makes a cleanup cost what is due. A decision is a `BEGIN IMMEDIATE`
-  transaction, so decisions in two processes come one after the other;
-  WAL with `synchronous=NORMAL` keeps atomicity, consistency and isolation
-  and gives up only a commit's survival of a power loss, which a disposable
-  file never promised. One connection per thread, and none across a fork:
-  SQLite asks that none be open when a process forks, and one opened afresh
-  in the child is not enough (a parent that closes its own afterwards
-  deletes the WAL under the child, whose commits are lost). An at-fork hook
-  waits until no operation of any store is in progress, closes every
-  connection of the process, and both sides open their own afterwards; so a
-  pre-fork server started through Python (gunicorn `--preload`) can share
-  the store. A fork must not be made from inside a decision, and one made
-  from C without Python's at-fork calls skips the hook. The file is private: created `0600`, `-wal` and
-  `-shm` brought to `0600` too, an existing store made private; a file
-  that is not a NanoIDP runtime store, or one of another schema version, is
-  refused and left as it was. A store held by another process for longer
-  than it waits is `RuntimeStoreUnavailable`, which the endpoints answer
-  with `503` and `Retry-After`; any other SQLite error is not called that.
-  The two switches of the test suite (`run_decisions_twice`,
-  `verify_codecs`) are now one for every backend (`RepositorySwitches`).
-  Measured, median per call, memory -> SQLite on ext4: creating an
-  authorization code 15 -> 66 us, redeeming it 17 -> 51 us, `is_revoked()`
-  1.2 -> 5.5 us, a refresh claim 10 -> 37 us; with ten thousand revocation
-  markers the refresh claim is 52 us in memory (the index copy) and 30 us in
-  SQLite. A few writes reach a p99 of 1 to 2 ms (a WAL checkpoint).
-  `runtime.store: sqlite` is not in the schema: it arrives once a store
-  shared by several processes keeps every invariant it has to, the audit
-  and the declared configuration included (#354, fourth step).
-- **The runtime store is chosen by the configuration and activated with it**
-  (#354, first step). `get_runtime_store()` built an in-memory store on first
-  use, took no settings and was published by nobody, so no backend could ever
-  be chosen. Now `runtime.store` is read from `settings.yaml` (`memory`, the
-  default, and in this version the one value: the schema names no backend
-  NanoIDP does not have), and the store is activated in the configuration's
-  activation step next to the signing service: prepared from the candidate
-  settings before anything is committed, activated by nothing but its
-  publication, once the load can no longer fail. **A reload that asks for
-  another store is refused** (`422`, kind `activation`) and nothing is built
-  for it: the store is chosen when the process starts. Before the first
-  activation there is a provisional memory store for whoever asks (the audit
-  of a plugin's load hook), and the first activation that asks for memory
-  adopts that very instance, so what was recorded before the configuration
-  was read is kept; `get_runtime_store()` never reads the configuration. The
-  services know the store only by its contracts (`RuntimeStore`,
-  `RuntimeRepository`, `AuditStore`), and `GET /api/config` and the MCP
-  `get_settings` tool report `runtime.store`. `services.activate_services`
-  is the activation both the app and the MCP server pass to `init_config`;
-  `activate_crypto_service` is still there.
-- **A token is verified against the key its `kid` names, and a process
-  notices a peer's key rotation** (#420, second of two parts). Two things
-  measured before. **In a single process, a token minted before a rotation
-  was refused after it**: `verify_jwt` decoded against the active key
-  whatever the token named, so `/userinfo` went from `200` to `401`,
-  `/introspect` to `active: false` and the refresh grant to `invalid_grant`,
-  while the JWKS went on publishing the previous key and the documentation
-  said "old key stays valid for verification". Verification is now by
-  `kid`, among the active key and the previous ones kept, no wider than
-  `jwt.max_previous_keys` and so the same set the JWKS shows; a `kid` that
-  is not kept, or is nobody's, is an invalid token; a token with no `kid` is
-  checked against the active key, as before. The `kid` chooses the key and
-  vouches for nothing. External keys have no history: they verify with
-  their one key whatever `kid` a token names, as before, so that changing
-  `jwt.external_key_id` for the same pair invalidates nothing. With that,
-  **the keys of a service are one value, replaced whole**: before, a
-  rotation set the kid, the private key and the public key one after the
-  other on the service every request was using, and minting between two of
-  those assignments named one key and signed with the other, which
-  verification by `kid` would refuse for good. Minting, verifying, the
-  JWKS and SAML signing each read the keys once. **And after one process rotated, it and a running
-  peer refused each other's tokens for as long as the peer ran**, the
-  peer's JWKS never showing the new key. A peer's rotation is now noticed
-  in one place, `get_crypto_service()`, through which JWT, JWKS, SAML and
-  the key information all come. It looks at `kid.txt` without a lock, with
-  a `stat` first and a read only when the file is a new one (about two
-  microseconds when nothing changed), and loads the bundle, whole, under
-  the directory's lock, only when the marker names another key. It loads
-  and does nothing else: a marker with no key behind it is reported and
-  left, never answered by generating a key pair. A new service is
-  published and the one in hand is left as it is, so a request that
-  already holds it keeps a whole one; a signature made with the old key
-  just before the peer's commit is correct, that key being a previous one
-  now. The refresh has a lock of its own, so the lock services are
-  published under is never held while the directory's is waited for; a
-  request waits for another's refresh at most half a second, and not at all
-  for one that is stuck; a refresh that failed is not tried again for five
-  seconds, the key in hand being used meanwhile. A marker that cannot be
-  read is said in the log, not taken for "no rotation". This process's own
-  rotation has its new keys before it lets the directory go, so no thread
-  of it loads and publishes a second service for it. External keys are not
-  looked for in the directory.
-- **Generated signing keys are one bundle for every process that shares the
-  keys directory** (#420, first of two parts). Measured before: two
-  processes cold-starting on one empty `jwt.keys_dir` ended with different
-  signing keys, twelve times out of twelve (check, then create, five files
-  one after the other), and a rotation wrote over the same fixed names, so
-  that a process killed after the first file left `kid.txt` saying OLD over
-  a private key that was NEW. Now a lock across processes covers a cold
-  start and a rotation (the advisory file lock the configuration directory
-  already uses, `.nanoidp-write.lock`); a cold start has one winner and the
-  others load its bundle whole; and a rotation is a small journaled
-  transaction in the directory: a complete rollback of the old bundle is
-  written down first, then the live files are replaced, then `kid.txt`,
-  which is the commit point, and only then are the previous keys nothing
-  refers to removed. Whoever next takes the lock recovers from what a dead
-  process left in `.rotation/`: the old bundle before the commit, the new
-  one after it, and again if the recovery itself dies. The key is generated
-  before the lock is taken. A rotation retires the key that is published,
-  not the one the rotating process remembers, so a rotation on top of a
-  peer's orphans nothing. A keys directory this process cannot write (a
-  read-only mount, a volume another user created) still boots, as before:
-  it has nothing it could repair, so it loads what is published, checking
-  that nothing moved meanwhile, and a rotation there is refused (`POST
-  /api/keys/rotate` answers `409`). That holds whether or not the
-  directory already has its lock file: one that is there can be taken
-  through a read-only view, so every mutation first finds out, by writing
-  under the lock, whether it can write at all (a read-only mount answers
-  `EROFS`, which is not a `PermissionError`, and is the same thing). Read
-  without the lock, the journal is looked at before the files as well as
-  after them, so that a recovery that ended meanwhile is noticed, and a
-  rotation that was committed and not tidied up does not keep a read-only
-  process out. A published private key this process cannot read is an
-  error and never "no keys yet", which would have started cold over
-  somebody's bundle. Nothing fails a rotation past its commit: what could
-  not be tidied up is left to whoever next takes the lock. A missing SAML
-  certificate, of generated and of external keys alike, is installed under
-  the lock after looking again, so that processes repairing it together
-  end with one certificate and not one each, and a peer that rotated
-  meanwhile is followed. When
-  the lock cannot be had in time, the endpoint answers `503` with
-  `Retry-After` and the MCP `rotate_keys` tool answers `success: false`,
-  naming the keys directory.
-  The layout and the file names are unchanged; **the private key is now
-  written with mode `0600`** (it followed the umask).
-- **A cleanup of the in-memory runtime repository costs what is due, not what
-  is kept** (#417). Since #413 `delete_expired(now)` sits inside the writing
-  decision of every service that keeps expiring state, so every write
-  scanned its whole collection under the store's one lock. The backend now
-  keeps a lazy min-heap of the expiries, `(expires_at, instance_id, name)`:
-  an item is pushed when an entry gets a time and never looked for again,
-  and one that no longer says anything true (the entry gone, the name given
-  to a successor, the time moved) is dropped when it reaches the top. The
-  heap is transactional state like the index: what a decision pushes is
-  staged and applied when it returns, what a cleanup pops is put back when
-  the decision raises or is one that is thrown away. A held entry past its
-  time waits on the heap, and is looked at by each cleanup for as long as
-  it is held. Stale items are bounded: past twice the entries plus 1024,
-  the heap is rebuilt from the entries. No part of the contract. One thing
-  it changes about memory: an item carries its entry's name, so the name of
-  an entry that was deleted or consumed stays in the process until the
-  item's time comes or the heap is rebuilt (for a code that is its own
-  name, the spent code).
-  A first design, a lower bound on the earliest expiry, was built and
-  dropped on measurement: with a fixed lifetime and steady writes one entry
-  comes due before nearly every write, so it scanned nearly every time, and
-  dearer than before (539 -> 627 us per write at ten thousand entries).
-  Measured per write, a cleanup and a create in one decision, over several
-  runs, before -> after: at ten thousand entries with one coming due before
-  every write 460-540 -> 130-150 us, with nothing coming due 385-450 ->
-  40-50 us; at a hundred thousand 6.2-6.4 -> 1.7-1.9 ms and 4.3-4.8 ->
-  0.4-0.5 ms. None of the workloads measured got worse. What is left is the
-  copy of the index on a write, which is still in proportion to what is
-  kept. A revocation or a refresh claim at ten thousand markers 0.44
-  -> 0.055 ms (0.16 ms before #363); creating a device code with ten
-  thousand pending 0.81 -> 0.10 ms (0.17 ms before #363).
-- **The audit lives in the runtime store, and the store is named for what it
-  holds** (#363, last of five steps). `AuditLog` kept a deque, seven counters
-  and a lock; it is now a facade, with no state, over an `AuditStore` the
-  runtime store owns: a small contract of its own, not a repository (the
-  event and its counters appended as one step, read with filters in the
-  backend, a bound that is the backend's, by value, and no operation of it
-  from inside a repository decision). In memory it has a lock of its own:
-  one runtime boundary is not one mutex, nothing has to be atomic across
-  the audit and a repository, and every request appends to it. The Python
-  log line and the `on_audit_event` hooks still follow the append, outside
-  any lock. Three deliberate corrections: **the audit reads in the order
-  events were recorded**, where it sorted by timestamp, so that events of
-  one timestamp came oldest first and a clock stepping back reordered them;
-  **a negative `limit` is none at all**, where `-1` was a slice that dropped
-  the last event (and means "no limit" to SQLite); **audit state is by
-  value**, where the `details` a caller passed, the ones kept, the ones a
-  reader got and the ones the `on_audit_event` hooks received were one dict
-  (the hooks of one event still share theirs among themselves, as before).
-  `AuditLog` no longer takes `max_entries` nor has that attribute: the
-  bound is the backend's (`audit_store.MAX_AUDIT_ENTRIES`), and every
-  `AuditLog()` is a view of the one audit, not a log of its own.
-  With it, `services/runtime_identities.py` becomes
-  `services/runtime_store.py`, `MemoryRuntimeIdentityStore`
-  `MemoryRuntimeStore` and `get_runtime_identity_store()`
-  `get_runtime_store()`, with no alias: none was exported by
-  `nanoidp.services`. `DELETE /api/runtime` still leaves the audit alone.
-- **Revocations live in the runtime store** (#363, fourth of five steps).
-  `RevocationStore` kept two dictionaries and a lock; it is now a view, with
-  no state, over ONE repository the runtime store lends, so that with a
-  backend several processes share (#354) a token revoked in one is revoked
-  in all. Token ids and rotation families are markers under typed names,
-  `jti:<id>` and `family:<id>`, because the refresh grant's check-and-claim
-  reads and writes both and has to stay one decision. A marker says nothing
-  but that it is there: how long it is remembered is its entry's
-  `expires_at`, and the indefinite retention that was `float("inf")` is
-  `None` there, which a backend can write down. Revoking again still never
-  shortens, and keeps the same marker (`set_expires_at`). `is_revoked()` is
-  one read and does no cleanup, so a marker past its time and not yet swept
-  still answers, as before. One correction, for inputs no verified token
-  can carry today: **an expiry that is no time is remembered for ever** - a
-  NaN was remembered until the next sweep, a number too large for a float
-  raised out of `/revoke`, a bool was read as a number. And since a name
-  is now made by formatting, **an id that is not text is refused**
-  (`TypeError`) instead of becoming the text of itself: `/logout` hands
-  over the `jti` of a hint it did not verify, and a `"jti": 5` there must
-  not revoke the token `"5"`; it revokes nothing, like any other invalid
-  hint. Measured with ten thousand markers: `is_revoked()` 1 to 3 us (0.08 us as a lock-free
-  dictionary lookup: it now takes the store's lock, which every lent
-  repository shares), a revocation or a refresh claim 0.44 ms (0.16 ms:
-  the sweep was linear before and is still, plus the copy of the index;
-  at three hundred thousand it is 18 ms, 13 of them the sweep, and it is
-  the store's one lock that is held meanwhile, where it was the
-  revocations' own).
-- **Device codes live in the runtime store** (#363, third of five steps).
-  `DeviceCodeStore` kept two dictionaries and a lock; it is now a view over
-  two repositories the runtime store lends: the grants, by device code, and
-  an index from the user's code to the grant, which names the grant's
-  instance. There is no lock around the two and no transaction across them:
-  an index entry whose grant is gone, or whose device code has since been
-  given to another grant, opens nothing. Every transition is one decision on
-  the grant. A poll resolves the user outside the decision (a decision
-  reaches no other repository) and then claims that instance, if it is still
-  authorized for that user and in time; a user who cannot be found still
-  costs nothing. A grant past its time still answers `expired_token` for as
-  long as it is there. One deliberate correction: **a user code that is
-  already taken is refused and another pair is made**, where the second
-  grant silently took the code over and left the first device's user
-  approving somebody else's device. When no pair can be made after a few
-  attempts, `/device_authorization` answers the same plain 503 with
-  `Retry-After` as for a full store (`DeviceCodeStoreBusy`, a
-  `DeviceCodeStoreFull`), and says so in the message and the audit entry.
-  `DeviceCodeGrant`, which `nanoidp.services` exports, now takes the
-  `device_code` it is kept under, as a required keyword; nothing outside the
-  store constructs one.
-  Measured with ten thousand pending:
-  creating one takes 0.81 ms (0.17 ms before: two repositories and their
-  cleanups instead of one dictionary), a poll 4 us.
-- **Authorization codes live in the runtime store** (#363, second of five
-  steps). `AuthCodeStore` kept a dictionary and a lock of its own; it is now
-  a view, with no state, over a repository the runtime store lends, so that
-  with a backend several processes share (#354) the codes are seen by all
-  of them. (`DELETE /api/runtime` removes runtime users and clients and
-  leaves outstanding codes, as it always has.) Redeeming a code is one decision with the
-  outcomes it always had: marked used and kept, so that a second
-  presentation is recognised and takes the code away whoever makes it; a
-  request that does not match (another client, another redirect URI, a
-  wrong or missing verifier) refused with the code left for the client it
-  was issued to. Creating a code drops the ones past their time without
-  reading a value. Two deliberate corrections: `get_code_info()` returns a
-  copy where it returned the stored object itself (tests and debugging are
-  its only callers), and a list given as `amr` is kept as a tuple, so that
-  a code written down by a backend reads back equal; a bare string is left
-  as it is, for the token choke point to drop as before. Also fixed on the
-  way: a PKCE verifier that is not ASCII raised out of the redemption as a
-  `500` and is now the `invalid_grant` any wrong verifier gets, and an
-  unknown challenge method is refused without logging from inside the
-  decision.
-  `get_auth_code_store()` returns a view each time; there is no store
-  object left for it to be a singleton of.
-- **A runtime entry can say when it becomes removable** (#363, first of five
-  steps). Bringing authorization codes, device codes, revocations and the
-  audit behind the runtime boundary needs a way through a large collection
-  that does not read its values: measured with ten thousand device codes
-  pending, creating one takes 0.17 ms today and 17.5 ms through the
-  contract as it was, because dropping what expired meant copying every
-  value. `Entry.expires_at` (None for never) is that way: `create(obj,
-  expires_at=...)`, `set_expires_at`, `delete_expired(now)` and `count()`
-  work on what the store knows about its entries and never on the values
-  (0.25 ms for the same create), and `create_within` is rebuilt on them and
-  no longer takes an `is_expired` callback. The expiry means "removable by
-  a cleanup" and nothing else: an entry past its time is still returned
-  until somebody removes it, since an owner may have to answer "expired"
-  for it (RFC 8628's `expired_token`). A cleanup takes what is strictly
-  past its time, so that it never removes an entry its owner still calls
-  good wherever that owner draws the line, and leaves what an operation in
-  progress holds. A replace and a hold keep the time; a replace can move it
-  in the same step, for an owner that keeps a time in its value too.
-  Authorization transactions and pending second factors tell the store
-  when their records become removable; nothing changes in what they do.
-- **A promotion's outcome is kept with the object, not in the process that
-  started it** (#405, last of the four steps of #404). Promoting a runtime
-  object is a small saga: claim it, write its entry, reload, retire it and
-  record that it was promoted. The claim was a mark in a dictionary of one
-  process, so with two processes on one runtime store the other one
-  deleted the object in the middle of its promotion, or retired it on a
-  reload and, knowing of no promotion, recorded an ordinary removal: the
-  promotion answered `200` and `runtime_identity_promoted` was never
-  recorded. The claim is now a hold on the object's entry in the store.
-  A delete, a reset and a second promotion see it from any process; the
-  promotion writes the value it claimed; whoever retires the object
-  records the one `runtime_identity_promoted`, with the promoting request's
-  context; a claim whose entry is still being written is its writer's to
-  resolve, so another process that loads the file first leaves the object
-  alone (nothing in a declaration says who made it, and a name declared by
-  somebody else while the object is claimed makes the promotion answer
-  `409`, as before, with the object left where it was); a
-  promotion given up after a failed reload is recorded by whoever released
-  its claim, and never by a process that read the files before the entry
-  was written. "One winner records it" is a guarantee against concurrency,
-  not against a crash between taking the object out and writing the audit
-  entry. A promotion torn down in the middle of its write keeps a claim
-  that says what is known, that the entry was being written, and nothing
-  in the process resolves it: recovering it belongs to the durable store of
-  #354, and with the store in memory it ends with the process. A reset is
-  one step that leaves claimed objects alone. One process behaves as
-  before and every `/api/runtime` response is unchanged. Not claimed: a
-  process whose configuration is stale can still create a runtime object
-  under a name another has just declared, which is the freshness of the
-  declared configuration across processes and belongs to #354.
+- **A SAML assertion's `Audience` is the requesting service provider**
+  (#443). Every SSO assertion carried `oauth.audience`, whichever service
+  provider asked, where the Web Browser SSO profile requires the
+  provider's own identifier (SAML Profiles §4.1.4.2); a provider that
+  checks the audience, Spring Security among them, rejected the response
+  unless its entity ID happened to equal that setting. The `Audience` is
+  now the AuthnRequest's `Issuer`; a request that names none, outside the
+  profile, is answered as before with `oauth.audience`. The audit event
+  records the Issuer received and the Audience issued.
+- **`stricter-dev` CORS is localhost, and nothing that starts like it**
+  (#441 review). The profile's default origins were `http://localhost:*`
+  and `http://127.0.0.1:*`, which flask-cors reads as regular expressions
+  and matches from the start only: `http://localhost.evil.test`,
+  `http://127.0.0.1.nip.io` and `http://127a0b0c1.test` were allowed too.
+  The patterns are now anchored at both ends, with the dots escaped.
+- **The device verification page says "denied" when the user denies.**
+  After **Deny**, `/device` showed "Device authorization denied" inside
+  the success box, followed by the authorization's text. The route now
+  passes the decision itself, and the page shows each with its own
+  heading, icon and text. The polling answer was always right
+  (`access_denied`); only the page was wrong.
 
 ### Security
+
 - **`extra` can no longer change what the grant decided** (#451). The
   `extra` parameter of `/token` was merged into the access token after the
-  registered claims on every grant except client credentials (#445): a
-  client could mint itself a token with another `sub`, `iss`, `aud`, an
-  `exp` in 2100, a `jti` of its choosing, other `roles` or `tenant`, and
+  registered claims on every grant except client credentials: a client
+  could mint itself a token with another `sub`, `iss`, `aud`, an `exp` in
+  2100, a `jti` of its choosing, other `roles` or `tenant`, and
   `/introspect` reported it active for that subject. The MCP tool
-  `generate_token` had one case of its own: unbound, its `extra_claims`
-  could add a `client_id` no binding decided. Now `extra` adds claims and
-  nothing else: a request that names a registered claim, a protocol claim
-  (`client_id` included), a claim the server reads back or a claim about
-  the user is refused with `invalid_request` and the names, before the
-  grant runs, so no code or refresh token is consumed; the token service
-  strips the same set for any caller that reaches it directly. **A test
-  that set `roles` or `exp` through `extra` gets a 400 now**; a user with
-  other roles is created instead, and the form parameter `exp` (a lifetime
-  in minutes) is unchanged. `extra` and `exp` are documented in the tokens
-  reference.
+  `generate_token`, unbound, could add a `client_id` no binding decided.
+  Now `extra` adds claims and nothing else: a request that names a
+  registered claim, a protocol claim (`client_id` included), a claim the
+  server reads back or a claim about the user is refused with
+  `invalid_request` and the names, before the grant runs, so no code or
+  refresh token is consumed; the token service strips the same set for any
+  caller that reaches it directly. `extra` and `exp` are documented in the
+  tokens reference.
 - **An access token can no longer be spent as a refresh token** (found in
   #445's review). The refresh grant recognised a refresh token by its
-  `token_type` claim, which the `/token` `extra` parameter can set on any
-  access token: a client could stamp `token_type: refresh` on its own access
-  token and spend it for a new access token and a refresh token, on every
-  grant. With the client credentials grant, which issues for `default_user`
-  up to 3.3.0, that turned a service's token into the default user's, admin
-  and its roles in the shipped configuration, with a long-lived refresh
-  token. The refresh grant now also requires `token_use: refresh`, which the
-  server sets last on every token it issues and `extra` cannot change. The
-  wider question of what `extra` may set is #451.
+  `token_type` claim, which `extra` could set on any access token: a client
+  could stamp `token_type: refresh` on its own access token and spend it
+  for a new access token and a refresh token; with the client credentials
+  grant of 3.3.0 and earlier that turned a service's token into the
+  default user's, admin in the shipped configuration. The refresh grant
+  now also requires `token_use: refresh`, which the server sets last on
+  every token it issues and `extra` cannot change.
 - **A registration credential no longer reads or deletes a client recreated
-  under its id** (#403). A dynamically registered client is two records, the
-  runtime client and the RFC 7592 credential that manages it, linked by
-  name, and the operations on them were each correct alone but not against
-  each other. A runtime client created under the same id at the wrong moment
-  was taken for the registered one: while `DELETE /api/runtime/clients/<id>`
-  or `DELETE /register/<id>` had removed the client and not yet its record;
-  between a `DELETE /api/runtime` and the sweep after it, where the record
-  then survived for good; between the two halves of `POST /register`, which
-  answered `201` for a client a reset had already removed; and between the
-  check of a credential and the read or the delete it authorised. In each
-  case `GET /register/<id>` with the first client's token answered with the
-  second client's `client_secret`, or `DELETE /register/<id>` removed it.
-  The record now carries the identity the runtime store gave its client
-  (#404), which no later client of that id has, so a record about a client
-  that is gone matches nothing: every check is a comparison of instances
-  rather than an order of steps somebody has to keep, the RFC 7592 delete
-  removes that instance and no other, and `POST /register` looks back at
-  its client once the record is there and refuses, removing what it
-  created, if a reset or a delete got in between (`400`, please retry), or
-  if a concurrent registration took the last slot (`429`). There is no lock
-  around the pair and no transaction across the two repositories, so the
-  pairing of a record with its client holds for whoever shares the store;
-  what a runtime client itself still rests on within one process (the check
-  against declared names, the promotion marks, a reset and a reconciliation
-  that go by name) is #405. It needs a second actor reusing a
-  server-generated id, so it was unlikely; it was reproduced
-  deterministically for every window. No endpoint changes shape.
-  `GET` and `DELETE /register/<id>` never wait for a configuration load or a
-  promotion; `POST /register` waits for one only while it creates its
-  client, as every creation of a runtime client does (#235), so for that
-  moment the store can hold a few more unrecorded clients than the limit,
-  which the refusals then remove.
+  under its id** (#403). A dynamically registered client is two records,
+  the runtime client and the RFC 7592 credential that manages it, linked
+  by name, and a runtime client created under the same id at the wrong
+  moment was taken for the registered one: `GET /register/<id>` with the
+  first client's token answered with the second client's `client_secret`,
+  or `DELETE /register/<id>` removed it. The record now carries the
+  identity the runtime store gave its client (#404), which no later client
+  of that id has, so a record about a client that is gone matches nothing;
+  `POST /register` looks back at its client once the record is there and
+  refuses, removing what it created, if a reset or a delete got in between
+  (`400`, please retry) or a concurrent registration took the last slot
+  (`429`). It needs a second actor reusing a server-generated id, so it
+  was unlikely; it was reproduced deterministically for every window. No
+  endpoint changes shape.
 
 ## [3.3.0] - 2026-09-19
 
