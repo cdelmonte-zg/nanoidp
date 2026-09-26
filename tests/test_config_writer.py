@@ -500,8 +500,8 @@ class TestLockPolling:
         monkeypatch.setattr(config_writer, "_try_lock_exclusive", lambda fd: False)
         monkeypatch.setattr(config_writer, "_LOCK_TIMEOUT_SECONDS", 0.2)
         # The deadline is set at 1000.2; the check passes at 1000.19 and
-        # every later reading is past it.
-        readings = iter([1000.0, 1000.19] + [1000.25] * 10)
+        # every later reading, however many there are, is past it.
+        readings = itertools.chain([1000.0, 1000.19], itertools.repeat(1000.25))
         monkeypatch.setattr(time, "monotonic", lambda: next(readings))
         slept = []
         monkeypatch.setattr(time, "sleep", slept.append)
