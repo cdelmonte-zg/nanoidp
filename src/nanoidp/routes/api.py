@@ -300,12 +300,13 @@ def rotate_keys() -> ResponseReturnValue:
         # process cannot write (409, permanent), or a lock it could not
         # take (503, #420). The exception may name the directory; that
         # stays in the log (the helper writes it), the body carries the
-        # fixed message and the kind (CodeQL 32/33). Retry-After on the 503
-        # as before, whatever the kind.
-        message, kind, permanent = rotation_refusal(refused)
-        response = jsonify({"success": False, "error": message, "kind": kind})
-        response.status_code = 409 if permanent else 503
-        if not permanent:
+        # fixed message and the kind (CodeQL 32/33). Retry-After only when
+        # coming back may help: a lock another process holds, not a
+        # filesystem that cannot lock.
+        refusal = rotation_refusal(refused)
+        response = jsonify({"success": False, "error": refusal.message, "kind": refusal.kind})
+        response.status_code = 409 if refusal.permanent else 503
+        if refusal.retryable:
             response.headers["Retry-After"] = "5"
         return response
 

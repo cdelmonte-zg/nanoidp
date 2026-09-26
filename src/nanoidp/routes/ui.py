@@ -29,18 +29,18 @@ from flask.typing import ResponseReturnValue
 from ..branding import effective_logos_dir
 from ..config import ConfigManager, OAuthClient, User, get_config
 from ..config_documents import DocumentRejected
-from ..config_writer import ConflictError
+from ..config_writer import ConflictError, LockUnavailableError
 from ..hooks import HookError
 from ..models import Settings
 from ..serialization import OWNED_SETTINGS
 from ..services import (
-    EXTERNAL_KEYS_NOT_ROTATABLE,
     ExternalKeysNotRotatable,
     get_audit_log,
     get_crypto_service,
     get_token_service,
     get_yaml_writer,
     identities_for,
+    rotation_refusal,
 )
 from ..services.client_metadata import forget as forget_cached_client
 from ..services.client_policy import UNSET, ClientSecretRequired, resolve_client_auth
@@ -1152,12 +1152,15 @@ def keys_regenerate() -> ResponseReturnValue:
         flash("Keys and certificate regenerated successfully", "success")
         return redirect(url_for("ui.keys"))
 
-    except ExternalKeysNotRotatable:
-        flash(EXTERNAL_KEYS_NOT_ROTATABLE, "error")
+    except (ExternalKeysNotRotatable, LockUnavailableError) as refused:
+        # The same refusal as /api/keys/rotate: the fixed message; the
+        # directory the exception may name stays in the log.
+        flash(rotation_refusal(refused).message, "error")
         return redirect(url_for("ui.keys"))
-    except Exception as e:
+    except Exception:
+        # Whatever it was, its text is for the log, not for the page.
         logger.exception("Failed to regenerate keys")
-        flash(f"Failed to regenerate keys: {e}", "error")
+        flash("Failed to regenerate keys: see the server log", "error")
         return redirect(url_for("ui.keys"))
 
 

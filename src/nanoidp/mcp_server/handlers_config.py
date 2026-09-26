@@ -329,8 +329,8 @@ def _tool_rotate_keys(arguments: dict[str, Any], config: ConfigManager, loaded: 
         # process cannot write, or a lock it could not take (#420). The
         # same fixed message and kind as /api/keys/rotate; the directory
         # the exception may name goes to the log, written by the helper.
-        message, kind, _ = rotation_refusal(refused)
-        return {"success": False, "error": message, "kind": kind}
+        refusal = rotation_refusal(refused)
+        return {"success": False, "error": refusal.message, "kind": refusal.kind}
     get_audit_log().log(
         event_type="key_rotation",
         endpoint="mcp:rotate_keys",

@@ -950,7 +950,10 @@ class TestTheRotateEndpointKeepsTheDirectoryOutOfTheBody:
         assert body == {"success": False, "error": message, "kind": kind}
         assert directory not in response.get_data(as_text=True)
         assert any(directory in record.getMessage() for record in caplog.records)
-        if status == 503:
+        # Retry-After only where coming back may help: a lock another
+        # process holds. Not for a permanent refusal, nor for a filesystem
+        # that cannot lock, the classification the configuration handlers use.
+        if kind == "lock_timeout":
             assert response.headers["Retry-After"] == "5"
         else:
             assert "Retry-After" not in response.headers
