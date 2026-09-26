@@ -16,6 +16,7 @@ second part.
 """
 
 import json
+import logging
 import multiprocessing
 import os
 import stat
@@ -28,6 +29,8 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 
 from nanoidp import serialization as nanoidp_serialization
+from nanoidp.config_writer import LockNamespaceUnavailable, LockUnavailableError
+from nanoidp.routes import api as api_module
 from nanoidp.services import key_directory
 from nanoidp.services.crypto import CryptoService
 
@@ -872,3 +875,59 @@ class TestRotationsComeOneAfterTheOther:
 
         assert [key.kid for key in loaded.previous_keys] == [kids[3], kids[2]]
         assert sorted(file.name for file in (keys_dir / "previous").iterdir()) == sorted(f"{kid}_public.pem" for kid in kids[2:4])
+
+
+class TestTheRotateEndpointKeepsTheDirectoryOutOfTheBody:
+    """The lock exceptions name the keys directory, which is for the log:
+    the endpoint answers a fixed message and the kind (CodeQL 32/33)."""
+
+    @pytest.mark.parametrize(
+        "raised, status, kind, message",
+        [
+            (
+                lambda d: LockNamespaceUnavailable(f"{d} is not writable and holds no usable lock file"),
+                409,
+                "lock_namespace_unavailable",
+                api_module.KEYS_DIRECTORY_NOT_WRITABLE,
+            ),
+            (
+                lambda d: LockUnavailableError(
+                    f"Timed out after 10.0s waiting for the write lock on {d} - another process may "
+                    "be stuck holding it",
+                    kind="lock_timeout",
+                ),
+                503,
+                "lock_timeout",
+                api_module.KEYS_DIRECTORY_LOCK_UNAVAILABLE,
+            ),
+            (
+                lambda d: LockUnavailableError(
+                    f"Advisory locking is not supported on {d}/.nanoidp-write.lock", kind="lock_unsupported"
+                ),
+                503,
+                "lock_unsupported",
+                api_module.KEYS_DIRECTORY_LOCK_UNAVAILABLE,
+            ),
+        ],
+    )
+    def test_the_directory_named_by_the_exception_is_logged_and_not_answered(
+        self, client, monkeypatch, caplog, raised, status, kind, message
+    ):
+        from nanoidp.services import crypto as crypto_module
+
+        directory = "/srv/nanoidp/secret-keys-9f3a"
+        service = crypto_module.get_crypto_service()
+        monkeypatch.setattr(service, "rotate_keys", lambda: (_ for _ in ()).throw(raised(directory)))
+
+        with caplog.at_level(logging.WARNING, logger="nanoidp.routes.api"):
+            response = client.post("/api/keys/rotate")
+
+        body = response.get_json()
+        assert response.status_code == status
+        assert body == {"success": False, "error": message, "kind": kind}
+        assert directory not in response.get_data(as_text=True)
+        assert any(directory in record.getMessage() for record in caplog.records)
+        if status == 503:
+            assert response.headers["Retry-After"] == "5"
+        else:
+            assert "Retry-After" not in response.headers

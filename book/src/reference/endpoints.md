@@ -104,7 +104,7 @@ the answer carries the id exactly as it was sent.
 | `POST /api/audit/clear` | Clear the audit log |
 | `GET /api/config` | Get current configuration |
 | `POST /api/config/reload` | Reload configuration. A rejected reload answers a JSON `422` (`kind`: `invalid` for files that cannot be read or do not validate, `activation` for a signing configuration that cannot be used) and the running configuration stays in effect; a strict hook or plugin failure answers `503` |
-| `POST /api/keys/rotate` | Rotate cryptographic keys; `409` when `jwt.external_keys` is configured, since the operator's key is not nanoidp's to replace, and when this process cannot write the keys directory; `503` with `Retry-After` when the directory's lock, shared with other NanoIDP processes, cannot be had in time |
+| `POST /api/keys/rotate` | Rotate cryptographic keys; `409` when `jwt.external_keys` is configured, since the operator's key is not nanoidp's to replace, and when this process cannot write the keys directory (`kind`: `lock_namespace_unavailable`); `503` with `Retry-After` when the directory's lock, shared with other NanoIDP processes, cannot be had in time (`kind`: `lock_timeout`, or `lock_unsupported` for a filesystem without advisory locks). The refusals carry a fixed message; the directory the lock names is in the server log |
 | `GET /api/keys/info` | Get key information |
 
 ### Runtime identities
