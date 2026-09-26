@@ -12,6 +12,8 @@ from ..config_writer import LockNamespaceUnavailable, LockUnavailableError
 from ..hooks import HookError
 from ..services import (
     EXTERNAL_KEYS_NOT_ROTATABLE,
+    KEYS_DIRECTORY_LOCK_UNAVAILABLE,
+    KEYS_DIRECTORY_NOT_WRITABLE,
     ExternalKeysNotRotatable,
     get_audit_log,
     get_crypto_service,
@@ -26,16 +28,6 @@ from ._issuer import effective_issuer, effective_saml_entity_id, effective_saml_
 
 logger = logging.getLogger(__name__)
 
-# What /api/keys/rotate answers when the keys directory refuses it: fixed
-# text, like EXTERNAL_KEYS_NOT_ROTATABLE, since the exceptions name the
-# directory and that belongs in the log, not in the body (CodeQL 32/33).
-KEYS_DIRECTORY_NOT_WRITABLE = (
-    "The keys directory is not writable through this process, so keys cannot be rotated here"
-)
-KEYS_DIRECTORY_LOCK_UNAVAILABLE = (
-    "The keys directory lock could not be taken in time: another process is starting or "
-    "rotating, try again"
-)
 
 api_bp = Blueprint("api", __name__, url_prefix="/api")
 api_bp.before_request(management_secret_required_for_api)
@@ -314,13 +306,17 @@ def rotate_keys() -> ResponseReturnValue:
         # volume of another user's): it signs with the keys and cannot
         # rotate them, now or later. Nothing was rotated. The exception
         # names the directory; that stays in the log, the body carries a
-        # fixed message and the kind (CodeQL 32/33).
+        # fixed message and the kind (CodeQL 32/33): keys_directory_not_writable
+        # for a directory whose lock file is there and cannot be written,
+        # lock_namespace_unavailable for one whose lock file cannot exist.
         logger.warning("Key rotation refused: %s", not_here)
         return jsonify({"success": False, "error": KEYS_DIRECTORY_NOT_WRITABLE, "kind": not_here.kind}), 409
     except LockUnavailableError as busy:
         # The keys directory is shared (#420) and its lock could not be had
-        # in time: another process is starting or rotating. Nothing was
-        # rotated, and coming back is what to do.
+        # in time (lock_timeout: another process is starting or rotating,
+        # coming back is what to do) or cannot be taken at all on this
+        # filesystem (lock_unsupported). Nothing was rotated. The message
+        # claims no cause; the kind says which.
         logger.warning("Key rotation refused: %s", busy)
         response = jsonify({"success": False, "error": KEYS_DIRECTORY_LOCK_UNAVAILABLE, "kind": busy.kind})
         response.status_code = 503

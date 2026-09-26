@@ -78,6 +78,14 @@ EXTERNAL_KEYS_NOT_ROTATABLE = (
     "key pair and reload (a key replaced at the same paths is read at the next start)"
 )
 
+# What a surface answers when the keys directory refuses a rotation: fixed
+# text, since the exceptions name the directory and that belongs in the log,
+# not in an HTTP body (CodeQL 32/33). The kind beside it says which.
+KEYS_DIRECTORY_NOT_WRITABLE = (
+    "The keys directory is not writable through this process, so keys cannot be rotated here"
+)
+KEYS_DIRECTORY_LOCK_UNAVAILABLE = "The keys directory lock could not be taken: nothing was rotated"
+
 
 class ExternalKeysNotRotatable(ValueError):
     """Rotation was requested for operator-provided signing keys (#358)."""

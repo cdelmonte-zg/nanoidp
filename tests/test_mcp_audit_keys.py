@@ -6,11 +6,18 @@ workflows can inspect what the IdP recorded and rotate keys to exercise a
 client's JWKS refresh handling.
 """
 
+import logging
+from pathlib import Path
+
 import pytest
 
 from nanoidp.config import get_config
 from nanoidp.mcp_server import MUTATING_TOOLS, _execute_tool
-from nanoidp.services import get_audit_log
+from nanoidp.services import (
+    KEYS_DIRECTORY_LOCK_UNAVAILABLE,
+    KEYS_DIRECTORY_NOT_WRITABLE,
+    get_audit_log,
+)
 
 
 class TestAuditTools:
@@ -94,8 +101,33 @@ class TestKeyTools:
                 result = await _execute_tool("rotate_keys", {}, config)
             after = await _execute_tool("get_keys_info", {}, config)
 
-        assert result["success"] is False and "keys directory lock" in result["error"]
+        assert result == {"success": False, "error": KEYS_DIRECTORY_LOCK_UNAVAILABLE, "kind": "lock_timeout"}
         assert after["active_kid"] == before["active_kid"]
+
+    @pytest.mark.asyncio
+    async def test_a_keys_directory_this_process_cannot_write_is_said_without_naming_it(
+        self, app, monkeypatch, caplog
+    ):
+        """The same refusal as /api/keys/rotate: the fixed message and the
+        kind, and the directory the exception names only in the log."""
+        from nanoidp.services import crypto as crypto_module
+        from nanoidp.services.key_directory import KeysDirectoryNotWritable
+
+        directory = "/srv/nanoidp/secret-keys-9f3a"
+        service = crypto_module.get_crypto_service()
+        monkeypatch.setattr(
+            service,
+            "rotate_keys",
+            lambda: (_ for _ in ()).throw(
+                KeysDirectoryNotWritable(Path(directory), PermissionError(13, "Permission denied"))
+            ),
+        )
+        with app.app_context(), caplog.at_level(logging.WARNING, logger="nanoidp.mcp_server.handlers_config"):
+            result = await _execute_tool("rotate_keys", {}, get_config())
+
+        assert result == {"success": False, "error": KEYS_DIRECTORY_NOT_WRITABLE, "kind": "keys_directory_not_writable"}
+        assert directory not in str(result)
+        assert any(directory in record.getMessage() for record in caplog.records)
 
 
 class TestToolClassification:

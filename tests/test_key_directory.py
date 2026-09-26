@@ -605,6 +605,13 @@ class TestADirectoryThisProcessCannotWrite:
         response = app.test_client().post("/api/keys/rotate")
 
         assert response.status_code == 409 and "Retry-After" not in response.headers
+        # The real path's kind, and the directory only in the log.
+        assert response.get_json() == {
+            "success": False,
+            "error": api_module.KEYS_DIRECTORY_NOT_WRITABLE,
+            "kind": "keys_directory_not_writable",
+        }
+        assert str(keys_dir) not in response.get_data(as_text=True)
         assert _snapshot(keys_dir) == before
         assert sorted(file.name for file in keys_dir.iterdir() if not file.name.startswith(".nanoidp")) == sorted(before)
 
@@ -771,7 +778,12 @@ class TestADirectoryThisProcessCannotWrite:
 
         assert response.status_code == 409
         assert "Retry-After" not in response.headers
-        assert "not writable" in response.get_json()["error"]
+        assert response.get_json() == {
+            "success": False,
+            "error": api_module.KEYS_DIRECTORY_NOT_WRITABLE,
+            "kind": "lock_namespace_unavailable",
+        }
+        assert str(keys_dir) not in response.get_data(as_text=True)
 
     def test_a_rotation_found_under_way_and_never_ending_is_said_not_loaded(self, read_only, monkeypatch):
         keys_dir, _ = read_only
@@ -862,7 +874,7 @@ class TestRotationsComeOneAfterTheOther:
         assert response.status_code == 503
         assert response.headers["Retry-After"]
         body = response.get_json()
-        assert body["success"] is False and "keys directory lock" in body["error"]
+        assert body == {"success": False, "error": api_module.KEYS_DIRECTORY_LOCK_UNAVAILABLE, "kind": "lock_timeout"}
 
     def test_rotating_keeps_as_many_previous_keys_as_it_is_told(self, tmp_path):
         keys_dir = tmp_path / "keys"
@@ -888,6 +900,12 @@ class TestTheRotateEndpointKeepsTheDirectoryOutOfTheBody:
                 lambda d: LockNamespaceUnavailable(f"{d} is not writable and holds no usable lock file"),
                 409,
                 "lock_namespace_unavailable",
+                api_module.KEYS_DIRECTORY_NOT_WRITABLE,
+            ),
+            (
+                lambda d: key_directory.KeysDirectoryNotWritable(Path(d), PermissionError(13, "Permission denied")),
+                409,
+                "keys_directory_not_writable",
                 api_module.KEYS_DIRECTORY_NOT_WRITABLE,
             ),
             (
