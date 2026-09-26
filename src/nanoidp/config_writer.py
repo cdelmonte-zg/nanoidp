@@ -170,7 +170,16 @@ _LOCK_FILENAME = ".nanoidp-write.lock"
 # first, the process-global thread lock second, so waiting on another
 # process never monopolizes this one.
 _LOCK_TIMEOUT_SECONDS = 10.0
-_LOCK_POLL_INTERVAL_SECONDS = 0.05
+# The pause between two tries of the file lock: 1 ms, doubled at every miss,
+# 50 ms at most (#426 point 3, measured). A fixed 50 ms made every collision
+# cost 50 ms whatever the hold: a freshness read holds the lock for 0.1 ms
+# and an ordinary write for 7 ms, so a reader that met a writer, or a writer
+# a reader, paid the poll and not the section (p99 31 ms at rest, 82 ms
+# under two writes a second). Doubling reaches the cap after 63 ms, so a
+# long section (a write of users.yaml with five hundred users holds it for a
+# third of a second) and a stuck peer are polled as before.
+_LOCK_POLL_INITIAL_SECONDS = 0.001
+_LOCK_POLL_MAX_SECONDS = 0.05
 
 _write_lock = threading.Lock()
 
@@ -255,6 +264,16 @@ def _try_lock_exclusive(fd: int) -> bool:
             raise
 
 
+def _poll_pauses() -> Iterator[float]:
+    """The pauses between two tries of the file lock, in order: doubling
+    from the initial one up to the cap, then the cap for as long as it
+    takes. The deadline, not this, ends the wait."""
+    pause = _LOCK_POLL_INITIAL_SECONDS
+    while True:
+        yield pause
+        pause = min(pause * 2, _LOCK_POLL_MAX_SECONDS)
+
+
 def _unlock(fd: int) -> None:
     """Release the lock ``_try_lock_exclusive`` acquired on ``fd``."""
     if sys.platform == "win32":
@@ -303,7 +322,8 @@ def _cross_process_lock(directory: Path, deadline: Optional[float] = None) -> It
     is never read for content, only locked).
 
     Acquisition polls ``_try_lock_exclusive`` rather than blocking
-    indefinitely, so a stuck peer is a bounded, logged wait
+    indefinitely, pausing 1 ms after the first miss and twice as long after
+    each next one up to 50 ms (``_poll_pauses``), so a stuck peer is a bounded, logged wait
     (``LockUnavailableError`` after ``_LOCK_TIMEOUT_SECONDS``) instead of
     an indefinite hang with no explanation. An ``OSError`` that isn't
     "someone else holds it" means the filesystem itself does not support
@@ -360,6 +380,7 @@ def _cross_process_lock(directory: Path, deadline: Optional[float] = None) -> It
         if deadline is None:
             deadline = time.monotonic() + _LOCK_TIMEOUT_SECONDS
         warned = False
+        pauses = _poll_pauses()
         while True:
             try:
                 if _try_lock_exclusive(fd):
@@ -381,7 +402,8 @@ def _cross_process_lock(directory: Path, deadline: Optional[float] = None) -> It
             if not warned:
                 logger.warning(f"Waiting for the write lock on {directory}...")
                 warned = True
-            time.sleep(_LOCK_POLL_INTERVAL_SECONDS)
+            # Never past the deadline: the last pause is what is left of it.
+            time.sleep(min(next(pauses), deadline - time.monotonic()))
         try:
             yield
         finally:

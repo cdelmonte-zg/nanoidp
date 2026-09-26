@@ -144,6 +144,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   page was wrong.
 
 ### Changed
+- **A process that finds the configuration directory's lock taken tries
+  again after 1 ms, then 2, 4, up to 50 ms between tries** (#426, point 3).
+  It waited a fixed 50 ms after every miss, so a request that met a 7 ms
+  write, or a write that met a 0.1 ms freshness read, paid the poll and not
+  the section: measured on one host, the p99 latency of a token request
+  under two file writes a second was 82 ms against 31 ms at rest, and 157 ms
+  under twenty; with the doubling pause, 45 ms and 59 ms, the p99 at rest unchanged (31 ms). The 10 s deadline, the 0.5 s wait of the
+  other requests and the error shapes are unchanged; the keys directory's
+  lock is the same primitive and tries again the same way. The measurements
+  behind this, and the policies decided against on their basis (a shorter
+  reader timeout, a cooldown after a timeout, a backoff shared between
+  processes), are recorded in #426.
 - **A client credentials token is the client's own** (#445). It was issued
   for the `default_user` of `users.yaml`, as if that user had logged in:
   `sub` was the user's name and the token carried the user's `roles`,

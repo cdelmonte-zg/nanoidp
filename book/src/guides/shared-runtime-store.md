@@ -99,6 +99,28 @@ process that waited longer than it should answers `503` with `Retry-After`
 over HTTP, and `MCP_RUNTIME_STORE_UNAVAILABLE` with `retryable: true` in
 MCP, rather than making up an answer. Both mean the same thing: ask again.
 
+## Configuration freshness
+
+With a shared runtime store, a request that reads the configuration first
+checks whether another process changed the files: a `stat` of the two files,
+and a read under the configuration directory's lock only when they changed,
+or were changed within the last two seconds. That lock is the writers' lock,
+the one a save from the web UI, an MCP `save_config` or a promotion takes.
+One freshness check in a process may wait for it, for up to 10 seconds,
+while another process holds it; the other requests of that process wait for
+that check for up to 0.5 seconds and then answer `503 configuration_unavailable`
+(`freshness_in_progress`) with `Retry-After: 1`, and the check that waited
+the whole 10 seconds answers the same with `lock_timeout`. A worker with one
+thread cannot run those requests alongside the waiting one, so its requests
+queue behind it instead. Health and static-file requests do not check.
+
+Orders of magnitude measured on one host, not promises
+([#426](https://github.com/cdelmonte-zg/nanoidp/issues/426)): a freshness
+read holds the lock for about 0.1 ms, a small write for 7 to 9 ms, a write
+of a `users.yaml` with five hundred users for about a third of a second. A
+process that finds the lock taken tries again after 1 ms, then 2, 4, and so
+on up to 50 ms between tries, within the same 10 seconds.
+
 ## See also
 
 - [Disposable test identities](runtime-identities.md), the identities this
