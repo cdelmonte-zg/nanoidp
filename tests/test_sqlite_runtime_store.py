@@ -23,6 +23,7 @@ import time
 
 import pytest
 
+from nanoidp.app import RUNTIME_STORE_UNAVAILABLE_TEXT
 from nanoidp.config import User
 from nanoidp.services import sqlite_runtime_store as sqlite_module
 from nanoidp.services.runtime_repository import (
@@ -694,8 +695,12 @@ class TestContention:
     def test_the_endpoints_say_come_back(self, client, monkeypatch):
         from nanoidp.services import auth_code
 
+        sentinel = "/srv/nanoidp/secret-state-4b9d/runtime.db"
+
         def held(*args, **kwargs):
-            raise RuntimeStoreUnavailable("the runtime store is held by another process")
+            raise RuntimeStoreUnavailable(
+                f"the runtime store is held by another process for longer than 5000 ms: database {sentinel} is locked"
+            )
 
         monkeypatch.setattr(auth_code.AuthCodeStore, "consume_code", held)
         response = client.post(
@@ -706,7 +711,13 @@ class TestContention:
 
         assert response.status_code == 503
         assert response.headers["Retry-After"]
-        assert response.get_json()["error"] == "runtime_store_unavailable"
+        # Fixed text: the exception's text (the store's failure, its file)
+        # is for the log, not for a body that reaches every client.
+        assert response.get_json() == {
+            "error": "runtime_store_unavailable",
+            "error_description": RUNTIME_STORE_UNAVAILABLE_TEXT,
+        }
+        assert sentinel not in response.get_data(as_text=True)
 
     def test_threads_each_have_their_connection_and_lose_nothing(self, tmp_path):
         users = _store(tmp_path / "runtime.db").users

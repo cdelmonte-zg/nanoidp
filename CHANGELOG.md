@@ -144,6 +144,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   page was wrong.
 
 ### Changed
+- **The `503`s for a configuration that cannot be used right now say so in
+  fixed words.** `configuration_unavailable`, `configuration_unloadable`
+  and `runtime_store_unavailable` carried the exception's text in
+  `error_description`: the configuration directory, the file that does not
+  load with the reason, or the store's failure. The first two answer a
+  runtime identity creation and `/register`; the third answers wherever
+  the runtime store is used, `/token` included. The text now goes to the
+  server log, where it already was, and the body carries a fixed sentence
+  per error. `error`, status codes and `Retry-After` are unchanged.
 - **`POST /api/keys/rotate` and the MCP `rotate_keys` tool refuse with a
   fixed message and a `kind`**: `external_keys_not_rotatable` (`409`, as
   before, the kind is new); `keys_directory_not_writable`, or
