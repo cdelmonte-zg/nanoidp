@@ -1,5 +1,9 @@
 """
-Flask application factory for NanoIDP.
+The Flask application of NanoIDP.
+
+``create_app()`` configures the process and returns its application. It
+is not a factory of independent applications: see its docstring for the
+one-instance-per-process contract.
 """
 
 import logging
@@ -86,7 +90,22 @@ def create_app(
     profile: Optional[str] = None,
     strict_config: Optional[bool] = None,
 ) -> Flask:
-    """Create and configure the Flask application."""
+    """Create and configure NanoIDP's single application for this process.
+
+    NanoIDP supports one application instance per process (#230, #407). A
+    successful second call replaces the process-wide ConfigManager, so an
+    application returned by an earlier call is not independent and
+    subsequently resolves the new configuration (its discovery document
+    names the new issuer). Process-wide services and runtime state are
+    shared.
+
+    The runtime store is chosen once per process. A later configuration
+    that requests different store inputs (kind or path) is rejected as a
+    configuration error, and the existing application remains in effect.
+
+    Tests that need a fresh process model reset the process-wide
+    singletons; see ``tests/conftest.py::_reset_process_singletons``.
+    """
     global limiter
 
     # Initialize configuration

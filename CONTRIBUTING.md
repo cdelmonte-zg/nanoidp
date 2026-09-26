@@ -137,6 +137,29 @@ constraint comments teach the next contributor a wrong module graph. The one
 real import constraint is the `serialization` contract above; everything
 else imports normally at module top.
 
+### One instance per process (#230, #407)
+
+A nanoidp process is one identity provider. `create_app()` configures the
+process-wide application; it is not a factory of independent applications.
+The `ConfigManager`, the signing service, the runtime store and the YAML
+writer are module globals resolved at call time, so a successful second
+`create_app()` in the same process replaces the configuration for all of
+them, and the application returned first resolves the new configuration
+from then on. The runtime store is chosen once per process: a later
+configuration that requests different store inputs (kind or path) is
+rejected, and the existing application remains in effect.
+
+Two consequences for a contributor. A new process-wide singleton that can
+survive one `create_app()` and affect the next test belongs in
+`_reset_process_singletons()` in `tests/conftest.py`; update that inventory
+when adding one (the rate limiter is process-global too, but every
+`create_app()` makes a new one, so it needs no reset). And a test builds
+one application: a second one in the same test would answer for both
+(`tests/test_dynamic_registration_api.py` says so where it matters).
+Handing `create_app()` an explicit context instead of the globals remains
+the documented next step of #230, to be taken only if embedding several
+instances in one process becomes a real need.
+
 ### Error surfaces (#287)
 
 Each surface class has ONE error shape; a new endpoint or tool uses its
