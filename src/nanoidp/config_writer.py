@@ -177,7 +177,9 @@ _LOCK_TIMEOUT_SECONDS = 10.0
 # a reader, paid the poll and not the section (p99 31 ms at rest, 82 ms
 # under two writes a second). Doubling reaches the cap after 63 ms, so a
 # long section (a write of users.yaml with five hundred users holds it for a
-# third of a second) and a stuck peer are polled as before.
+# third of a second) and a stuck peer are polled as before. Measured on
+# Linux; on Windows before Python 3.11 a pause shorter than about 16 ms
+# lasts that long, so the first tries are coarser there.
 _LOCK_POLL_INITIAL_SECONDS = 0.001
 _LOCK_POLL_MAX_SECONDS = 0.05
 
@@ -406,10 +408,11 @@ def _cross_process_lock(directory: Path, deadline: Optional[float] = None) -> It
                 )
             pause = next(pauses)
             if not warned and pause >= _LOCK_POLL_MAX_SECONDS:
-                # Once the pauses have reached the cap (63 ms in): a peer
-                # holding the lock for longer than a section takes, not the
-                # collision with a read or a write that the short pauses
-                # absorb, which under a shared store is routine.
+                # Once the pauses have reached the cap (63 ms in): a hold
+                # longer than the short pauses absorb, whether a large write
+                # (users.yaml with hundreds of users, a third of a second) or
+                # a peer that is stuck. Not the collision with a read or an
+                # ordinary write, which under a shared store is routine.
                 logger.warning(f"Waiting for the write lock on {directory}...")
                 warned = True
             # Never past the deadline: the last pause is what is left of it.

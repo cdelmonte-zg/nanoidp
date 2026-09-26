@@ -493,10 +493,12 @@ class TestLockPolling:
         ] * warnings
 
     def test_the_clock_is_read_once_per_try_so_a_pause_is_never_negative(self, tmp_path, monkeypatch):
-        """The deadline check and the pause share one reading of the clock:
-        read twice, a clock that crossed the deadline in between gave
-        time.sleep a negative length, a ValueError where the callers
-        classify only LockUnavailableError."""
+        """The deadline check and the pause share one reading of the clock.
+        Read twice, as the first version of the doubling pause did (never
+        released: the fixed 50 ms pause before it could not go negative), a
+        clock that crossed the deadline in between gave time.sleep a
+        negative length, a ValueError where the callers classify only
+        LockUnavailableError."""
         monkeypatch.setattr(config_writer, "_try_lock_exclusive", lambda fd: False)
         monkeypatch.setattr(config_writer, "_LOCK_TIMEOUT_SECONDS", 0.2)
         # The deadline is set at 1000.2; the check passes at 1000.19 and
