@@ -99,7 +99,7 @@ implicitly throughout the project's history; this writes them down.
   way to react to configuration events from outside (mirror, notify,
   bootstrap): nanoidp provides the extension points, the deploy provides
   whatever sits behind them.
-- **Production persistence and distributed state.** Runtime protocol
+- **Production persistence and distributed state.** Runtime protocol and test
   state (authorization transactions and codes, device codes, token
   revocations and refresh-token families, the audit log, runtime-created
   clients and users) lives behind a runtime store: in memory by default,
