@@ -11,8 +11,6 @@ from ..config import ConfigurationRejected, get_config
 from ..config_writer import LockUnavailableError
 from ..hooks import HookError
 from ..services import (
-    EXTERNAL_KEYS_NOT_ROTATABLE,
-    EXTERNAL_KEYS_NOT_ROTATABLE_KIND,
     ExternalKeysNotRotatable,
     get_audit_log,
     get_crypto_service,
@@ -297,19 +295,13 @@ def rotate_keys() -> ResponseReturnValue:
 
     try:
         result = crypto.rotate_keys()
-    except ExternalKeysNotRotatable:
-        # Operator-provided keys (#358): nothing was rotated. The fixed
-        # message, not the exception's text.
-        return (
-            jsonify({"success": False, "error": EXTERNAL_KEYS_NOT_ROTATABLE, "kind": EXTERNAL_KEYS_NOT_ROTATABLE_KIND}),
-            409,
-        )
-    except LockUnavailableError as refused:
-        # The keys directory refused (#420): one this process cannot write
-        # (409, permanent) or a lock it could not take (503). The exception
-        # names the directory; that stays in the log, the body carries the
-        # fixed message and the kind (CodeQL 32/33). Retry-After on the
-        # 503 as before, whatever the kind.
+    except (ExternalKeysNotRotatable, LockUnavailableError) as refused:
+        # Nothing was rotated: operator keys (#358), a keys directory this
+        # process cannot write (409, permanent), or a lock it could not
+        # take (503, #420). The exception may name the directory; that
+        # stays in the log, the body carries the fixed message and the
+        # kind (CodeQL 32/33). Retry-After on the 503 as before, whatever
+        # the kind.
         logger.warning("Key rotation refused: %s", refused)
         message, kind, permanent = rotation_refusal(refused)
         response = jsonify({"success": False, "error": message, "kind": kind})

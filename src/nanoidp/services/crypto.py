@@ -89,21 +89,31 @@ KEYS_DIRECTORY_LOCK_UNAVAILABLE = "The keys directory lock could not be taken: n
 EXTERNAL_KEYS_NOT_ROTATABLE_KIND = "external_keys_not_rotatable"
 
 
-def rotation_refusal(refused: LockUnavailableError) -> Tuple[str, str, bool]:
-    """What a surface answers for a rotation the keys directory refused: the
-    fixed message, the kind, and whether the refusal is permanent. A
-    directory this process cannot write (LockNamespaceUnavailable, and its
-    subclass for one whose lock file is there) is permanent; a lock that was
-    not had is not, and its kind says whether coming back may help
-    (lock_timeout) or the filesystem cannot lock at all (lock_unsupported).
-    The HTTP route and the MCP tool both answer through here."""
+class ExternalKeysNotRotatable(ValueError):
+    """Rotation was requested for operator-provided signing keys (#358).
+    Same shape as the lock exceptions (``kind``), so one refusal helper
+    answers for all three."""
+
+    kind = EXTERNAL_KEYS_NOT_ROTATABLE_KIND
+
+
+def rotation_refusal(
+    refused: "Union[ExternalKeysNotRotatable, LockUnavailableError]",
+) -> Tuple[str, str, bool]:
+    """What a surface answers for a rotation that was refused: the fixed
+    message, the kind, and whether the refusal is permanent. Operator
+    keys are never rotated; a directory this process cannot write
+    (LockNamespaceUnavailable, and its subclass for one whose lock file is
+    there) is permanent too; a lock that was not had is not, and its kind
+    says whether coming back may help (lock_timeout) or the filesystem
+    cannot lock at all (lock_unsupported). The exceptions name the keys
+    directory, which is for the log, never for the answer. The HTTP route
+    and the MCP tool both answer through here."""
+    if isinstance(refused, ExternalKeysNotRotatable):
+        return EXTERNAL_KEYS_NOT_ROTATABLE, refused.kind, True
     permanent = isinstance(refused, LockNamespaceUnavailable)
     message = KEYS_DIRECTORY_NOT_WRITABLE if permanent else KEYS_DIRECTORY_LOCK_UNAVAILABLE
     return message, refused.kind, permanent
-
-
-class ExternalKeysNotRotatable(ValueError):
-    """Rotation was requested for operator-provided signing keys (#358)."""
 
 
 def _signing_inputs(
@@ -367,7 +377,7 @@ class CryptoService:
                     now = self._keys
                     certificate = self._certificate_for(now.priv_pem, now.pub_pem)
                 key_directory.replace_certificate(self.keys_dir, certificate, name)
-        except key_directory.LockNamespaceUnavailable:
+        except LockNamespaceUnavailable:
             logger.warning(f"{self.keys_dir} is not writable: the SAML certificate was not saved")
         return certificate
 

@@ -14,8 +14,6 @@ from ..config_validation import UNAVAILABLE, validate_config_result
 from ..config_writer import ConflictError, LockUnavailableError
 from ..hooks import HookError
 from ..services import (
-    EXTERNAL_KEYS_NOT_ROTATABLE,
-    EXTERNAL_KEYS_NOT_ROTATABLE_KIND,
     ExternalKeysNotRotatable,
     build_discovery_document,
     get_audit_log,
@@ -329,13 +327,11 @@ def _tool_rotate_keys(arguments: dict[str, Any], config: ConfigManager, loaded: 
     crypto = get_crypto_service()
     try:
         result = crypto.rotate_keys()
-    except ExternalKeysNotRotatable:
-        # Operator-provided keys (#358): nothing was rotated.
-        return {"success": False, "error": EXTERNAL_KEYS_NOT_ROTATABLE, "kind": EXTERNAL_KEYS_NOT_ROTATABLE_KIND}
-    except LockUnavailableError as refused:
-        # The keys directory refused (#420): nothing was rotated. The same
-        # fixed message and kind as /api/keys/rotate; the directory the
-        # exception names goes to the log.
+    except (ExternalKeysNotRotatable, LockUnavailableError) as refused:
+        # Nothing was rotated: operator keys (#358), a keys directory this
+        # process cannot write, or a lock it could not take (#420). The
+        # same fixed message and kind as /api/keys/rotate; the directory
+        # the exception may name goes to the log.
         logger.warning("Key rotation refused: %s", refused)
         message, kind, _ = rotation_refusal(refused)
         return {"success": False, "error": message, "kind": kind}

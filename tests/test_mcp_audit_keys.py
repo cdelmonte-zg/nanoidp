@@ -13,7 +13,7 @@ import pytest
 
 from nanoidp.config import get_config
 from nanoidp.config_writer import LockNamespaceUnavailable, LockUnavailableError
-from nanoidp.mcp_server import _execute_tool
+from nanoidp.mcp_server import MUTATING_TOOLS, _execute_tool
 from nanoidp.services import (
     EXTERNAL_KEYS_NOT_ROTATABLE,
     EXTERNAL_KEYS_NOT_ROTATABLE_KIND,
@@ -170,3 +170,12 @@ class TestKeyTools:
             "error": EXTERNAL_KEYS_NOT_ROTATABLE,
             "kind": EXTERNAL_KEYS_NOT_ROTATABLE_KIND,
         }
+
+
+class TestToolClassification:
+    def test_mutating_tools_membership(self):
+        assert "clear_audit_log" in MUTATING_TOOLS
+        assert "rotate_keys" in MUTATING_TOOLS
+        assert "get_audit_log" not in MUTATING_TOOLS
+        assert "get_audit_stats" not in MUTATING_TOOLS
+        assert "get_keys_info" not in MUTATING_TOOLS
