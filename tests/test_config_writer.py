@@ -6,6 +6,8 @@ disk - no ``ConfigManager``/``YamlWriter`` involved yet (phase 3 migrates
 ``YamlWriter`` onto this primitive).
 """
 
+import itertools
+import logging
 import multiprocessing
 import sys
 import threading
@@ -14,11 +16,14 @@ from pathlib import Path
 
 import pytest
 
+from nanoidp import config_writer
 from nanoidp.config_writer import (
     ConflictError,
+    LockUnavailableError,
     compare_and_replace,
     compare_and_replace_many,
     current_revision,
+    directory_lock,
 )
 from nanoidp.serialization import load_yaml_document
 
@@ -439,3 +444,95 @@ class TestCompareAndReplaceMany:
 
         assert a.read_text().strip() == "x: 1"
         assert b.read_text().strip() == "y: 1"
+
+
+class TestLockPolling:
+    """The pause between two tries of the file lock doubles from 1 ms to
+    50 ms (#426 point 3): a collision with a short section costs about the
+    section, and a long one is polled as before. The deadline is untouched."""
+
+    def test_the_pauses_double_from_one_millisecond_to_the_cap(self):
+        assert list(itertools.islice(config_writer._poll_pauses(), 9)) == [
+            0.001, 0.002, 0.004, 0.008, 0.016, 0.032, 0.05, 0.05, 0.05,
+        ]
+
+    def test_an_acquisition_pauses_by_the_schedule_until_the_lock_is_free(self, tmp_path, monkeypatch):
+        tries = iter([False] * 8 + [True])
+        monkeypatch.setattr(config_writer, "_try_lock_exclusive", lambda fd: next(tries))
+        # The stub takes no lock, so there is none to release: on Windows
+        # unlocking a region that was never locked raises.
+        monkeypatch.setattr(config_writer, "_unlock", lambda fd: None)
+        slept = []
+        monkeypatch.setattr(time, "sleep", slept.append)
+
+        entered = False
+        with directory_lock(tmp_path):
+            entered = True
+
+        assert entered
+        assert slept == [0.001, 0.002, 0.004, 0.008, 0.016, 0.032, 0.05, 0.05]
+
+    @pytest.mark.parametrize("misses, warnings", [(6, 0), (7, 1), (12, 1)])
+    def test_the_wait_is_logged_once_the_pauses_have_reached_the_cap(
+        self, tmp_path, monkeypatch, caplog, misses, warnings
+    ):
+        """A collision with a read or a write is absorbed by the short
+        pauses in silence; a peer that holds the lock past them is said
+        once."""
+        tries = iter([False] * misses + [True])
+        monkeypatch.setattr(config_writer, "_try_lock_exclusive", lambda fd: next(tries))
+        monkeypatch.setattr(config_writer, "_unlock", lambda fd: None)
+        monkeypatch.setattr(time, "sleep", lambda seconds: None)
+
+        with caplog.at_level(logging.WARNING, logger="nanoidp.config_writer"):
+            with directory_lock(tmp_path):
+                pass
+
+        assert [r.getMessage() for r in caplog.records if "Waiting for the write lock" in r.getMessage()] == [
+            f"Waiting for the write lock on {tmp_path}..."
+        ] * warnings
+
+    def test_the_clock_is_read_once_per_try_so_a_pause_is_never_negative(self, tmp_path, monkeypatch):
+        """The deadline check and the pause share one reading of the clock.
+        Read twice, as the first version of the doubling pause did (never
+        released: the fixed 50 ms pause before it could not go negative), a
+        clock that crossed the deadline in between gave time.sleep a
+        negative length, a ValueError where the callers classify only
+        LockUnavailableError."""
+        monkeypatch.setattr(config_writer, "_try_lock_exclusive", lambda fd: False)
+        monkeypatch.setattr(config_writer, "_LOCK_TIMEOUT_SECONDS", 0.2)
+        # The deadline is set at 1000.2; the check passes at 1000.19 and
+        # every later reading, however many there are, is past it.
+        readings = itertools.chain([1000.0, 1000.19], itertools.repeat(1000.25))
+        monkeypatch.setattr(time, "monotonic", lambda: next(readings))
+        slept = []
+        monkeypatch.setattr(time, "sleep", slept.append)
+
+        with pytest.raises(LockUnavailableError) as caught:
+            with directory_lock(tmp_path):
+                pass
+
+        assert caught.value.kind == "lock_timeout"
+        assert slept == [pytest.approx(0.001)]
+        assert all(seconds >= 0 for seconds in slept)
+
+    def test_the_deadline_ends_the_wait_and_the_last_pause_is_what_is_left(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config_writer, "_try_lock_exclusive", lambda fd: False)
+        monkeypatch.setattr(config_writer, "_LOCK_TIMEOUT_SECONDS", 0.2)
+        clock = [1000.0]
+        slept = []
+
+        def sleep(seconds):
+            slept.append(seconds)
+            clock[0] += seconds
+
+        monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+        monkeypatch.setattr(time, "sleep", sleep)
+
+        with pytest.raises(LockUnavailableError) as caught:
+            with directory_lock(tmp_path):
+                pass
+
+        assert caught.value.kind == "lock_timeout"
+        assert slept == pytest.approx([0.001, 0.002, 0.004, 0.008, 0.016, 0.032, 0.05, 0.05, 0.037])
+        assert abs(sum(slept) - 0.2) < 1e-9
