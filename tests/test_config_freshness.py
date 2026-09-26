@@ -1445,7 +1445,10 @@ class TestTheCriticalCreation:
         with caplog.at_level(logging.WARNING):
             response = client.post(path, json=body)
 
-        assert any(str(config_dir) in record.getMessage() for record in caplog.records)
+        # The handler's own record, with the directory and the cause.
+        refused = [r.getMessage() for r in caplog.records if r.getMessage().startswith("Refused against")]
+        assert len(refused) == 1
+        assert str(config_dir) in refused[0] and "Input/output error" in refused[0]
         assert response.status_code == 503 and response.headers["Retry-After"] == "5"
         assert response.get_json() == {
             "error": "configuration_unavailable",

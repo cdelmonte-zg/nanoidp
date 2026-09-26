@@ -41,7 +41,9 @@ CONFIGURATION_UNLOADABLE_TEXT = (
     "The configuration files changed and do not load; the configuration loaded before stays "
     "in force until they are fixed."
 )
-RUNTIME_STORE_UNAVAILABLE_TEXT = "The runtime store is held by another process; try again."
+# "Another writer": SQLite reports contention between processes and between
+# this process's own connections the same way.
+RUNTIME_STORE_UNAVAILABLE_TEXT = "The runtime store is held by another writer; try again."
 
 # Global limiter instance (initialized in create_app)
 limiter: Optional[Limiter] = None
