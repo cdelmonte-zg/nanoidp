@@ -14,12 +14,12 @@ import pytest
 from nanoidp.config import get_config
 from nanoidp.config_writer import LockNamespaceUnavailable, LockUnavailableError
 from nanoidp.mcp_server import MUTATING_TOOLS, _execute_tool
-from nanoidp.services import (
+from nanoidp.services import get_audit_log
+from nanoidp.services.crypto import (
     EXTERNAL_KEYS_NOT_ROTATABLE,
     EXTERNAL_KEYS_NOT_ROTATABLE_KIND,
     KEYS_DIRECTORY_LOCK_UNAVAILABLE,
     KEYS_DIRECTORY_NOT_WRITABLE,
-    get_audit_log,
 )
 from nanoidp.services.key_directory import KeysDirectoryNotWritable
 
@@ -148,7 +148,7 @@ class TestKeyTools:
         directory = "/srv/nanoidp/secret-keys-9f3a"
         service = crypto_module.get_crypto_service()
         monkeypatch.setattr(service, "rotate_keys", lambda: (_ for _ in ()).throw(raised(directory)))
-        with app.app_context(), caplog.at_level(logging.WARNING, logger="nanoidp.mcp_server.handlers_config"):
+        with app.app_context(), caplog.at_level(logging.WARNING, logger="nanoidp.services.crypto"):
             result = await _execute_tool("rotate_keys", {}, get_config())
 
         assert result == {"success": False, "error": message, "kind": kind}

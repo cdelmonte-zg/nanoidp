@@ -30,14 +30,14 @@ from cryptography.hazmat.primitives import serialization
 
 from nanoidp import serialization as nanoidp_serialization
 from nanoidp.config_writer import LockNamespaceUnavailable, LockUnavailableError
-from nanoidp.services import (
+from nanoidp.services import key_directory
+from nanoidp.services.crypto import (
     EXTERNAL_KEYS_NOT_ROTATABLE,
     EXTERNAL_KEYS_NOT_ROTATABLE_KIND,
     KEYS_DIRECTORY_LOCK_UNAVAILABLE,
     KEYS_DIRECTORY_NOT_WRITABLE,
-    key_directory,
+    CryptoService,
 )
-from nanoidp.services.crypto import CryptoService
 
 _REPO = Path(__file__).resolve().parent.parent
 _SPAWN = multiprocessing.get_context("spawn")
@@ -942,7 +942,7 @@ class TestTheRotateEndpointKeepsTheDirectoryOutOfTheBody:
         service = crypto_module.get_crypto_service()
         monkeypatch.setattr(service, "rotate_keys", lambda: (_ for _ in ()).throw(raised(directory)))
 
-        with caplog.at_level(logging.WARNING, logger="nanoidp.routes.api"):
+        with caplog.at_level(logging.WARNING, logger="nanoidp.services.crypto"):
             response = client.post("/api/keys/rotate")
 
         body = response.get_json()
@@ -955,16 +955,19 @@ class TestTheRotateEndpointKeepsTheDirectoryOutOfTheBody:
         else:
             assert "Retry-After" not in response.headers
 
-    def test_external_keys_are_refused_with_the_kind_beside_the_fixed_message(self, client, monkeypatch):
+    def test_external_keys_are_refused_with_the_kind_beside_the_fixed_message(self, client, monkeypatch, caplog):
+        """A documented configuration state: answered, not warned about."""
         from nanoidp.services import crypto as crypto_module
         from nanoidp.services.crypto import ExternalKeysNotRotatable
 
         service = crypto_module.get_crypto_service()
         monkeypatch.setattr(service, "rotate_keys", lambda: (_ for _ in ()).throw(ExternalKeysNotRotatable()))
 
-        response = client.post("/api/keys/rotate")
+        with caplog.at_level(logging.WARNING, logger="nanoidp.services.crypto"):
+            response = client.post("/api/keys/rotate")
 
         assert response.status_code == 409 and "Retry-After" not in response.headers
+        assert not [r for r in caplog.records if "Key rotation refused" in r.getMessage()]
         assert response.get_json() == {
             "success": False,
             "error": EXTERNAL_KEYS_NOT_ROTATABLE,

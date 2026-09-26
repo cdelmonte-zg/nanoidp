@@ -5,7 +5,6 @@ the #229 revision-precondition semantics on save_config and the settings
 normalizer table contract (tests/test_settings_plumbing_parity.py).
 """
 
-import logging
 from typing import Any, Optional
 
 from ..config import ConfigManager, ConfigSnapshot, ConfigurationRejected, ReloadAfterSaveError
@@ -22,8 +21,6 @@ from ..services import (
 )
 from ..services.runtime_store import runtime_store_report
 from .normalize import _UPDATE_SETTINGS_FIELDS, _UPDATE_SETTINGS_NORMALIZERS
-
-logger = logging.getLogger(__name__)
 
 
 # Configuration
@@ -331,8 +328,7 @@ def _tool_rotate_keys(arguments: dict[str, Any], config: ConfigManager, loaded: 
         # Nothing was rotated: operator keys (#358), a keys directory this
         # process cannot write, or a lock it could not take (#420). The
         # same fixed message and kind as /api/keys/rotate; the directory
-        # the exception may name goes to the log.
-        logger.warning("Key rotation refused: %s", refused)
+        # the exception may name goes to the log, written by the helper.
         message, kind, _ = rotation_refusal(refused)
         return {"success": False, "error": message, "kind": kind}
     get_audit_log().log(

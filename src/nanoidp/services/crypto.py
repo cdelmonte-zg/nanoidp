@@ -98,7 +98,7 @@ class ExternalKeysNotRotatable(ValueError):
 
 
 def rotation_refusal(
-    refused: "Union[ExternalKeysNotRotatable, LockUnavailableError]",
+    refused: Union[ExternalKeysNotRotatable, LockUnavailableError],
 ) -> Tuple[str, str, bool]:
     """What a surface answers for a rotation that was refused: the fixed
     message, the kind, and whether the refusal is permanent. Operator
@@ -106,11 +106,13 @@ def rotation_refusal(
     (LockNamespaceUnavailable, and its subclass for one whose lock file is
     there) is permanent too; a lock that was not had is not, and its kind
     says whether coming back may help (lock_timeout) or the filesystem
-    cannot lock at all (lock_unsupported). The exceptions name the keys
-    directory, which is for the log, never for the answer. The HTTP route
-    and the MCP tool both answer through here."""
+    cannot lock at all (lock_unsupported). The lock exceptions name the
+    keys directory: it is logged here, once, and never answered. The HTTP
+    route and the MCP tool both answer through here."""
     if isinstance(refused, ExternalKeysNotRotatable):
+        # A documented configuration state, not something to warn about.
         return EXTERNAL_KEYS_NOT_ROTATABLE, refused.kind, True
+    logger.warning("Key rotation refused: %s", refused)
     permanent = isinstance(refused, LockNamespaceUnavailable)
     message = KEYS_DIRECTORY_NOT_WRITABLE if permanent else KEYS_DIRECTORY_LOCK_UNAVAILABLE
     return message, refused.kind, permanent
