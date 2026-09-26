@@ -151,8 +151,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   keys directory this process cannot write (`409`); `lock_timeout` or
   `lock_unsupported` for a lock that could not be taken (`503`). The body
   used to carry the exception's text, which names the keys directory; that
-  now goes to the server log, as the configuration endpoints already did,
-  and the web UI's **Regenerate keys** shows the same fixed message where
+  now goes to the server log, as the HTTP handler for a configuration
+  directory's lock already did, and the web UI's **Regenerate keys** shows the same fixed message where
   it showed the exception's text (any other failure there is "see the
   server log"). Status codes are unchanged; `Retry-After` on the `503` is
   sent for `lock_timeout` only, no longer for `lock_unsupported`, which a
