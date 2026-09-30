@@ -67,7 +67,7 @@ The access token is the user's: its `sub` is the user who approved, with
 that user's roles, and its `client_id` is `cli-tool`.
 
 A device code lives 600 seconds, and clients are told to poll every 5. In
-releases after 3.3.0 both can be set, which makes `expired_token` testable
+3.4.0 and later both can be set, which makes `expired_token` testable
 in a second:
 
 ```yaml
