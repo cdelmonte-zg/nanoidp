@@ -97,6 +97,10 @@ def build_discovery_document(
         # Only the authorization code flow is implemented; the implicit flow is
         # deprecated by the OAuth 2.0 Security BCP and intentionally absent.
         "response_types_supported": ["code"],
+        # REQUIRED by Discovery section 3, missing until #464. Subjects are
+        # public: sub is the username, or the client_id for client
+        # credentials (#445); nothing pairwise exists.
+        "subject_types_supported": ["public"],
         "id_token_signing_alg_values_supported": ["RS256"],
         # Settings-driven (#186), default unchanged - see Settings.scopes_supported.
         "scopes_supported": settings.scopes_supported,

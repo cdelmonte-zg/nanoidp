@@ -408,6 +408,12 @@ named.
   second-factor screens, which already said `no-store`, say
   `Pragma: no-cache` too. The discovery documents and the JWKS stay
   cacheable.
+- **Discovery publishes `subject_types_supported`** (#464). The member is
+  REQUIRED by OpenID Connect Discovery 1.0 section 3 and was the only one
+  of the seven missing; the value is `["public"]`, the one kind of subject
+  NanoIDP issues (`sub` is the username, or the `client_id` for client
+  credentials). The MCP `get_oidc_discovery` tool serves the same
+  document.
 - **A SAML assertion's `Audience` is the requesting service provider**
   (#443). Every SSO assertion carried `oauth.audience`, whichever service
   provider asked, where the Web Browser SSO profile requires the

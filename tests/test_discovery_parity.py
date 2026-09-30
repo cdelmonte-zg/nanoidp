@@ -107,3 +107,34 @@ class TestAuthorizationServerMetadata:
         OIDC rule has to be the inner one."""
         with app.test_request_context():
             assert url_for("oauth.oidc_config") == "/.well-known/openid-configuration"
+
+
+class TestRequiredMetadataIsPresent:
+    """OIDC Discovery 1.0 section 3 names seven REQUIRED members; the
+    document had six until #464, and no test said so. Pinned as a set, on
+    both names of the document, so the next omission fails here."""
+
+    REQUIRED = {
+        "issuer",
+        "authorization_endpoint",
+        "token_endpoint",
+        "jwks_uri",
+        "response_types_supported",
+        "subject_types_supported",
+        "id_token_signing_alg_values_supported",
+    }
+
+    @pytest.mark.parametrize(
+        "path",
+        ["/.well-known/openid-configuration", "/.well-known/oauth-authorization-server"],
+    )
+    def test_every_required_member_of_discovery_section_3(self, client, path):
+        doc = json.loads(client.get(path).data)
+        assert self.REQUIRED <= set(doc)
+
+    def test_subjects_are_public(self, client):
+        """sub is the username, or the client_id for client_credentials
+        (#445); nothing pairwise exists, so the only honest value is this
+        one, exactly."""
+        doc = json.loads(client.get("/.well-known/openid-configuration").data)
+        assert doc["subject_types_supported"] == ["public"]
