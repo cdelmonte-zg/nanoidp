@@ -281,8 +281,12 @@ class TestCredentialsAreNotCacheable:
             headers=_bearer(registered["registration_access_token"]),
         )
 
+        # The pair RFC 6749 §5.1 asks for on a response carrying credentials,
+        # from the one helper every such response goes through (#462).
         assert registered_response.headers["Cache-Control"] == "no-store"
+        assert registered_response.headers["Pragma"] == "no-cache"
         assert read.headers["Cache-Control"] == "no-store"
+        assert read.headers["Pragma"] == "no-cache"
 
 
 class TestManagingARegistration:

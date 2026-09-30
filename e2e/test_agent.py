@@ -2694,6 +2694,68 @@ class NanoIDPTestAgent:
         except Exception as e:
             return self._add_result("Public Client Device Flow", TestCategory.OAUTH, False, str(e))
 
+    def test_token_responses_are_never_stored(self) -> TestResult:
+        """Every response of /token says Cache-Control: no-store and
+        Pragma: no-cache, success and error alike (#462, RFC 6749 §5.1).
+        The discovery document does not: the rule is per view."""
+        name = "Token responses never stored"
+        try:
+            success = self.session.post(
+                f"{self.base_url}/token",
+                data={"grant_type": "client_credentials"},
+                timeout=5,
+            )
+            error = self.session.post(
+                f"{self.base_url}/token",
+                data={"grant_type": "no-such-grant"},
+                timeout=5,
+            )
+            discovery = self.session.get(
+                f"{self.base_url}/.well-known/openid-configuration", timeout=5
+            )
+            headers = {
+                "success": (success.status_code, success.headers.get("Cache-Control"), success.headers.get("Pragma")),
+                "error": (error.status_code, error.headers.get("Cache-Control"), error.headers.get("Pragma")),
+                "discovery": (discovery.status_code, discovery.headers.get("Cache-Control")),
+            }
+
+            def directives_of(cache_control):
+                return [d.strip() for d in (cache_control or "").split(",")]
+
+            def never_stored(response):
+                # A proxy in front may add directives of its own, so the
+                # header is read for no-store, not compared whole
+                return (
+                    "no-store" in directives_of(response.headers.get("Cache-Control"))
+                    and response.headers.get("Pragma") == "no-cache"
+                )
+
+            # A success and an error, each checked as what it claims to be,
+            # so two errors with the right headers cannot pass as both
+            success_is_one = success.status_code == 200 and "access_token" in success.json()
+            error_is_one = (
+                error.status_code == 400 and error.json().get("error") == "unsupported_grant_type"
+            )
+            ok = (
+                success_is_one
+                and error_is_one
+                and never_stored(success)
+                and never_stored(error)
+                and discovery.status_code == 200
+                and "no-store" not in directives_of(discovery.headers.get("Cache-Control"))
+            )
+            return self._add_result(
+                name,
+                TestCategory.OAUTH,
+                ok,
+                "no-store and no-cache on /token success and error, none on discovery"
+                if ok
+                else f"headers observed: {headers}",
+                headers,
+            )
+        except Exception as e:
+            return self._add_result(name, TestCategory.OAUTH, False, str(e))
+
     def test_extra_cannot_forge_the_token(self) -> TestResult:
         """`extra` adds claims and never changes the grant's (#451): a
         request naming sub, aud, exp or roles is refused before the grant,
@@ -6589,6 +6651,7 @@ class NanoIDPTestAgent:
                 self.test_jwks,
                 self.test_password_grant,
                 self.test_client_credentials,
+                self.test_token_responses_are_never_stored,
                 self.test_extra_cannot_forge_the_token,
                 self.test_issuer_from_request,
                 self.test_issuer_from_proxy_headers,

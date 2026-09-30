@@ -19,7 +19,7 @@ from ..services import (
     rotation_refusal,
 )
 from ..services.runtime_store import runtime_store_report
-from ._auth import management_secret_required_for_api
+from ._auth import management_secret_required_for_api, no_store_responses
 from ._config import request_config
 from ._identity_views import user_summary
 from ._issuer import effective_issuer, effective_saml_entity_id, effective_saml_sso_url
@@ -75,6 +75,7 @@ def get_user(username: str) -> ResponseReturnValue:
 
 
 @api_bp.route("/users/<username>/token", methods=["POST"])
+@no_store_responses
 def generate_token(username: str) -> ResponseReturnValue:
     """Generate a token for a user (for testing). The user and the optional
     client resolve like any protocol lookup, runtime ones included (#192)."""

@@ -396,6 +396,18 @@ named.
 
 ### Fixed
 
+- **A token response is never stored by a cache** (#462). No response of
+  `/token` carried `Cache-Control: no-store` or `Pragma: no-cache`, which
+  RFC 6749 §5.1 requires on every response carrying tokens, credentials
+  or other sensitive information (the OpenID conformance suite's
+  `oidcc-refresh-token` failed on it). Every response returned by the
+  views of `/token`, `/device_authorization`, `/userinfo`, `/introspect`
+  and `POST /api/users/{username}/token` now carries both, success and
+  error alike (a 405, a 429 or a 503 the endpoint did not build keeps its
+  own headers); the two registration responses that carry credentials and the
+  second-factor screens, which already said `no-store`, say
+  `Pragma: no-cache` too. The discovery documents and the JWKS stay
+  cacheable.
 - **A SAML assertion's `Audience` is the requesting service provider**
   (#443). Every SSO assertion carried `oauth.audience`, whichever service
   provider asked, where the Web Browser SSO profile requires the

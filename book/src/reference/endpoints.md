@@ -63,6 +63,17 @@ only `login_hint` applies the hint to the pending request
 curl examples for every grant are in
 [Requesting tokens](../guides/token-requests.md).
 
+What `/token`, `/device_authorization`, `/userinfo`, `/introspect` and
+`POST /api/users/{username}/token` answer carries `Cache-Control: no-store`
+and `Pragma: no-cache`, success and error alike (RFC 6749 §5.1 for the
+responses that carry tokens or credentials; a policy of nanoidp's own for
+user data and token state, so that nothing between a test client and the
+IdP answers from a cache). The two registration responses that carry
+credentials (#190) say the same. A response the endpoint itself did not
+build, such as a 405, a 429 from the rate limiter or a 503 while the
+configuration cannot be read, carries neither; nor do the discovery
+documents and the JWKS, which are public and cacheable.
+
 The standard OIDC `profile` / `email` claims (`email`, `email_verified`,
 `preferred_username`, ...) are served from `GET /userinfo`, not embedded
 in the tokens - see [Tokens and claims](tokens.md#where-do-the-email--profile-claims-come-from).

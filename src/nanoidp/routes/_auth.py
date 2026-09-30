@@ -4,15 +4,18 @@ in models.py), the management_secret mutation gate shared by ui_bp, api_bp
 and the MCP server (opt-in, off by default - see management_secret in
 models.py), the two-step login phase shared by every interactive
 password-form surface (#322/#323 review round 2), and the declarative
-TOTP second-factor phase riding the same machinery (#348).
+TOTP second-factor phase riding the same machinery (#348), and the
+no-store rule for the responses that carry tokens, credentials or other
+sensitive information (#462).
 """
 
+import functools
 import hashlib
 import hmac
 import secrets
 from dataclasses import dataclass
 from enum import Enum
-from typing import Mapping, Optional, Sequence
+from typing import Any, Callable, Mapping, Optional, Sequence
 
 from flask import Response, current_app, jsonify, make_response, redirect, request, session, url_for
 from flask.typing import ResponseReturnValue
@@ -472,13 +475,39 @@ def discard_pending_second_factor(
 
 
 def no_store(response: ResponseReturnValue) -> Response:
-    """Mark a code-screen response uncacheable (#348 review). The screen no
-    longer carries the password (#346, #373), but it names server-side login
-    state bound to this browser, which has no business sitting in a shared
-    or back/forward cache either."""
+    """Mark a response one that no cache may keep: the one home of the pair
+    RFC 6749 section 5.1 asks for on every response carrying a token, a
+    credential or other sensitive information (#462). Its callers are the
+    registration responses (#190), which carry a client secret, the
+    second-factor screens (#348 review), which name server-side login state
+    bound to this browser, and the views marked with no_store_responses.
+
+    Both headers, although OpenID Connect Core 3.1.3.3 (errata set 2) lists
+    only Cache-Control and HTTP deprecates Pragma: RFC 6749 is the text
+    that governs the token endpoint, and a header a client never reads
+    costs nothing."""
     resp = make_response(response)
     resp.headers["Cache-Control"] = "no-store"
+    resp.headers["Pragma"] = "no-cache"
     return resp
+
+
+def no_store_responses(view: Callable[..., ResponseReturnValue]) -> Callable[..., Response]:
+    """Every response the view returns goes through no_store(): success and
+    error alike, whatever the grant. Declared under the route so the rule
+    is read from it (#462).
+
+    It wraps what the view RETURNS. A response built elsewhere keeps its
+    own headers: a 405 from routing, a 429 from the rate limiter that wraps
+    the view, a 503 from the freshness check in before_request, or what an
+    error handler makes of an exception the view raised. None of them
+    carries a token."""
+
+    @functools.wraps(view)
+    def wrapped(*args: Any, **kwargs: Any) -> Response:
+        return no_store(view(*args, **kwargs))
+
+    return wrapped
 
 
 def is_ui_authenticated() -> bool:
