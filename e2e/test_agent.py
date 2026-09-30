@@ -294,12 +294,25 @@ class NanoIDPTestAgent:
                 grants = data.get("grant_types_supported", [])
                 # azp is emitted for multi-audience ID Tokens, so it must be advertised (#37).
                 azp_advertised = "azp" in data.get("claims_supported", [])
+                # The seven REQUIRED members of Discovery 1.0 section 3, and
+                # public as the only honest subject type: sub is a username
+                # or a client_id (#464).
+                required_members = {
+                    "issuer", "authorization_endpoint", "token_endpoint", "jwks_uri",
+                    "response_types_supported", "subject_types_supported",
+                    "id_token_signing_alg_values_supported",
+                }
+                missing_members = sorted(required_members - set(data))
+                subject_types = data.get("subject_types_supported")
                 return self._add_result(
                     "OIDC Discovery",
                     TestCategory.CORE,
-                    len(found) == len(required) and azp_advertised,
-                    f"{len(found)}/{len(required)} endpoints, grants: {len(grants)}, azp advertised: {azp_advertised}",
-                    {"endpoints": found, "grants": grants, "azp_advertised": azp_advertised}
+                    len(found) == len(required) and azp_advertised
+                    and not missing_members and subject_types == ["public"],
+                    f"{len(found)}/{len(required)} endpoints, grants: {len(grants)}, azp advertised: {azp_advertised}, "
+                    f"REQUIRED members missing: {missing_members}, subject types: {subject_types}",
+                    {"endpoints": found, "grants": grants, "azp_advertised": azp_advertised,
+                     "required_members_missing": missing_members, "subject_types_supported": subject_types}
                 )
             return self._add_result(
                 "OIDC Discovery",
