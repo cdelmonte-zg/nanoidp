@@ -84,6 +84,7 @@ from ._auth import (
     continue_second_factor,
     discard_pending_second_factor,
     no_store,
+    no_store_responses,
     two_step_phase,
 )
 from ._config import request_config
@@ -1650,6 +1651,7 @@ def _enforce_registered_client_auth(
 
 
 @oauth_bp.route("/token", methods=["POST"])
+@no_store_responses
 def token() -> ResponseReturnValue:
     """OAuth2 token endpoint: shared validation, then per-grant dispatch."""
     config = get_config()
@@ -1875,6 +1877,7 @@ def _extract_bearer_token() -> str | None:
 
 
 @oauth_bp.route("/userinfo", methods=["GET", "POST"])
+@no_store_responses
 def userinfo() -> ResponseReturnValue:
     """
     OIDC UserInfo endpoint.
@@ -1970,6 +1973,7 @@ def userinfo() -> ResponseReturnValue:
 
 
 @oauth_bp.route("/introspect", methods=["POST"])
+@no_store_responses
 def introspect() -> ResponseReturnValue:
     """
     Token Introspection endpoint (RFC 7662).
@@ -2277,6 +2281,7 @@ def _device_client(
 
 @oauth_bp.route("/device_authorization", methods=["POST"])
 @oauth_bp.route("/device/code", methods=["POST"])
+@no_store_responses
 def device_authorization() -> ResponseReturnValue:
     """
     Device Authorization endpoint (RFC 8628).
