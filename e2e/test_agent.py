@@ -2719,19 +2719,30 @@ class NanoIDPTestAgent:
                 "discovery": (discovery.status_code, discovery.headers.get("Cache-Control")),
             }
 
-            def never_stored(observed):
-                status, cache_control, pragma = observed
-                directives = [d.strip() for d in (cache_control or "").split(",")]
-                return status in (200, 400) and "no-store" in directives and pragma == "no-cache"
+            def directives_of(cache_control):
+                return [d.strip() for d in (cache_control or "").split(",")]
 
-            # A proxy in front may add a Cache-Control of its own, so the
-            # document is read for the directive, not for the header's absence
-            discovery_directives = [d.strip() for d in (headers["discovery"][1] or "").split(",")]
+            def never_stored(response):
+                # A proxy in front may add directives of its own, so the
+                # header is read for no-store, not compared whole
+                return (
+                    "no-store" in directives_of(response.headers.get("Cache-Control"))
+                    and response.headers.get("Pragma") == "no-cache"
+                )
+
+            # A success and an error, each checked as what it claims to be,
+            # so two errors with the right headers cannot pass as both
+            success_is_one = success.status_code == 200 and "access_token" in success.json()
+            error_is_one = (
+                error.status_code == 400 and error.json().get("error") == "unsupported_grant_type"
+            )
             ok = (
-                never_stored(headers["success"])
-                and never_stored(headers["error"])
-                and headers["discovery"][0] == 200
-                and "no-store" not in discovery_directives
+                success_is_one
+                and error_is_one
+                and never_stored(success)
+                and never_stored(error)
+                and discovery.status_code == 200
+                and "no-store" not in directives_of(discovery.headers.get("Cache-Control"))
             )
             return self._add_result(
                 name,
