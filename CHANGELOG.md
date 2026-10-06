@@ -2145,7 +2145,7 @@ previous leniency allowed - needs a one-time adjustment.
 ## [2.6.0] - 2026-08-21
 
 ### Documentation
-- **New guide: [Running behind a TLS-terminating reverse proxy](book/src/guides/reverse-proxy.md)**,
+- **New guide: [Running behind a TLS-terminating reverse proxy](https://cdelmonte-zg.github.io/nanoidp/guides/reverse-proxy.html)**,
   walking through composing `oauth.issuer`, `issuer_from_request`,
   `issuer_from_proxy_headers`, `issuer_allowlist`, `device_verification_base_url`
   and `POST /api/config/reload` for a proxied/containerized deployment, with

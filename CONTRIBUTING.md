@@ -226,7 +226,7 @@ Releases are cut by pushing a `v*` tag; two workflows publish to PyPI and
 GHCR and a wheel-smoke job exercises the built artifact before anything is
 published. The full process, with the exact commands, the verification
 checklist and the recovery procedures, lives in
-[docs/RELEASING.md](docs/RELEASING.md). In short: bump `pyproject.toml`
+[docs/RELEASING.md](https://github.com/cdelmonte-zg/nanoidp/blob/main/docs/RELEASING.md). In short: bump `pyproject.toml`
 through a PR, tag the merged commit (`v2.7.0-rc5` for a pre-release with a
 hyphen, `v2.7.0` for a final), create the GitHub release, then verify that
 every workflow job ran and that the published artifacts install and behave

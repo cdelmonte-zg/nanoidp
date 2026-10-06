@@ -18,6 +18,7 @@ on:
       - "docs/**"
       - "VISION.md"
       - "CHANGELOG.md"
+      - "CONTRIBUTING.md"
       - ".github/workflows/pages.yml"
   workflow_dispatch:
 
