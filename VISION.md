@@ -198,5 +198,6 @@ example of a theme that is in bounds and waiting for a concrete test case:
 the issue was closed without a scope and is kept as a decision record,
 and a use case reopens the subject with a new one.
 
-Anything not covered here is fair game for discussion: open an issue. The
+Anything not covered here is fair game for discussion: start one in
+[Discussions](https://github.com/cdelmonte-zg/nanoidp/discussions). The
 principles above, not this list, are the contract.

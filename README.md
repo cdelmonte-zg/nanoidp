@@ -144,6 +144,12 @@ Listing means NanoIDP is in use there. It does not imply sponsorship or
 endorsement. If you use it and would like to be listed, open an issue or a
 pull request against this section.
 
+## Questions and feedback
+
+Questions about a flow or a configuration, and ideas for the project, go in
+[Discussions](https://github.com/cdelmonte-zg/nanoidp/discussions).
+Bugs go in [Issues](https://github.com/cdelmonte-zg/nanoidp/issues).
+
 ## License
 
 MIT License. See [LICENSE](LICENSE) for details.
