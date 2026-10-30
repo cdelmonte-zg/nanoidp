@@ -2,6 +2,10 @@
 
 Thank you for your interest in contributing to NanoIDP!
 
+Questions and ideas belong in
+[Discussions](https://github.com/cdelmonte-zg/nanoidp/discussions); bugs
+in [Issues](https://github.com/cdelmonte-zg/nanoidp/issues).
+
 Before writing code, read the
 [Architecture page](https://cdelmonte-zg.github.io/nanoidp/project/architecture.html)
 (source: `book/src/project/architecture.md`): it maps the packages, the
@@ -21,9 +25,11 @@ flows (like adding a client field) that changes must follow.
 
 ### Feature Requests
 
-1. Open an issue describing the feature
-2. Explain the use case
-3. Wait for discussion before implementing
+1. Start a discussion in
+   [Ideas](https://github.com/cdelmonte-zg/nanoidp/discussions/categories/ideas)
+   describing the feature and the use case
+2. An issue is opened once the scope is agreed
+3. Wait for that issue before implementing
 
 ### Pull Requests
 
