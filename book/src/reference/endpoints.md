@@ -62,9 +62,12 @@ the access token until its own expiry and the whole refresh token family,
 so that `/userinfo` refuses the token, `/introspect` reports it inactive
 and the refresh token grant is refused; a request that does not bind to
 the code (another client, another redirect URI, a wrong verifier) is
-refused and revokes nothing. The used code is kept for the ten minutes of
-its life, which is the reuse window; access tokens already minted through
-a refresh of the family stay valid until their own expiry (#466).
+refused and revokes nothing. A code not yet redeemed lives ten minutes; a
+redeemed one is kept as long as the access token it issued, so that a
+replay in that time still revokes. Two limits remain: once the record is
+gone, a later replay leaves a refresh family that is still live usable,
+and access tokens already minted through a refresh of the family stay
+valid until their own expiry even when the family is revoked (#466).
 
 A `POST` names its transaction with `transaction_id`; when its own query
 string also carries OAuth request parameters, they must be exactly those of

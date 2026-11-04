@@ -16,8 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to issue are now recorded with the code in the decision that consumes
   it, so a replay that arrives before the first token is signed still
   finds them; a reuse revokes the access token until its own expiry and
-  the whole refresh family in one decision, and the record stays until the
-  code expires so a later reuse revokes again. The binding of the request
+  the whole refresh family in one decision, and the record stays as long
+  as the access token it issued is live (the code itself lives ten
+  minutes) so a later reuse revokes again. The binding of the request
   to the code (client, redirect URI, verifier) is verified before a reuse
   is recognised: whoever merely knows a used code revokes nothing. The
   reuse is audited as such. `/introspect` reports a refresh token whose

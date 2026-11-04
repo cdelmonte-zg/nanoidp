@@ -127,6 +127,52 @@ class TestAReuseRevokesWhatTheCodeIssued:
         assert _active(client, first["access_token"]) is False
         assert _active(client, first["refresh_token"]) is False
 
+    def test_at_minute_eleven_an_unused_code_is_expired_and_a_used_one_still_revokes(
+        self, client, app, monkeypatch
+    ):
+        """The code lives ten minutes; the redeemed record lives as long as
+        the access token it issued (an hour by default). At minute eleven
+        a code never redeemed is expired, and the replay of a redeemed one
+        revokes the first access token and the refresh family."""
+        import types
+
+        from nanoidp.services import auth_code as auth_code_module
+        from nanoidp.services import revocation as revocation_module
+
+        unused = _code(client)
+        used = _code(client)
+        first = _exchange(client, used).get_json()
+        real = time.time()
+        later = types.SimpleNamespace(time=lambda: real + 11 * 60)
+        monkeypatch.setattr(auth_code_module, "time", later)
+        monkeypatch.setattr(revocation_module, "time", later)
+
+        assert _exchange(client, unused).status_code == 400
+        with app.app_context():
+            assert get_auth_code_store().get_code_info(unused) is None
+        assert _exchange(client, used).status_code == 400
+        assert _active(client, first["access_token"]) is False
+        assert _active(client, first["refresh_token"]) is False
+        assert _failed_token_events(app)[0]["details"]["tokens_revoked"] is True
+
+    def test_the_store_keeps_the_record_as_long_as_the_access_token(self, client, app):
+        """The store's own expiry of the entry follows the record: the code's
+        ten minutes before the redemption, the access token's expiry after
+        it, and back to the code's when the ids are forgotten."""
+        code = _code(client)
+        with app.app_context():
+            store = get_auth_code_store()
+            before = store._repository.entry(code)
+            assert before.expires_at == before.value.expires_at.timestamp()
+        first = _exchange(client, code, exp="30").get_json()
+        payload = jwt.decode(first["access_token"], options={"verify_signature": False})
+        with app.app_context():
+            after = store._repository.entry(code)
+            assert after.expires_at == payload["exp"] == after.value.removable_at()
+            store.forget_issued(code)
+            forgotten = store._repository.entry(code)
+            assert forgotten.expires_at == forgotten.value.expires_at.timestamp()
+
     def test_the_access_token_carries_the_recorded_id_and_expiry(self, client):
         """What the code recorded before minting is what the token says:
         the same jti and the same exp, so the marker outlives the token by

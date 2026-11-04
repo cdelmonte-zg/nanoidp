@@ -92,11 +92,16 @@ class AuthorizationCode:
             self.resource = list(self.resource)
 
     def removable_at(self) -> float:
-        """When the store may drop this code: its own expiry, which is the
-        one time there is. The store's copy is derived from it here and
-        nowhere else, as a hint for the cleanup; whether a code is still
-        good is judged from the code."""
-        return self.expires_at.timestamp()
+        """When the store may drop this code: its own expiry for a code not
+        yet redeemed, and for a redeemed one the later of that and the
+        access token's expiry it recorded (#466), so that a reuse can
+        revoke the token as long as the token is live. The store's copy is
+        derived from it here and nowhere else, as a hint for the cleanup;
+        whether a code is still good is judged from the code."""
+        until = self.expires_at.timestamp()
+        if self.issued is not None:
+            until = max(until, self.issued.access_exp)
+        return until
 
 
 class AuthorizationCodeCodec:
@@ -149,8 +154,8 @@ _CODEC = AuthorizationCodeCodec()
 class CodeReused:
     """A redemption of a code already redeemed (RFC 6749 4.1.2): what the
     first redemption issued, for the caller to revoke, and whose session
-    it was, for the audit. The record stays until the code's own expiry,
-    so a later reuse can revoke again."""
+    it was, for the audit. The record stays as long as the access token it
+    issued is live, so a later reuse can revoke again."""
 
     issued: Optional[IssuedTokens]
     username: str
@@ -286,8 +291,9 @@ class AuthCodeStore:
         Consume (validate and mark as used) an authorization code.
 
         One decision (#43, #363): two concurrent redemptions cannot both
-        pass. A code is marked used and kept until its own expiry, so that
-        a second redemption is recognised as one (``CodeReused``, carrying
+        pass. A code is marked used and kept as long as the access token
+        it issued is live (removable_at; its own ten minutes otherwise),
+        so that a second redemption is recognised as one (``CodeReused``, carrying
         what the first issued, for the caller to revoke, #466); a request
         that does not match the code (another client, another redirect
         URI, a wrong or missing verifier) is refused and leaves it as it
@@ -327,8 +333,11 @@ class AuthCodeStore:
                 return _Refused.NOT_FOUND
             auth_code = entry.value
             # One instant for the decision: the expiry check and the record.
+            # A code not yet redeemed lives ten minutes; a redeemed one is
+            # kept as long as the access token it issued (removable_at), so
+            # that a replay in that time still revokes.
             now = time.time()
-            if now > auth_code.expires_at.timestamp():
+            if now > auth_code.removable_at():
                 view.delete(code)
                 return _Refused.EXPIRED
             if auth_code.client_id != client_id:
@@ -356,10 +365,12 @@ class AuthCodeStore:
                     int((minted_at + timedelta(seconds=access_lifetime_seconds)).timestamp())
                 )
                 issued = IssuedTokens(access_jti, access_exp, refresh_family)
-            return view.replace(
+            redeemed = view.replace(
                 code,
                 dataclasses.replace(auth_code, used=True, issued=issued, issued_at=issued_at),
             ).value
+            view.set_expires_at(code, redeemed.removable_at())
+            return redeemed
 
         outcome = self._repository.transact(decide)
         if isinstance(outcome, _Refused):
@@ -378,7 +389,8 @@ class AuthCodeStore:
         def decide(view: RepositoryTransaction[AuthorizationCode]) -> None:
             entry = view.entry(code)
             if entry is not None and entry.value.issued is not None:
-                view.replace(code, dataclasses.replace(entry.value, issued=None))
+                forgotten = view.replace(code, dataclasses.replace(entry.value, issued=None)).value
+                view.set_expires_at(code, forgotten.removable_at())
 
         self._repository.transact(decide)
 
