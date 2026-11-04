@@ -204,6 +204,35 @@ class RevocationStore:
 
         self._markers.transact(decide)
 
+    def revoke_issued(self, access_jti: str, access_exp: float, family: str) -> None:
+        """What an authorization code issued, revoked together on the code's
+        reuse (RFC 6749 4.1.2, #466): the access token's id until the
+        token's own expiry, the one the code recorded at redemption, and
+        the refresh family with the bounded default retention from now,
+        since a descendant may outlive the first refresh token. One
+        decision, idempotent and monotonic like ``revoke``: a reuse that
+        comes back after a failed commit revokes the same two markers."""
+
+        if self.is_revoked(access_jti) and self.is_family_revoked(family):
+            # Every replay of a used code comes through here: once both
+            # markers are there, nothing a write could add (the family's
+            # retention would move, which no descendant needs), and a
+            # shared store's write lock is not taken for it.
+            return
+
+        def decide(view: RepositoryTransaction[RevocationMarker]) -> None:
+            now = time.time()
+            view.delete_expired(now)
+            self._remember(view, _token(access_jti), self._effective_expiry(access_exp, now))
+            self._remember(view, _family(family), self._effective_expiry(_UNSET, now))
+
+        self._markers.transact(decide)
+
+    def is_family_revoked(self, family: Optional[str]) -> bool:
+        """Whether the rotation family's marker is there: one read, as
+        ``is_revoked``; read by introspection for a refresh token (#466)."""
+        return isinstance(family, str) and self._markers.entry(_family(family)) is not None
+
     def is_revoked(self, token_id: Optional[str]) -> bool:
         """Whether the marker is there: one read, and no cleanup.
 

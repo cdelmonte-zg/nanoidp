@@ -28,6 +28,17 @@ logger = logging.getLogger(__name__)
 CODE_LIFETIME_SECONDS = 600
 
 
+@dataclass(frozen=True)
+class IssuedTokens:
+    """The ids a redemption is about to issue, recorded on the code before
+    the tokens exist (#466), so that a reuse can revoke them even when it
+    arrives before the first token is signed."""
+
+    access_jti: str
+    access_exp: float
+    refresh_family: str
+
+
 @dataclass
 class AuthorizationCode:
     """Represents an OAuth2 authorization code."""
@@ -59,6 +70,13 @@ class AuthorizationCode:
         + timedelta(seconds=CODE_LIFETIME_SECONDS)
     )
     used: bool = False
+    # What the one redemption issued (#466), recorded in the decision that
+    # marks the code used, and the instant of that decision, which is the
+    # instant the tokens are minted at. A reuse revokes what is issued;
+    # nothing else reads it. Forgotten again when the exchange fails after
+    # the redemption, since nothing was issued then.
+    issued: Optional[IssuedTokens] = None
+    issued_at: Optional[float] = None
 
     def __post_init__(self) -> None:
         # The shape of a code, in one place, for a code made anywhere
@@ -74,11 +92,16 @@ class AuthorizationCode:
             self.resource = list(self.resource)
 
     def removable_at(self) -> float:
-        """When the store may drop this code: its own expiry, which is the
-        one time there is. The store's copy is derived from it here and
-        nowhere else, as a hint for the cleanup; whether a code is still
-        good is judged from the code."""
-        return self.expires_at.timestamp()
+        """When the store may drop this code: its own expiry for a code not
+        yet redeemed, and for a redeemed one the later of that and the
+        access token's expiry it recorded (#466), so that a reuse can
+        revoke the token as long as the token is live. The store's copy is
+        derived from it here and nowhere else, as a hint for the cleanup;
+        whether a code is still good is judged from the code."""
+        until = self.expires_at.timestamp()
+        if self.issued is not None:
+            until = max(until, self.issued.access_exp)
+        return until
 
 
 class AuthorizationCodeCodec:
@@ -100,12 +123,21 @@ class AuthorizationCodeCodec:
         written["created_at"] = value.created_at.isoformat()
         written["expires_at"] = value.expires_at.isoformat()
         written["amr"] = list(value.amr) if isinstance(value.amr, tuple) else value.amr
+        # Written only once there is something to write (#466): a code not
+        # yet redeemed reads back on a 3.4.0 process sharing the store, so
+        # that a version skew breaks only on the redeemed records, which
+        # that process could not revoke anyway.
+        for key in ("issued", "issued_at"):
+            if written[key] is None:
+                del written[key]
         return written
 
     def load(self, data: Any) -> AuthorizationCode:
         read = dict(data)
         read["created_at"] = datetime.fromisoformat(read["created_at"])
         read["expires_at"] = datetime.fromisoformat(read["expires_at"])
+        if read.get("issued") is not None:
+            read["issued"] = IssuedTokens(**read["issued"])
         return AuthorizationCode(**read)
 
 
@@ -116,6 +148,17 @@ def _code_of(auth_code: AuthorizationCode) -> str:
 # Given to the store once: the repository is created on the first request
 # and keeps the key function and the codec it was created with.
 _CODEC = AuthorizationCodeCodec()
+
+
+@dataclass(frozen=True)
+class CodeReused:
+    """A redemption of a code already redeemed (RFC 6749 4.1.2): what the
+    first redemption issued, for the caller to revoke, and whose session
+    it was, for the audit. The record stays as long as the access token it
+    issued is live, so a later reuse can revoke again."""
+
+    issued: Optional[IssuedTokens]
+    username: str
 
 
 class _Refused(Enum):
@@ -227,15 +270,44 @@ class AuthCodeStore:
         redirect_uri: str,
         code_verifier: Optional[str] = None,
     ) -> Optional[AuthorizationCode]:
+        """Redeem a code: the code when the redemption passed, None when it
+        did not, whatever the reason. The token endpoint uses redeem_code,
+        which tells a reuse apart (#466)."""
+        outcome = self.redeem_code(code, client_id, redirect_uri, code_verifier)
+        return outcome if isinstance(outcome, AuthorizationCode) else None
+
+    def redeem_code(
+        self,
+        code: str,
+        client_id: str,
+        redirect_uri: str,
+        code_verifier: Optional[str] = None,
+        *,
+        access_jti: Optional[str] = None,
+        refresh_family: Optional[str] = None,
+        access_lifetime_seconds: Optional[int] = None,
+    ) -> Union[AuthorizationCode, CodeReused, None]:
         """
         Consume (validate and mark as used) an authorization code.
 
         One decision (#43, #363): two concurrent redemptions cannot both
-        pass. A code is marked used and kept, so that a second redemption
-        is recognised as one and takes the code away; a request that does
-        not match the code (another client, another redirect URI, a wrong
-        or missing verifier) is refused and leaves it as it was, for the
-        client it was issued to.
+        pass. A code is marked used and kept as long as the access token
+        it issued is live (removable_at; its own ten minutes otherwise),
+        so that a second redemption is recognised as one (``CodeReused``, carrying
+        what the first issued, for the caller to revoke, #466); a request
+        that does not match the code (another client, another redirect
+        URI, a wrong or missing verifier) is refused and leaves it as it
+        was, for the client it was issued to - and is refused BEFORE a
+        reuse is recognised, so that whoever merely knows a used code
+        cannot make its tokens revoked.
+
+        ``access_jti``, ``refresh_family`` and ``access_lifetime_seconds``
+        are what this redemption is about to issue, written in the same
+        decision that marks the code used: no instant exists in which the
+        code is used and the ids are unknown. The instant is drawn inside
+        the decision too, after any wait for the store, and the record
+        carries it: the access token's expiry recorded here and the token
+        minted from ``issued_at`` agree to the second.
 
         Args:
             code: The authorization code to consume
@@ -247,19 +319,27 @@ class AuthCodeStore:
             The AuthorizationCode if valid, None otherwise
         """
 
+        given = (access_jti, refresh_family, access_lifetime_seconds)
+        if any(value is not None for value in given) and not all(value is not None for value in given):
+            # One unit, or nothing: a redemption recorded with half of
+            # what it issues would be a reuse that revokes nothing.
+            raise ValueError("access_jti, refresh_family and access_lifetime_seconds go together")
+
         def decide(
             view: RepositoryTransaction[AuthorizationCode],
-        ) -> Union[AuthorizationCode, _Refused]:
+        ) -> Union[AuthorizationCode, CodeReused, _Refused]:
             entry = view.entry(code)
             if entry is None:
                 return _Refused.NOT_FOUND
             auth_code = entry.value
-            if datetime.now(timezone.utc) > auth_code.expires_at:
+            # One instant for the decision: the expiry check and the record.
+            # A code not yet redeemed lives ten minutes; a redeemed one is
+            # kept as long as the access token it issued (removable_at), so
+            # that a replay in that time still revokes.
+            now = time.time()
+            if now > auth_code.removable_at():
                 view.delete(code)
                 return _Refused.EXPIRED
-            if auth_code.used:
-                view.delete(code)
-                return _Refused.ALREADY_USED
             if auth_code.client_id != client_id:
                 return _Refused.WRONG_CLIENT
             if auth_code.redirect_uri != redirect_uri:
@@ -272,14 +352,47 @@ class AuthCodeStore:
                 )
                 if refusal is not None:
                     return refusal
-            return view.replace(code, dataclasses.replace(auth_code, used=True)).value
+            if auth_code.used:
+                return CodeReused(auth_code.issued, auth_code.username)
+            issued_at = now
+            issued = None
+            if access_jti is not None and refresh_family is not None and access_lifetime_seconds is not None:
+                # The same arithmetic the signer applies to the same instant
+                # (datetime at microsecond precision, truncated to the
+                # second), so the recorded expiry is the token's.
+                minted_at = datetime.fromtimestamp(issued_at, timezone.utc)
+                access_exp = float(
+                    int((minted_at + timedelta(seconds=access_lifetime_seconds)).timestamp())
+                )
+                issued = IssuedTokens(access_jti, access_exp, refresh_family)
+            redeemed = view.replace(
+                code,
+                dataclasses.replace(auth_code, used=True, issued=issued, issued_at=issued_at),
+            ).value
+            view.set_expires_at(code, redeemed.removable_at())
+            return redeemed
 
         outcome = self._repository.transact(decide)
         if isinstance(outcome, _Refused):
             logger.warning(f"{outcome.value}: {code[:8]}...")
             return None
+        if isinstance(outcome, CodeReused):
+            logger.warning(f"{_Refused.ALREADY_USED.value}: {code[:8]}...")
+            return outcome
         logger.debug(f"Authorization code consumed for user '{outcome.username}'")
         return outcome
+
+    def forget_issued(self, code: str) -> None:
+        """An exchange that failed after the redemption issued nothing: the
+        record stays used, and carries nothing to revoke (#466)."""
+
+        def decide(view: RepositoryTransaction[AuthorizationCode]) -> None:
+            entry = view.entry(code)
+            if entry is not None and entry.value.issued is not None:
+                forgotten = view.replace(code, dataclasses.replace(entry.value, issued=None)).value
+                view.set_expires_at(code, forgotten.removable_at())
+
+        self._repository.transact(decide)
 
     def _verify_pkce(self, code_verifier: str, code_challenge: str, method: Optional[str]) -> bool:
         """

@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A reused authorization code revokes the tokens issued from it** (#466,
+  RFC 6749 4.1.2). The reuse was denied, as it must be, but the access
+  token and the refresh token of the first exchange stayed usable (OpenID
+  conformance, `oidcc-codereuse-30seconds`). The ids the exchange is about
+  to issue are now recorded with the code in the decision that consumes
+  it, so a replay that arrives before the first token is signed still
+  finds them; a reuse revokes the access token until its own expiry and
+  the whole refresh family in one decision, and the record stays as long
+  as the access token it issued is live (the code itself lives ten
+  minutes) so a later reuse revokes again. The binding of the request
+  to the code (client, redirect URI, verifier) is verified before a reuse
+  is recognised: whoever merely knows a used code revokes nothing. The
+  reuse is audited as such. `/introspect` reports a refresh token whose
+  family is revoked as inactive, which it did not after the reuse of a
+  rotated refresh token either (#56). Access tokens already minted
+  through a refresh of the family stay valid until their own expiry.
+  *Migration:* the authorization code record gained two fields (what the
+  redemption issued, and its instant), which a 3.4.0 process cannot read
+  back: processes sharing a runtime store
+  (`runtime.store: sqlite`) must run the same version.
+
 - **`/userinfo` accepts the access token in a form-encoded POST body, and
   answers every refusal with a Bearer challenge** (#465). The token was
   read from the `Authorization` header only, with a case-sensitive

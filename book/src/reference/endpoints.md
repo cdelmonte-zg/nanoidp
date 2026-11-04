@@ -56,6 +56,19 @@ document publishes
 `request_parameter_supported` and `request_uri_parameter_supported` as
 `false` (#463).
 
+An authorization code is redeemed once. A second redemption is denied
+with `invalid_grant` and revokes what the first issued (RFC 6749 4.1.2):
+the access token until its own expiry and the whole refresh token family,
+so that `/userinfo` refuses the token, `/introspect` reports it inactive
+and the refresh token grant is refused; a request that does not bind to
+the code (another client, another redirect URI, a wrong verifier) is
+refused and revokes nothing. A code not yet redeemed lives ten minutes; a
+redeemed one is kept as long as the access token it issued, so that a
+replay in that time still revokes. Two limits remain: once the record is
+gone, a later replay leaves a refresh family that is still live usable,
+and access tokens already minted through a refresh of the family stay
+valid until their own expiry even when the family is revoked (#466).
+
 A `POST` names its transaction with `transaction_id`; when its own query
 string also carries OAuth request parameters, they must be exactly those of
 the request that created the transaction. A POST without `transaction_id`

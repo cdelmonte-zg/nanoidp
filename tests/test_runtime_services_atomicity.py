@@ -327,25 +327,31 @@ class TestAuthorizationCodes:
 
         assert len(redeemed) == 1
 
-    def test_a_second_redemption_takes_the_code_away(self):
+    def test_a_second_redemption_is_refused_and_the_record_stays(self):
+        """Until #466 a second redemption took the code away; now the used
+        record stays until the code's own expiry, so that every later
+        reuse can revoke what the first redemption issued (RFC 6749
+        4.1.2), including a reuse that retries after a failed commit."""
         store = get_auth_code_store()
         code = self._code(store)
 
         assert store.consume_code(code, "demo-client", self.REDIRECT).used is True
         assert store.get_code_info(code).used is True
         assert store.consume_code(code, "demo-client", self.REDIRECT) is None
-        assert store.get_code_info(code) is None
+        assert store.get_code_info(code).used is True
 
-    def test_a_used_code_goes_whoever_presents_it_again(self):
-        """Used is looked at before anything about the request: a second
-        presentation is the sign that a code leaked, and it is taken away
-        even when the one presenting it is not the client it was for."""
+    def test_a_used_code_presented_by_another_is_refused_as_not_bound(self):
+        """The binding of the request to the code (client, redirect URI,
+        verifier) is verified BEFORE a reuse is recognised (#466): whoever
+        merely knows a used code is refused as not bound to it, and the
+        record is left as it was - a reuse, with the revocation it
+        triggers, is only what the bound client can present."""
         store = get_auth_code_store()
         code = self._code(store)
         store.consume_code(code, "demo-client", self.REDIRECT)
 
         assert store.consume_code(code, "another-client", self.REDIRECT) is None
-        assert store.get_code_info(code) is None
+        assert store.get_code_info(code).used is True
 
     @pytest.mark.parametrize(
         "wrong",

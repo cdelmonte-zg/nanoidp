@@ -313,8 +313,15 @@ class TokenService:
         issue_refresh_token: Optional[bool] = None,
         resource: Optional[List[str]] = None,
         refresh_resource: Optional[List[str]] = None,
+        access_jti: Optional[str] = None,
+        issued_at: Optional[datetime] = None,
     ) -> Dict[str, Any]:
         """Create a JWT token for a user.
+
+        ``access_jti`` and ``issued_at`` (#466): the authorization code
+        grant records the access token's id and expiry on the code before
+        minting, so the token must carry exactly those; every other grant
+        leaves them to the signer.
 
         ``auth_time`` is the Unix timestamp of the original end-user
         authentication (issue #42): callers pass it when they know it (auth
@@ -455,6 +462,8 @@ class TokenService:
             tenant=user.tenant,
             extra=extra,
             exp_minutes=exp_minutes,
+            jti=access_jti,
+            now=issued_at,
         )
 
         id_token = None

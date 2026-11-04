@@ -1966,6 +1966,7 @@ def token() -> ResponseReturnValue:
         identities=identities_for(config, loaded),
         client_id=client_id,
         grant_type=grant_type,
+        exp_minutes=exp_minutes,
     )
     result = handler(ctx)
     if not isinstance(result, _GrantOutcome):
@@ -2015,6 +2016,8 @@ def token() -> ResponseReturnValue:
         ),
         resource=result.resource,
         refresh_resource=result.refresh_resource,
+        access_jti=result.access_jti,
+        issued_at=result.issued_at,
     )
 
     # Audit log
@@ -2416,9 +2419,16 @@ def introspect() -> ResponseReturnValue:
         )
         return jsonify({"active": False})
 
-    # Check if revoked
+    # Check if revoked: the token's own marker, and for a refresh token its
+    # family's (#466; a family is revoked on a code reuse and on the reuse
+    # of a rotated refresh token, #56).
     jti = payload.get("jti")
-    if get_revocation_store().is_revoked(jti):
+    revocations = get_revocation_store()
+    if revocations.is_revoked(jti):
+        return jsonify({"active": False})
+    if payload.get("token_use") == "refresh" and revocations.is_family_revoked(
+        payload.get("rt_family")
+    ):
         return jsonify({"active": False})
 
     # What an introspection reports is RFC 7662 §2.2, and lives in
