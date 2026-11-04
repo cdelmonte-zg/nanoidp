@@ -5,6 +5,37 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Request objects are refused instead of ignored, and discovery says
+  so** (#463). `/authorize` answered a request carrying `request` or
+  `request_uri` from the query string alone, with the object unread; a
+  client that put its `state` and `nonce` inside the object got a response
+  without the first and an ID token with the wrong second (OpenID
+  conformance,
+  `oidcc-unsigned-request-object-supported-correctly-or-rejected-as-unsupported`).
+  A non-empty `request` is now refused with `request_not_supported` and a
+  non-empty `request_uri` with `request_uri_not_supported` (OIDC Core 6.1,
+  6.2), whatever else the request says or lacks: the object may hold the
+  very parameter the query omits. The refusal goes to the `redirect_uri`
+  once that is validated for the client, with `state` and `iss` like every
+  other error after it, and stays local otherwise (the client and the
+  `redirect_uri` are judged exactly as the ordinary validation judges
+  them); the request is refused before any other check runs, so one
+  refusal is one `authorization_request` audit event, which names the
+  parameter, says whether it was delivered and why not, and records
+  neither value. Both parameters are request fields now, so a GET carrying
+  only one of them is refused rather than resuming the browser's pending
+  request, one in a POST body is audited as forged like every other OAuth
+  parameter (#325), and one added to the query string of a POST that names
+  its transaction is a mismatch (#346). The discovery document publishes
+  `request_parameter_supported: false` and
+  `request_uri_parameter_supported: false` explicitly: Discovery 1.0
+  section 3 reads the omitted second flag as `true`, so the document
+  promised by omission what the server never implemented.
+
 ## [3.4.0] - 2026-09-30
 
 ### Migration notes

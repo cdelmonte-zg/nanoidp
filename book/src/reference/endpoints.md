@@ -43,7 +43,18 @@ holds and never reads OAuth parameters from its body. A transaction expires
 after 10 minutes, yields at most one code, and can only be used with the
 cookie of the browser that created it. It is a snapshot: a configuration
 change while it is open does not revalidate it, and only a client that no
-longer exists ends it.
+longer exists ends it. Request objects (OIDC Core section 6) are not
+implemented: a request carrying a non-empty `request` is refused with
+`request_not_supported`, one carrying a non-empty `request_uri` with
+`request_uri_not_supported`, whatever else the request says or lacks.
+The refusal goes to the `redirect_uri` when the request names a known
+client (looked up as any request's is, a metadata document included) and
+a `redirect_uri` the ordinary validation accepts for it, with `state` and
+`iss` like any other error after it, and stays local otherwise; the
+audit event says which, and why when it stayed local. The discovery
+document publishes
+`request_parameter_supported` and `request_uri_parameter_supported` as
+`false` (#463).
 
 A `POST` names its transaction with `transaction_id`; when its own query
 string also carries OAuth request parameters, they must be exactly those of
