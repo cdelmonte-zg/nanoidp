@@ -2089,8 +2089,9 @@ def _form_token_malformed(reason: str, description: str) -> _FormToken:
 
 def _form_access_token() -> _FormToken:
     """The ``access_token`` parameter of this request's form-encoded body,
-    read as RFC 6750 2.2 describes the body - form-encoded, the token
-    value ASCII - and no further.
+    read as RFC 6750 2.2 describes the body - form-encoded, ASCII - with
+    the ASCII rule enforced on the token value and a non-ASCII field
+    beside it tolerated.
 
     Read here, not through ``request.form``: werkzeug's parser drops a
     body it cannot decode without a word and raises a bare 413 past the
@@ -2152,13 +2153,18 @@ def _form_access_token() -> _FormToken:
         return _NO_FORM_TOKEN
     if len(raw) > limit:
         return _form_token_malformed("form body too large", "The body exceeds the size limit")
-    # Parsed as bytes: RFC 6750 2.2's ASCII rule governs the body that
-    # carries the token, not a field beside it. A non-ASCII token value is
-    # a channel used badly; a non-ASCII value elsewhere is no channel.
+    # Parsed through latin-1, which maps every byte to one code point, so
+    # the bytes survive the parse on every supported Python (3.10's
+    # parse_qsl coerces bytes through ASCII and raises on anything else)
+    # and are judged afterwards. RFC 6750 2.2 wants the whole body ASCII;
+    # NanoIDP enforces that on the token value and tolerates a non-ASCII
+    # field beside it, which is no channel.
     values = [
         value
-        for name, value in parse_qsl(raw, keep_blank_values=True)
-        if name == b"access_token"
+        for name, value in parse_qsl(
+            raw.decode("latin-1"), encoding="latin-1", keep_blank_values=True
+        )
+        if name == "access_token"
     ]
     if not values:
         return _NO_FORM_TOKEN
@@ -2170,7 +2176,7 @@ def _form_access_token() -> _FormToken:
         return _form_token_malformed(
             "access_token not ASCII", "access_token is not ASCII (RFC 6750 2.2)"
         )
-    return _FormToken(present=True, value=values[0].decode("ascii"))
+    return _FormToken(present=True, value=values[0])
 
 
 def _bearer_token_of_request() -> Tuple[Optional[str], Optional[ResponseReturnValue]]:
