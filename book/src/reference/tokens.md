@@ -211,6 +211,16 @@ curl 'http://localhost:8000/userinfo' \
 }
 ```
 
+### Presenting the token to `/userinfo`
+
+The token travels in the `Authorization` header, or as the `access_token`
+parameter of a form-encoded `POST` body (RFC 6750 section 2.2); one of
+the two, never both, and never in the query string (RFC 9700 section
+4.3.2), which `/userinfo` refuses with `invalid_request`. A request
+without credentials is answered `401` with `WWW-Authenticate: Bearer
+realm="userinfo"` and no body; a token that fails is `401 invalid_token`,
+with the reason in the challenge and in the body (#465).
+
 ### Scope gating
 
 Under the default `dev` profile, `/userinfo` returns these claims

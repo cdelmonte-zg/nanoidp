@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`/userinfo` accepts the access token in a form-encoded POST body, and
+  answers every refusal with a Bearer challenge** (#465). The token was
+  read from the `Authorization` header only, with a case-sensitive
+  scheme, and a token sent any other way was answered "Missing Bearer
+  token" (OpenID conformance, `oidcc-userinfo-post-body`); no 401 carried
+  `WWW-Authenticate`. Now the `access_token` parameter of a form-encoded
+  `POST` body is accepted (RFC 6750 2.2), the scheme is compared
+  case-insensitively, and what a request sends is judged once: the query
+  string is refused with `invalid_request` whatever else the request
+  carries (RFC 9700 4.3.2), two methods at once are refused even with one
+  token (RFC 6750 2), and a malformed channel (a bare `Bearer`, an empty
+  or repeated `access_token`) is refused rather than fallen back from. A
+  request that sent the token in the header and also in the query string
+  or the body was served before and is refused now: send it one way.
+  Every 400 and 401 carries `WWW-Authenticate: Bearer realm="userinfo"`
+  with the error in the challenge; a request without credentials gets the
+  challenge alone, with no error code and no body (RFC 6750 3.1). The
+  refusals are audited with a fixed reason. The `Authorization` header's
+  scheme is now read by one parser for `/userinfo`, `/token` and the
+  registration endpoint, split on a space or a tab: `/token` used to
+  count a `Basic` scheme followed by any other whitespace as an attempt.
+
 - **Request objects are refused instead of ignored, and discovery says
   so** (#463). `/authorize` answered a request carrying `request` or
   `request_uri` from the query string alone, with the object unread; a

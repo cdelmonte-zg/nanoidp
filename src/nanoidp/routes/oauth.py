@@ -8,10 +8,12 @@ import os
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+from urllib.parse import parse_qsl
 
 import jwt as pyjwt
 from flask import (
     Blueprint,
+    Response,
     abort,
     current_app,
     jsonify,
@@ -23,6 +25,7 @@ from flask import (
     url_for,
 )
 from flask.typing import ResponseReturnValue
+from werkzeug.exceptions import ClientDisconnected, RequestEntityTooLarge
 
 from ..branding import effective_logos_dir, resolve_client_logo
 from ..config import ConfigManager, ConfigSnapshot, OAuthClient, Settings, User, get_config
@@ -78,6 +81,8 @@ from ._auth import (
     SecondFactorPhase,
     TwoStepPhase,
     authenticate_interactively,
+    authorization_credentials,
+    bearer_header_credential,
     begin_second_factor,
     browser_flow_binding,
     check_second_factor,
@@ -89,7 +94,7 @@ from ._auth import (
 )
 from ._config import request_config
 from ._issuer import effective_issuer
-from ._oauth_error import invalid_client_error, oauth_error
+from ._oauth_error import bearer_challenge, bearer_error, invalid_client_error, oauth_error
 from .oauth_grants import _GRANT_HANDLERS, _GrantContext, _GrantOutcome
 
 logger = logging.getLogger(__name__)
@@ -1646,10 +1651,7 @@ def _basic_attempted() -> bool:
     "BasicFoo xyz" is a different scheme, not a Basic attempt. A bare
     "Basic" with no credentials still counts - the scheme was named.
     """
-    raw = request.headers.get("Authorization", "").lstrip()
-    if not raw:
-        return False
-    scheme = raw.split(maxsplit=1)[0]
+    scheme, _ = authorization_credentials()
     return scheme.casefold() == "basic"
 
 
@@ -2034,12 +2036,204 @@ def token() -> ResponseReturnValue:
     return jsonify(token_response)
 
 
-def _extract_bearer_token() -> str | None:
-    """Extract Bearer token from Authorization header."""
-    auth_header = request.headers.get("Authorization", "")
-    if auth_header.startswith("Bearer "):
-        return auth_header[7:]
-    return None
+_USERINFO_REALM = "userinfo"
+
+
+def _bearer_refusal(status: int, error: str, description: str) -> ResponseReturnValue:
+    """An error answer of /userinfo to a presented credential: bearer_error
+    with this resource's realm. Descriptions are FIXED text (the rule of
+    routes/_oauth_error.py)."""
+    return bearer_error(status, error, description, realm=_USERINFO_REALM)
+
+
+def _bearer_challenge_alone() -> ResponseReturnValue:
+    """The answer to a request with no bearer credentials: 401, the
+    challenge with the realm, no error code and no body (RFC 6750 3.1,
+    "SHOULD NOT include an error code or other error information")."""
+    response = Response(status=401)
+    del response.headers["Content-Type"]
+    response.headers["WWW-Authenticate"] = bearer_challenge(realm=_USERINFO_REALM)
+    return response
+
+
+def _userinfo_refused(reason: str, description: str) -> Response:
+    """A malformed or doubled credential (RFC 6750 3.1 invalid_request):
+    audited, since a client sent something it must not, unlike a request
+    with no credentials at all."""
+    audit_event(
+        "userinfo_request", "failed", endpoint="/userinfo", details={"reason": reason}
+    )
+    return bearer_error(400, "invalid_request", description, realm=_USERINFO_REALM)
+
+
+@dataclass(frozen=True)
+class _FormToken:
+    """What this request's form-encoded body said about the token channel:
+    ``present`` when the body used it (carried ``access_token``, or could
+    not be read as a form at all); then either ``value``, the one token of
+    a body that used it well, or ``malformed``, the audit reason and
+    description of one that used it badly. A decodable body without the
+    parameter is no channel."""
+
+    present: bool
+    value: Optional[str] = None
+    malformed: Optional[Tuple[str, str]] = None
+
+
+_NO_FORM_TOKEN = _FormToken(present=False)
+
+
+def _form_token_malformed(reason: str, description: str) -> _FormToken:
+    return _FormToken(present=True, malformed=(reason, description))
+
+
+def _form_access_token() -> _FormToken:
+    """The ``access_token`` parameter of this request's form-encoded body,
+    read as RFC 6750 2.2 describes the body - form-encoded, the token
+    value ASCII - and no further.
+
+    Read here, not through ``request.form``: werkzeug's parser drops a
+    body it cannot decode without a word and raises a bare 413 past the
+    form size limit, neither of which is an answer this endpoint gives.
+    The read is bounded by that same limit, ``MAX_FORM_MEMORY_SIZE`` (read
+    from the configuration, since the request attribute is Flask 3.1's;
+    unlimited falls back to werkzeug's own default, a bearer form is never
+    larger), plus one byte to tell "too large" from "at the limit", and by
+    the declared length when there is one; it loops, since a WSGI input
+    may answer a read short. A body that ends before its declared length,
+    on a server that raises for it and on one that returns short, and one
+    werkzeug refuses at the stream for ``MAX_CONTENT_LENGTH``, are bodies
+    that used the channel badly, not a bare 400 or 413. A chunked body
+    needs a server that terminates the input (``wsgi.input_terminated``,
+    as the dev server and gunicorn do); elsewhere werkzeug hands over an
+    empty stream and the body is no channel. What a refusal leaves unread
+    is the server's to drain, as it is for werkzeug's own 413."""
+    configured = current_app.config.get("MAX_FORM_MEMORY_SIZE", 500_000)
+    limit = configured if configured is not None else 500_000
+    declared = request.content_length
+    # One byte past the limit tells "too large" from "at the limit"; a
+    # declared length bounds the read further, so a small body does not
+    # cost a buffer of the whole limit.
+    wanted = limit + 1 if declared is None else min(limit + 1, declared + 1)
+    expected = None if declared is None else min(declared, limit + 1)
+    chunks: List[bytes] = []
+    received = 0
+    try:
+        while wanted > 0:
+            chunk = request.stream.read(wanted)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            received += len(chunk)
+            wanted -= len(chunk)
+    except ClientDisconnected:
+        return _form_token_malformed(
+            "form body ended early", "The body ended before its declared length"
+        )
+    except RequestEntityTooLarge:
+        # werkzeug's verdict on MAX_CONTENT_LENGTH: raised at the first
+        # touch of the stream for a declared length past it, or by a
+        # terminated input asked for the byte past it - which the extra
+        # byte above does to a complete body that sits exactly at it. A
+        # body received in full is read; anything else is too large.
+        if declared is None or received < declared:
+            return _form_token_malformed(
+                "request body past the content length limit", "The body exceeds the size limit"
+            )
+    raw = b"".join(chunks)
+    if expected is not None and len(raw) < expected:
+        # The input ended short of what the request declared. The dev
+        # server raises for this (caught above); a server that terminates
+        # the input itself just returns short, and the verdict is the same.
+        return _form_token_malformed(
+            "form body ended early", "The body ended before its declared length"
+        )
+    if not raw:
+        return _NO_FORM_TOKEN
+    if len(raw) > limit:
+        return _form_token_malformed("form body too large", "The body exceeds the size limit")
+    # Parsed as bytes: RFC 6750 2.2's ASCII rule governs the body that
+    # carries the token, not a field beside it. A non-ASCII token value is
+    # a channel used badly; a non-ASCII value elsewhere is no channel.
+    values = [
+        value
+        for name, value in parse_qsl(raw, keep_blank_values=True)
+        if name == b"access_token"
+    ]
+    if not values:
+        return _NO_FORM_TOKEN
+    if len(values) > 1:
+        return _form_token_malformed("access_token repeated", "access_token is repeated")
+    if not values[0]:
+        return _form_token_malformed("access_token empty", "access_token is empty")
+    if not values[0].isascii():
+        return _form_token_malformed(
+            "access_token not ASCII", "access_token is not ASCII (RFC 6750 2.2)"
+        )
+    return _FormToken(present=True, value=values[0].decode("ascii"))
+
+
+def _bearer_token_of_request() -> Tuple[Optional[str], Optional[ResponseReturnValue]]:
+    """The bearer token a /userinfo request presents, read once (#465):
+    ``(token, None)``, or ``(None, refusal)``.
+
+    Three channels are recognised by PRESENCE: the Authorization header
+    with the Bearer scheme (bearer_header_credential, shared with the
+    registration access token), the ``access_token`` parameter of a
+    form-encoded POST body (_form_access_token: only on a method with body
+    semantics, only under that content type, bounded), and ``access_token``
+    in the query string (2.3). What a channel carries is judged after its
+    presence:
+
+    - the query string is refused whatever else the request carries:
+      RFC 9700 4.3.2 forbids clients to use it, and NanoIDP says so rather
+      than ignoring the parameter (#463's rule);
+    - two channels are refused, even with the same token in both (section
+      2: "MUST NOT use more than one method");
+    - a channel present but malformed - a bare ``Bearer``, an empty or a
+      repeated ``access_token``, a body that is not ASCII or exceeds the
+      form size limit - is refused, and a valid header beside it is not
+      fallen back on;
+    - no channel is the challenge alone (section 3).
+    """
+    if "access_token" in request.args:
+        # Refused before anything else is read: the body of a request that
+        # is refused anyway is not worth reading.
+        return None, _userinfo_refused(
+            "access_token in the query string",
+            "The access token must not be sent in the query string (RFC 9700 4.3.2)",
+        )
+
+    channels: List[str] = []
+    malformed: Optional[Tuple[str, str]] = None
+    token = ""
+
+    attempted, credential = bearer_header_credential()
+    if attempted:
+        channels.append("header")
+        token = credential
+        if not token:
+            malformed = ("bearer header without a token", "The Authorization header carries no token")
+
+    if request.method == "POST" and request.mimetype == "application/x-www-form-urlencoded":
+        form = _form_access_token()
+        if form.present:
+            channels.append("body")
+        if form.malformed is not None:
+            malformed = form.malformed
+        elif form.value is not None:
+            token = form.value
+
+    if len(channels) > 1:
+        return None, _userinfo_refused(
+            "more than one token transmission method",
+            "The access token was sent by more than one method (RFC 6750 2)",
+        )
+    if malformed is not None:
+        return None, _userinfo_refused(*malformed)
+    if not channels:
+        return None, _bearer_challenge_alone()
+    return token, None
 
 
 @oauth_bp.route("/userinfo", methods=["GET", "POST"])
@@ -2054,10 +2248,12 @@ def userinfo() -> ResponseReturnValue:
     loaded = request_config()
     config = get_config()
 
-    # Extract Bearer token
-    token = _extract_bearer_token()
-    if not token:
-        return jsonify({"error": "invalid_token", "error_description": "Missing Bearer token"}), 401
+    # One reader of the bearer credentials, one shape for every error
+    # answer (#465): see _bearer_token_of_request and _bearer_refusal.
+    token, refusal = _bearer_token_of_request()
+    if refusal is not None:
+        return refusal
+    assert token is not None
 
     # Verify token. Settings before the signing service (#359): see
     # get_crypto_service().
@@ -2078,10 +2274,7 @@ def userinfo() -> ResponseReturnValue:
             endpoint="/userinfo",
             details={"reason": str(e)},
         )
-        return (
-            jsonify({"error": "invalid_token", "error_description": "Token validation failed"}),
-            401,
-        )
+        return _bearer_refusal(401, "invalid_token", "Token validation failed")
 
     # UserInfo requires an *access* token (OIDC Core §5.3.1). Reject ID/refresh
     # tokens even if they verify against the resource audience (issue #34).
@@ -2098,18 +2291,18 @@ def userinfo() -> ResponseReturnValue:
             endpoint="/userinfo",
             details={"reason": "Not an access token", "token_use": payload.get("token_use")},
         )
-        return (
-            jsonify({"error": "invalid_token", "error_description": "An access token is required"}),
-            401,
-        )
+        return _bearer_refusal(401, "invalid_token", "An access token is required")
 
     # Check if token is revoked
     jti = payload.get("jti")
     if get_revocation_store().is_revoked(jti):
-        return (
-            jsonify({"error": "invalid_token", "error_description": "Token has been revoked"}),
-            401,
+        audit_event(
+            "userinfo_request",
+            "failed",
+            endpoint="/userinfo",
+            details={"reason": "Token has been revoked"},
         )
+        return _bearer_refusal(401, "invalid_token", "Token has been revoked")
 
     # Get user info. A token whose subject is its client has no end user
     # behind it, and is never resolved as a user of the same name (#445).

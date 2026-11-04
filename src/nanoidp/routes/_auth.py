@@ -12,6 +12,7 @@ sensitive information (#462).
 import functools
 import hashlib
 import hmac
+import re
 import secrets
 from dataclasses import dataclass
 from enum import Enum
@@ -472,6 +473,37 @@ def discard_pending_second_factor(
         record_id, browser_flow_binding(), purpose=purpose, context=context
     )
     return record.username if record is not None else None
+
+
+def authorization_credentials() -> tuple[str, str]:
+    """The scheme and the credentials of this request's Authorization
+    header, split on SP or HTAB (RFC 7235: ``auth-scheme 1*SP token68 /
+    auth-params``, HTAB read leniently): ``("", "")`` without a header,
+    ``(scheme, "")`` for a bare scheme. The one parser of that header's
+    SCHEME, so the Basic attempt detection at /token (#313), the Bearer
+    reader at /userinfo (#465) and the registration access token agree on
+    what counts as an attempt. The Basic credentials themselves are still
+    read by werkzeug's ``request.authorization``, which splits on a single
+    space: a tab-separated Basic header is an attempt here and no
+    credential there, as it was before #465, when the detection split on
+    any whitespace (a scheme followed by a no-break space or a control
+    character is no attempt now)."""
+    raw = request.headers.get("Authorization", "").strip(" \t")
+    if not raw:
+        return "", ""
+    parts = re.split(r"[ \t]+", raw, maxsplit=1)
+    return parts[0], parts[1] if len(parts) > 1 else ""
+
+
+def bearer_header_credential() -> tuple[bool, str]:
+    """Whether this request's Authorization header attempts the Bearer
+    scheme (compared case-insensitively, RFC 7235), and the credential it
+    carries, "" for a bare ``Bearer``. One reader for /userinfo (#465) and
+    the registration access token (#190): what each does with an attempt
+    that carries nothing is its own contract, what counts as an attempt is
+    not."""
+    scheme, credential = authorization_credentials()
+    return scheme.casefold() == "bearer", credential
 
 
 def no_store(response: ResponseReturnValue) -> Response:

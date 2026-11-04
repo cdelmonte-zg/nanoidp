@@ -311,7 +311,12 @@ class TestManagingARegistration:
         response = client.get(f"/register/{registered['client_id']}", headers=headers or {})
 
         assert response.status_code == 401
-        assert "Bearer" in response.headers["WWW-Authenticate"]
+        # Built by bearer_error (#465): the one builder of the server's
+        # Bearer error answers; this resource names no realm, and the
+        # description rides in the challenge as RFC 6750 section 3 allows.
+        assert response.headers["WWW-Authenticate"] == (
+            'Bearer error="invalid_token", error_description="invalid registration access token"'
+        )
 
     def test_an_unknown_registration_answers_like_a_wrong_credential(self, client):
         """Telling the two apart would let anyone walk the client ids."""

@@ -133,6 +133,10 @@ curl 'http://localhost:8000/userinfo' \
   -H 'Authorization: Bearer YOUR_ACCESS_TOKEN'
 ```
 
+The token may also travel as `access_token` in a form-encoded `POST` body;
+one method per request, and never the query string, which is refused. The
+rules are in [Presenting the token](../reference/tokens.md#presenting-the-token-to-userinfo).
+
 ## Token introspection
 
 ```bash
