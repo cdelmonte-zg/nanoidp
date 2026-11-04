@@ -133,6 +133,12 @@ def build_discovery_document(
         # The OIDC `claims` request parameter is honoured at /authorize to
         # deliver requested claims in the ID Token / UserInfo (§5.5, #104).
         "claims_parameter_supported": True,
+        # Request objects (Core 6) are not implemented, and /authorize
+        # refuses both parameters (#463). Said explicitly because Discovery
+        # section 3 reads an omitted request_uri_parameter_supported as
+        # TRUE: the document promised by omission what the server refuses.
+        "request_parameter_supported": False,
+        "request_uri_parameter_supported": False,
         # The password grant is removed by OAuth 2.1 and rejected under the
         # oauth21 profile, so it must not be advertised there (#68).
         "grant_types_supported": [

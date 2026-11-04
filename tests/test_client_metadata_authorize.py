@@ -102,6 +102,57 @@ def _authorize_query(client_id, **overrides):
     return query, verifier
 
 
+class TestARequestObjectRefusalLearnsTheClientLikeAnyRequest:
+    """#463: the refusal of a request object is delivered to the client's
+    redirect_uri when the client is known the way any request's client is
+    known - a cached document, or one fetched now - and stays local when
+    no document can be learned. Judging the cache alone would have made
+    the answer say whether the client had been here lately."""
+
+    REQUEST_OBJECT = "eyJhbGciOiJub25lIn0.eyJzdGF0ZSI6IklOU0lERSJ9."
+
+    def test_a_cached_document_makes_the_refusal_deliverable(
+        self, app, origin, resolves_to_loopback
+    ):
+        client = app.test_client()
+        client_id = _client_id(origin)
+        origin.serve_document(metadata_document(client_id, redirect_uris=[REDIRECT]))
+        query, _ = _authorize_query(client_id)
+        assert client.get("/authorize", query_string=query).status_code == 200
+        fetched = len(origin.requests)
+
+        refused = client.get("/authorize", query_string={**query, "request": self.REQUEST_OBJECT})
+        assert refused.status_code == 302
+        params = parse_qs(urlparse(refused.headers["Location"]).query)
+        assert params["error"] == ["request_not_supported"]
+        assert params["state"] == ["s1"]
+        assert len(origin.requests) == fetched
+
+    def test_an_uncached_document_is_fetched_once_and_the_refusal_delivered(
+        self, app, origin, resolves_to_loopback
+    ):
+        client = app.test_client()
+        client_id = _client_id(origin)
+        origin.serve_document(metadata_document(client_id, redirect_uris=[REDIRECT]))
+        query, _ = _authorize_query(client_id)
+        refused = client.get("/authorize", query_string={**query, "request": self.REQUEST_OBJECT})
+        assert refused.status_code == 302
+        params = parse_qs(urlparse(refused.headers["Location"]).query)
+        assert params["error"] == ["request_not_supported"]
+        assert len(origin.requests) == 1
+
+    def test_a_document_that_cannot_be_learned_keeps_the_refusal_local(
+        self, app, origin, resolves_to_loopback
+    ):
+        client = app.test_client()
+        client_id = _client_id(origin, path="/nothing-here.json")
+        query, _ = _authorize_query(client_id)
+        refused = client.get("/authorize", query_string={**query, "request": self.REQUEST_OBJECT})
+        assert refused.status_code == 400
+        assert refused.headers.get("Location") is None
+        assert refused.get_json()["error"] == "request_not_supported"
+
+
 class TestAuthorizeLearnsTheClient:
     def test_a_published_document_completes_an_authorization_code_flow(
         self, app, origin, resolves_to_loopback

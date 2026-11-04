@@ -304,15 +304,27 @@ class NanoIDPTestAgent:
                 }
                 missing_members = sorted(required_members - set(data))
                 subject_types = data.get("subject_types_supported")
+                # Request objects are refused at /authorize, and the document
+                # must say so explicitly: an omitted
+                # request_uri_parameter_supported reads as true (#463).
+                request_flags = (
+                    data.get("request_parameter_supported"),
+                    data.get("request_uri_parameter_supported"),
+                )
+                request_objects_declared_unsupported = all(flag is False for flag in request_flags)
                 return self._add_result(
                     "OIDC Discovery",
                     TestCategory.CORE,
                     len(found) == len(required) and azp_advertised
-                    and not missing_members and subject_types == ["public"],
+                    and not missing_members and subject_types == ["public"]
+                    and request_objects_declared_unsupported,
                     f"{len(found)}/{len(required)} endpoints, grants: {len(grants)}, azp advertised: {azp_advertised}, "
-                    f"REQUIRED members missing: {missing_members}, subject types: {subject_types}",
+                    f"REQUIRED members missing: {missing_members}, subject types: {subject_types}, "
+                    f"request/request_uri declared unsupported: {request_objects_declared_unsupported}",
                     {"endpoints": found, "grants": grants, "azp_advertised": azp_advertised,
-                     "required_members_missing": missing_members, "subject_types_supported": subject_types}
+                     "required_members_missing": missing_members, "subject_types_supported": subject_types,
+                     "request_parameter_supported": request_flags[0],
+                     "request_uri_parameter_supported": request_flags[1]}
                 )
             return self._add_result(
                 "OIDC Discovery",
@@ -1173,6 +1185,90 @@ class NanoIDPTestAgent:
         if token_resp.status_code != 200:
             return None
         return token_resp.json()
+
+    def test_request_objects_refused(self) -> TestResult:
+        """Request objects are not implemented, and a request carrying one
+        is refused as such (#463, OIDC Core 6.1): delivered to the
+        registered redirect_uri with state when the request names a known
+        client and a valid redirect_uri, local 400 otherwise, never a
+        login page with the object ignored. Requires 'registered-client'
+        from the default config.
+        """
+        request_object = "eyJhbGciOiJub25lIn0.eyJzdGF0ZSI6IklOU0lERSJ9."
+        base_params = {
+            "response_type": "code",
+            "client_id": "registered-client",
+            "scope": "openid",
+            "state": "e2e-463",
+            "request": request_object,
+        }
+        try:
+            delivered = requests.get(
+                f"{self.base_url}/authorize",
+                params={**base_params, "redirect_uri": "http://localhost:3000/callback"},
+                allow_redirects=False,
+                timeout=5,
+            )
+            location = delivered.headers.get("Location", "")
+            delivered_params = parse_qs(urlparse(location).query)
+            delivered_ok = (
+                delivered.status_code == 302
+                and location.startswith("http://localhost:3000/callback")
+                and delivered_params.get("error") == ["request_not_supported"]
+                and delivered_params.get("state") == ["e2e-463"]
+                and "code" not in delivered_params
+            )
+            local = requests.get(
+                f"{self.base_url}/authorize",
+                params={**base_params, "redirect_uri": "http://localhost:3000/elsewhere"},
+                allow_redirects=False,
+                timeout=5,
+            )
+            local_ok = local.status_code == 400 and "Location" not in local.headers
+            if local_ok:
+                try:
+                    local_ok = local.json().get("error") == "request_not_supported"
+                except ValueError:
+                    local_ok = False
+            by_reference = requests.get(
+                f"{self.base_url}/authorize",
+                params={
+                    **{k: v for k, v in base_params.items() if k != "request"},
+                    "redirect_uri": "http://localhost:3000/callback",
+                    "request_uri": "https://rp.example/request-objects/1",
+                },
+                allow_redirects=False,
+                timeout=5,
+            )
+            by_reference_location = by_reference.headers.get("Location", "")
+            by_reference_params = parse_qs(urlparse(by_reference_location).query)
+            by_reference_ok = (
+                by_reference.status_code == 302
+                and by_reference_location.startswith("http://localhost:3000/callback")
+                and by_reference_params.get("error") == ["request_uri_not_supported"]
+                and by_reference_params.get("state") == ["e2e-463"]
+                and "code" not in by_reference_params
+            )
+            return self._add_result(
+                "Request Objects Refused",
+                TestCategory.OAUTH,
+                delivered_ok and local_ok and by_reference_ok,
+                "request= refused with request_not_supported: delivered to the registered "
+                "redirect_uri with state, local without one; request_uri= with "
+                "request_uri_not_supported",
+                {
+                    "delivered_status": delivered.status_code,
+                    "delivered_error": delivered_params.get("error"),
+                    "local_status": local.status_code,
+                    "local_redirected": "Location" in local.headers,
+                    "request_uri_status": by_reference.status_code,
+                    "request_uri_error": by_reference_params.get("error"),
+                },
+            )
+        except Exception as e:
+            return self._add_result(
+                "Request Objects Refused", TestCategory.OAUTH, False, f"Error: {e}"
+            )
 
     def test_redirect_uri_exact_matching(self) -> TestResult:
         """Registered redirect URIs are enforced with exact matching (issue #67).
@@ -6672,6 +6768,7 @@ class NanoIDPTestAgent:
                 self.test_public_client_flow,
                 self.test_resource_indicators,
                 self.test_redirect_uri_exact_matching,
+                self.test_request_objects_refused,
                 self.test_native_app_redirect_uris,
                 self.test_scope_enforcement,
                 self.test_client_branding,

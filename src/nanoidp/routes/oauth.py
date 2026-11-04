@@ -25,7 +25,7 @@ from flask import (
 from flask.typing import ResponseReturnValue
 
 from ..branding import effective_logos_dir, resolve_client_logo
-from ..config import ConfigManager, ConfigSnapshot, OAuthClient, User, get_config
+from ..config import ConfigManager, ConfigSnapshot, OAuthClient, Settings, User, get_config
 from ..services import (
     DeviceVerifyOutcome,
     build_discovery_document,
@@ -189,6 +189,13 @@ class _AuthorizeParams:
     # point 6). Ignored unless it carries the reserved 'persona-auto-login:'
     # prefix - see _try_persona_auto_login.
     login_hint: str
+    # OIDC Core 6.1 / 6.2 (#463): the request-object parameter a new
+    # request's query string carries with a non-empty value - "request"
+    # (Core 6.1), else "request_uri" (Core 6.2), else None - read only to
+    # be refused. Presence, never the value: the object and the URI are
+    # not read, so nothing here can record or leak them. A transaction is
+    # created only for a request that carries neither.
+    unsupported_request_parameter: Optional[str] = None
 
 
 _AUTHORIZE_REQUEST_FIELDS = (
@@ -202,6 +209,12 @@ _AUTHORIZE_REQUEST_FIELDS = (
     "nonce",
     "claims",
     "resource",
+    # Request fields although they are always refused (#463): a request
+    # that carries one is a request, so it is validated and refused, never
+    # resumed, forged into a POST body unnoticed, or added to a named
+    # transaction's query string unnoticed.
+    "request",
+    "request_uri",
 )
 
 
@@ -236,6 +249,18 @@ def _read_authorize_params() -> _AuthorizeParams:
         # RFC 8707 resource is repeatable (#187): read every value.
         resources=params.getlist("resource"),
         login_hint=params.get("login_hint", ""),
+        # Presence of a non-empty value, over every repetition
+        # (request=&request=<object>, #463 review round 3): what is refused
+        # is that an object was sent at all, not any one value of it. A
+        # parameter sent without a value is an omitted parameter (RFC 6749
+        # 3.1), as for every other field here - while its PRESENCE still
+        # makes the GET a new request rather than a resume
+        # (_requested_fields, #329), so ?request= alone is a request with
+        # no client_id, not the pending transaction's login page.
+        unsupported_request_parameter=next(
+            (field for field in ("request", "request_uri") if any(params.getlist(field))),
+            None,
+        ),
     )
 
 
@@ -265,7 +290,9 @@ def _audit_body_oauth_fields() -> None:
     The login form never legitimately carries them, so any of them showing
     up in the POST body is a forged request; they are never read.
     """
-    forged = [field for field in _AUTHORIZE_REQUEST_FIELDS if request.form.get(field)]
+    # Any non-empty value over every repetition, as the query reader does
+    # for the two refused fields (#463): an empty first value hides nothing.
+    forged = [field for field in _AUTHORIZE_REQUEST_FIELDS if any(request.form.getlist(field))]
     if not forged:
         return
     audit_event(
@@ -295,22 +322,68 @@ def _refuse_without_transaction(
     )
     return jsonify({"error": "invalid_request", "error_description": description}), 400
 
+
+@dataclass(frozen=True)
+class _Rejection:
+    """What a side-effect-free verdict helper answers when it refuses: the
+    OAuth error, its description, and a fixed reason naming the check.
+    ``audited`` is False for the checks that have never written an audit
+    event (the two required parameters, redirect_uri syntax); their reason
+    is then only the label the request-object refusal records for what
+    kept it local (#463)."""
+
+    error: str
+    description: str
+    reason: str
+    audited: bool = True
+
+
+def _reject_locally(client_id: Optional[str], rejection: _Rejection) -> ResponseReturnValue:
+    """A verdict's rejection, answered as the validators always have: a
+    local 400, audited when that check audits."""
+    return _authorize_reject(
+        client_id,
+        rejection.reason,
+        rejection.error,
+        rejection.description,
+        audit=rejection.audited,
+    )
+
+
+def _failed_details(reason: str, details: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """The details of a failed authorization_request event: the caller's
+    extras under the reason, which nothing can overwrite. One home for the
+    local and the delivered refusal."""
+    return {**(details or {}), "reason": reason}
+
+
 def _authorize_reject(
-    client_id: str, reason: str, error: str, description: str
+    client_id: Optional[str],
+    reason: str,
+    error: str,
+    description: str,
+    details: Optional[Dict[str, Any]] = None,
+    *,
+    audit: bool = True,
 ) -> ResponseReturnValue:
-    """Audit-then-reject, the shape every post-client-lookup check shares.
+    """Audit-then-reject, the shape every post-client-lookup check shares;
+    the one builder of the local 400.
 
     The pre-lookup checks (response_type, missing client_id/redirect_uri,
-    redirect_uri syntax) intentionally do NOT audit - they never have - so
-    they build their responses directly instead of calling this.
+    redirect_uri syntax) intentionally do NOT audit - they never have - and
+    come through here with ``audit=False``. The one pre-lookup caller that
+    audits is the request-object refusal (#463), because it is the
+    request's whole answer; ``client_id`` is None when the request named
+    none. ``details`` extends the event beyond its reason.
     """
-    audit_event(
-        "authorization_request",
-        "failed",
-        endpoint="/authorize",
-        client_id=client_id,
-        details={"reason": reason},
-    )
+    if audit:
+        audit_event(
+            "authorization_request",
+            "failed",
+            endpoint="/authorize",
+            client_id=client_id,
+            details=_failed_details(reason, details),
+        )
     return jsonify({"error": error, "error_description": description}), 400
 
 
@@ -322,19 +395,23 @@ def _authorize_error_redirect(
     reason: str,
     *,
     username: Optional[str] = None,
+    details: Optional[Dict[str, Any]] = None,
 ) -> ResponseReturnValue:
     """Deliver an authorization error to the client through the ALREADY
     VALIDATED redirect_uri (RFC 6749 §4.1.2.1), carrying iss so the client
     can still detect an authorization-server mix-up on an error (#189/RFC
-    9207 §2: iss appears on error responses too). Only reachable after
-    _validate_authorize_redirect_uri has run, so this never redirects to an
-    unvalidated URI - errors before that stay local (see _authorize_reject).
+    9207 §2: iss appears on error responses too). Reachable after
+    _validate_authorize_redirect_uri has run, or after _undeliverable_because
+    read the same rule (_redirect_uri_verdict) without side effects (#463),
+    so this never redirects to an unvalidated URI - errors before that stay
+    local (see _authorize_reject).
 
     ``username`` (#318 review round 1) is the attempted username, when one
     exists - e.g. an unknown persona in an auto-login hint - so a consumer
     filtering failed ``authorization_request`` events by ``username`` sees
     it structured, not only inside ``reason``'s free text. ``None`` for
-    every other caller, exactly as before.
+    every other caller, exactly as before. ``details`` extends the event
+    beyond its reason.
     """
     # The configuration this request began with (#406).
     loaded = request_config()
@@ -344,7 +421,7 @@ def _authorize_error_redirect(
         endpoint="/authorize",
         client_id=p.client_id,
         username=username,
-        details={"reason": reason},
+        details=_failed_details(reason, details),
     )
     params = {"error": error, "error_description": description}
     if p.state:
@@ -363,25 +440,40 @@ def _validate_authorize_client(
     response_type is NOT checked here: it is validated after the redirect_uri
     is trusted (#258 review), so an unsupported_response_type on a valid
     redirect_uri is delivered as an error redirect, not a local JSON."""
+    client, rejection = _client_verdict(config, request_config(), p)
+    if rejection is not None:
+        return None, _reject_locally(p.client_id, rejection)
+    return client, None
+
+
+def _client_verdict(
+    config: ConfigManager, loaded: ConfigSnapshot, p: _AuthorizeParams
+) -> Tuple[Optional[OAuthClient], Optional[_Rejection]]:
+    """The required-parameter checks and the client lookup: ``(client,
+    None)`` or ``(None, rejection)``. The one home of "which client does
+    this request name", read by the validator above and by the
+    request-object refusal (#463) to decide whether an error may be
+    delivered, so the two cannot name different clients. The lookup is the
+    ordinary one, the metadata-document fetch included (#196): a refusal
+    that looked only at the cache answered 302 or 400 by whether the
+    document was cached, which told whoever chose the URL that the client
+    had been here lately, a fact the ordinary path never discloses."""
     if not p.client_id:
-        return None, (
-            jsonify({"error": "invalid_request", "error_description": "client_id is required"}),
-            400,
+        return None, _Rejection(
+            "invalid_request", "client_id is required", "client_id is required", audited=False
         )
-
     if not p.redirect_uri:
-        return None, (
-            jsonify({"error": "invalid_request", "error_description": "redirect_uri is required"}),
-            400,
+        return None, _Rejection(
+            "invalid_request",
+            "redirect_uri is required",
+            "redirect_uri is required",
+            audited=False,
         )
-
-    client = identities_for(config, request_config()).get_client(p.client_id)
+    client = identities_for(config, loaded).get_client(p.client_id)
     if client is None:
         client = _client_from_metadata_document(config, p.client_id)
-    if not client:
-        return None, _authorize_reject(
-            p.client_id, "Unknown client", "invalid_client", "Unknown client_id"
-        )
+    if client is None:
+        return None, _Rejection("invalid_client", "Unknown client_id", "Unknown client")
     return client, None
 
 
@@ -433,6 +525,63 @@ def _client_from_metadata_document(
             client_id=client_id,
         )
         return None
+
+
+def _refuse_unsupported_request_parameter(
+    config: ConfigManager, p: _AuthorizeParams, field: str
+) -> ResponseReturnValue:
+    """Request objects are not implemented, so a request that carries one is
+    refused with the one error that explains why nothing in the object was
+    read, whatever else the request says or lacks (#463): the object may
+    hold the very parameter the query omits (Core 6.1 lets everything but
+    response_type and client_id travel inside it), so no other error is
+    the right answer. Discovery publishes both ``*_parameter_supported``
+    flags as false, and this is the behaviour those flags describe.
+
+    Delivered where every error goes once the redirect_uri is validated
+    (to it, with state and iss), and locally otherwise - never to a URI
+    the redirect_uri rule would refuse for this client (a client without
+    registered URIs keeps #67's permissive dev behaviour here as
+    everywhere; oauth21 requires registration). The request is refused
+    before any validator runs, so it writes one authorization_request
+    event, this refusal's (the client lookup may write its own
+    client_metadata_document_refused, as for any request, #196);
+    whether it may be delivered is read off the same two rules the
+    validators apply, _client_verdict and _redirect_uri_verdict, which
+    write no audit event of their own (the client lookup may fetch a
+    metadata document and audit its refusal, as for any request). What
+    kept a refusal local is
+    recorded in the audit event (``delivered``, ``undeliverable``: the
+    fixed reason of the rule that kept it), since the validators that
+    used to say it no longer run for this request. The object and the URI
+    themselves are never recorded."""
+    error = f"{field}_not_supported"
+    description = f"The {field} parameter is not supported"
+    reason = f"{field} parameter is not supported"
+    undeliverable = _undeliverable_because(config, p)
+    if undeliverable is None:
+        return _authorize_error_redirect(
+            config, p, error, description, reason, details={"delivered": True}
+        )
+    return _authorize_reject(
+        p.client_id or None,
+        reason,
+        error,
+        description,
+        details={"delivered": False, "undeliverable": undeliverable},
+    )
+
+
+def _undeliverable_because(config: ConfigManager, p: _AuthorizeParams) -> Optional[str]:
+    """None when an error for this request may go to its redirect_uri, else
+    the fixed reason it may not: see _refuse_unsupported_request_parameter."""
+    loaded = request_config()
+    client, rejection = _client_verdict(config, loaded, p)
+    if rejection is not None:
+        return rejection.reason
+    assert client is not None
+    rejection = _redirect_uri_verdict(loaded.settings, p, client)
+    return rejection.reason if rejection is not None else None
 
 
 def _validate_authorize_response_type(
@@ -513,26 +662,36 @@ def _validate_authorize_redirect_uri(
     """
     # The configuration this request began with (#406).
     loaded = request_config()
-    rejection = redirect_uri_rejection_reason(p.redirect_uri)
-    if rejection is not None:
-        return jsonify({"error": "invalid_request", "error_description": rejection}), 400
+    rejection = _redirect_uri_verdict(loaded.settings, p, client)
+    if rejection is None:
+        return None
+    return _reject_locally(p.client_id, rejection)
 
+
+def _redirect_uri_verdict(
+    settings: Settings, p: _AuthorizeParams, client: OAuthClient
+) -> Optional[_Rejection]:
+    """The redirect_uri rule, with no side effect: None when the request's
+    redirect_uri is usable for this client, else the rejection. The one
+    home of the rule, read by the validator above and by the request-object
+    refusal (#463) to decide whether an error may be delivered to the
+    URI."""
+    syntax = redirect_uri_rejection_reason(p.redirect_uri)
+    if syntax is not None:
+        return _Rejection("invalid_request", syntax, "redirect_uri invalid", audited=False)
     if client.redirect_uris and not redirect_uri_is_registered(
         p.redirect_uri, client.redirect_uris
     ):
-        return _authorize_reject(
-            p.client_id,
-            "redirect_uri not registered for client",
+        return _Rejection(
             "invalid_request",
             "redirect_uri is not registered for this client",
+            "redirect_uri not registered for client",
         )
-
-    if loaded.settings.security_profile == "oauth21" and not client.redirect_uris:
-        return _authorize_reject(
-            p.client_id,
-            "oauth21 profile requires registered redirect_uris",
+    if settings.security_profile == "oauth21" and not client.redirect_uris:
+        return _Rejection(
             "invalid_request",
-            "the oauth21 profile requires this client to have " "registered redirect_uris",
+            "the oauth21 profile requires this client to have registered redirect_uris",
+            "oauth21 profile requires registered redirect_uris",
         )
     return None
 
@@ -1183,6 +1342,13 @@ def _validate_authorize_request(
     Each step is a named helper; every rejection keeps its historical error
     body and audit behavior (#212). A rejected request creates nothing (#331).
     """
+    # A request object is refused whatever the rest of the request says,
+    # before any validator runs (#463): one answer, one authorization_request
+    # event.
+    unsupported = p.unsupported_request_parameter
+    if unsupported is not None:
+        return None, _refuse_unsupported_request_parameter(config, p, unsupported)
+
     client, error = _validate_authorize_client(config, p)
     if error is not None:
         return None, error
