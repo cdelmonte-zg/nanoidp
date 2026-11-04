@@ -516,12 +516,19 @@ class CryptoService:
         tenant: Optional[str] = None,
         extra: Optional[Dict[str, Any]] = None,
         exp_minutes: int = 60,
-        nonce: Optional[str] = None
+        nonce: Optional[str] = None,
+        jti: Optional[str] = None,
+        now: Optional[datetime] = None,
     ) -> str:
-        """Create a signed JWT token."""
-        now = datetime.now(timezone.utc)
+        """Create a signed JWT token.
+
+        ``jti`` and ``now`` are drawn here unless the caller brings them:
+        the authorization code grant does (#466), so that the id and the
+        expiry it recorded on the code before minting are the ones the
+        token carries."""
+        now = now if now is not None else datetime.now(timezone.utc)
         payload = {
-            "jti": str(uuid.uuid4()),  # JWT ID for revocation support
+            "jti": jti if jti is not None else str(uuid.uuid4()),  # JWT ID for revocation support
             "iss": issuer,
             "sub": sub,
             "aud": audience,

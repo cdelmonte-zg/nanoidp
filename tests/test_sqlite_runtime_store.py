@@ -702,7 +702,8 @@ class TestContention:
                 f"the runtime store is held by another process for longer than 5000 ms: database {sentinel} is locked"
             )
 
-        monkeypatch.setattr(auth_code.AuthCodeStore, "consume_code", held)
+        # The token endpoint redeems through redeem_code since #466.
+        monkeypatch.setattr(auth_code.AuthCodeStore, "redeem_code", held)
         response = client.post(
             "/token",
             data={"grant_type": "authorization_code", "code": "x", "redirect_uri": "http://localhost:3000/callback"},

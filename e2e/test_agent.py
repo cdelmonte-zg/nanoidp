@@ -59,7 +59,7 @@ import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, urlparse
 
 try:
@@ -1148,6 +1148,30 @@ class NanoIDPTestAgent:
         Used by the ID Token audience tests to exercise a specific client.
         Returns None if any step fails.
         """
+        obtained = self._obtain_authorization_code(client_id, scope)
+        if obtained is None:
+            return None
+        sess, code, redirect_uri = obtained
+        token_resp = sess.post(
+            f"{self.base_url}/token",
+            data={
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": redirect_uri,
+            },
+            auth=(client_id, client_secret),
+            timeout=5,
+        )
+        if token_resp.status_code != 200:
+            return None
+        return token_resp.json()
+
+    def _obtain_authorization_code(
+        self, client_id: str, scope: str = "openid"
+    ) -> Optional[Tuple[requests.Session, str, str]]:
+        """Log in through /authorize in a fresh session and return the
+        session, the authorization code and the redirect URI, or None if
+        a step fails."""
         redirect_uri = "http://localhost:3000/callback"
         auth_params = {
             "response_type": "code",
@@ -1172,19 +1196,87 @@ class NanoIDPTestAgent:
         params = parse_qs(urlparse(resp.headers.get("Location", "")).query)
         if "code" not in params:
             return None
-        token_resp = sess.post(
-            f"{self.base_url}/token",
-            data={
-                "grant_type": "authorization_code",
-                "code": params["code"][0],
-                "redirect_uri": redirect_uri,
-            },
-            auth=(client_id, client_secret),
-            timeout=5,
-        )
-        if token_resp.status_code != 200:
-            return None
-        return token_resp.json()
+        return sess, params["code"][0], redirect_uri
+
+    def test_code_reuse_revokes_tokens(self) -> TestResult:
+        """RFC 6749 4.1.2 (#466): a reused authorization code is denied and
+        revokes what the first exchange issued - the access token and the
+        refresh family. A code of its own: the revocation must not touch
+        the tokens the other tests go on using."""
+        try:
+            obtained = self._obtain_authorization_code(self.client_id, "openid offline_access")
+            if obtained is None:
+                return self._add_result(
+                    "Code Reuse Revokes Tokens", TestCategory.OAUTH, False, "No authorization code"
+                )
+            sess, code, redirect_uri = obtained
+
+            def exchange():
+                return sess.post(
+                    f"{self.base_url}/token",
+                    data={"grant_type": "authorization_code", "code": code, "redirect_uri": redirect_uri},
+                    auth=(self.client_id, self.client_secret),
+                    timeout=5,
+                )
+
+            def introspect(token):
+                return requests.post(
+                    f"{self.base_url}/introspect",
+                    data={"token": token},
+                    auth=(self.client_id, self.client_secret),
+                    timeout=5,
+                ).json().get("active")
+
+            first = exchange()
+            if first.status_code != 200:
+                return self._add_result(
+                    "Code Reuse Revokes Tokens", TestCategory.OAUTH, False,
+                    f"First exchange failed: {first.status_code}",
+                )
+            tokens = first.json()
+            if "refresh_token" not in tokens:
+                return self._add_result(
+                    "Code Reuse Revokes Tokens", TestCategory.OAUTH, False,
+                    "The first exchange issued no refresh token: the family half cannot be checked",
+                )
+            bearer = {"Authorization": f"Bearer {tokens['access_token']}"}
+            before = requests.get(f"{self.base_url}/userinfo", headers=bearer, timeout=5)
+            reuse = exchange()
+            after = requests.get(f"{self.base_url}/userinfo", headers=bearer, timeout=5)
+            refreshed = requests.post(
+                f"{self.base_url}/token",
+                data={"grant_type": "refresh_token", "refresh_token": tokens["refresh_token"]},
+                auth=(self.client_id, self.client_secret),
+                timeout=5,
+            )
+            access_active = introspect(tokens["access_token"])
+            refresh_active = introspect(tokens["refresh_token"])
+            ok = (
+                before.status_code == 200
+                and reuse.status_code == 400
+                and reuse.json().get("error") == "invalid_grant"
+                and after.status_code == 401
+                and access_active is False
+                and refresh_active is False
+                and refreshed.status_code == 400
+            )
+            return self._add_result(
+                "Code Reuse Revokes Tokens",
+                TestCategory.OAUTH,
+                ok,
+                f"reuse: {reuse.status_code}, userinfo before/after: {before.status_code}/{after.status_code}, "
+                f"refresh after reuse: {refreshed.status_code}",
+                {
+                    "reuse_status": reuse.status_code,
+                    "userinfo_before": before.status_code,
+                    "userinfo_after": after.status_code,
+                    "access_active_after": access_active,
+                    "refresh_active_after": refresh_active,
+                    "refresh_after_reuse_status": refreshed.status_code,
+                },
+            )
+        except Exception as e:
+            return self._add_result("Code Reuse Revokes Tokens", TestCategory.OAUTH, False, str(e))
 
     def test_request_objects_refused(self) -> TestResult:
         """Request objects are not implemented, and a request carrying one
@@ -6794,6 +6886,7 @@ class NanoIDPTestAgent:
                 self.test_issuer_from_request,
                 self.test_issuer_from_proxy_headers,
                 self.test_authorization_code_pkce,
+                self.test_code_reuse_revokes_tokens,
                 self.test_public_client_flow,
                 self.test_resource_indicators,
                 self.test_redirect_uri_exact_matching,

@@ -8,7 +8,9 @@ shared route audit helper (._audit), never back on routes.oauth, so the import
 stays one-way and there is no cycle.
 """
 
+import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 from flask import (
@@ -25,6 +27,7 @@ from ..services import (
     get_device_code_store,
     get_revocation_store,
 )
+from ..services.auth_code import AuthorizationCode, CodeReused
 from ..services.identities import IdentityResolver
 from ..services.resource import resolve_resources
 from ..services.scope import resolve_scope
@@ -52,6 +55,11 @@ class _GrantOutcome:
     # persona mode, which checks no password.
     amr: Optional[Sequence[str]] = None
     refresh_family: Optional[str] = None
+    # The access token's id and the instant it is minted at, when the grant
+    # recorded them before minting (#466, the authorization code grant);
+    # None leaves both to the signer.
+    access_jti: Optional[str] = None
+    issued_at: Optional[datetime] = None
     # Claim names requested via the OIDC `claims` parameter (§5.5, #104).
     id_token_claims: Optional[list] = None
     userinfo_claims: Optional[list] = None
@@ -90,6 +98,10 @@ class _GrantContext:
     # so handlers always see a concrete id.
     client_id: str
     grant_type: str
+    # The effective token lifetime of this request, validated by token()
+    # before dispatch (#466): the authorization code grant records the
+    # access token's expiry before the token exists.
+    exp_minutes: int
 
 
 # A handler returns either issuance parameters or a finished error response.
@@ -577,15 +589,55 @@ def _grant_authorization_code(ctx: _GrantContext) -> GrantResult:
         )
         return _oauth_error("invalid_request", "redirect_uri is required")
 
-    # Consume the authorization code
+    # The ids this redemption will issue, drawn before the code is
+    # consumed and recorded with it in the same decision (#466): a reuse
+    # that arrives before the first token is signed still finds them. The
+    # instant and the access token's expiry are drawn inside the decision,
+    # after any wait for the store, and come back on the record.
+    access_jti = str(uuid.uuid4())
+    refresh_family = str(uuid.uuid4())
     auth_code_store = get_auth_code_store()
-    auth_code = auth_code_store.consume_code(
+    redemption = auth_code_store.redeem_code(
         code=code,
         client_id=ctx.client_id,
         redirect_uri=redirect_uri,
         code_verifier=code_verifier,
+        access_jti=access_jti,
+        refresh_family=refresh_family,
+        access_lifetime_seconds=ctx.exp_minutes * 60,
     )
 
+    if isinstance(redemption, CodeReused):
+        # RFC 6749 4.1.2: deny, and revoke what the code issued - the first
+        # access token until its expiry and the whole refresh family - in
+        # one decision of the revocation store; the record stays until the
+        # code expires, so a reuse after a failed commit revokes again.
+        # The client reads the same refusal as for any bad code.
+        if redemption.issued is not None:
+            get_revocation_store().revoke_issued(
+                redemption.issued.access_jti,
+                redemption.issued.access_exp,
+                redemption.issued.refresh_family,
+            )
+        audit_event(
+            "token_request",
+            "failed",
+            endpoint="/token",
+            username=redemption.username,
+            client_id=ctx.client_id,
+            details={
+                "reason": (
+                    "Authorization code reused: the tokens issued from it are revoked"
+                    if redemption.issued is not None
+                    else "Authorization code reused: nothing recorded to revoke"
+                ),
+                "grant_type": ctx.grant_type,
+                "tokens_revoked": redemption.issued is not None,
+            },
+        )
+        return _oauth_error("invalid_grant", "Invalid or expired authorization code")
+
+    auth_code = redemption
     if not auth_code:
         audit_event(
             "token_request",
@@ -599,6 +651,38 @@ def _grant_authorization_code(ctx: _GrantContext) -> GrantResult:
         )
         return _oauth_error("invalid_grant", "Invalid or expired authorization code")
 
+    try:
+        result = _issue_for_code(ctx, auth_code, access_jti, refresh_family)
+    except BaseException:
+        # Whatever failed here issued nothing: see below.
+        auth_code_store.forget_issued(code)
+        raise
+    if not isinstance(result, _GrantOutcome):
+        # The code is used and nothing was issued: a later presentation
+        # must find nothing to revoke, and say so. (A signer that fails
+        # after this handler returned is the one window left: the record
+        # then names tokens that never existed, and a reuse revokes them
+        # harmlessly.)
+        auth_code_store.forget_issued(code)
+    return result
+
+
+def _minted_at(auth_code: AuthorizationCode) -> datetime:
+    """The instant the redemption recorded, which the tokens are minted at.
+    A redeemed code without one is a record this version did not write:
+    refused loudly rather than minted at the epoch."""
+    if auth_code.issued_at is None:
+        raise RuntimeError("a redeemed authorization code carries no instant to mint at")
+    return datetime.fromtimestamp(auth_code.issued_at, timezone.utc)
+
+
+def _issue_for_code(
+    ctx: _GrantContext, auth_code: AuthorizationCode, access_jti: str, refresh_family: str
+) -> GrantResult:
+    """The checks between a redeemed code and its tokens, and the issuance
+    parameters: the user, the scope against today's vocabulary, the
+    resource. Separate from the redemption so that a refusal here is known
+    to have issued nothing (#466)."""
     # Get the user from the authorization code
     username = auth_code.username
     user = ctx.identities.get_user(username)
@@ -673,6 +757,9 @@ def _grant_authorization_code(ctx: _GrantContext) -> GrantResult:
         # How that login authenticated (#348) - set at /authorize, None
         # under persona mode.
         amr=auth_code.amr,
+        refresh_family=refresh_family,
+        access_jti=access_jti,
+        issued_at=_minted_at(auth_code),
         # Claims the client asked for through the OIDC `claims` parameter (#104).
         id_token_claims=requested_claims.get("id_token"),
         userinfo_claims=requested_claims.get("userinfo"),
