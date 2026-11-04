@@ -50,9 +50,10 @@ from ..services.identities import (
 from ..services.runtime_repository import delete_if
 from ..services.runtime_store import RuntimeObjectExists
 from ._audit import audit_event
-from ._auth import no_store
+from ._auth import bearer_header_credential, no_store
 from ._config import request_config
 from ._issuer import effective_issuer
+from ._oauth_error import bearer_error
 
 registration_bp = Blueprint("registration", __name__)
 
@@ -100,19 +101,12 @@ def _unauthorized() -> ResponseReturnValue:
 
     Telling them apart would let anyone walk the client ids.
     """
-    response = jsonify(
-        {"error": "invalid_token", "error_description": "invalid registration access token"}
-    )
-    response.headers["WWW-Authenticate"] = 'Bearer error="invalid_token"'
-    return response, 401
+    return bearer_error(401, "invalid_token", "invalid registration access token")
 
 
 def _presented_token() -> Optional[str]:
-    header = request.headers.get("Authorization", "")
-    scheme, _, value = header.partition(" ")
-    if scheme.lower() != "bearer" or not value.strip():
-        return None
-    return value.strip()
+    attempted, value = bearer_header_credential()
+    return value if attempted and value else None
 
 
 def _authenticated(

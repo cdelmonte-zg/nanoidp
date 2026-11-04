@@ -13,9 +13,54 @@ invalid, expired, revoked or issued to another client; invalid_client =
 client authentication failed (401).
 """
 
-from typing import Tuple
+from typing import Optional, Tuple
 
 from flask import Response, jsonify
+
+
+def bearer_challenge(
+    *, realm: Optional[str] = None, error: Optional[str] = None, description: Optional[str] = None
+) -> str:
+    """The value of an RFC 6750 section 3 ``WWW-Authenticate`` header: the
+    Bearer scheme followed by at least one parameter (the section's MUST):
+    ``realm``, which names the protected resource and is each resource's
+    own (/userinfo says ``userinfo``, the registration endpoint names
+    none), and, for a refused credential, ``error`` and
+    ``error_description``. The one builder for the challenges of /userinfo
+    (#465) and the registration access token (#190). Values are FIXED
+    text, as every description here is, and the builder fails closed on
+    anything outside printable ASCII and HTAB (RFC 7230 quoted-string; a
+    quote or a backslash is escaped), so that the header and the JSON body
+    that carries the same text can never disagree."""
+    params = [
+        (name, value)
+        for name, value in (("realm", realm), ("error", error), ("error_description", description))
+        if value is not None
+    ]
+    if not params:
+        raise ValueError("a Bearer challenge needs at least one parameter")
+
+    def quoted(value: str) -> str:
+        if any(not (" " <= ch <= "~" or ch == "\t") for ch in value):
+            raise ValueError("a Bearer challenge value is printable ASCII")
+        return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+    return "Bearer " + ", ".join(f"{name}={quoted(value)}" for name, value in params)
+
+
+def bearer_error(
+    status: int, error: str, description: str, *, realm: Optional[str] = None
+) -> Response:
+    """An RFC 6750 section 3 error answer of a protected resource: the RFC
+    6749 section 5.2 JSON body and the Bearer challenge naming the error. The
+    one builder for /userinfo (#465) and the registration access token
+    (#190)."""
+    body = jsonify({"error": error, "error_description": description})
+    body.status_code = status
+    body.headers["WWW-Authenticate"] = bearer_challenge(
+        realm=realm, error=error, description=description
+    )
+    return body
 
 
 def oauth_error(error: str, description: str, status: int = 400) -> Tuple[Response, int]:

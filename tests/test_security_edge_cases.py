@@ -516,11 +516,14 @@ class TestMalformedTokens:
         assert response.status_code == 401
 
     def test_empty_token_rejected(self, client):
-        """Test that empty tokens are rejected."""
+        """A Bearer header without a token is a malformed attempt, refused
+        as invalid_request (RFC 6750 3.1) since #465; before, it was read
+        as no credentials at all."""
         response = client.get('/userinfo',
             headers={'Authorization': 'Bearer '}
         )
-        assert response.status_code == 401
+        assert response.status_code == 400
+        assert response.headers['WWW-Authenticate'].startswith('Bearer realm="userinfo", error="invalid_request"')
 
     def test_missing_bearer_prefix_rejected(self, client, access_token):
         """Test that tokens without Bearer prefix are rejected."""

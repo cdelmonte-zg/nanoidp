@@ -3039,12 +3039,41 @@ class NanoIDPTestAgent:
                 sub = data.get("sub", "?")
                 email = data.get("email", "?")
                 tenant = data.get("tenant", "?")
+                # RFC 6750 (#465): the token in a form-encoded POST body is
+                # accepted; header and body together are refused with
+                # invalid_request; a request without credentials gets the
+                # Bearer challenge with no error code.
+                in_body = requests.post(
+                    f"{self.base_url}/userinfo",
+                    data={"access_token": self.access_token},
+                    timeout=5,
+                )
+                both = requests.post(
+                    f"{self.base_url}/userinfo",
+                    headers=headers,
+                    data={"access_token": self.access_token},
+                    timeout=5,
+                )
+                bare = requests.get(f"{self.base_url}/userinfo", timeout=5)
+                transport_ok = (
+                    in_body.status_code == 200
+                    and in_body.json().get("sub") == sub
+                    and both.status_code == 400
+                    and 'error="invalid_request"' in both.headers.get("WWW-Authenticate", "")
+                    and bare.status_code == 401
+                    and bare.headers.get("WWW-Authenticate") == 'Bearer realm="userinfo"'
+                )
                 return self._add_result(
                     "UserInfo",
                     TestCategory.OAUTH,
-                    True,
-                    f"sub={sub}, email={email}, tenant={tenant}",
-                    data
+                    transport_ok,
+                    f"sub={sub}, email={email}, tenant={tenant}; token in POST body: "
+                    f"{in_body.status_code}, header+body: {both.status_code}, "
+                    f"no credentials: {bare.status_code}",
+                    {**data, "token_in_body_status": in_body.status_code,
+                     "header_and_body_status": both.status_code,
+                     "no_credentials_status": bare.status_code,
+                     "no_credentials_challenge": bare.headers.get("WWW-Authenticate")}
                 )
             return self._add_result(
                 "UserInfo",
