@@ -12,7 +12,9 @@ inside the object, so the object may hold the very parameter the query
 omits, and no other error is the right answer. Only WHERE the refusal goes
 depends on the rest: to the validated redirect_uri (with ``state`` from the
 query and ``iss`` when the issuer qualifies, #258) once there is one, and
-locally otherwise, never to a URI the client did not register. The
+locally otherwise - only ever to a URI the client's redirect policy
+accepts, which for a client without registered URIs is #67's permissive
+``dev`` rule. The
 conformance suite ends its request object test as SKIPPED on
 ``error=request_not_supported`` and checks no state there, since the
 suite's state travels inside the object.
