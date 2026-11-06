@@ -67,9 +67,10 @@ class AuthenticatedSession(BaseModel):
     def is_live_for(self, browser_binding: Optional[str]) -> bool:
         return self.is_for(browser_binding) and self.is_live()
 
-    def age(self, now: Optional[float] = None) -> int:
-        """Seconds since the authentication, for ``max_age``."""
-        return int((now if now is not None else time.time()) - self.auth_time)
+    def age(self, now: Optional[float] = None) -> float:
+        """Seconds since the authentication, for ``max_age``: not truncated,
+        so an authentication 1.9 s old is older than ``max_age=1``."""
+        return (now if now is not None else time.time()) - self.auth_time
 
 
 class AuthenticatedSessionStore:

@@ -100,15 +100,59 @@ class TestPromptNone:
         assert _error_of(response) == "login_required"
         assert pending_transaction_ids(client) == []
 
-    def test_on_the_direct_post_it_is_never_a_login(self, client):
+    def test_on_the_direct_post_it_is_login_required_even_with_a_session(self, client):
+        """The direct POST authenticates with the credentials it carries
+        and never takes a code from the session; prompt=none on it is a
+        contradiction answered as login_required."""
         refused = client.post(f"/authorize?{QS}&prompt=none", data=LOGIN)
-
         assert _error_of(refused) == "login_required"
 
         _login(client)
-        reused = client.post(f"/authorize?{QS}&prompt=none", data=LOGIN)
+        again = client.post(f"/authorize?{QS}&prompt=none", data=LOGIN)
 
-        assert "code" in authorization_response_params(reused)
+        assert _error_of(again) == "login_required"
+
+
+class TestTheDirectPostAuthenticatesWithItsCredentials:
+    def test_a_wrong_password_is_refused_despite_a_live_session(self, client):
+        _login(client)
+
+        attempt = client.post(f"/authorize?{QS}", data={"username": "user1", "password": "wrong"})
+
+        assert attempt.status_code == 200
+        assert b"Invalid username or password" in attempt.data
+
+    def test_another_users_credentials_issue_that_users_code_and_replace_the_session(
+        self, client
+    ):
+        _login(client)
+
+        done = client.post(f"/authorize?{QS}", data={"username": "user1", "password": "password"})
+
+        assert _exchange(client, done)["sub"] == "user1"
+        reused = client.get(f"/authorize?{QS}")
+        assert _exchange(client, reused)["sub"] == "user1"
+
+
+class TestTheAutoLoginHintNamesThePersona:
+    def test_a_session_for_another_persona_is_not_reused_for_the_hinted_one(self, client, app):
+        _enable_auto_login(app)
+        first = client.get(f"/authorize?{QS}&login_hint=persona-auto-login:admin")
+        assert _exchange(client, first)["sub"] == "admin"
+
+        second = client.get(f"/authorize?{QS}&login_hint=persona-auto-login:user1")
+
+        assert _exchange(client, second)["sub"] == "user1"
+        assert _exchange(client, client.get(f"/authorize?{QS}"))["sub"] == "user1"
+
+    def test_a_session_for_the_hinted_persona_is_reused(self, client, app):
+        _enable_auto_login(app)
+        first = _exchange(client, client.get(f"/authorize?{QS}&login_hint=persona-auto-login:admin"))
+        time.sleep(1.1)
+
+        second = _exchange(client, client.get(f"/authorize?{QS}&login_hint=persona-auto-login:admin"))
+
+        assert second["auth_time"] == first["auth_time"]
 
 
 class TestPromptLoginAndMaxAgeZero:
@@ -166,6 +210,25 @@ class TestMaxAge:
         assert second["auth_time"] > first["auth_time"]
         assert second["auth_time"] >= int(time.time()) - 5
 
+    def test_the_age_is_not_truncated(self, client):
+        """An authentication 1.x seconds old is older than max_age=1."""
+        from nanoidp.services.authenticated_sessions import get_authenticated_session_store
+
+        _login(client)
+        with client.session_transaction() as s:
+            binding = s["authorize_binding"]
+        store = get_authenticated_session_store()
+        record = store.live(binding)
+        store.establish(
+            browser_binding=binding,
+            username=record.username,
+            method=record.method,
+            auth_time=int(time.time()) - 1,
+            lifetime_seconds=3600,
+        )
+
+        assert _is_login_page(client.get(f"/authorize?{QS}&max_age=1"))
+
     def test_auth_time_is_present_when_max_age_was_requested(self, client):
         claims = _login(client, "&max_age=300")
 
@@ -212,6 +275,8 @@ class TestMalformedValues:
             "&max_age=abc",
             "&max_age=-1",
             "&max_age=1.5",
+            "&max_age=%C2%B2",  # a superscript digit: str.isdigit() but not int()
+            "&max_age=" + "9" * 5000,
         ):
             assert _error_of(client.get(f"/authorize?{QS}{extra}")) == "invalid_request", extra
         assert pending_transaction_ids(client) == []

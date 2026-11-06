@@ -7,6 +7,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Dict, FrozenSet, List, Optional, Sequence, Tuple, Union
 from urllib.parse import parse_qsl, urlencode
 
@@ -69,6 +70,7 @@ from ..services.device_code import (
 )
 from ..services.discovery import issuer_qualifies_for_iss_parameter
 from ..services.id_token_hint_references import (
+    UNPARKED_REFERENCE,
     ParkedHintStoreFull,
     get_parked_hint_store,
     is_reference,
@@ -388,7 +390,7 @@ def _is_form_serialized_request(requested: Dict[str, List[str]], form: MultiDict
     return bool(_requested_fields(form))
 
 
-def _redirect_form_request_to_get(form: MultiDict) -> ResponseReturnValue:
+def _redirect_form_request_to_get(config: ConfigManager, form: MultiDict) -> ResponseReturnValue:
     """Answer a form-serialized authorization request with a 303 to the
     same request in GET form (#467): the fields the GET reads, from the
     body only, as sent - empty and repeated values included, a repeated
@@ -407,9 +409,19 @@ def _redirect_form_request_to_get(form: MultiDict) -> ResponseReturnValue:
     login bound to it. The redirect is followed as a top-level GET, which
     carries the cookie, and the GET is the one reader of a request.
     """
+    # A hint is parked only for a client this server already knows
+    # (declared, runtime, or a cached metadata document): the parked store
+    # is bounded, and a sender who names no real client fills nothing. For
+    # a client it would first have to fetch, the hint becomes a reference
+    # that resolves to nothing and the GET refuses the request
+    # (invalid_request), rather than serving it without the hint.
+    known_client = bool(
+        form.get("client_id")
+        and identities_for(config, request_config()).get_client(form.get("client_id", ""))
+    )
     try:
         carried = [
-            (field, _carried_value(field, value))
+            (field, _carried_value(field, value, known_client))
             for field in _AUTHORIZE_READ_FIELDS
             for value in form.getlist(field)
         ]
@@ -435,14 +447,15 @@ def _redirect_form_request_to_get(form: MultiDict) -> ResponseReturnValue:
     return redirect(f"{url_for('oauth.authorize')}?{urlencode(carried)}", code=303)
 
 
-def _carried_value(field: str, value: str) -> str:
+def _carried_value(field: str, value: str, known_client: bool) -> str:
     """What a body field's value becomes in the GET form (#467, #468): a
-    request object a placeholder, an ID token hint a parked reference,
-    anything else itself."""
+    request object a placeholder, an ID token hint a parked reference
+    (or one that resolves to nothing, for a client not known), anything
+    else itself."""
     if value and field in ("request", "request_uri"):
         return _REQUEST_OBJECT_PLACEHOLDER
     if value and field == "id_token_hint":
-        return get_parked_hint_store().park(value)
+        return get_parked_hint_store().park(value) if known_client else UNPARKED_REFERENCE
     return value
 
 
@@ -1171,7 +1184,11 @@ def _issue_authorization_code(
             username=username,
         )
 
-    auth_time = reused.auth_time if reused is not None else int(time.time())
+    # One instant for the code's creation, the session and the ID token:
+    # a fresh login's auth_time is the code's created_at, so the two never
+    # disagree at a second's boundary.
+    created_at = datetime.now(timezone.utc)
+    auth_time = reused.auth_time if reused is not None else int(created_at.timestamp())
     session_outcome = _record_authenticated_session(loaded, username, method, auth_time, reused)
 
     auth_code_store = get_auth_code_store()
@@ -1188,6 +1205,7 @@ def _issue_authorization_code(
         resource=list(p.resources) if p.resources else None,
         amr=amr,
         auth_time=auth_time,
+        created_at=created_at,
     )
 
     # Build redirect URL with code
@@ -1613,7 +1631,10 @@ def _validate_authorize_authentication_constraints(
         )
     max_age: Optional[int] = None
     if p.max_age:
-        if not p.max_age.isdigit():
+        # ASCII digits only, bounded: str.isdigit accepts other scripts'
+        # digits and superscripts that int() refuses, and int() refuses
+        # very long strings; neither is an answer this endpoint gives.
+        if not (p.max_age.isascii() and p.max_age.isdigit() and len(p.max_age) <= 10):
             return _authorize_error_redirect(
                 config, p, "invalid_request", "max_age must be a non-negative integer",
                 "max_age is not a non-negative integer",
@@ -1665,7 +1686,7 @@ def _interaction_required(p: _AuthorizeParams) -> bool:
 
 
 def _answer_from_session(
-    config: ConfigManager, loaded: ConfigSnapshot, p: _AuthorizeParams
+    config: ConfigManager, loaded: ConfigSnapshot, p: _AuthorizeParams, *, reuse: bool = True
 ) -> Optional[ResponseReturnValue]:
     """What a validated request gets before any login page is considered
     (#468): a code resting on the browser's authenticated session, an
@@ -1681,7 +1702,12 @@ def _answer_from_session(
     than that. ``prompt=none`` forbids every interaction: without a
     reusable session it is ``login_required``, whatever a ``login_hint``
     says (persona auto-login is no interaction either, and stands in for
-    none).
+    none). A hint that names a user - ``id_token_hint``'s subject, or the
+    persona of an auto-login ``login_hint`` - is honoured: a session for
+    another user is not reused for it. ``reuse`` is off for the direct
+    POST, which carries credentials and authenticates with them: it never
+    takes a code from the session, and ``prompt=none`` on it is
+    ``login_required``.
     """
     prompts = p.prompts
     if "consent" in prompts:
@@ -1696,23 +1722,32 @@ def _answer_from_session(
             "prompt=select_account under password login mode",
         )
     interaction = _interaction_required(p)
-    usable = _usable_session(config, loaded)
-    if usable is not None and not interaction:
+    # Resolved only where it decides something: the store round-trip and
+    # the user lookup are not paid for a request that asks for a login.
+    usable = _usable_session(config, loaded) if reuse and not interaction else None
+    hinted = p.hint_subject
+    if hinted is None and loaded.settings.auto_login_enabled and p.login_hint.startswith(
+        _AUTO_LOGIN_HINT_PREFIX
+    ):
+        hinted = p.login_hint[len(_AUTO_LOGIN_HINT_PREFIX) :]
+    if usable is not None:
         record, user = usable
         fresh_enough = p.max_age_seconds is None or record.age() <= p.max_age_seconds
-        hinted_user = p.hint_subject is None or p.hint_subject == user.username
+        hinted_user = hinted is None or hinted == user.username
         if fresh_enough and hinted_user:
             method = AuthMethod(record.method)
             return _issue_authorization_code(
                 config, p, user.username, method=method, amr=_session_amr(loaded, method), reused=record
             )
     if "none" in prompts:
-        if interaction:
+        if not reuse:
+            reason = "prompt=none on a request carrying credentials"
+        elif interaction:
             reason = "prompt=none with max_age=0"
         elif usable is None:
             reason = "prompt=none without an authenticated session"
-        elif p.hint_subject is not None and p.hint_subject != usable[1].username:
-            reason = "prompt=none with a session for another subject than id_token_hint names"
+        elif hinted is not None and hinted != usable[1].username:
+            reason = "prompt=none with a session for another user than the hint names"
         else:
             reason = "prompt=none with a session older than max_age"
         return _authorize_error_redirect(
@@ -1828,10 +1863,10 @@ def _authorize_direct_post(
     if error is not None:
         return error
     assert client is not None
-    # The same decision a GET makes first (#468): a live session answers
-    # the request before any credentials are looked at, and prompt=none
-    # is never a login.
-    answered = _answer_from_session(config, request_config(), p)
+    # The constraints a GET decides first apply here too (#468), but the
+    # credentials this POST carries are what it authenticates with: no
+    # session is reused for it, and prompt=none is never a login.
+    answered = _answer_from_session(config, request_config(), p, reuse=False)
     if answered is not None:
         return answered
     transaction, error = _begin_transaction(
@@ -2015,7 +2050,7 @@ def authorize() -> ResponseReturnValue:
         return _render_authorize_login(config, transaction, None)
 
     if _is_form_serialized_request(requested, request.form):
-        return _redirect_form_request_to_get(request.form)
+        return _redirect_form_request_to_get(config, request.form)
     _audit_body_oauth_fields()
     transaction_id = request.form.get("transaction_id", "")
     if not transaction_id and requested:

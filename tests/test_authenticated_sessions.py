@@ -221,6 +221,31 @@ class TestSingleSignOn:
             assert "user" not in s
 
 
+class TestTheCodeRecordAndOlderProcesses:
+    def test_a_fresh_login_writes_no_auth_time_key_and_a_reused_session_does(self, client):
+        """A code issued at the login reads back on a 3.4.0 process sharing
+        the store (#466's guarantee); only a code resting on an earlier
+        authentication carries the new key."""
+        from nanoidp.services.auth_code import get_auth_code_store
+
+        page = client.get(f"/authorize?{QS}")
+        done = client.post("/authorize", data={"transaction_id": transaction_id_of(page), **LOGIN})
+        fresh_code = authorization_response_params(done)["code"][0]
+        time.sleep(1.1)
+        reused_code = authorization_response_params(client.get(f"/authorize?{QS}"))["code"][0]
+
+        store = get_auth_code_store()
+        written = {code: store._repository.entry(code) for code in (fresh_code, reused_code)}
+        from nanoidp.services.auth_code import _CODEC
+
+        fresh = _CODEC.dump(written[fresh_code].value)
+        reused = _CODEC.dump(written[reused_code].value)
+        assert "auth_time" not in fresh
+        assert reused["auth_time"] == written[reused_code].value.auth_time
+        loaded = _CODEC.load(fresh)
+        assert loaded.auth_time == int(loaded.created_at.timestamp())
+
+
 class TestTheSessionIsOnlyAsGoodAsTheLoginIsToday:
     def test_a_user_that_no_longer_exists(self, client, app):
         _login(client)

@@ -207,6 +207,19 @@ class TestFormPost:
         reused = client.get(f"/authorize?{query}")
         assert _error_of(reused) == "invalid_request"
 
+    def test_a_hint_is_parked_only_for_a_known_client(self, client, app):
+        """A sender naming no real client fills nothing: the hint becomes a
+        reference that resolves to nothing, and the GET refuses the request
+        rather than serving it without the hint."""
+        from nanoidp.services.id_token_hint_references import get_parked_hint_store
+
+        hint = _mint(app, sub="admin")
+        answer = client.post("/authorize", data={**self._body(hint), "client_id": "nobody"})
+
+        assert answer.status_code == 303
+        assert "id_token_hint=ref%3Aunparked" in answer.headers["Location"]
+        assert get_parked_hint_store()._repository.list() == []
+
     def test_an_unknown_reference_is_invalid_request(self, client, app):
         response = client.get(f"/authorize?{QS}&id_token_hint=ref:nothing")
 

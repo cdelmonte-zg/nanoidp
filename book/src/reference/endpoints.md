@@ -91,13 +91,19 @@ expect the code on the GET once a session exists. The session is only as
 good as its login is today: a user that no longer exists, a persona
 selection under password mode, a password login under persona mode or one
 made before a TOTP code became required of that user, are no session.
-`/logout` ends it, and so does `DELETE /api/runtime`.
+`/logout` ends it, and so does `DELETE /api/runtime`. The direct entry
+point (the request in the query string, credentials in the body)
+authenticates with the credentials it carries and never takes a code from
+the session. A persona auto-login `login_hint` names the persona: a
+session for another user is not reused for it, the hinted persona is
+logged in and the session is theirs.
 
 The three parameters that speak to the session are decided after the
 `redirect_uri`, so every answer reaches the client with `state` and
 `iss`. `prompt=none` is never a page: a code resting on a usable session,
 else `login_required`; persona auto-login does not stand in for a
-session. `prompt=login` and `max_age=0` ask for the user's own
+session, and the direct entry point, which carries credentials, answers
+it with `login_required`. `prompt=login` and `max_age=0` ask for the user's own
 interaction: the login page, whatever session exists, a new `auth_time`,
 and no auto-login, not even on a later hint-only GET resuming that
 transaction. `max_age=N` reuses a session whose authentication is no
@@ -113,7 +119,9 @@ another is not, and a login that follows is accepted only from that user,
 any other being `login_required`; a hint that does not verify is
 `invalid_request`. In a form POST (#467) the hint never enters the URL:
 the 303 carries a single-use reference, resolved by the GET within a
-minute.
+minute. The hint is parked only for a client the server already knows
+(declared, runtime, or a cached metadata document); for any other the
+reference resolves to nothing and the GET answers `invalid_request`.
 
 One browser fact: the session cookie is `SameSite=Lax`, which a browser
 sends on a top-level navigation and not from a cross-site iframe. A

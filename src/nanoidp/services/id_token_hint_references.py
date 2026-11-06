@@ -23,6 +23,9 @@ from .runtime_store import PydanticCodec, RuntimeRepository, get_runtime_store
 REFERENCE_LIFETIME_SECONDS = 60
 MAX_PARKED_HINTS = 1000
 REFERENCE_PREFIX = "ref:"
+# A reference that stands for nothing: what a hint becomes when it is not
+# parked, so the GET refuses the request instead of serving it unhinted.
+UNPARKED_REFERENCE = REFERENCE_PREFIX + "unparked"
 
 
 class ParkedHintStoreFull(Exception):

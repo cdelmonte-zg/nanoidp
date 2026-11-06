@@ -27,7 +27,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `DELETE /api/runtime` (which now answers `sessions_ended`) end sessions.
   Four OpenID conformance tests failed on the missing session
   (`oidcc-prompt-none-not-logged-in`, `oidcc-prompt-none-logged-in`,
-  `oidcc-max-age-10000`, `oidcc-id-token-hint`).
+  `oidcc-max-age-10000`, `oidcc-id-token-hint`). A code that rests on
+  an earlier authentication carries an `auth_time` the 3.4.0 record did
+  not have: a 3.4.0 process sharing the runtime store cannot redeem such
+  a code, while a code issued at the login reads back as before.
 
 ### Fixed
 
