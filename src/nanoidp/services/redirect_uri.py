@@ -85,7 +85,10 @@ def is_absolute_redirect_uri(uri: str) -> bool:
     Accepts web URIs (``https://host/path``), private-use scheme URIs with a
     path and no authority (``com.example.app:/oauth2redirect``, RFC 8252
     §7.1) and loopback URIs. Rejects relative references, scheme-only
-    strings and anything carrying a fragment.
+    strings, anything carrying a fragment, and an HTTP(S) URI with no host
+    (#486): ``https:/callback`` has a scheme and a path, and a browser
+    resolves it against the current URL, so the response would go to the
+    IdP's own host.
     """
     try:
         parsed = urlparse(uri)
@@ -97,7 +100,7 @@ def is_absolute_redirect_uri(uri: str) -> bool:
         return False
     if parsed.fragment or uri.endswith("#"):
         return False
-    return True
+    return parsed.scheme not in _WEB_SCHEMES or bool(parsed.hostname)
 
 
 _WEB_SCHEMES = frozenset({"http", "https"})
