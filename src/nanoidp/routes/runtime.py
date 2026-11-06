@@ -27,6 +27,7 @@ from ..config_documents import (
 )
 from ..config_writer import ConflictError, LockUnavailableError
 from ..hooks import HookError
+from ..services.authenticated_sessions import get_authenticated_session_store
 from ..services.dynamic_registration import (
     delete_client_and_registration,
     prune_stale_registrations,
@@ -185,6 +186,9 @@ def reset() -> ResponseReturnValue:
     configuration."""
     resolver = identities_for(get_config(), request_config())
     users_deleted, clients_deleted = resolver.reset_runtime_identities()
+    # Every browser's authenticated session at /authorize is test state
+    # too (#468): a reset ends them all, whoever they were for.
+    sessions_ended = get_authenticated_session_store().delete_all()
     # Tidiness, and the capacity count: the records of the clients that just
     # went match nothing any more (#404), including a client created under
     # one of those ids before this line runs.
@@ -193,9 +197,19 @@ def reset() -> ResponseReturnValue:
         "runtime_identities_reset",
         "success",
         endpoint=request.path,
-        details={"users_deleted": users_deleted, "clients_deleted": clients_deleted},
+        details={
+            "users_deleted": users_deleted,
+            "clients_deleted": clients_deleted,
+            "sessions_ended": sessions_ended,
+        },
     )
-    return jsonify({"users_deleted": users_deleted, "clients_deleted": clients_deleted})
+    return jsonify(
+        {
+            "users_deleted": users_deleted,
+            "clients_deleted": clients_deleted,
+            "sessions_ended": sessions_ended,
+        }
+    )
 
 
 # ---- shared -----------------------------------------------------------------

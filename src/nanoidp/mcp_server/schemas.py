@@ -497,6 +497,7 @@ _TOOLS: list[Tool] = [
                     "written directly in users.yaml, with no enrolment, "
                     "no replay protection and no admin reset. Opt-in, "
                     "off by default; inert under login_mode: persona."),
+                "session_minutes": _domain(Settings, "session_minutes", "How long a browser's authenticated session at /authorize lives, in minutes, counted from the authentication that created it and not renewed by reuse (#468). While it lives, a request without prompt, max_age or id_token_hint is answered with a code without a login page (single sign-on), prompt=none succeeds, and max_age and id_token_hint are checked against it. 0 disables the session: every request authenticates, as before 3.5. Distinct from the web UI login session; /device and SAML neither create nor use it."),
             },
             "required": [],
         },

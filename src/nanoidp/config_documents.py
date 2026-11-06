@@ -348,6 +348,7 @@ class LoginSection(BaseModel):
     auto_login: bool = False
     two_step: bool = False
     totp: bool = False
+    session_minutes: int = Field(default=60, ge=0, le=10080)
 
 
 class HooksSection(BaseModel):
@@ -547,6 +548,7 @@ class SettingsDocument(BaseModel):
             auto_login=self.login.auto_login,
             two_step=self.login.two_step,
             totp=self.login.totp,
+            session_minutes=self.login.session_minutes,
             security_profile=self.security_profile,
             cors_allowed_origins=self.cors_allowed_origins,
             device_code_expiry_seconds=self.device_flow.code_expiry_seconds,

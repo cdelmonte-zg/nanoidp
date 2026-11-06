@@ -64,6 +64,10 @@ class AuthorizationCode:
     # Carried to the token exchange the same way auth_time is, so a refresh
     # can keep honouring it (#112's pattern).
     amr: Optional[Sequence[str]] = None
+    # When the user authenticated (#468): the authenticated session's
+    # instant when the code rests on one, else the login's own. The ID
+    # token's auth_time; None only for a code written before 3.5.
+    auth_time: Optional[int] = None
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     expires_at: datetime = field(
         default_factory=lambda: datetime.now(timezone.utc)
@@ -208,6 +212,7 @@ class AuthCodeStore:
         claims: Optional[Dict[str, Any]] = None,
         resource: Optional[list] = None,
         amr: Optional[Sequence[str]] = None,
+        auth_time: Optional[int] = None,
     ) -> str:
         """
         Create a new authorization code.
@@ -243,6 +248,7 @@ class AuthCodeStore:
             claims=claims,
             resource=resource,
             amr=amr,
+            auth_time=auth_time,
         )
 
         def decide(view: RepositoryTransaction[AuthorizationCode]) -> None:

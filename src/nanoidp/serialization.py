@@ -413,6 +413,7 @@ _FALLBACK_DEFAULTS: Dict[str, Any] = {
     "login.auto_login": False,
     "login.two_step": False,
     "login.totp": False,
+    "login.session_minutes": 60,
 }
 
 
@@ -517,6 +518,7 @@ OWNED_SETTINGS: tuple[OwnedSetting, ...] = (
     OwnedSetting("login", "auto_login", "auto_login", "omit_when_default"),
     OwnedSetting("login", "two_step", "two_step", "omit_when_default"),
     OwnedSetting("login", "totp", "totp", "omit_when_default"),
+    OwnedSetting("login", "session_minutes", "session_minutes", "omit_when_default"),
     OwnedSetting("", "authority_prefixes", "authority_prefixes"),
     OwnedSetting("", "allowed_identity_classes", "allowed_identity_classes", "omit_when_falsy", []),
 )

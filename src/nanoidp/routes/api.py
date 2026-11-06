@@ -224,6 +224,7 @@ def get_configuration() -> ResponseReturnValue:
             "auto_login": settings.auto_login,
             "two_step": settings.two_step,
             "totp": settings.totp,
+            "session_minutes": settings.session_minutes,
         },
         "authority_prefixes": settings.authority_prefixes,
         "allowed_identity_classes": settings.allowed_identity_classes,

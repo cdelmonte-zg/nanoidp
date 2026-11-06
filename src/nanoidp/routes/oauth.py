@@ -41,6 +41,11 @@ from ..services import (
     identities_for,
 )
 from ..services.auth_code import CODE_LIFETIME_SECONDS
+from ..services.authenticated_sessions import (
+    AuthenticatedSession,
+    AuthenticatedSessionStoreFull,
+    get_authenticated_session_store,
+)
 from ..services.authorization_transactions import (
     AuthorizationParameters,
     AuthorizationTransaction,
@@ -965,6 +970,79 @@ def _hold_cached_client_for_the_code(
     return retain_cached_client_until(p.client_id, time.time() + CODE_LIFETIME_SECONDS)
 
 
+def _record_authenticated_session(
+    loaded: ConfigSnapshot,
+    username: str,
+    method: AuthMethod,
+    auth_time: int,
+    reused: Optional[AuthenticatedSession],
+) -> str:
+    """Keep the browser's authenticated session up to date for the code
+    being issued (#468), and say what happened, for the audit: "reused",
+    "established", "disabled" (``login.session_minutes`` is 0) or
+    "not kept, store full"."""
+    if reused is not None:
+        return "reused"
+    lifetime = loaded.settings.authenticated_session_seconds
+    if lifetime <= 0:
+        return "disabled"
+    try:
+        get_authenticated_session_store().establish(
+            browser_binding=browser_flow_binding(create=True) or "",
+            username=username,
+            method=method.value,
+            auth_time=auth_time,
+            lifetime_seconds=lifetime,
+        )
+    except AuthenticatedSessionStoreFull:
+        return "not kept, store full"
+    return "established"
+
+
+def _usable_session(
+    config: ConfigManager, loaded: ConfigSnapshot
+) -> Optional[Tuple[AuthenticatedSession, User]]:
+    """This browser's live authenticated session (#468) with its user
+    resolved again, or None.
+
+    A session is only as good as the login it records is today: the user
+    must still exist; a persona selection counts only while persona mode
+    is on; a password login counts only while a password is what the
+    login mode asks for, and not once a TOTP code has become required of
+    that user (``login.totp`` turned on, or the user given a secret) that
+    the session never checked. A password-and-code login counts under
+    password mode whatever the TOTP setting now says.
+    """
+    settings = loaded.settings
+    if settings.authenticated_session_seconds <= 0:
+        # 0 disables reuse as well as keeping: a session established under
+        # an earlier setting is not consulted.
+        return None
+    record = get_authenticated_session_store().live(browser_flow_binding())
+    if record is None:
+        return None
+    user = identities_for(config, loaded).get_user(record.username)
+    if user is None:
+        return None
+    persona = settings.persona_mode_enabled
+    if record.method == AuthMethod.PERSONA.value:
+        usable = persona
+    elif record.method == AuthMethod.PASSWORD.value:
+        usable = not persona and not (settings.totp_active and bool(user.totp_secret))
+    elif record.method == AuthMethod.PASSWORD_OTP.value:
+        usable = not persona
+    else:
+        usable = False
+    return (record, user) if usable else None
+
+
+def _session_amr(loaded: ConfigSnapshot, method: AuthMethod) -> Optional[Sequence[str]]:
+    """The amr a reused session's code carries: the method's, gated on
+    ``login.totp`` being active exactly as a fresh login's is
+    (``authenticate_interactively``)."""
+    return method.amr if loaded.settings.totp_active else None
+
+
 def _issue_authorization_code(
     config: ConfigManager,
     p: _AuthorizeParams,
@@ -973,16 +1051,27 @@ def _issue_authorization_code(
     transaction: Optional[AuthorizationTransaction] = None,
     verified_username: Optional[str] = None,
     auto_login: bool = False,
+    method: AuthMethod,
     amr: Optional[Sequence[str]] = None,
+    reused: Optional[AuthenticatedSession] = None,
 ) -> ResponseReturnValue:
     """Consume the transaction, mint the code, audit success and redirect to
     the client - shared by a normal inline login (``_handle_authorize_login``),
-    the TOTP step (``_complete_second_factor``) and #250's persona auto-login
-    (``_try_persona_auto_login``), which are otherwise indistinguishable on
-    the wire once a user is known. ``auto_login`` only affects the audit
-    record and log line. ``amr`` (#348) is the OIDC amr for the login that
-    produced this code - ``None`` for a persona/auto-login, since no
-    password was checked.
+    the TOTP step (``_complete_second_factor``), #250's persona auto-login
+    (``_try_persona_auto_login``) and the reuse of an authenticated session
+    (#468), which are otherwise indistinguishable on the wire once a user
+    is known. ``auto_login`` only affects the audit record and log line.
+    ``method`` is how the user authenticated; ``amr`` (#348) is the OIDC amr
+    for that login - ``None`` for a persona/auto-login, since no password
+    was checked.
+
+    ``reused`` is the authenticated session this code rests on (#468): its
+    ``auth_time`` is the code's, and no new session is recorded. Otherwise
+    the user authenticated now: ``auth_time`` is now, and the browser's
+    session is established (replacing any it had) for
+    ``login.session_minutes``, unless that is 0, or every slot is held by
+    another browser, in which case the login completes without one and the
+    audit says so.
 
     ``transaction`` is ``None`` only for an auto-login answered on the GET
     that carried the request, which never had a transaction. Otherwise it is
@@ -1019,6 +1108,9 @@ def _issue_authorization_code(
             username=username,
         )
 
+    auth_time = reused.auth_time if reused is not None else int(time.time())
+    session_outcome = _record_authenticated_session(loaded, username, method, auth_time, reused)
+
     auth_code_store = get_auth_code_store()
     code = auth_code_store.create_code(
         client_id=p.client_id,
@@ -1032,6 +1124,7 @@ def _issue_authorization_code(
         claims=_parse_claims_parameter(p.claims_param),
         resource=list(p.resources) if p.resources else None,
         amr=amr,
+        auth_time=auth_time,
     )
 
     # Build redirect URL with code
@@ -1063,6 +1156,9 @@ def _issue_authorization_code(
             # Distinguishes a persona-picker/password login from a
             # login_hint-triggered auto-login (#250 design contract point 4).
             **({"auto_login": True} if auto_login else {}),
+            # #468: what became of the browser's authenticated session.
+            "auth_time": auth_time,
+            "session": session_outcome,
         },
     )
 
@@ -1126,7 +1222,8 @@ def _try_persona_auto_login(
         )
 
     return _issue_authorization_code(
-        config, p, user.username, transaction=transaction, auto_login=True
+        config, p, user.username, transaction=transaction, auto_login=True,
+        method=AuthMethod.PERSONA,
     )
 
 
@@ -1204,7 +1301,8 @@ def _handle_authorize_login(
         return (
             None,
             _issue_authorization_code(
-                config, p, login.user.username, transaction=transaction, amr=login.amr
+                config, p, login.user.username, transaction=transaction,
+                method=login.method, amr=login.amr,
             ),
             False,
         )
@@ -1302,6 +1400,7 @@ def _complete_second_factor(
         username,
         transaction=transaction,
         verified_username=username,
+        method=login.method,
         amr=login.amr,
     )
 
@@ -1470,6 +1569,17 @@ def _authorize_new_request(
     if error is not None:
         return error
     assert client is not None
+
+    # #468: a browser whose login is still live is not asked to log in
+    # again - the code rests on that session and carries its auth_time.
+    loaded = request_config()
+    usable = _usable_session(config, loaded)
+    if usable is not None:
+        record, user = usable
+        method = AuthMethod(record.method)
+        return _issue_authorization_code(
+            config, p, user.username, method=method, amr=_session_amr(loaded, method), reused=record
+        )
 
     # #250: a login_hint carrying the reserved auto-login prefix bypasses
     # the login page/picker entirely - inert (returns None) unless
@@ -2686,6 +2796,9 @@ def end_session() -> ResponseReturnValue:
         except Exception:
             pass  # Invalid token, continue anyway
 
+    # The browser's authenticated session at /authorize ends here (#468),
+    # before the cookie that names it goes.
+    get_authenticated_session_store().end(browser_flow_binding())
     # Clear session
     session.clear()
 

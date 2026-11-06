@@ -417,6 +417,13 @@
             "title": "Mode",
             "type": "string"
           },
+          "session_minutes": {
+            "default": 60,
+            "maximum": 10080,
+            "minimum": 0,
+            "title": "Session Minutes",
+            "type": "integer"
+          },
           "totp": {
             "default": false,
             "title": "Totp",

@@ -42,6 +42,7 @@ from ..services import (
     identities_for,
     rotation_refusal,
 )
+from ..services.authenticated_sessions import get_authenticated_session_store
 from ..services.client_metadata import forget as forget_cached_client
 from ..services.client_policy import UNSET, ClientSecretRequired, resolve_client_auth
 from ._audit import audit_event
@@ -52,6 +53,7 @@ from ._auth import (
     TwoStepPhase,
     authenticate_interactively,
     begin_second_factor,
+    browser_flow_binding,
     continue_second_factor,
     discard_pending_second_factor,
     establish_login_session,
@@ -308,6 +310,9 @@ def logout() -> ResponseReturnValue:
     confirmation page, and this audit event was never written.
     """
     username = session.get("user")
+    # The browser's authenticated session at /authorize goes with the
+    # cookie that names it (#468).
+    get_authenticated_session_store().end(browser_flow_binding())
     session.clear()
 
     if username:
@@ -1071,6 +1076,7 @@ def settings() -> ResponseReturnValue:
             auto_login=_form_bool("auto_login"),
             two_step=_form_bool("two_step"),
             totp=_form_bool("totp"),
+            session_minutes=_form_int("session_minutes"),
             expected_revision=_expected_revision_from_form(),
         )
 
