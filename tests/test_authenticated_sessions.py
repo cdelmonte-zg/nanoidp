@@ -183,19 +183,28 @@ class TestSingleSignOn:
         assert second["auth_time"] > first["auth_time"]
         assert _session_of(client).auth_time == second["auth_time"]
 
+    def _binding(self, client):
+        with client.session_transaction() as s:
+            return s["authorize_binding"]
+
     def test_logout_ends_the_session(self, client):
+        """The record goes, not only the cookie that names it: a binding
+        that leaked would otherwise still answer until expiry."""
         _login(client)
+        binding = self._binding(client)
 
         client.get("/logout")
 
+        assert get_authenticated_session_store().live(binding) is None
         assert _is_login_page(client.get(f"/authorize?{QS}"))
 
     def test_the_ui_logout_ends_it_too(self, client):
         _login(client)
+        binding = self._binding(client)
 
         client.get("/ui/logout", follow_redirects=False)
-        client.post("/logout")
 
+        assert get_authenticated_session_store().live(binding) is None
         assert _is_login_page(client.get(f"/authorize?{QS}"))
 
     def test_a_runtime_reset_ends_every_session(self, client):

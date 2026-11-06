@@ -7,7 +7,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, FrozenSet, List, Optional, Sequence, Tuple, Union
 from urllib.parse import parse_qsl, urlencode
 
 import jwt as pyjwt
@@ -202,6 +202,12 @@ class _AuthorizeParams:
     # Ignored unless it carries the reserved 'persona-auto-login:' prefix -
     # see _try_persona_auto_login.
     login_hint: str
+    # OIDC Core 3.1.2.1 (#468): the authentication constraints, as sent;
+    # read into prompts / max_age_seconds by the validator.
+    prompt: str = ""
+    max_age: str = ""
+    prompts: FrozenSet[str] = frozenset()
+    max_age_seconds: Optional[int] = None
     # OIDC Core 6.1 / 6.2 (#463): the request-object parameter a new
     # request's query string carries with a non-empty value - "request"
     # (Core 6.1), else "request_uri" (Core 6.2), else None - read only to
@@ -235,7 +241,7 @@ _AUTHORIZE_REQUEST_FIELDS = (
 # login_hint, which is read but is not what makes a request. A
 # form-serialized request carries exactly these into its GET form, so a
 # field the reader gains must be added here (pinned by a test).
-_AUTHORIZE_READ_FIELDS = _AUTHORIZE_REQUEST_FIELDS + ("login_hint",)
+_AUTHORIZE_READ_FIELDS = _AUTHORIZE_REQUEST_FIELDS + ("login_hint", "prompt", "max_age")
 
 # What a non-empty request-object value becomes in the GET form of a form
 # POST (#467): the GET refuses any non-empty value (#463) and never reads
@@ -294,6 +300,8 @@ def _read_authorize_params() -> _AuthorizeParams:
         # RFC 8707 resource is repeatable (#187): read every value.
         resources=params.getlist("resource"),
         login_hint=params.get("login_hint", ""),
+        prompt=params.get("prompt", ""),
+        max_age=params.get("max_age", ""),
         # Presence of a non-empty value, over every repetition
         # (request=&request=<object>, #463 review round 3): what is refused
         # is that an object was sent at all, not any one value of it. A
@@ -1459,6 +1467,7 @@ def _begin_transaction(
     p: _AuthorizeParams,
     client: OAuthClient,
     requested: Dict[str, List[str]],
+    interaction_required: bool = False,
 ) -> Tuple[Optional[AuthorizationTransaction], Optional[ResponseReturnValue]]:
     """Store a validated request as a transaction of this browser.
 
@@ -1495,6 +1504,7 @@ def _begin_transaction(
                 resources=list(p.resources),
             ),
             requested=requested,
+            interaction_required=interaction_required,
             client=client,
             client_origin=resolved.origin,
         )
@@ -1518,6 +1528,106 @@ def _begin_transaction(
             "the cached metadata document could not be held for the transaction",
         )
     return transaction, None
+
+
+_PROMPT_VALUES = frozenset({"none", "login", "consent", "select_account"})
+
+
+def _validate_authorize_authentication_constraints(
+    config: ConfigManager, p: _AuthorizeParams
+) -> Optional[ResponseReturnValue]:
+    """``prompt`` and ``max_age`` (OIDC Core 3.1.2.1, #468), read into
+    ``p.prompts`` and ``p.max_age_seconds``: a space-separated list of the
+    four defined values, ``none`` alone; a non-negative integer. Anything
+    else is ``invalid_request``, delivered to the client like every error
+    after the redirect_uri. Each is an omitted parameter when sent empty,
+    as every other field (RFC 6749 3.1)."""
+    prompts = frozenset(p.prompt.split()) if p.prompt else frozenset()
+    unknown = sorted(prompts - _PROMPT_VALUES)
+    if unknown:
+        return _authorize_error_redirect(
+            config, p, "invalid_request", "Unsupported prompt value",
+            f"prompt carries an unknown value: {', '.join(unknown)}",
+        )
+    if "none" in prompts and len(prompts) > 1:
+        return _authorize_error_redirect(
+            config, p, "invalid_request", "prompt=none cannot be combined with another prompt value",
+            "prompt=none combined with another value",
+        )
+    max_age: Optional[int] = None
+    if p.max_age:
+        if not p.max_age.isdigit():
+            return _authorize_error_redirect(
+                config, p, "invalid_request", "max_age must be a non-negative integer",
+                "max_age is not a non-negative integer",
+            )
+        max_age = int(p.max_age)
+    p.prompts = prompts
+    p.max_age_seconds = max_age
+    return None
+
+
+def _interaction_required(p: _AuthorizeParams) -> bool:
+    """Whether the request asks for the user's own interaction (#468):
+    ``prompt=login``, ``prompt=select_account`` (the picker, where there is
+    one) or ``max_age=0``. A live session is not reused for it, and persona
+    auto-login does not stand in for it."""
+    return (
+        "login" in p.prompts or "select_account" in p.prompts or p.max_age_seconds == 0
+    )
+
+
+def _answer_from_session(
+    config: ConfigManager, loaded: ConfigSnapshot, p: _AuthorizeParams
+) -> Optional[ResponseReturnValue]:
+    """What a validated request gets before any login page is considered
+    (#468): a code resting on the browser's authenticated session, an
+    error the request's constraints call for, or None, meaning the login
+    page (or persona auto-login, where the request allows it) comes next.
+
+    ``prompt=consent`` is ``consent_required``: there is no consent screen.
+    ``prompt=select_account`` under password mode is
+    ``account_selection_required``: the login form selects no account;
+    under persona mode the picker does, so it is an interaction like
+    ``prompt=login``. A live session is reused when the request asks for
+    no interaction and, with ``max_age``, the authentication is not older
+    than that. ``prompt=none`` forbids every interaction: without a
+    reusable session it is ``login_required``, whatever a ``login_hint``
+    says (persona auto-login is no interaction either, and stands in for
+    none).
+    """
+    prompts = p.prompts
+    if "consent" in prompts:
+        return _authorize_error_redirect(
+            config, p, "consent_required", "Consent is required and this server has no consent screen",
+            "prompt=consent: no consent screen",
+        )
+    if "select_account" in prompts and not loaded.settings.persona_mode_enabled:
+        return _authorize_error_redirect(
+            config, p, "account_selection_required",
+            "Account selection is required and the login form selects no account",
+            "prompt=select_account under password login mode",
+        )
+    interaction = _interaction_required(p)
+    usable = _usable_session(config, loaded)
+    if usable is not None and not interaction:
+        record, user = usable
+        if p.max_age_seconds is None or record.age() <= p.max_age_seconds:
+            method = AuthMethod(record.method)
+            return _issue_authorization_code(
+                config, p, user.username, method=method, amr=_session_amr(loaded, method), reused=record
+            )
+    if "none" in prompts:
+        if interaction:
+            reason = "prompt=none with max_age=0"
+        elif usable is None:
+            reason = "prompt=none without an authenticated session"
+        else:
+            reason = "prompt=none with a session older than max_age"
+        return _authorize_error_redirect(
+            config, p, "login_required", "Authentication is required and prompt=none forbids it", reason
+        )
+    return None
 
 
 def _validate_authorize_request(
@@ -1548,6 +1658,7 @@ def _validate_authorize_request(
     # client as an OAuth error redirect carrying iss (#258 review).
     for check in (
         lambda: _validate_authorize_redirect_uri(config, p, client),
+        lambda: _validate_authorize_authentication_constraints(config, p),
         lambda: _validate_authorize_response_type(config, p),
         lambda: _validate_authorize_scope(config, p, client),
         lambda: _validate_authorize_pkce(config, p, client),
@@ -1571,25 +1682,27 @@ def _authorize_new_request(
     assert client is not None
 
     # #468: a browser whose login is still live is not asked to log in
-    # again - the code rests on that session and carries its auth_time.
+    # again, unless the request asks for an interaction; prompt=none gets
+    # a code or an error, never a page.
     loaded = request_config()
-    usable = _usable_session(config, loaded)
-    if usable is not None:
-        record, user = usable
-        method = AuthMethod(record.method)
-        return _issue_authorization_code(
-            config, p, user.username, method=method, amr=_session_amr(loaded, method), reused=record
-        )
+    answered = _answer_from_session(config, loaded, p)
+    if answered is not None:
+        return answered
+    interaction_required = _interaction_required(p)
 
     # #250: a login_hint carrying the reserved auto-login prefix bypasses
     # the login page/picker entirely - inert (returns None) unless
     # login.auto_login and login.mode: persona are both active. Answered on
-    # this GET, so no transaction is created for it.
-    auto_login_response = _try_persona_auto_login(config, p)
-    if auto_login_response is not None:
-        return auto_login_response
+    # this GET, so no transaction is created for it. Not for a request that
+    # asked for the user's own interaction (#468).
+    if not interaction_required:
+        auto_login_response = _try_persona_auto_login(config, p)
+        if auto_login_response is not None:
+            return auto_login_response
 
-    transaction, error = _begin_transaction(config, p, client, requested)
+    transaction, error = _begin_transaction(
+        config, p, client, requested, interaction_required=interaction_required
+    )
     if error is not None:
         return error
     assert transaction is not None
@@ -1619,7 +1732,15 @@ def _authorize_direct_post(
     if error is not None:
         return error
     assert client is not None
-    transaction, error = _begin_transaction(config, p, client, requested)
+    # The same decision a GET makes first (#468): a live session answers
+    # the request before any credentials are looked at, and prompt=none
+    # is never a login.
+    answered = _answer_from_session(config, request_config(), p)
+    if answered is not None:
+        return answered
+    transaction, error = _begin_transaction(
+        config, p, client, requested, interaction_required=_interaction_required(p)
+    )
     if error is not None:
         return error
     assert transaction is not None
@@ -1782,13 +1903,14 @@ def authorize() -> ResponseReturnValue:
         if error is not None:
             return error
         assert transaction is not None
-        auto_login_response = _try_persona_auto_login(
-            config,
-            _params_of(transaction, login_hint=request.args.get("login_hint", "")),
-            transaction,
-        )
-        if auto_login_response is not None:
-            return auto_login_response
+        if not transaction.interaction_required:
+            auto_login_response = _try_persona_auto_login(
+                config,
+                _params_of(transaction, login_hint=request.args.get("login_hint", "")),
+                transaction,
+            )
+            if auto_login_response is not None:
+                return auto_login_response
         return _render_authorize_login(config, transaction, None)
 
     if _is_form_serialized_request(requested, request.form):

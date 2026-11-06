@@ -119,6 +119,10 @@ class AuthorizationTransaction(BaseModel):
     requested: Dict[str, List[str]]
     client_snapshot: ClientSnapshot
     client_origin: ClientOrigin
+    # The request asked for the user's own interaction (#468: prompt=login,
+    # prompt=select_account, max_age=0): no later leg of this transaction
+    # may complete it without one, persona auto-login included.
+    interaction_required: bool = False
     state: TransactionState = TransactionState.PENDING
     primary_username: Optional[str] = None
     primary_amr: Optional[List[str]] = None
@@ -174,6 +178,7 @@ class AuthorizationTransactionStore:
         requested: Dict[str, List[str]],
         client: OAuthClient,
         client_origin: ClientOrigin,
+        interaction_required: bool = False,
     ) -> AuthorizationTransaction:
         """Store a new pending transaction; raises TransactionStoreFull."""
         now = time.time()
@@ -186,6 +191,7 @@ class AuthorizationTransactionStore:
             requested=requested,
             client_snapshot=ClientSnapshot.of(client),
             client_origin=client_origin,
+            interaction_required=interaction_required,
         )
         return create_within(
             self._repository,
