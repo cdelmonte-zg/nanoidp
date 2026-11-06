@@ -52,6 +52,7 @@ from ._auth import (
     authenticate_interactively,
     begin_second_factor,
     continue_second_factor,
+    credential_form,
     discard_pending_second_factor,
     establish_login_session,
     no_store,
@@ -817,14 +818,14 @@ def _sso_success_response(
     # Auto-submit form (escape user-controlled values to prevent XSS)
     safe_acs_url = html.escape(acs_url, quote=True)
     safe_relay_state = html.escape(relay_state, quote=True)
-    return f"""<!DOCTYPE html>
+    return credential_form(no_store(f"""<!DOCTYPE html>
 <html><body onload="document.forms[0].submit()">
 <form method="post" action="{safe_acs_url}">
   <input type="hidden" name="SAMLResponse" value="{saml_b64}"/>
   <input type="hidden" name="RelayState" value="{safe_relay_state}"/>
   <noscript><button type="submit">Continue</button></noscript>
 </form>
-</body></html>"""
+</body></html>""", cache_control="no-cache, no-store"))
 
 
 @saml_bp.route("/sso", methods=["GET", "POST"])

@@ -20,6 +20,7 @@ from typing import Any, Callable, Mapping, Optional, Sequence
 
 from flask import Response, current_app, jsonify, make_response, redirect, request, session, url_for
 from flask.typing import ResponseReturnValue
+from flask_cors import cross_origin
 
 from ..config import ConfigManager, ConfigSnapshot, User
 
@@ -508,7 +509,7 @@ def bearer_header_credential() -> tuple[bool, str]:
     return scheme.casefold() == "bearer", credential
 
 
-def no_store(response: ResponseReturnValue) -> Response:
+def no_store(response: ResponseReturnValue, *, cache_control: str = "no-store") -> Response:
     """Mark a response one that no cache may keep: the one home of the pair
     RFC 6749 section 5.1 asks for on every response carrying a token, a
     credential or other sensitive information (#462). Its callers are the
@@ -521,8 +522,23 @@ def no_store(response: ResponseReturnValue) -> Response:
     that governs the token endpoint, and a header a client never reads
     costs nothing."""
     resp = make_response(response)
-    resp.headers["Cache-Control"] = "no-store"
+    resp.headers["Cache-Control"] = cache_control
     resp.headers["Pragma"] = "no-cache"
+    return resp
+
+@cross_origin(origins=[], always_send=False)
+def credential_form(response: ResponseReturnValue) -> Response:
+    """Only explicitly named origins may read a credential-bearing form page.
+
+    The decorator prevents the app-wide CORS policy from reopening this
+    response, including when no named origin matches.
+    """
+    resp = make_response(response)
+    origin = request.headers.get("Origin")
+    declared = request_config().settings.cors_allowed_origins or []
+    if origin and any(item != "*" and item.lower() == origin.lower() for item in declared):
+        resp.headers["Access-Control-Allow-Origin"] = origin
+    resp.vary.add("Origin")
     return resp
 
 

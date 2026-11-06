@@ -105,6 +105,7 @@ from ._auth import (
     browser_flow_binding,
     check_second_factor,
     continue_second_factor,
+    credential_form,
     discard_pending_second_factor,
     no_store,
     no_store_responses,
@@ -647,7 +648,9 @@ def _authorize_error_redirect(
     return _deliver_authorization_response(p, params)
 
 
-def _deliver_authorization_response(p: _AuthorizeParams, params: Dict[str, str]) -> ResponseReturnValue:
+def _deliver_authorization_response(
+    p: _AuthorizeParams, params: Dict[str, str]
+) -> ResponseReturnValue:
     """An authorization response - a code, or an error after the
     redirect_uri - delivered the way the request asked (#472): in the query
     (the default), in the fragment, or as a page whose form posts the
@@ -657,20 +660,18 @@ def _deliver_authorization_response(p: _AuthorizeParams, params: Dict[str, str])
     and ``form_post`` only ever posts to an HTTP(S) one
     (``_redirect_uri_verdict``).
 
-    The page is the one answer of /authorize whose body holds a code, so it
-    names this server as its only allowed origin: flask-cors leaves a
-    response that already has the header alone, and the app-wide rule would
-    otherwise let a script of any origin read the code, which a Location
-    never did (persona auto-login needs no cookie)."""
+    Credential-bearing pages share the named-origin policy with SAML,
+    so the app-wide CORS rule cannot expose their body to any origin."""
     if p.response_mode == "fragment":
         return redirect(append_authorization_fragment(p.redirect_uri, params))
     if p.response_mode == "form_post":
-        return no_store(
-            Response(
-                render_template("form_post.html", action=p.redirect_uri, params=params),
-                status=200,
-                content_type="text/html; charset=utf-8",
-                headers={"Access-Control-Allow-Origin": request.host_url.rstrip("/")},
+        return credential_form(
+            no_store(
+                Response(
+                    render_template("form_post.html", action=p.redirect_uri, params=params),
+                    status=200,
+                    content_type="text/html; charset=utf-8",
+                )
             )
         )
     return redirect(append_authorization_params(p.redirect_uri, params))

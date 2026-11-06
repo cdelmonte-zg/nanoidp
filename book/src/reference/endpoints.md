@@ -135,8 +135,9 @@ asks: `query` (the default, also for an empty value), `fragment`, or
 `form_post`, a page with `Cache-Control: no-store` whose form posts
 `code` or `error` and `error_description`, `state` when sent, and `iss`
 under the usual rule, to the `redirect_uri` and submits itself, and which
-names this server as its only allowed CORS origin, since it holds a code
-in a readable body. The mode
+permits script access only to origins explicitly named in
+`cors_allowed_origins`, since it holds a code in a readable body. Wildcards
+and the stricter-dev localhost default do not grant access to this page. The mode
 is resolved before any answer is built, the request-object refusal
 included, so that refusal follows it too. An unknown value, or a repeated
 `response_mode`, names no usable channel and is a plain local `400`,
@@ -214,6 +215,12 @@ in the tokens - see [Tokens and claims](tokens.md#where-do-the-email--profile-cl
 | `GET /saml/cert.pem` | IdP signing certificate (PEM) |
 | `GET/POST /saml/sso` | Single Sign-On (supports both HTTP-POST and HTTP-Redirect bindings) |
 | `POST /saml/attribute-query` | Attribute Query (SOAP, backend-to-backend) |
+
+The auto-submit page carrying `SAMLResponse` sends `Cache-Control: no-cache, no-store`
+and `Pragma: no-cache` (SAML Bindings §3.5.5.1). Like OAuth `form_post`, it permits
+script access only to origins explicitly named in `cors_allowed_origins`, in every
+security profile. A wildcard or the default localhost pattern does not grant access;
+the browser can still submit the form to the ACS.
 
 Bindings, strict-binding mode, response signing, and canonicalization are
 covered in [SAML options](saml.md).
