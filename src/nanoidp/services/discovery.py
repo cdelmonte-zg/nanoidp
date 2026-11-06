@@ -11,6 +11,7 @@ from typing import Any, Dict, Optional
 from urllib.parse import urlparse
 
 from ..config import Settings
+from .redirect_uri import RESPONSE_MODES
 
 
 def issuer_qualifies_for_iss_parameter(issuer: str) -> bool:
@@ -97,6 +98,10 @@ def build_discovery_document(
         # Only the authorization code flow is implemented; the implicit flow is
         # deprecated by the OAuth 2.0 Security BCP and intentionally absent.
         "response_types_supported": ["code"],
+        # The three response modes /authorize honours for code (#472):
+        # query (the default), fragment, and form_post. Said explicitly:
+        # Discovery section 3 reads an omitted member as query + fragment.
+        "response_modes_supported": list(RESPONSE_MODES),
         # REQUIRED by Discovery section 3, missing until #464. Subjects are
         # public: sub is the username, or the client_id for client
         # credentials (#445); nothing pairwise exists.

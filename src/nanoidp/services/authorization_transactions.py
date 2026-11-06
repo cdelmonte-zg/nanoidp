@@ -83,6 +83,9 @@ class AuthorizationParameters(BaseModel):
     nonce: str
     claims: str
     resources: List[str]
+    # How the response is to be delivered (#472): query, fragment or
+    # form_post; a record written before 3.5 has none and means query.
+    response_mode: str = "query"
 
 
 class ClientSnapshot(BaseModel):

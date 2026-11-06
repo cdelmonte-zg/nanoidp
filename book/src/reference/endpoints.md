@@ -37,7 +37,8 @@ An accepted `GET /authorize` stores the validated request as an
 **authorization transaction** on the server (#346), bound to the browser
 through the session cookie, and renders a login page whose forms carry its
 `transaction_id`. The request (`response_type`, `client_id`, `redirect_uri`,
-`scope`, `state`, PKCE, `nonce`, `claims`, `resource`) is validated once, on
+`scope`, `state`, PKCE, `nonce`, `claims`, `resource`, `prompt`, `max_age`,
+`id_token_hint`, `response_mode`) is validated once, on
 that GET; the `POST` that completes the login uses what the transaction
 holds and never reads OAuth parameters from its body. The same request
 sent as a form `POST` (OIDC Core 3.1.2.1, #467), its parameters
@@ -126,6 +127,26 @@ the 303 carries a single-use reference, resolved by the GET within a
 minute. The hint is parked only for a client the server already knows
 (declared, runtime, or a cached metadata document); for any other the
 reference resolves to nothing and the GET answers `invalid_request`.
+
+**Response modes** (#472, OAuth 2.0 Multiple Response Type Encoding
+Practices, OAuth 2.0 Form Post Response Mode). A code, and every error
+decided after the `redirect_uri`, is delivered the way `response_mode`
+asks: `query` (the default, also for an empty value), `fragment`, or
+`form_post`, a page with `Cache-Control: no-store` whose form posts
+`code` or `error` and `error_description`, `state` when sent, and `iss`
+under the usual rule, to the `redirect_uri` and submits itself, and which
+names this server as its only allowed CORS origin, since it holds a code
+in a readable body. The mode
+is resolved before any answer is built, the request-object refusal
+included, so that refusal follows it too. An unknown value, or a repeated
+`response_mode`, names no usable channel and is a plain local `400`,
+without `Location` and without OAuth error parameters (Core 3.1.2.6). A
+`form_post` can only reach an absolute HTTP(S) `redirect_uri` with an
+explicit host: with a private-scheme one (a native client) it is a local
+`400`, while `query` and `fragment` reach such a URI as any redirect does. The mode is kept by
+the transaction, so the login POST delivers the code in it, and travels
+into the GET form of a form-serialized request. The discovery document
+publishes `response_modes_supported: ["query", "fragment", "form_post"]`.
 
 One browser fact: the session cookie is `SameSite=Lax`, which a browser
 sends on a top-level navigation and not from a cross-site iframe. A

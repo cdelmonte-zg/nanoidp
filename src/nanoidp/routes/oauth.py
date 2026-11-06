@@ -2,6 +2,7 @@
 OAuth2/OIDC routes for token endpoint and discovery.
 """
 
+import hashlib
 import json
 import logging
 import os
@@ -77,7 +78,10 @@ from ..services.id_token_hint_references import (
 )
 from ..services.introspection import build_introspection_response
 from ..services.redirect_uri import (
+    RESPONSE_MODES,
+    append_authorization_fragment,
     append_authorization_params,
+    is_http_redirect_uri,
     redirect_uri_is_registered,
     redirect_uri_rejection_reason,
 )
@@ -209,6 +213,14 @@ class _AuthorizeParams:
     # Ignored unless it carries the reserved 'persona-auto-login:' prefix -
     # see _try_persona_auto_login.
     login_hint: str
+    # OAuth 2.0 Multiple Response Type Encoding Practices 2.1 (#472): how
+    # the response is to be delivered, resolved before any response is
+    # built - "query" (the default, also for an empty value), "fragment"
+    # or "form_post". ``response_mode_rejected`` is the reason the request
+    # names no usable channel (an unknown value, or the parameter
+    # repeated), refused locally before anything else.
+    response_mode: str = "query"
+    response_mode_rejected: Optional[str] = None
     # OIDC Core 3.1.2.1 (#468): the authentication constraints, as sent;
     # read into prompts / max_age_seconds by the validator.
     prompt: str = ""
@@ -216,6 +228,8 @@ class _AuthorizeParams:
     id_token_hint: str = ""
     # Sent more than once (RFC 6749 3.1): refused, whatever the values.
     id_token_hint_repeated: bool = False
+    # A reference that resolved to nothing (_take_parked_hint).
+    id_token_hint_unresolved: bool = False
     prompts: FrozenSet[str] = frozenset()
     max_age_seconds: Optional[int] = None
     # The subject a verified id_token_hint names (#468), else None.
@@ -246,6 +260,13 @@ _AUTHORIZE_REQUEST_FIELDS = (
     # transaction's query string unnoticed.
     "request",
     "request_uri",
+    # Request fields too (#468, #472), whatever their value: alone in a
+    # query they are a request with no client, not a resume of the pending
+    # page, and added to a named transaction's query they are noticed.
+    "prompt",
+    "max_age",
+    "id_token_hint",
+    "response_mode",
 )
 
 
@@ -253,12 +274,26 @@ _AUTHORIZE_REQUEST_FIELDS = (
 # login_hint, which is read but is not what makes a request. A
 # form-serialized request carries exactly these into its GET form, so a
 # field the reader gains must be added here (pinned by a test).
-_AUTHORIZE_READ_FIELDS = _AUTHORIZE_REQUEST_FIELDS + (
-    "login_hint",
-    "prompt",
-    "max_age",
-    "id_token_hint",
-)
+_AUTHORIZE_READ_FIELDS = _AUTHORIZE_REQUEST_FIELDS + ("login_hint",)
+
+
+def _resolve_response_mode(values: List[str]) -> Tuple[str, Optional[str]]:
+    """The response mode a request asks for (#472), from every value the
+    parameter was sent with, and why it cannot be honoured when it cannot:
+    ("query", None) for an omitted or empty parameter; (mode, None) for one
+    of the three; ("query", reason) for an unknown value or a repeated
+    parameter. Resolved from the raw query before any response to the
+    client is built."""
+    if len(values) > 1:
+        return "query", "response_mode repeated"
+    value = values[0] if values else ""
+    if not value:
+        return "query", None
+    if value not in RESPONSE_MODES:
+        # A fixed reason: this refusal runs before any client lookup, and
+        # the audit log is not a place for whatever a caller sends.
+        return "query", "unknown response_mode"
+    return value, None
 
 # What a non-empty request-object value becomes in the GET form of a form
 # POST (#467): the GET refuses any non-empty value (#463) and never reads
@@ -284,14 +319,22 @@ _AUTHORIZE_LOGIN_FIELDS = (
 def _requested_fields(source: MultiDict) -> Dict[str, List[str]]:
     """The OAuth request fields ``source`` carries, as sent: a request's
     query string, or the body of a POST asked whether it is a
-    form-serialized request (#467).
+    form-serialized request (#467). A transaction stores this and compares
+    it with the query of a POST that names it, so an ID token hint is kept
+    as its digest: equal for that comparison, and no token in a record the
+    shared store may persist (#468).
 
     Presence, not truthiness, makes a field part of the request (#329
     review): ``client_id=`` is a request with an empty client_id, not no
     request. Unrelated parameters are not request fields (#328).
     """
     return {
-        field: source.getlist(field)
+        field: [
+            hashlib.sha256(value.encode("utf-8")).hexdigest()
+            if field == "id_token_hint"
+            else value
+            for value in source.getlist(field)
+        ]
         for field in _AUTHORIZE_REQUEST_FIELDS
         if field in source
     }
@@ -304,6 +347,7 @@ def _read_authorize_params() -> _AuthorizeParams:
     redirected to its GET form first (#467), so the query string is the one
     place a request is read from."""
     params = request.args
+    response_mode, response_mode_rejected = _resolve_response_mode(params.getlist("response_mode"))
     return _AuthorizeParams(
         response_type=params.get("response_type", ""),
         client_id=params.get("client_id", ""),
@@ -321,6 +365,8 @@ def _read_authorize_params() -> _AuthorizeParams:
         max_age=params.get("max_age", ""),
         id_token_hint=params.get("id_token_hint", ""),
         id_token_hint_repeated=len(params.getlist("id_token_hint")) > 1,
+        response_mode=response_mode,
+        response_mode_rejected=response_mode_rejected,
         # Presence of a non-empty value, over every repetition
         # (request=&request=<object>, #463 review round 3): what is refused
         # is that an object was sent at all, not any one value of it. A
@@ -352,6 +398,7 @@ def _params_of(transaction: AuthorizationTransaction, login_hint: str = "") -> _
         claims_param=stored.claims,
         resources=list(stored.resources),
         login_hint=login_hint,
+        response_mode=stored.response_mode,
     )
 
 
@@ -367,13 +414,7 @@ def _audit_body_oauth_fields() -> None:
     """
     # Any non-empty value over every repetition, as the query reader does
     # for the two refused fields (#463): an empty first value hides nothing.
-    # The request fields, and the three a request may carry beside them
-    # (#468) - never login_hint, which the login page itself may post.
-    forged = [
-        field
-        for field in _AUTHORIZE_REQUEST_FIELDS + ("prompt", "max_age", "id_token_hint")
-        if any(request.form.getlist(field))
-    ]
+    forged = [field for field in _AUTHORIZE_REQUEST_FIELDS if any(request.form.getlist(field))]
     if not forged:
         return
     audit_event(
@@ -545,10 +586,10 @@ def _authorize_reject(
 
     The pre-lookup checks (response_type, missing client_id/redirect_uri,
     redirect_uri syntax) intentionally do NOT audit - they never have - and
-    come through here with ``audit=False``. The one pre-lookup caller that
-    audits is the request-object refusal (#463), because it is the
-    request's whole answer; ``client_id`` is None when the request named
-    none. ``details`` extends the event beyond its reason.
+    come through here with ``audit=False``. The pre-lookup callers that
+    audit are the request-object refusal (#463) and the response_mode
+    refusal (#472), because each is the request's whole answer;
+    ``client_id`` is None when the request named none. ``details`` extends the event beyond its reason.
     """
     if audit:
         audit_event(
@@ -603,7 +644,37 @@ def _authorize_error_redirect(
     issuer = effective_issuer(loaded.settings)
     if issuer_qualifies_for_iss_parameter(issuer):
         params["iss"] = issuer
+    return _deliver_authorization_response(p, params)
+
+
+def _deliver_authorization_response(p: _AuthorizeParams, params: Dict[str, str]) -> ResponseReturnValue:
+    """An authorization response - a code, or an error after the
+    redirect_uri - delivered the way the request asked (#472): in the query
+    (the default), in the fragment, or as a page whose form posts the
+    parameters to the redirect_uri and submits itself (OAuth 2.0 Form Post
+    Response Mode), with no-store, since it carries the code. The one place
+    a response reaches the client; ``p.redirect_uri`` is validated by now,
+    and ``form_post`` only ever posts to an HTTP(S) one
+    (``_redirect_uri_verdict``).
+
+    The page is the one answer of /authorize whose body holds a code, so it
+    names this server as its only allowed origin: flask-cors leaves a
+    response that already has the header alone, and the app-wide rule would
+    otherwise let a script of any origin read the code, which a Location
+    never did (persona auto-login needs no cookie)."""
+    if p.response_mode == "fragment":
+        return redirect(append_authorization_fragment(p.redirect_uri, params))
+    if p.response_mode == "form_post":
+        return no_store(
+            Response(
+                render_template("form_post.html", action=p.redirect_uri, params=params),
+                status=200,
+                content_type="text/html; charset=utf-8",
+                headers={"Access-Control-Allow-Origin": request.host_url.rstrip("/")},
+            )
+        )
     return redirect(append_authorization_params(p.redirect_uri, params))
+
 
 
 def _validate_authorize_client(
@@ -866,6 +937,15 @@ def _redirect_uri_verdict(
             "invalid_request",
             "the oauth21 profile requires this client to have registered redirect_uris",
             "oauth21 profile requires registered redirect_uris",
+        )
+    # A browser form posts to HTTP(S) only (#472): a native client's
+    # private-scheme URI is no channel for form_post, and stays one for the
+    # redirect modes.
+    if p.response_mode == "form_post" and not is_http_redirect_uri(p.redirect_uri):
+        return _Rejection(
+            "invalid_request",
+            "response_mode form_post requires an http or https redirect_uri",
+            "form_post response_mode needs an http(s) redirect_uri",
         )
     return None
 
@@ -1249,8 +1329,6 @@ def _issue_authorization_code(
     if issuer_qualifies_for_iss_parameter(issuer):
         redirect_params["iss"] = issuer
 
-    callback_url = append_authorization_params(p.redirect_uri, redirect_params)
-
     audit_event(
         "authorization_request",
         "success",
@@ -1277,7 +1355,7 @@ def _issue_authorization_code(
     else:
         logger.info("Authorization code issued")
 
-    return redirect(callback_url)
+    return _deliver_authorization_response(p, redirect_params)
 
 
 # OIDC Core 3.1.2.1 (#250): the reserved login_hint prefix that opts an
@@ -1592,6 +1670,7 @@ def _begin_transaction(
         transaction = store.create(
             browser_binding=binding,
             params=AuthorizationParameters(
+                response_mode=p.response_mode,
                 response_type=p.response_type,
                 client_id=p.client_id,
                 redirect_uri=p.redirect_uri,
@@ -1672,18 +1751,13 @@ def _validate_authorize_authentication_constraints(
             config, p, "invalid_request", "id_token_hint must not be repeated",
             "id_token_hint repeated",
         )
+    if p.id_token_hint_unresolved:
+        return _authorize_error_redirect(
+            config, p, "invalid_request", "id_token_hint reference unknown, expired or already used",
+            "id_token_hint reference not resolvable",
+        )
     if p.id_token_hint:
         hint = p.id_token_hint
-        if is_reference(hint):
-            # A form POST's hint, parked under a reference by the 303
-            # (#467): taken once, here.
-            parked = get_parked_hint_store().take(hint)
-            if parked is None:
-                return _authorize_error_redirect(
-                    config, p, "invalid_request", "id_token_hint reference unknown, expired or already used",
-                    "id_token_hint reference not resolvable",
-                )
-            hint = parked
         # The settings are read before the signing service is resolved
         # (#359): the issuer this request answers for, then the keys.
         issuer = effective_issuer(request_config().settings)
@@ -1797,6 +1871,36 @@ def _answer_from_session(
     return None
 
 
+def _refuse_response_mode(p: _AuthorizeParams) -> ResponseReturnValue:
+    """OIDC Core 3.1.2.6: an unknown response_mode is an HTTP 400 that
+    carries no OAuth error parameters, since the request names no channel
+    to deliver them on; a repeated one is treated alike (#472). Audited as
+    any refusal of a request."""
+    audit_event(
+        "authorization_request",
+        "failed",
+        endpoint="/authorize",
+        client_id=p.client_id or None,
+        details=_failed_details(p.response_mode_rejected or "", None),
+    )
+    return Response("Bad request: response_mode\n", status=400, content_type="text/plain")
+
+
+def _take_parked_hint(p: _AuthorizeParams) -> None:
+    """Swap a form POST's parked reference (#467, #468) for the hint it
+    stands for. First thing in the validation, before anything can refuse
+    the request: a refused request with one hint gives its slot of the
+    bounded store back at once, whichever refusal it was. (A hand-built URL
+    repeating references leaves the others to their minute, as a 303 nobody
+    follows does.) An unknown, expired or used reference is judged where
+    the hint is, after the redirect_uri."""
+    if not is_reference(p.id_token_hint):
+        return
+    parked = get_parked_hint_store().take(p.id_token_hint)
+    p.id_token_hint = parked or ""
+    p.id_token_hint_unresolved = parked is None
+
+
 def _validate_authorize_request(
     config: ConfigManager, p: _AuthorizeParams
 ) -> Tuple[Optional[OAuthClient], Optional[ResponseReturnValue]]:
@@ -1807,6 +1911,14 @@ def _validate_authorize_request(
     Each step is a named helper; every rejection keeps its historical error
     body and audit behavior (#212). A rejected request creates nothing (#331).
     """
+    _take_parked_hint(p)
+
+    # The channel first (#472): a request whose response_mode names no
+    # usable one is refused locally before any answer, the request-object
+    # refusal below included, is built for the client.
+    if p.response_mode_rejected is not None:
+        return None, _refuse_response_mode(p)
+
     # A request object is refused whatever the rest of the request says,
     # before any validator runs (#463): one answer, one authorization_request
     # event.

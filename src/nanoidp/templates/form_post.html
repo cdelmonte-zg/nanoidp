@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Returning to the application - NanoIDP</title>
+</head>
+<body onload="document.forms[0].submit()">
+    <noscript>
+        <p>JavaScript is off: press the button to return to the application.</p>
+    </noscript>
+    <form method="post" action="{{ action }}">
+        {% for name, value in params.items() %}
+        <input type="hidden" name="{{ name }}" value="{{ value }}">
+        {% endfor %}
+        <noscript><button type="submit">Continue</button></noscript>
+    </form>
+</body>
+</html>

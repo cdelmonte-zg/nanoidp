@@ -155,6 +155,45 @@ class TestTheBoundSubject:
         assert _error_of(resumed) == "login_required"
 
 
+class TestTheTransactionDoesNotKeepTheToken:
+    def _transaction(self):
+        from nanoidp.services.authorization_transactions import (
+            get_authorization_transaction_store,
+        )
+
+        (record,) = get_authorization_transaction_store()._repository.list()
+        return record
+
+    def test_requested_holds_a_digest_of_the_hint(self, client, app):
+        hint = _mint(app, sub="admin")
+
+        client.get(f"/authorize?{QS}&id_token_hint={hint}")
+
+        assert hint not in self._transaction().model_dump_json()
+
+    def test_the_login_form_posting_back_to_the_url_still_matches(self, client, app):
+        """A browser form has no action: it posts to the GET's URL, whose
+        query must be that request's, digest and all."""
+        hint = _mint(app, sub="admin")
+        url = f"/authorize?{QS}&id_token_hint={hint}"
+        page = client.get(url)
+
+        done = client.post(url, data={"transaction_id": transaction_id_of(page), **ADMIN})
+
+        assert "code" in authorization_response_params(done)
+
+    def test_another_hint_in_the_query_does_not_match(self, client, app):
+        page = client.get(f"/authorize?{QS}&id_token_hint={_mint(app, sub='admin')}")
+        other = _mint(app, sub="user1")
+
+        refused = client.post(
+            f"/authorize?{QS}&id_token_hint={other}",
+            data={"transaction_id": transaction_id_of(page), **ADMIN},
+        )
+
+        assert refused.status_code == 400
+
+
 class TestAHintThatDoesNotVerify:
     def test_each_is_invalid_request(self, client, app):
         with app.app_context():
@@ -268,10 +307,11 @@ class TestFormPost:
                 "id_token_hint": hint,
                 "prompt": "none",
                 "max_age": "0",
+                "response_mode": "fragment",
             },
         )
 
-        assert "code" in authorization_response_params(done)
+        assert "code" in authorization_response_params(done)  # in the query: not read
         with app.app_context():
             from nanoidp.services import get_audit_log
 
@@ -280,7 +320,7 @@ class TestFormPost:
                 for e in get_audit_log().get_entries(event_type="authorization_request")
                 if e["details"].get("reason") == "OAuth parameters in POST body are ignored"
             ]
-        assert ignored == [["prompt", "max_age", "id_token_hint"]]
+        assert ignored == [["prompt", "max_age", "id_token_hint", "response_mode"]]
 
     def test_an_unknown_reference_is_invalid_request(self, client, app):
         response = client.get(f"/authorize?{QS}&id_token_hint=ref:nothing")

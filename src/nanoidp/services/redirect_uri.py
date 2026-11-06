@@ -36,8 +36,8 @@ def append_authorization_params(uri: str, params: Dict[str, str]) -> str:
     """Append authorization-response parameters to a redirect URI, retaining
     any query the URI already carries byte-for-byte.
 
-    The single place that builds an authorization response URI (success or
-    error). RFC 6749 §3.1.2 lets a ``redirect_uri`` carry a query, and that
+    The single place that builds an authorization response URI in the
+    query (success or error; the fragment mode has its own, below, #472). RFC 6749 §3.1.2 lets a ``redirect_uri`` carry a query, and that
     query MUST be retained when the authorization server adds response
     parameters. The URI has already been validated and matched against the
     registered value, so there is nothing to interpret in the existing query
@@ -48,6 +48,30 @@ def append_authorization_params(uri: str, params: Dict[str, str]) -> str:
     """
     separator = "&" if "?" in uri else "?"
     return f"{uri}{separator}{urlencode(params)}"
+
+
+# The response modes /authorize honours for code (#472), query the default:
+# the one list, read by the request's validation and by discovery, so what
+# is advertised and what is accepted cannot drift.
+RESPONSE_MODES = ("query", "fragment", "form_post")
+
+
+def append_authorization_fragment(uri: str, params: Dict[str, str]) -> str:
+    """The ``fragment`` response mode (#472): the same parameters in the
+    fragment of the redirect URI. A validated redirect URI carries no
+    fragment (RFC 6749 3.1.2), so a plain append is safe here too."""
+    return f"{uri}#{urlencode(params)}"
+
+
+def is_http_redirect_uri(uri: str) -> bool:
+    """Whether a validated redirect URI is an absolute HTTP(S) URL with an
+    explicit host: the only kind that is safe as a form's action (the
+    ``form_post`` response mode, #472). A private-scheme URI of a native
+    client is reached by a redirect only, and ``https:/callback`` passes as
+    a scheme but a browser resolves it against the page's own URL, so the
+    form would post the code to the IdP itself."""
+    parts = urlparse(uri)
+    return parts.scheme in _WEB_SCHEMES and bool(parts.hostname)
 
 # RFC 8252 §7.3: loopback interface redirection is defined for the IPv4 and
 # IPv6 loopback literals only. urlparse().hostname strips the brackets from
