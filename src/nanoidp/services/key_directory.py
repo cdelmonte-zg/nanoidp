@@ -151,7 +151,7 @@ def locked(keys_dir: Path) -> Iterator[None]:
     """The exclusive section of one keys directory, across processes. Any
     rotation that died on the way is settled before the caller sees the
     directory. Not reentrant."""
-    keys_dir.mkdir(parents=True, exist_ok=True)
+    _create(keys_dir)
     with directory_lock(keys_dir, _thread_lock, of="keys directory"):
         try:
             _sweep_temporaries(keys_dir)
@@ -163,6 +163,20 @@ def locked(keys_dir: Path) -> Iterator[None]:
                 raise KeysDirectoryNotWritable(keys_dir, failure) from failure
             raise
         yield
+
+
+def _create(keys_dir: Path) -> None:
+    """Make the directory if it is not there (#476). One that cannot be made
+    is one this process cannot write, whatever stands in the way: besides
+    what a write answers with, a file in a path component (``ENOTDIR``) or
+    in its place (``EEXIST``). Any other failure, an ``EIO``, stays what it
+    is."""
+    try:
+        keys_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as failure:
+        if failure.errno in (*KeysDirectoryNotWritable.ERRNOS, errno.ENOTDIR, errno.EEXIST):
+            raise KeysDirectoryNotWritable(keys_dir, failure) from failure
+        raise
 
 
 def _require_writable(keys_dir: Path) -> None:

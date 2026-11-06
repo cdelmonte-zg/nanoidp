@@ -15,10 +15,12 @@ other. The peers' noticing a rotation, and verification by ``kid``, are the
 second part.
 """
 
+import errno
 import json
 import logging
 import multiprocessing
 import os
+import shutil
 import stat
 import subprocess
 import sys
@@ -975,4 +977,100 @@ class TestTheRotateEndpointKeepsTheDirectoryOutOfTheBody:
             "success": False,
             "error": EXTERNAL_KEYS_NOT_ROTATABLE,
             "kind": EXTERNAL_KEYS_NOT_ROTATABLE_KIND,
+        }
+
+
+class TestADirectoryThatCannotBeCreated:
+    """The one writer #459 left outside the refusal contract (#476): a keys
+    directory that is gone and cannot be made again is the condition that
+    contract names, on every surface."""
+
+    def _service_whose_directory_went(self, tmp_path):
+        parent = tmp_path / "parent"
+        parent.mkdir()
+        keys_dir = parent / "keys"
+        service = CryptoService(keys_dir=str(keys_dir))
+        shutil.rmtree(keys_dir)
+        return parent, keys_dir, service
+
+    def _assert_refused(self, app, service, keys_dir):
+        from nanoidp.services import crypto as crypto_module
+
+        crypto_module.publish_crypto_service(service)
+        response = app.test_client().post("/api/keys/rotate")
+
+        assert response.status_code == 409 and "Retry-After" not in response.headers
+        assert response.get_json() == {
+            "success": False,
+            "error": KEYS_DIRECTORY_NOT_WRITABLE,
+            "kind": "keys_directory_not_writable",
+        }
+        assert str(keys_dir) not in response.get_data(as_text=True)
+
+    @pytest.mark.skipif(os.name != "posix" or os.geteuid() == 0, reason="needs a directory this user cannot write")
+    def test_a_parent_this_process_cannot_write(self, tmp_path, app):
+        parent, keys_dir, service = self._service_whose_directory_went(tmp_path)
+        parent.chmod(0o555)
+        try:
+            self._assert_refused(app, service, keys_dir)
+        finally:
+            parent.chmod(0o755)
+
+    def test_a_file_where_the_directory_should_be(self, tmp_path, app):
+        _, keys_dir, service = self._service_whose_directory_went(tmp_path)
+        keys_dir.write_text("not a directory")
+
+        self._assert_refused(app, service, keys_dir)
+
+    def test_a_file_as_its_parent(self, tmp_path, app):
+        parent, keys_dir, service = self._service_whose_directory_went(tmp_path)
+        shutil.rmtree(parent)
+        parent.write_text("not a directory")
+
+        self._assert_refused(app, service, keys_dir)
+
+    def test_any_other_failure_stays_what_it_is(self, tmp_path, monkeypatch):
+        keys_dir = tmp_path / "keys"
+
+        def failing(*args, **kwargs):
+            raise OSError(errno.EIO, "Input/output error")
+
+        monkeypatch.setattr(Path, "mkdir", failing)
+
+        with pytest.raises(OSError) as raised:
+            with key_directory.locked(keys_dir):
+                pass
+        assert not isinstance(raised.value, key_directory.KeysDirectoryNotWritable)
+        assert raised.value.errno == errno.EIO
+
+    def test_the_mkdir_errnos_do_not_widen_the_writers(self):
+        assert errno.ENOTDIR not in key_directory.KeysDirectoryNotWritable.ERRNOS
+        assert errno.EEXIST not in key_directory.KeysDirectoryNotWritable.ERRNOS
+
+    def test_at_startup_it_stays_a_failure(self, tmp_path):
+        """Not a refusal to classify: the service makes the directory itself
+        before anything else, and a process with no keys does not start."""
+        keys_dir = tmp_path / "keys"
+        keys_dir.write_text("not a directory")
+
+        with pytest.raises(FileExistsError):
+            CryptoService(keys_dir=str(keys_dir))
+
+    @pytest.mark.asyncio
+    async def test_the_mcp_tool_answers_the_same_refusal(self, tmp_path, app):
+        from nanoidp.config import get_config
+        from nanoidp.mcp_server import _execute_tool
+        from nanoidp.services import crypto as crypto_module
+
+        _, keys_dir, service = self._service_whose_directory_went(tmp_path)
+        keys_dir.write_text("not a directory")
+        crypto_module.publish_crypto_service(service)
+
+        with app.app_context():
+            result = await _execute_tool("rotate_keys", {}, get_config())
+
+        assert result == {
+            "success": False,
+            "error": KEYS_DIRECTORY_NOT_WRITABLE,
+            "kind": "keys_directory_not_writable",
         }
