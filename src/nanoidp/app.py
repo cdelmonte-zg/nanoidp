@@ -11,7 +11,7 @@ import os
 import re
 from typing import Any, Optional
 
-from flask import Flask, Response, jsonify, make_response, request
+from flask import Flask, Response, g, jsonify, make_response, request
 from flask_cors import CORS
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
@@ -232,6 +232,18 @@ def create_app(
             else ["*"]
         )
         applied = list(origins)
+    if "*" in origins:
+
+        @app.after_request
+        def _credential_pages_leave_the_permissive_rule(response: Any) -> Any:
+            # Registered before CORS() so that it runs after it. A page that
+            # holds a credential in its body is not for every origin's
+            # scripts (#478, routes/_auth.credential_page); a named list is
+            # the operator's decision and stays in force on it.
+            if g.get("credential_page"):
+                response.headers.pop("Access-Control-Allow-Origin", None)
+            return response
+
     CORS(app, resources={r"/*": {"origins": origins}}, **cors_options)
     if vary_on_origin:
 

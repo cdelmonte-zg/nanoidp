@@ -297,7 +297,7 @@ class TestAFormPostPageIsNotReadableCrossOrigin:
         )
 
         assert "code" in _form_of(page)[1]
-        assert page.headers.get("Access-Control-Allow-Origin") not in ("*", origin["Origin"])
+        assert "Access-Control-Allow-Origin" not in page.headers
         other = client.get("/.well-known/openid-configuration", headers=origin)
         assert other.headers.get("Access-Control-Allow-Origin") is not None
 

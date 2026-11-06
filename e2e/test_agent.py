@@ -3985,15 +3985,28 @@ class NanoIDPTestAgent:
                         page_protected = (
                             response.headers.get("Cache-Control") == "no-cache, no-store"
                             and response.headers.get("Pragma") == "no-cache"
-                            and response.headers.get("Access-Control-Allow-Origin") != "*"
+                        )
+                        # Asked from another origin, as a script would: the
+                        # permissive rule does not answer on this page.
+                        cross_origin = session.post(
+                            f"{self.base_url}/saml/sso",
+                            data={"SAMLRequest": encoded_request, "RelayState": "test-relay-state"},
+                            headers={"Origin": "http://evil.example"},
+                            allow_redirects=False,
+                            timeout=5,
+                        )
+                        page_protected = (
+                            page_protected
+                            and "SAMLResponse" in cross_origin.text
+                            and "Access-Control-Allow-Origin" not in cross_origin.headers
                         )
 
                         return self._add_result(
                             "SAML SSO (POST binding)",
                             TestCategory.SAML,
                             parsing_ok and acs_in_response and audience_ok and page_protected,
-                            f"HTTP-POST binding: InResponseTo={'OK' if parsing_ok else 'FAIL'}, ACS={'OK' if acs_in_response else 'FAIL'}, Audience={'OK' if audience_ok else audience}",
-                            {"binding": "HTTP-POST", "request_id": request_id, "in_response_to": in_response_to, "parsing_ok": parsing_ok, "audience": audience}
+                            f"HTTP-POST binding: InResponseTo={'OK' if parsing_ok else 'FAIL'}, ACS={'OK' if acs_in_response else 'FAIL'}, Audience={'OK' if audience_ok else audience}, page protected={'OK' if page_protected else 'FAIL'}",
+                            {"binding": "HTTP-POST", "request_id": request_id, "in_response_to": in_response_to, "parsing_ok": parsing_ok, "audience": audience, "page_protected": page_protected}
                         )
 
                 # Got login form instead of SAML response

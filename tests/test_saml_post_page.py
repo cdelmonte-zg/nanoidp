@@ -17,15 +17,18 @@ ACS = "http://localhost:8080/acs"
 EVIL = {"Origin": "http://evil.example"}
 
 
-def _redirect_binding_query():
-    xml = (
+def _authn_request():
+    return (
         '<samlp:AuthnRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" ID="_1" '
         f'Version="2.0" IssueInstant="2026-11-06T00:00:00Z" AssertionConsumerServiceURL="{ACS}">'
         '<saml:Issuer xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion">sp</saml:Issuer>'
         "</samlp:AuthnRequest>"
     )
+
+
+def _redirect_binding_query():
     compressor = zlib.compressobj(wbits=-15)
-    deflated = compressor.compress(xml.encode()) + compressor.flush()
+    deflated = compressor.compress(_authn_request().encode()) + compressor.flush()
     return f"SAMLRequest={quote(base64.b64encode(deflated).decode())}&RelayState=r"
 
 
@@ -67,19 +70,66 @@ class TestNoCacheKeepsThePage:
         assert token.headers["Cache-Control"] == "no-store"
 
 
+def _one_shot_post(client, headers):
+    """The attack: one POST from a page of another origin, the HTTP-POST
+    binding, no GET before it, no cookie, no password."""
+    xml = _authn_request()
+    return client.post(
+        "/saml/sso",
+        data={
+            "SAMLRequest": base64.b64encode(xml.encode()).decode(),
+            "RelayState": "r",
+            "username": "admin",
+        },
+        headers=headers,
+    )
+
+
 class TestNoOtherOriginReadsThePage:
-    def test_a_cross_origin_post_without_credentials_in_persona_mode(self, client, app):
+    def test_a_one_shot_cross_origin_post_in_persona_mode(self, client, app):
         """Persona mode needs no password and no cookie, so without this a
-        script of any origin could read a signed assertion."""
+        script of any origin could read a signed assertion. The header is
+        absent, not narrowed: a same-origin read needs none."""
         with app.app_context():
             get_config().settings.login_mode = "persona"
 
-        page = _login(app.test_client(), {"username": "admin"}, headers=EVIL)
+        page = _one_shot_post(client, EVIL)
 
         _assert_delivers_to_the_acs(page)
-        allowed = page.headers.get("Access-Control-Allow-Origin")
-        assert allowed == "http://localhost"
-        assert "Access-Control-Allow-Credentials" not in page.headers
+        assert "Access-Control-Allow-Origin" not in page.headers
+
+    def test_a_forwarded_host_cannot_name_the_allowed_origin(self, client, app):
+        """X-Forwarded-Host is a header a script may set: nothing about
+        this page's CORS answer comes from the request."""
+        with app.app_context():
+            settings = get_config().settings
+            settings.login_mode = "persona"
+            settings.issuer_from_proxy_headers = True
+
+        page = _one_shot_post(
+            client,
+            {**EVIL, "X-Forwarded-Host": "evil.example", "X-Forwarded-Proto": "http"},
+        )
+
+        assert "Access-Control-Allow-Origin" not in page.headers
+
+    def test_an_origin_the_operator_named_may_still_read_it(self, isolated_repo_config):
+        """A declared cors_allowed_origins is the operator's decision: it
+        stays the list on these pages too (a browser test harness), and an
+        origin outside it reads nothing."""
+        from tests.test_timing_and_cors_settings import _client
+
+        client = _client(
+            isolated_repo_config,
+            cors_allowed_origins=["http://harness.test:3000"],
+            login={"mode": "persona"},
+        )
+
+        named = _one_shot_post(client, {"Origin": "http://harness.test:3000"})
+        other = _one_shot_post(client, EVIL)
+
+        assert named.headers.get("Access-Control-Allow-Origin") == "http://harness.test:3000"
+        assert "Access-Control-Allow-Origin" not in other.headers
 
     def test_the_rule_stays_open_elsewhere(self, client):
         other = client.get("/.well-known/openid-configuration", headers=EVIL)

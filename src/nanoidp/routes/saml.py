@@ -52,10 +52,10 @@ from ._auth import (
     authenticate_interactively,
     begin_second_factor,
     continue_second_factor,
+    credential_page,
     discard_pending_second_factor,
     establish_login_session,
     no_store,
-    own_origin_only,
     session_auth_method,
     two_step_phase,
 )
@@ -826,9 +826,7 @@ def _sso_success_response(
   <noscript><button type="submit">Continue</button></noscript>
 </form>
 </body></html>"""
-    # A signed assertion in a 200 body (#478): Bindings 3.5.5.1's directives
-    # for a cache, and no other origin's script reads it.
-    return own_origin_only(no_store(page, cache_control="no-cache, no-store"))
+    return credential_page(page, no_cache=True)
 
 
 @saml_bp.route("/sso", methods=["GET", "POST"])

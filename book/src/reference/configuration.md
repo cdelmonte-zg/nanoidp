@@ -767,7 +767,9 @@ so a file that does not mention them behaves as it always did.
   Absent, the security profile decides: every origin under `dev` and
   `oauth21`, `localhost` and `127.0.0.1` on any port under `stricter-dev`.
   Present, it is the list in every profile: `[]` allows no origin, `"*"`
-  every origin, and each entry is an origin written the way a browser
+  every origin (except on the two pages that hold a credential in their
+  body, the SAML POST page and the `form_post` page, which only a named
+  origin may read), and each entry is an origin written the way a browser
   sends it in an Origin header: `http` or `https`, a host (a name, an IPv4
   address, or a compressed IPv6 address in brackets such as `[::1]`) and a
   port only when it is not the scheme's default. Entries are compared with

@@ -105,10 +105,10 @@ from ._auth import (
     browser_flow_binding,
     check_second_factor,
     continue_second_factor,
+    credential_page,
     discard_pending_second_factor,
     no_store,
     no_store_responses,
-    own_origin_only,
     two_step_phase,
 )
 from ._config import request_config
@@ -656,13 +656,12 @@ def _deliver_authorization_response(p: _AuthorizeParams, params: Dict[str, str])
     Response Mode), with no-store, since it carries the code. The one place
     a response reaches the client; ``p.redirect_uri`` is validated by now,
     and ``form_post`` only ever posts to an HTTP(S) one
-    (``_redirect_uri_verdict``). The page holds the code in its body, so
-    other origins' scripts are kept from it (``own_origin_only``)."""
+    (``_redirect_uri_verdict``)."""
     if p.response_mode == "fragment":
         return redirect(append_authorization_fragment(p.redirect_uri, params))
     if p.response_mode == "form_post":
-        return own_origin_only(
-            no_store(render_template("form_post.html", action=p.redirect_uri, params=params))
+        return credential_page(
+            render_template("form_post.html", action=p.redirect_uri, params=params)
         )
     return redirect(append_authorization_params(p.redirect_uri, params))
 
