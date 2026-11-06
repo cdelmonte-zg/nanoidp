@@ -112,7 +112,7 @@ class RotationRefusal:
 def rotation_refusal(refused: Union[ExternalKeysNotRotatable, LockUnavailableError]) -> RotationRefusal:
     """Operator keys are never rotated; a directory this process cannot
     write (LockNamespaceUnavailable, and its subclass for one whose lock
-    file is there) is permanent too. A lock that was not had is not
+    file is there) or cannot create (#476) is permanent too. A lock that was not had is not
     permanent: another process holding it (lock_timeout) is worth coming
     back for, a filesystem without advisory locks (lock_unsupported) is
     not, which is how the configuration handlers classify the two kinds
@@ -123,7 +123,9 @@ def rotation_refusal(refused: Union[ExternalKeysNotRotatable, LockUnavailableErr
         # A documented configuration state, not something to warn about.
         return RotationRefusal(EXTERNAL_KEYS_NOT_ROTATABLE, refused.kind, permanent=True, retryable=False)
     logger.warning("Key rotation refused: %s", refused)
-    permanent = isinstance(refused, LockNamespaceUnavailable)
+    permanent = isinstance(
+        refused, (LockNamespaceUnavailable, key_directory.KeysDirectoryCannotBeCreated)
+    )
     message = KEYS_DIRECTORY_NOT_WRITABLE if permanent else KEYS_DIRECTORY_LOCK_UNAVAILABLE
     return RotationRefusal(message, refused.kind, permanent=permanent, retryable=refused.kind == "lock_timeout")
 

@@ -55,7 +55,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterator, List, Optional, Tuple
 
-from ..config_writer import LockNamespaceUnavailable, directory_lock
+from ..config_writer import LockNamespaceUnavailable, LockUnavailableError, directory_lock
 from ..serialization import atomic_write_bytes
 
 logger = logging.getLogger(__name__)
@@ -104,6 +104,26 @@ class KeysDirectoryNotWritable(LockNamespaceUnavailable):
         super().__init__(
             f"{keys_dir} is not writable for this process ({failure.strerror or failure}): it can sign "
             "with the keys there and cannot create, rotate or repair them",
+            kind="keys_directory_not_writable",
+        )
+
+
+class KeysDirectoryCannotBeCreated(LockUnavailableError):
+    """The keys directory is not there and this process cannot make it
+    (#476). The same refusal as ``KeysDirectoryNotWritable`` on every
+    surface, and deliberately not one of its kind: that one is a directory
+    that can still be read, which is what ``load_published`` falls back on,
+    while here there is nothing to read.
+
+    What stands in the way: what a write answers with, or a file in a path
+    component (``ENOTDIR``) or in its place (``EEXIST``). Any other failure
+    of ``mkdir`` (``EIO``, ``ENOSPC``) stays what it is."""
+
+    ERRNOS = (*KeysDirectoryNotWritable.ERRNOS, errno.ENOTDIR, errno.EEXIST)
+
+    def __init__(self, keys_dir: Path, failure: OSError) -> None:
+        super().__init__(
+            f"{keys_dir} cannot be created by this process ({failure.strerror or failure})",
             kind="keys_directory_not_writable",
         )
 
@@ -166,16 +186,12 @@ def locked(keys_dir: Path) -> Iterator[None]:
 
 
 def _create(keys_dir: Path) -> None:
-    """Make the directory if it is not there (#476). One that cannot be made
-    is one this process cannot write, whatever stands in the way: besides
-    what a write answers with, a file in a path component (``ENOTDIR``) or
-    in its place (``EEXIST``). Any other failure, an ``EIO``, stays what it
-    is."""
+    """Make the directory if it is not there (#476)."""
     try:
         keys_dir.mkdir(parents=True, exist_ok=True)
     except OSError as failure:
-        if failure.errno in (*KeysDirectoryNotWritable.ERRNOS, errno.ENOTDIR, errno.EEXIST):
-            raise KeysDirectoryNotWritable(keys_dir, failure) from failure
+        if failure.errno in KeysDirectoryCannotBeCreated.ERRNOS:
+            raise KeysDirectoryCannotBeCreated(keys_dir, failure) from failure
         raise
 
 

@@ -981,9 +981,10 @@ class TestTheRotateEndpointKeepsTheDirectoryOutOfTheBody:
 
 
 class TestADirectoryThatCannotBeCreated:
-    """The one writer #459 left outside the refusal contract (#476): a keys
-    directory that is gone and cannot be made again is the condition that
-    contract names, on every surface."""
+    """A keys directory that is gone and cannot be made again answers the
+    refusal #459 defined, on every surface (#476). It is no read-only view:
+    nothing there can be read, so it is not a LockNamespaceUnavailable, and
+    load_published does not take it for one."""
 
     def _service_whose_directory_went(self, tmp_path):
         parent = tmp_path / "parent"
@@ -1047,6 +1048,42 @@ class TestADirectoryThatCannotBeCreated:
         assert errno.ENOTDIR not in key_directory.KeysDirectoryNotWritable.ERRNOS
         assert errno.EEXIST not in key_directory.KeysDirectoryNotWritable.ERRNOS
 
+    def test_it_is_no_read_only_view_for_load_published(self, tmp_path):
+        """The fallback is for a directory that can be read and not written.
+        A directory that does not exist is neither: it stays an error."""
+        keys_dir = tmp_path / "file" / "keys"
+        (tmp_path / "file").write_text("not a directory")
+
+        with pytest.raises(key_directory.KeysDirectoryCannotBeCreated):
+            key_directory.load_published(keys_dir)
+
+    def test_the_log_says_what_it_is(self, tmp_path, app, caplog):
+        from nanoidp.services import crypto as crypto_module
+
+        _, keys_dir, service = self._service_whose_directory_went(tmp_path)
+        keys_dir.write_text("not a directory")
+        crypto_module.publish_crypto_service(service)
+
+        with caplog.at_level(logging.WARNING):
+            app.test_client().post("/api/keys/rotate")
+
+        assert "cannot be created" in caplog.text
+        assert "can sign with the keys" not in caplog.text
+
+    def test_the_ui_flashes_the_fixed_message(self, tmp_path, app):
+        from nanoidp.services import crypto as crypto_module
+
+        _, keys_dir, service = self._service_whose_directory_went(tmp_path)
+        keys_dir.write_text("not a directory")
+        crypto_module.publish_crypto_service(service)
+        client = app.test_client()
+
+        response = client.post("/keys/regenerate", follow_redirects=True)
+
+        html = response.get_data(as_text=True)
+        assert KEYS_DIRECTORY_NOT_WRITABLE in html
+        assert "see the server log" not in html
+
     def test_at_startup_it_stays_a_failure(self, tmp_path):
         """Not a refusal to classify: the service makes the directory itself
         before anything else, and a process with no keys does not start."""
@@ -1058,19 +1095,21 @@ class TestADirectoryThatCannotBeCreated:
 
     @pytest.mark.asyncio
     async def test_the_mcp_tool_answers_the_same_refusal(self, tmp_path, app):
-        from nanoidp.config import get_config
-        from nanoidp.mcp_server import _execute_tool
+        """Through the real protocol, where the old answer lived: the
+        dispatcher's internal error, with the path on the wire."""
         from nanoidp.services import crypto as crypto_module
+        from tests.conftest import call_mcp_tool
 
         _, keys_dir, service = self._service_whose_directory_went(tmp_path)
         keys_dir.write_text("not a directory")
         crypto_module.publish_crypto_service(service)
 
-        with app.app_context():
-            result = await _execute_tool("rotate_keys", {}, get_config())
+        result = await call_mcp_tool("rotate_keys", {})
 
-        assert result == {
+        text = result.content[0].text
+        assert json.loads(text) == {
             "success": False,
             "error": KEYS_DIRECTORY_NOT_WRITABLE,
             "kind": "keys_directory_not_writable",
         }
+        assert str(keys_dir) not in text
