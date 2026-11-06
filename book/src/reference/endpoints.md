@@ -40,10 +40,17 @@ through the session cookie, and renders a login page whose forms carry its
 `scope`, `state`, PKCE, `nonce`, `claims`, `resource`) is validated once, on
 that GET; the `POST` that completes the login uses what the transaction
 holds and never reads OAuth parameters from its body. The same request
-sent as a form `POST` (OIDC Core 3.1.2.1, #467), its parameters in an
-`application/x-www-form-urlencoded` body and no login field beside them,
-is handled exactly as the GET is: the same validation, `login_hint` read
-from that body, a transaction and its login page. A transaction expires
+sent as a form `POST` (OIDC Core 3.1.2.1, #467), its parameters
+form-encoded in the body (`application/x-www-form-urlencoded`, Core 13.2;
+a `multipart/form-data` body is read the same way) and no login field
+beside them, is handled as the GET is: the same validation, `login_hint`
+read from that body, a transaction and its login page. One difference is
+the browser's: the session cookie is `SameSite=Lax`, which a browser sends
+on a top-level GET navigation but not on a cross-site POST, so a form POST
+from another site's page arrives as a new browser and the login page's
+response sets a new session cookie. Transactions pending in the session
+that cookie replaces, a pending second factor, and a login to the web UI
+are no longer reachable from that browser; a GET keeps all of them. A transaction expires
 after 10 minutes, yields at most one code, and can only be used with the
 cookie of the browser that created it. It is a snapshot: a configuration
 change while it is open does not revalidate it, and only a client that no

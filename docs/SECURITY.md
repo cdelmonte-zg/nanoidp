@@ -358,9 +358,9 @@ With both set, an OIDC `/authorize` request whose `login_hint` is exactly `perso
 
 An unknown username in the hint reports through the same channel every other post-`redirect_uri` `/authorize` error uses: a redirect to the client with `error=invalid_request` and `state` preserved, never a bare `400` - a test asserting on a failed authorization sees the failure the same way any other rejected request does.
 
-First implementation surface is OIDC `/authorize` only; the device flow and SAML have no defined transport for the hint today. It is only ever read from a `GET` request's own query string - never from the POST body of a login form submission, which the login page itself never sends it on anyway (#325).
+First implementation surface is OIDC `/authorize` only; the device flow and SAML have no defined transport for the hint today. It is read from the request that carries the authorization request it belongs to: a `GET` request's own query string, or the body of a form `POST` that carries the request and no login field (#467) - never from a login form submission, which the login page itself never sends it on anyway (#325).
 
-Auto-login removes the one human click persona mode still required, so for any client used with it, register its `redirect_uris` rather than relying on the permissive dev default that accepts any `redirect_uri` - otherwise a plain GET link mints a code for any configured persona to anywhere.
+Auto-login removes the one human click persona mode still required, so for any client used with it, register its `redirect_uris` rather than relying on the permissive dev default that accepts any `redirect_uri` - otherwise a plain GET link, or a form that posts the request to `/authorize`, mints a code for any configured persona to anywhere.
 
 ---
 

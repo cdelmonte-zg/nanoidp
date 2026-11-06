@@ -11,7 +11,11 @@ fields it carries are audited as a forged request.
 """
 
 
+import re
+from pathlib import Path
+
 from nanoidp.config import get_config
+from nanoidp.routes.oauth import _AUTHORIZE_LOGIN_FIELDS
 from tests.conftest import (
     authorization_response_params,
     pending_transaction_ids,
@@ -185,11 +189,52 @@ class TestAFormPostIsAnAuthorizationRequest:
             return html.replace(transaction_id_of_html(html), "TID")
 
         def transaction_id_of_html(html):
-            import re
-
             return re.search(r'name="transaction_id" value="([^"]+)"', html).group(1)
 
         assert shape(from_get) == shape(from_post)
+
+    def test_a_multipart_body_is_read_as_a_form_too(self, client):
+        page = client.post(
+            "/authorize", data=REQUEST_A, content_type="multipart/form-data"
+        )
+
+        assert page.status_code == 200
+        assert pending_transaction_ids(client) == [transaction_id_of(page)]
+
+    def test_a_form_post_without_the_session_cookie_starts_a_new_browser_session(
+        self, app
+    ):
+        """A browser sends a SameSite=Lax cookie on a top-level GET but not
+        on a cross-site POST, so a form POST from another site's page
+        arrives without one, and the login page's response sets a new
+        session cookie that replaces the browser's. This pins the fact the
+        reference documents: the request is served, with a new session."""
+        assert app.config["SESSION_COOKIE_SAMESITE"] == "Lax"
+
+        page = app.test_client().post("/authorize", data=REQUEST_A)
+
+        assert page.status_code == 200
+        assert "Set-Cookie" in page.headers
+        assert "session=" in page.headers["Set-Cookie"]
+
+
+class TestTheLoginFieldsAreTheTemplatesFields:
+    def test_every_field_a_login_form_sends_is_a_login_field(self):
+        """The classification keys on the fields the login screens send:
+        a field added to a template without being added to the tuple would
+        let a POST carrying it beside a body request be taken for a
+        request. The templates are the source of truth here."""
+        import nanoidp
+
+        templates = Path(nanoidp.__file__).parent / "templates"
+        sent = set()
+        for name in ("authorize.html", "_macros.html"):
+            html = (templates / name).read_text()
+            sent.update(
+                re.findall(r'<(?:input|button|select|textarea)\b[^>]*\bname="([^"]+)"', html)
+            )
+        assert sent, "no form field found in the templates"
+        assert sent <= set(_AUTHORIZE_LOGIN_FIELDS), sent - set(_AUTHORIZE_LOGIN_FIELDS)
 
 
 class TestALoginFieldKeepsThePreexistingPath:

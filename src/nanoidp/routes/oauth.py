@@ -78,6 +78,7 @@ from ._audit import audit_event
 from ._auth import (
     PENDING_SECOND_FACTOR_FIELD,
     SECOND_FACTOR_STORE_FULL,
+    TOTP_CODE_FIELD,
     AuthMethod,
     SecondFactorPhase,
     TwoStepPhase,
@@ -198,7 +199,8 @@ class _AuthorizeParams:
     # _try_persona_auto_login.
     login_hint: str
     # OIDC Core 6.1 / 6.2 (#463): the request-object parameter a new
-    # request's query string carries with a non-empty value - "request"
+    # request carries with a non-empty value (in its query string, or in
+    # the body of a form POST, #467) - "request"
     # (Core 6.1), else "request_uri" (Core 6.2), else None - read only to
     # be refused. Presence, never the value: the object and the URI are
     # not read, so nothing here can record or leak them. A transaction is
@@ -236,7 +238,7 @@ _AUTHORIZE_LOGIN_FIELDS = (
     "transaction_id",
     "username",
     "password",
-    "totp_code",
+    TOTP_CODE_FIELD,
     PENDING_SECOND_FACTOR_FIELD,
     "change_username",
 )
@@ -330,6 +332,22 @@ def _audit_body_oauth_fields() -> None:
         client_id=request.form.get("client_id") or None,
         details={"reason": "OAuth parameters in POST body are ignored", "fields": forged},
     )
+
+
+def _form_serialized_request(requested: Dict[str, List[str]]) -> Dict[str, List[str]]:
+    """The OAuth request fields a POST's body carries when that POST is an
+    authorization request serialized as a form (OIDC Core 3.1.2.1, #467),
+    else empty.
+
+    A POST is one when its query string carries no request fields
+    (``requested``: those make it the direct entry point) and its body
+    carries no login field - present, even empty, a login field makes the
+    POST a login, which never reads OAuth parameters from its body (#325).
+    A login POST with no query string resumes or names a transaction.
+    """
+    if requested or any(field in request.form for field in _AUTHORIZE_LOGIN_FIELDS):
+        return {}
+    return _requested_fields(request.form)
 
 
 def _refuse_without_transaction(
@@ -1416,7 +1434,8 @@ def _authorize_new_request(
     # #250: a login_hint carrying the reserved auto-login prefix bypasses
     # the login page/picker entirely - inert (returns None) unless
     # login.auto_login and login.mode: persona are both active. Answered on
-    # this GET, so no transaction is created for it.
+    # this request, a GET or a form POST alike, so no transaction is
+    # created for it.
     auto_login_response = _try_persona_auto_login(config, p)
     if auto_login_response is not None:
         return auto_login_response
@@ -1623,10 +1642,9 @@ def authorize() -> ResponseReturnValue:
             return auto_login_response
         return _render_authorize_login(config, transaction, None)
 
-    if not requested and not any(field in request.form for field in _AUTHORIZE_LOGIN_FIELDS):
-        body_request = _requested_fields(request.form)
-        if body_request:
-            return _authorize_new_request(config, request.form, body_request)
+    body_request = _form_serialized_request(requested)
+    if body_request:
+        return _authorize_new_request(config, request.form, body_request)
     _audit_body_oauth_fields()
     transaction_id = request.form.get("transaction_id", "")
     if not transaction_id and requested:

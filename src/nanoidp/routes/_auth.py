@@ -307,7 +307,7 @@ def authenticate_interactively(
     persona check, then - only when it succeeds and login.totp is active -
     the further TOTP phase, riding the same phase machinery as two_step
     (#322/#323). The submitted code is read from this request's form here
-    (``totp_code``), so the field name too is spelled once - stripped like
+    (``TOTP_CODE_FIELD``), so the field name too is spelled once - stripped like
     ``username`` on every one of these forms, so a pasted or autofilled
     code with trailing whitespace verifies instead of being audited as a
     failed attempt (#348 review, cleanup). Each route only renders what
@@ -335,8 +335,8 @@ def check_second_factor(config: ConfigManager, loaded: ConfigSnapshot, user: Use
     phase = second_factor_phase(
         totp_active=totp_active,
         user=user,
-        code_submitted="totp_code" in request.form,
-        code=request.form.get("totp_code", "").strip(),
+        code_submitted=TOTP_CODE_FIELD in request.form,
+        code=request.form.get(TOTP_CODE_FIELD, "").strip(),
     )
     method = AuthMethod.PASSWORD_OTP if phase is SecondFactorPhase.VERIFIED else AuthMethod.PASSWORD
     return InteractiveLogin(
@@ -365,6 +365,8 @@ def browser_flow_binding(*, create: bool = False) -> Optional[str]:
 
 # The form field a code screen names its pending second factor with (#373).
 PENDING_SECOND_FACTOR_FIELD = "pending_second_factor"
+# The form field that carries the submitted TOTP code (#348).
+TOTP_CODE_FIELD = "totp_code"
 
 
 def begin_second_factor(
