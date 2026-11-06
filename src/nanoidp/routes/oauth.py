@@ -226,6 +226,17 @@ _AUTHORIZE_REQUEST_FIELDS = (
 )
 
 
+# Every field _read_authorize_params reads (#467): the request fields and
+# login_hint, which is read but is not what makes a request. A
+# form-serialized request carries exactly these into its GET form, so a
+# field the reader gains must be added here (pinned by a test).
+_AUTHORIZE_READ_FIELDS = _AUTHORIZE_REQUEST_FIELDS + ("login_hint",)
+
+# What a non-empty request-object value becomes in the GET form of a form
+# POST (#467): the GET refuses any non-empty value (#463) and never reads
+# it, so the object itself has no reason to reach a URL.
+_REQUEST_OBJECT_PLACEHOLDER = "unsupported"
+
 # The fields a login POST carries (#467): any of them present, even empty,
 # makes a POST a login - the continuation of a transaction, named by
 # ``transaction_id`` or resumed - and never an authorization request to
@@ -350,12 +361,17 @@ def _is_form_serialized_request(requested: Dict[str, List[str]], form: MultiDict
     return bool(_requested_fields(form))
 
 
-def _redirect_form_request_to_get(query: MultiDict, form: MultiDict) -> ResponseReturnValue:
+def _redirect_form_request_to_get(form: MultiDict) -> ResponseReturnValue:
     """Answer a form-serialized authorization request with a 303 to the
-    same request in GET form: the parameters of the POST's own query string
-    (no request field among them, by the classification above) followed by
-    every body field, carried as sent, a repeated field's values in their
-    order (#467).
+    same request in GET form (#467): the fields the GET reads, from the
+    body only, as sent - empty and repeated values included, a repeated
+    field's values in their order. The body is the request: the POST's own
+    query string carries no request field (the classification above), and
+    a ``login_hint`` in it is not the request's. Nothing else in the body
+    reaches the URL: an unexpected field is not read by the GET anyway, and
+    a non-empty ``request`` or ``request_uri`` value becomes a placeholder,
+    so the GET refuses the request as it refuses any such (#463) without
+    the object entering a URL, a log or a history.
 
     Served in place, a cross-site form POST would arrive without the
     session cookie - ``SameSite=Lax``, sent on a top-level GET navigation
@@ -364,7 +380,16 @@ def _redirect_form_request_to_get(query: MultiDict, form: MultiDict) -> Response
     login bound to it. The redirect is followed as a top-level GET, which
     carries the cookie, and the GET is the one reader of a request.
     """
-    carried = list(query.items(multi=True)) + list(form.items(multi=True))
+    carried = [
+        (
+            field,
+            _REQUEST_OBJECT_PLACEHOLDER
+            if value and field in ("request", "request_uri")
+            else value,
+        )
+        for field in _AUTHORIZE_READ_FIELDS
+        for value in form.getlist(field)
+    ]
     return redirect(f"{url_for('oauth.authorize')}?{urlencode(carried)}", code=303)
 
 
@@ -1657,7 +1682,7 @@ def authorize() -> ResponseReturnValue:
         return _render_authorize_login(config, transaction, None)
 
     if _is_form_serialized_request(requested, request.form):
-        return _redirect_form_request_to_get(request.args, request.form)
+        return _redirect_form_request_to_get(request.form)
     _audit_body_oauth_fields()
     transaction_id = request.form.get("transaction_id", "")
     if not transaction_id and requested:

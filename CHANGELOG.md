@@ -15,8 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pending login and refused with "No pending authorization request", or
   shown another request's login page (OpenID conformance,
   `oidcc-ensure-post-request-succeeds`). It is now answered with a
-  `303 See Other` to the same request in GET form, every body field
-  carried as sent: the browser follows it as a top-level GET, which
+  `303 See Other` to the same request in GET form, the fields the GET
+  reads carried as sent and nothing else: the browser follows it as a
+  top-level GET, which
   carries the `SameSite=Lax` session cookie a cross-site POST does not,
   so the request joins the session the browser already has, and the GET
   stays the one reader of a request. A POST that carries a login field,

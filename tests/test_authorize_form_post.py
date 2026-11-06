@@ -18,7 +18,8 @@ from urllib.parse import parse_qs, urlsplit
 from werkzeug.datastructures import MultiDict
 
 from nanoidp.config import get_config
-from nanoidp.routes.oauth import _AUTHORIZE_LOGIN_FIELDS
+from nanoidp.routes import oauth as oauth_module
+from nanoidp.routes.oauth import _AUTHORIZE_LOGIN_FIELDS, _AUTHORIZE_READ_FIELDS
 from tests.conftest import (
     authorization_response_params,
     pending_transaction_ids,
@@ -127,62 +128,99 @@ class TestAFormPostIsAnAuthorizationRequest:
         assert authorization_response_params(done)["state"] == ["stA"]
         assert pending_transaction_ids(client) == [transaction_b]
 
-    def test_every_body_field_is_carried_as_sent(self, client):
-        """Repeated fields (resource, RFC 8707), unrelated ones (ignored by
-        the GET, #328), empty values and login_hint all travel: the GET
-        decides what they mean, the redirect does not."""
+    def test_the_fields_the_get_reads_are_carried_as_sent_and_nothing_else(self, client):
+        """Repeated fields (resource, RFC 8707), empty values and login_hint
+        travel, a repeated field's values in their order; a field the GET
+        does not read (it would ignore it, #328) stays out of the URL."""
         body = [
             ("response_type", "code"),
             ("client_id", "demo-client"),
             ("redirect_uri", CALLBACK),
             ("scope", "openid"),
-            ("resource", "https://api.example/a"),
             ("resource", "https://api.example/b"),
+            ("resource", "https://api.example/a"),
             ("state", ""),
             ("login_hint", "persona-auto-login:admin"),
             ("utm_source", "mail"),
+            ("access_token", "not-for-a-url"),
         ]
 
-        _, query = _redirected_to_get(client.post("/authorize", data=MultiDict(body)))
+        target, query = _redirected_to_get(client.post("/authorize", data=MultiDict(body)))
 
         assert query == {
             "response_type": ["code"],
             "client_id": ["demo-client"],
             "redirect_uri": [CALLBACK],
             "scope": ["openid"],
-            "resource": ["https://api.example/a", "https://api.example/b"],
+            "resource": ["https://api.example/b", "https://api.example/a"],
             "state": [""],
             "login_hint": ["persona-auto-login:admin"],
-            "utm_source": ["mail"],
         }
+        assert "not-for-a-url" not in target.query
 
-    def test_the_posts_own_query_parameters_travel_too(self, client):
-        """A form whose action carries non-request parameters, such as a
-        login_hint, posts the request in its body: the redirect is the GET
-        of that URL plus that body, query parameters first; a repeated
-        field's values keep their order (fields are grouped by name, as
-        the form parser delivers them)."""
-        # A raw body: the test client would group repeated keys itself.
-        body = (
-            "resource=https%3A%2F%2Fapi.example%2Fb&client_id=demo-client"
-            "&resource=https%3A%2F%2Fapi.example%2Fa&response_type=code"
-            "&redirect_uri=http%3A%2F%2Flocalhost%3A3000%2Fcallback"
-        )
+    def test_a_request_object_never_reaches_the_url_and_is_still_refused(self, client):
+        """A non-empty request or request_uri value becomes a placeholder:
+        the GET refuses it as it refuses any (#463), to the registered
+        redirect_uri with the body's state, and the object is in no URL."""
+        for field in ("request", "request_uri"):
+            body = _request(client_id="registered-client", **{field: "eyJ.SECRET-OBJECT."})
 
-        target, _ = _redirected_to_get(
+            target, query = _redirected_to_get(client.post("/authorize", data=body))
+            refused = client.get(f"/authorize?{target.query}")
+
+            assert "SECRET-OBJECT" not in target.query, field
+            assert query[field] == ["unsupported"], field
+            assert refused.status_code == 302
+            params = authorization_response_params(refused)
+            assert params["error"] == [f"{field}_not_supported"]
+            assert params["state"] == ["stA"]
+
+    def test_an_empty_request_object_field_stays_empty(self, client):
+        """Presence is what the GET keys on (#329): an empty value travels
+        empty, so ?request= is a request with no object, as sent."""
+        _, query = _redirected_to_get(client.post("/authorize", data=_request(request="")))
+
+        assert query["request"] == [""]
+
+    def test_the_posts_own_query_string_is_not_the_request(self, client, app):
+        """A form whose action URL carries a login_hint posts the request
+        in its body: the body's hint is the request's, the URL's is left
+        behind, so it cannot pick the persona the auto-login authenticates."""
+        _enable_auto_login(app)
+
+        target, query = _redirected_to_get(
             client.post(
                 "/authorize?login_hint=persona-auto-login:admin&x=1",
-                data=body,
-                content_type="application/x-www-form-urlencoded",
+                data=_request(login_hint="persona-auto-login:user1"),
             )
         )
+        response = client.get(f"/authorize?{target.query}")
 
-        assert target.query == (
-            "login_hint=persona-auto-login%3Aadmin&x=1"
-            "&resource=https%3A%2F%2Fapi.example%2Fb&resource=https%3A%2F%2Fapi.example%2Fa"
-            "&client_id=demo-client&response_type=code"
-            "&redirect_uri=http%3A%2F%2Flocalhost%3A3000%2Fcallback"
-        )
+        assert query["login_hint"] == ["persona-auto-login:user1"]
+        assert "x" not in query
+        assert response.status_code == 302
+        assert "code" in authorization_response_params(response)
+        with app.app_context():
+            from nanoidp.services import get_audit_log
+
+            issued = [
+                e for e in get_audit_log().get_entries(event_type="authorization_request")
+                if e["status"] == "success"
+            ]
+        assert issued[0]["username"] == "user1"
+
+    def test_the_carried_fields_are_the_fields_the_get_reads(self):
+        """_read_authorize_params reads exactly _AUTHORIZE_READ_FIELDS: a
+        field the reader gains (prompt, max_age, ...) must travel with a
+        form POST too, or the two serializations diverge."""
+        import inspect
+
+        source = inspect.getsource(oauth_module._read_authorize_params)
+        read = set(re.findall(r'params\.(?:get|getlist)\("([^"]+)"', source))
+        # request and request_uri are read through their own tuple literal.
+        assert '("request", "request_uri")' in source
+        read |= {"request", "request_uri"}
+        assert read == set(_AUTHORIZE_READ_FIELDS)
 
     def test_a_request_the_get_refuses_is_refused_after_the_redirect(self, client):
         """The redirect validates nothing: a body the GET refuses before its

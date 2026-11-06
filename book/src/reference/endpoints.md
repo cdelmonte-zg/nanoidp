@@ -44,16 +44,19 @@ sent as a form `POST` (OIDC Core 3.1.2.1, #467), its parameters
 form-encoded in the body (`application/x-www-form-urlencoded`, Core 13.2;
 a `multipart/form-data` body is read the same way) and no login field
 beside them, is answered with a `303 See Other` to the same request in
-GET form, every body field carried as sent, and the GET then validates
-it. The redirect is what keeps the browser's session: the session cookie
+GET form, and the GET then validates it. The 303 carries the fields the
+GET reads (the parameters listed above and `login_hint`), from the body
+only and as sent, empty and repeated values included; anything else in
+the body, and the POST's own URL parameters, are left behind, and a
+non-empty `request` or `request_uri` value is replaced by a placeholder,
+so the GET refuses it as it refuses any (#463) without the object ever
+entering a URL. The redirect is what keeps the browser's session: the session cookie
 is `SameSite=Lax`, which a browser sends on a top-level GET navigation but
 not on a cross-site POST, so a form POST from another site's page arrives
 without it, while the GET it is redirected to carries it, and the request
 joins the transactions, second factor and web UI login that browser
 already has at the IdP. The 303 itself validates nothing and sets no
-cookie. The parameters of the POST's own URL travel first, then the
-body's, a repeated field's values in their order. The request then lives
-in a URL, so a body longer
+cookie. The request then lives in a URL, so a body longer
 than what the server in front accepts as a request line is not served:
 request objects, the one reason for a long request, are refused anyway
 (#463). A transaction expires
