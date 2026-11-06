@@ -417,14 +417,17 @@ class TestSignatureVerification:
         the behavioural test above stops seeing its 401). So the pin is worth
         holding. Checked on the AST of the decode call, not a source substring
         (issue #337 moved these tripwires off text): reformatting is fine, and
-        a second algorithm added to that call is caught."""
+        a second algorithm added to that call is caught. The call lives in
+        _decode_own_token since #468, the one decoder every verification of
+        this service's own tokens goes through (verify_jwt and
+        verify_id_token_hint), so the pin holds for all of them at once."""
         import ast
         import inspect
         import textwrap
 
         from nanoidp.services.crypto import CryptoService
 
-        tree = ast.parse(textwrap.dedent(inspect.getsource(CryptoService.verify_jwt)))
+        tree = ast.parse(textwrap.dedent(inspect.getsource(CryptoService._decode_own_token)))
         decode_calls = [
             node
             for node in ast.walk(tree)
@@ -434,7 +437,7 @@ class TestSignatureVerification:
             and isinstance(node.func.value, ast.Name)
             and node.func.value.id == "jwt"
         ]
-        assert len(decode_calls) == 1, "expected exactly one jwt.decode in verify_jwt"
+        assert len(decode_calls) == 1, "expected exactly one jwt.decode in _decode_own_token"
         algorithms = [kw.value for kw in decode_calls[0].keywords if kw.arg == "algorithms"]
         assert len(algorithms) == 1, "jwt.decode must pin its algorithms= argument"
         (value,) = algorithms
