@@ -1421,24 +1421,34 @@ class NanoIDPTestAgent:
                 )
             else:
                 code_ok = False
-            # Negative: a login field beside the request makes it a login.
-            refused = requests.post(
+            # Negative: a login field beside the request, even empty, makes
+            # it a login. With a request pending in the session it continues
+            # that one (its page, "Username is required") instead of being
+            # redirected as a new request; its OAuth fields are not read.
+            other = requests.Session()
+            pending = other.get(
+                f"{self.base_url}/authorize",
+                params={**request_body, "state": "e2e-467-pending"},
+                allow_redirects=False, timeout=5,
+            )
+            pending_match = re.search(r'name="transaction_id" value="([^"]+)"', pending.text)
+            refused = other.post(
                 f"{self.base_url}/authorize", data={**request_body, "username": ""},
                 allow_redirects=False, timeout=5,
             )
-            refused_ok = refused.status_code == 400 and "Location" not in refused.headers
-            if refused_ok:
-                try:
-                    refused_ok = refused.json().get("error") == "invalid_request"
-                except ValueError:
-                    refused_ok = False
+            refused_ok = (
+                pending_match is not None
+                and refused.status_code == 200
+                and "Location" not in refused.headers
+                and f'name="transaction_id" value="{pending_match.group(1)}"' in refused.text
+            )
             return self._add_result(
                 "Authorization Request As Form POST",
                 TestCategory.OAUTH,
                 page_ok and code_ok and refused_ok,
                 "body request: 303 to its GET form, login page, then a code with "
-                "the body's state; body request beside a login field: refused, "
-                "fields not read",
+                "the body's state; body request beside an empty login field: the "
+                "pending request's page, fields not read",
                 {
                     "redirect_status": answer.status_code,
                     "page_status": page.status_code,

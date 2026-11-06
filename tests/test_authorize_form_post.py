@@ -156,6 +156,34 @@ class TestAFormPostIsAnAuthorizationRequest:
             "utm_source": ["mail"],
         }
 
+    def test_the_posts_own_query_parameters_travel_too(self, client):
+        """A form whose action carries non-request parameters, such as a
+        login_hint, posts the request in its body: the redirect is the GET
+        of that URL plus that body, query parameters first; a repeated
+        field's values keep their order (fields are grouped by name, as
+        the form parser delivers them)."""
+        # A raw body: the test client would group repeated keys itself.
+        body = (
+            "resource=https%3A%2F%2Fapi.example%2Fb&client_id=demo-client"
+            "&resource=https%3A%2F%2Fapi.example%2Fa&response_type=code"
+            "&redirect_uri=http%3A%2F%2Flocalhost%3A3000%2Fcallback"
+        )
+
+        target, _ = _redirected_to_get(
+            client.post(
+                "/authorize?login_hint=persona-auto-login:admin&x=1",
+                data=body,
+                content_type="application/x-www-form-urlencoded",
+            )
+        )
+
+        assert target.query == (
+            "login_hint=persona-auto-login%3Aadmin&x=1"
+            "&resource=https%3A%2F%2Fapi.example%2Fb&resource=https%3A%2F%2Fapi.example%2Fa"
+            "&client_id=demo-client&response_type=code"
+            "&redirect_uri=http%3A%2F%2Flocalhost%3A3000%2Fcallback"
+        )
+
     def test_a_request_the_get_refuses_is_refused_after_the_redirect(self, client):
         """The redirect validates nothing: a body the GET refuses before its
         redirect_uri lands on the GET's local 400."""

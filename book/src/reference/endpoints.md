@@ -51,7 +51,12 @@ not on a cross-site POST, so a form POST from another site's page arrives
 without it, while the GET it is redirected to carries it, and the request
 joins the transactions, second factor and web UI login that browser
 already has at the IdP. The 303 itself validates nothing and sets no
-cookie. A transaction expires
+cookie. The parameters of the POST's own URL travel first, then the
+body's, a repeated field's values in their order. The request then lives
+in a URL, so a body longer
+than what the server in front accepts as a request line is not served:
+request objects, the one reason for a long request, are refused anyway
+(#463). A transaction expires
 after 10 minutes, yields at most one code, and can only be used with the
 cookie of the browser that created it. It is a snapshot: a configuration
 change while it is open does not revalidate it, and only a client that no

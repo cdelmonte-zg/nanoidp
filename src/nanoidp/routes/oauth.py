@@ -336,24 +336,26 @@ def _audit_body_oauth_fields() -> None:
     )
 
 
-def _is_form_serialized_request(query: MultiDict, form: MultiDict) -> bool:
+def _is_form_serialized_request(requested: Dict[str, List[str]], form: MultiDict) -> bool:
     """Whether a POST is an authorization request serialized as a form
     (OIDC Core 3.1.2.1, #467): its query string carries no request field
-    (those make it the direct entry point), its body carries no login
-    field - present, even empty, a login field makes the POST a login,
-    which never reads OAuth parameters from its body (#325) - and its body
-    carries a request field. A login POST with no query string resumes or
-    names a transaction.
+    (``requested``: those make it the direct entry point), its body
+    carries no login field - present, even empty, a login field makes the
+    POST a login, which never reads OAuth parameters from its body (#325)
+    - and its body carries a request field. A login POST with no query
+    string resumes or names a transaction.
     """
-    if _requested_fields(query) or any(field in form for field in _AUTHORIZE_LOGIN_FIELDS):
+    if requested or any(field in form for field in _AUTHORIZE_LOGIN_FIELDS):
         return False
     return bool(_requested_fields(form))
 
 
-def _redirect_form_request_to_get(form: MultiDict) -> ResponseReturnValue:
+def _redirect_form_request_to_get(query: MultiDict, form: MultiDict) -> ResponseReturnValue:
     """Answer a form-serialized authorization request with a 303 to the
-    same request in GET form, every body field carried as sent, repeated
-    ones included (#467).
+    same request in GET form: the parameters of the POST's own query string
+    (no request field among them, by the classification above) followed by
+    every body field, carried as sent, a repeated field's values in their
+    order (#467).
 
     Served in place, a cross-site form POST would arrive without the
     session cookie - ``SameSite=Lax``, sent on a top-level GET navigation
@@ -362,8 +364,8 @@ def _redirect_form_request_to_get(form: MultiDict) -> ResponseReturnValue:
     login bound to it. The redirect is followed as a top-level GET, which
     carries the cookie, and the GET is the one reader of a request.
     """
-    query = urlencode(form.to_dict(flat=False), doseq=True)
-    return redirect(f"{url_for('oauth.authorize')}?{query}", code=303)
+    carried = list(query.items(multi=True)) + list(form.items(multi=True))
+    return redirect(f"{url_for('oauth.authorize')}?{urlencode(carried)}", code=303)
 
 
 def _refuse_without_transaction(
@@ -1654,8 +1656,8 @@ def authorize() -> ResponseReturnValue:
             return auto_login_response
         return _render_authorize_login(config, transaction, None)
 
-    if _is_form_serialized_request(request.args, request.form):
-        return _redirect_form_request_to_get(request.form)
+    if _is_form_serialized_request(requested, request.form):
+        return _redirect_form_request_to_get(request.args, request.form)
     _audit_body_oauth_fields()
     transaction_id = request.form.get("transaction_id", "")
     if not transaction_id and requested:
