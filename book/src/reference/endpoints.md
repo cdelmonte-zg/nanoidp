@@ -139,10 +139,11 @@ names this server as its only allowed CORS origin, since it holds a code
 in a readable body. The mode
 is resolved before any answer is built, the request-object refusal
 included, so that refusal follows it too. An unknown value, or a repeated
-`response_mode`, names no usable channel and is a local `400` without
-`Location`. A `form_post` can only reach an HTTP(S) `redirect_uri`: with
-a private-scheme one (a native client) it is a local `400`, while `query`
-and `fragment` reach such a URI as any redirect does. The mode is kept by
+`response_mode`, names no usable channel and is a plain local `400`,
+without `Location` and without OAuth error parameters (Core 3.1.2.6). A
+`form_post` can only reach an absolute HTTP(S) `redirect_uri` with an
+explicit host: with a private-scheme one (a native client) it is a local
+`400`, while `query` and `fragment` reach such a URI as any redirect does. The mode is kept by
 the transaction, so the login POST delivers the code in it, and travels
 into the GET form of a form-serialized request. The discovery document
 publishes `response_modes_supported: ["query", "fragment", "form_post"]`.

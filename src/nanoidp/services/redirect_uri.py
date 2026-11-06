@@ -64,10 +64,14 @@ def append_authorization_fragment(uri: str, params: Dict[str, str]) -> str:
 
 
 def is_http_redirect_uri(uri: str) -> bool:
-    """Whether a validated redirect URI is an HTTP(S) one: the only kind a
-    browser form can post to (the ``form_post`` response mode, #472); a
-    private-scheme URI of a native client is reached by a redirect only."""
-    return urlparse(uri).scheme in _WEB_SCHEMES
+    """Whether a validated redirect URI is an absolute HTTP(S) URL with an
+    explicit host: the only kind that is safe as a form's action (the
+    ``form_post`` response mode, #472). A private-scheme URI of a native
+    client is reached by a redirect only, and ``https:/callback`` passes as
+    a scheme but a browser resolves it against the page's own URL, so the
+    form would post the code to the IdP itself."""
+    parts = urlparse(uri)
+    return parts.scheme in _WEB_SCHEMES and bool(parts.hostname)
 
 # RFC 8252 §7.3: loopback interface redirection is defined for the IPv4 and
 # IPv6 loopback literals only. urlparse().hostname strips the brackets from

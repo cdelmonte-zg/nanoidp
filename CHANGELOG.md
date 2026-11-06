@@ -15,8 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `response_modes_supported`, which by omission promised `fragment`. A code
   and every error after the `redirect_uri` now follow the requested mode;
   `form_post` renders a self-submitting form with `Cache-Control:
-  no-store`, and can only reach an HTTP(S) `redirect_uri`. An unknown or
-  repeated `response_mode` is a local `400`. Discovery publishes the three
+  no-store`, and can only reach an absolute HTTP(S) `redirect_uri` with a
+  host. An unknown or repeated `response_mode` is a plain local `400`
+  with no OAuth error parameters. Discovery publishes the three
   modes under both names. ASP.NET Core's OpenID Connect handler asks for
   `form_post` by default, so that path can now be tested against NanoIDP.
 - **An authenticated browser session at `/authorize`** (#468, OIDC Core

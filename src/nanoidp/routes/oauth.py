@@ -2,6 +2,7 @@
 OAuth2/OIDC routes for token endpoint and discovery.
 """
 
+import hashlib
 import json
 import logging
 import os
@@ -318,14 +319,22 @@ _AUTHORIZE_LOGIN_FIELDS = (
 def _requested_fields(source: MultiDict) -> Dict[str, List[str]]:
     """The OAuth request fields ``source`` carries, as sent: a request's
     query string, or the body of a POST asked whether it is a
-    form-serialized request (#467).
+    form-serialized request (#467). A transaction stores this and compares
+    it with the query of a POST that names it, so an ID token hint is kept
+    as its digest: equal for that comparison, and no token in a record the
+    shared store may persist (#468).
 
     Presence, not truthiness, makes a field part of the request (#329
     review): ``client_id=`` is a request with an empty client_id, not no
     request. Unrelated parameters are not request fields (#328).
     """
     return {
-        field: source.getlist(field)
+        field: [
+            hashlib.sha256(value.encode("utf-8")).hexdigest()
+            if field == "id_token_hint"
+            else value
+            for value in source.getlist(field)
+        ]
         for field in _AUTHORIZE_REQUEST_FIELDS
         if field in source
     }
@@ -1862,6 +1871,21 @@ def _answer_from_session(
     return None
 
 
+def _refuse_response_mode(p: _AuthorizeParams) -> ResponseReturnValue:
+    """OIDC Core 3.1.2.6: an unknown response_mode is an HTTP 400 that
+    carries no OAuth error parameters, since the request names no channel
+    to deliver them on; a repeated one is treated alike (#472). Audited as
+    any refusal of a request."""
+    audit_event(
+        "authorization_request",
+        "failed",
+        endpoint="/authorize",
+        client_id=p.client_id or None,
+        details=_failed_details(p.response_mode_rejected or "", None),
+    )
+    return Response("Bad request: response_mode\n", status=400, content_type="text/plain")
+
+
 def _take_parked_hint(p: _AuthorizeParams) -> None:
     """Swap a form POST's parked reference (#467, #468) for the hint it
     stands for. First thing in the validation, before anything can refuse
@@ -1893,12 +1917,7 @@ def _validate_authorize_request(
     # usable one is refused locally before any answer, the request-object
     # refusal below included, is built for the client.
     if p.response_mode_rejected is not None:
-        return None, _authorize_reject(
-            p.client_id or None,
-            p.response_mode_rejected,
-            "invalid_request",
-            "response_mode is not supported",
-        )
+        return None, _refuse_response_mode(p)
 
     # A request object is refused whatever the rest of the request says,
     # before any validator runs (#463): one answer, one authorization_request

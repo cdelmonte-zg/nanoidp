@@ -42,6 +42,16 @@ def _form_of(response):
     return action, fields
 
 
+def _assert_plain_400(response):
+    """OIDC Core 3.1.2.6: an unknown response_mode is a 400 that carries no
+    OAuth error parameters."""
+    assert response.status_code == 400
+    assert "Location" not in response.headers
+    assert response.get_json(silent=True) is None
+    assert b"invalid_request" not in response.data
+    assert b"error" not in response.data
+
+
 def _login(client, **extra):
     """The response that carries the code: after the login, or at once
     when the browser's session is reused (#468)."""
@@ -152,12 +162,7 @@ class TestARequestThatNamesNoChannel:
             {"response_mode": "nonsense", "client_id": "unknown-client"},
         ):
             refused = client.get("/authorize", query_string={**BASE, **extra})
-            assert refused.status_code == 400, extra
-            assert "Location" not in refused.headers
-            assert refused.get_json() == {
-                "error": "invalid_request",
-                "error_description": "response_mode is not supported",
-            }
+            _assert_plain_400(refused)
         assert pending_transaction_ids(client) == []
 
     def test_a_repeated_mode_is_a_local_400_even_with_valid_values(self, client):
@@ -167,9 +172,34 @@ class TestARequestThatNamesNoChannel:
             "&response_mode=query&response_mode=fragment"
         )
 
-        assert refused.status_code == 400
-        assert "Location" not in refused.headers
-        assert refused.get_json()["error"] == "invalid_request"
+        _assert_plain_400(refused)
+
+    def test_the_refusal_stays_audited(self, client, app):
+        client.get("/authorize", query_string={**BASE, "response_mode": "nonsense"})
+
+        with app.app_context():
+            from nanoidp.services import get_audit_log
+
+            entry = get_audit_log().get_entries(event_type="authorization_request")[0]
+        assert entry["status"] == "failed"
+        assert entry["client_id"] == "registered-client"
+
+    def test_form_post_needs_an_explicit_host(self, client):
+        """https:/callback passes as a scheme, but a browser resolves it
+        against the page's own URL: the form would post the code to the IdP
+        itself. Only an absolute URL with a host is a form action."""
+        for uri in ("https:/callback", "https:///callback", "http:callback"):
+            refused = client.get(
+                "/authorize",
+                query_string={
+                    **BASE,
+                    "client_id": "demo-client",
+                    "redirect_uri": uri,
+                    "response_mode": "form_post",
+                },
+            )
+            assert refused.status_code == 400, uri
+            assert "Location" not in refused.headers
 
     def test_form_post_to_a_private_scheme_is_a_local_400_after_the_redirect_uri(self, client):
         native = {**BASE, "client_id": "ui-native", "redirect_uri": "com.example.app:/oauth2redirect"}
