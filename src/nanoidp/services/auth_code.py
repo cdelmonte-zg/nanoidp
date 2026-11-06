@@ -249,6 +249,7 @@ class AuthCodeStore:
         # Generate a secure random code
         code = secrets.token_urlsafe(32)
 
+        instant = created_at if created_at is not None else datetime.now(timezone.utc)
         auth_code = AuthorizationCode(
             code=code,
             client_id=client_id,
@@ -263,9 +264,11 @@ class AuthCodeStore:
             resource=resource,
             amr=amr,
             auth_time=auth_time,
+            # The caller's instant when it has one (#468: the same instant
+            # as the session's auth_time), with the expiry counted from it.
+            created_at=instant,
+            expires_at=instant + timedelta(seconds=CODE_LIFETIME_SECONDS),
         )
-        if created_at is not None:
-            auth_code = dataclasses.replace(auth_code, created_at=created_at)
 
         def decide(view: RepositoryTransaction[AuthorizationCode]) -> None:
             # No cap, as ever: a code is only created for a login that went

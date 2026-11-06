@@ -753,13 +753,9 @@ def _issue_for_code(
         scope=code_scope,
         # The user authenticated at the login page, or earlier in the
         # session the code rests on (#468), not at this token exchange: that
-        # moment is auth_time (#42). A code written before 3.5 has none and
-        # falls back to its own creation.
-        auth_time=(
-            auth_code.auth_time
-            if auth_code.auth_time is not None
-            else int(auth_code.created_at.timestamp())
-        ),
+        # moment is auth_time (#42), the code's own creation unless the
+        # record says otherwise (AuthorizationCode.__post_init__).
+        auth_time=auth_code.auth_time,
         # How that login authenticated (#348) - set at /authorize, None
         # under persona mode.
         amr=auth_code.amr,

@@ -220,6 +220,44 @@ class TestFormPost:
         assert "id_token_hint=ref%3Aunparked" in answer.headers["Location"]
         assert get_parked_hint_store()._repository.list() == []
 
+    def test_a_runtime_reset_drops_parked_references(self, client, app):
+        hint = _mint(app, sub="admin")
+        answer = client.post("/authorize", data=self._body(hint))
+        query = answer.headers["Location"].split("?", 1)[1]
+
+        client.delete("/api/runtime")
+
+        assert _error_of(client.get(f"/authorize?{query}")) == "invalid_request"
+
+    def test_a_hint_in_a_login_posts_body_is_audited_as_ignored(self, client, app):
+        """#325's visibility: the three fields a request may carry beside
+        the request fields are audited like them when a login POST body
+        carries them; they are never read there."""
+        page = client.get(f"/authorize?{QS}")
+        hint = _mint(app, sub="user1")
+
+        done = client.post(
+            "/authorize",
+            data={
+                "transaction_id": transaction_id_of(page),
+                **ADMIN,
+                "id_token_hint": hint,
+                "prompt": "none",
+                "max_age": "0",
+            },
+        )
+
+        assert "code" in authorization_response_params(done)
+        with app.app_context():
+            from nanoidp.services import get_audit_log
+
+            ignored = [
+                e["details"]["fields"]
+                for e in get_audit_log().get_entries(event_type="authorization_request")
+                if e["details"].get("reason") == "OAuth parameters in POST body are ignored"
+            ]
+        assert ignored == [["prompt", "max_age", "id_token_hint"]]
+
     def test_an_unknown_reference_is_invalid_request(self, client, app):
         response = client.get(f"/authorize?{QS}&id_token_hint=ref:nothing")
 

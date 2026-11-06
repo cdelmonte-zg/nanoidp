@@ -27,7 +27,6 @@ repository is one decision of the repository's (#404), whole for whoever
 shares the store.
 """
 
-import hmac
 import time
 from typing import Optional
 
@@ -58,14 +57,6 @@ class AuthenticatedSession(BaseModel):
 
     def is_live(self, now: Optional[float] = None) -> bool:
         return (now if now is not None else time.time()) < self.expires_at
-
-    def is_for(self, browser_binding: Optional[str]) -> bool:
-        return browser_binding is not None and hmac.compare_digest(
-            self.browser_binding, browser_binding
-        )
-
-    def is_live_for(self, browser_binding: Optional[str]) -> bool:
-        return self.is_for(browser_binding) and self.is_live()
 
     def age(self, now: Optional[float] = None) -> float:
         """Seconds since the authentication, for ``max_age``: not truncated,
@@ -131,8 +122,9 @@ class AuthenticatedSessionStore:
         """This browser's record, if live now."""
         if browser_binding is None:
             return None
+        # Keyed by the binding: the lookup is the binding check.
         record = self._repository.get(browser_binding)
-        if record is None or not record.is_live_for(browser_binding):
+        if record is None or not record.is_live():
             return None
         return record
 

@@ -74,6 +74,11 @@ class ParkedHintStore:
         return taken.value.value if taken is not None else None
 
 
+    def delete_all(self) -> int:
+        """Drop every parked hint: a runtime reset."""
+        return self._repository.delete_all()
+
+
 def is_reference(value: str) -> bool:
     return value.startswith(REFERENCE_PREFIX)
 

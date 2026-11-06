@@ -385,7 +385,8 @@ what a production IdP needs.
 
 `login.session_minutes` (default `60`, #468) is how long a browser's login
 at `/authorize` lives, counted from the authentication and not renewed by
-reuse. While it lives, a request without `prompt`, `max_age` or
+reuse; lowering it shortens the sessions already established. While it
+lives, a request without `prompt`, `max_age` or
 `id_token_hint` is answered with a code and no login page (single
 sign-on), `prompt=none` succeeds, and `max_age` and `id_token_hint` are
 checked against it; `prompt=login` and `max_age=0` always show the login

@@ -160,6 +160,44 @@ class TestSingleSignOn:
         assert _is_login_page(client.get(f"/authorize?{QS}"))
         assert _audit_sessions(app) == ["disabled"]
 
+    def test_lowering_the_setting_shortens_a_session_already_established(self, client, app):
+        _login(client)
+        with client.session_transaction() as s:
+            binding = s["authorize_binding"]
+        store = get_authenticated_session_store()
+        record = store.live(binding)
+        store.establish(
+            browser_binding=binding,
+            username=record.username,
+            method=record.method,
+            auth_time=int(time.time()) - 120,
+            lifetime_seconds=3600,
+        )
+        assert client.get(f"/authorize?{QS}").status_code == 302
+        with app.app_context():
+            get_config().settings.session_minutes = 1
+
+        assert _is_login_page(client.get(f"/authorize?{QS}"))
+
+    def test_a_code_created_at_an_instant_counts_everything_from_it(self):
+        from datetime import datetime, timedelta, timezone
+
+        from nanoidp.services.auth_code import CODE_LIFETIME_SECONDS, get_auth_code_store
+
+        instant = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+        store = get_auth_code_store()
+        code = store.create_code(
+            client_id="demo-client",
+            redirect_uri=CALLBACK,
+            username="admin",
+            created_at=instant,
+        )
+        record = store._repository.get(code)
+
+        assert record.created_at == instant
+        assert record.expires_at == instant + timedelta(seconds=CODE_LIFETIME_SECONDS)
+        assert record.auth_time == int(instant.timestamp())
+
     def test_an_expired_session_shows_the_login_page(self, client, app, monkeypatch):
         _login(client)
         record = _session_of(client)

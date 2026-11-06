@@ -364,7 +364,13 @@ def _audit_body_oauth_fields() -> None:
     """
     # Any non-empty value over every repetition, as the query reader does
     # for the two refused fields (#463): an empty first value hides nothing.
-    forged = [field for field in _AUTHORIZE_REQUEST_FIELDS if any(request.form.getlist(field))]
+    # The request fields, and the three a request may carry beside them
+    # (#468) - never login_hint, which the login page itself may post.
+    forged = [
+        field
+        for field in _AUTHORIZE_REQUEST_FIELDS + ("prompt", "max_age", "id_token_hint")
+        if any(request.form.getlist(field))
+    ]
     if not forged:
         return
     audit_event(
@@ -415,7 +421,7 @@ def _redirect_form_request_to_get(config: ConfigManager, form: MultiDict) -> Res
     # a client it would first have to fetch, the hint becomes a reference
     # that resolves to nothing and the GET refuses the request
     # (invalid_request), rather than serving it without the hint.
-    known_client = bool(
+    known_client = any(form.getlist("id_token_hint")) and bool(
         form.get("client_id")
         and identities_for(config, request_config()).get_client(form.get("client_id", ""))
     )
@@ -1047,9 +1053,14 @@ def _record_authenticated_session(
     lifetime = loaded.settings.authenticated_session_seconds
     if lifetime <= 0:
         return "disabled"
+    binding = browser_flow_binding(create=True)
+    if not binding:
+        # Never with create=True; and a session keyed by nothing would be
+        # every cookieless browser's, so none is kept.
+        return "not kept, no browser binding"
     try:
         get_authenticated_session_store().establish(
-            browser_binding=browser_flow_binding(create=True) or "",
+            browser_binding=binding,
             username=username,
             method=method.value,
             auth_time=auth_time,
@@ -1080,7 +1091,9 @@ def _usable_session(
         # an earlier setting is not consulted.
         return None
     record = get_authenticated_session_store().live(browser_flow_binding())
-    if record is None:
+    if record is None or record.age() > settings.authenticated_session_seconds:
+        # The setting in force now bounds a session too: lowering it
+        # shortens the sessions already established, as the reference says.
         return None
     user = identities_for(config, loaded).get_user(record.username)
     if user is None:

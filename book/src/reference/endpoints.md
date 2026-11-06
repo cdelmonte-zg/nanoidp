@@ -81,7 +81,8 @@ session** (#468, OIDC Core 3.1.2.1): a record in the runtime store bound
 to the browser through the same cookie value as its transactions, holding
 who authenticated, how, and when (`auth_time`), for
 `login.session_minutes` (default 60, counted from the authentication and
-not renewed by reuse; `0` keeps and consults none). It is distinct from
+not renewed by reuse; the value in force when a request arrives bounds a
+session established under a longer one; `0` keeps and consults none). It is distinct from
 the web UI's login; `/device` and SAML neither create nor use it. While it
 lives, a request that carries no `prompt`, `max_age` or `id_token_hint`
 is answered with a code at once, no login page, and the ID token carries
@@ -239,4 +240,4 @@ never written to the declared files unless promoted; see
 | `GET /api/runtime/clients/{client_id}` | Get a runtime client |
 | `DELETE /api/runtime/clients/{client_id}` | Delete a runtime client |
 | `POST /api/runtime/clients/{client_id}/promote` | Write it into `settings.yaml` and retire the runtime object |
-| `DELETE /api/runtime` | Remove every runtime user and client and end every authenticated session at `/authorize`; answers `users_deleted`, `clients_deleted` and `sessions_ended` |
+| `DELETE /api/runtime` | Remove every runtime user and client, end every authenticated session at `/authorize` and drop the parked `id_token_hint` references; answers `users_deleted`, `clients_deleted` and `sessions_ended` |

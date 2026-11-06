@@ -33,6 +33,7 @@ from ..services.dynamic_registration import (
     prune_stale_registrations,
     registration_of,
 )
+from ..services.id_token_hint_references import get_parked_hint_store
 from ..services.identities import (
     DeclaredNameCollision,
     PromotionInProgress,
@@ -189,6 +190,9 @@ def reset() -> ResponseReturnValue:
     # Every browser's authenticated session at /authorize is test state
     # too (#468): a reset ends them all, whoever they were for.
     sessions_ended = get_authenticated_session_store().delete_all()
+    # So are the id_token_hint references a form POST parked (#468): test
+    # state of the same store, dropped with the rest.
+    get_parked_hint_store().delete_all()
     # Tidiness, and the capacity count: the records of the clients that just
     # went match nothing any more (#404), including a client created under
     # one of those ids before this line runs.
