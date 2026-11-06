@@ -45,6 +45,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The SAML POST page is neither cached nor readable from another origin**
+  (#478, SAML 2.0 Bindings 3.5.5.1). The page that carries `SAMLResponse`
+  now answers `Cache-Control: no-cache, no-store` and `Pragma: no-cache`,
+  and, like the `form_post` page, is readable from a script only by an
+  origin named in `cors_allowed_origins`, in every profile: under `*` a
+  script of any origin could read the assertion from the response, which
+  in persona mode takes neither a password nor a cookie. This closes reading
+  the page, not requesting an assertion: the ACS still comes from the
+  AuthnRequest, as on any test IdP without registered service providers.
 - **`/authorize` accepts the authorization request as a form POST** (#467,
   OIDC Core 3.1.2.1). A POST whose form-encoded body carries the request
   parameters and no login field was taken for the continuation of a

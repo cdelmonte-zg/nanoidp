@@ -134,9 +134,7 @@ decided after the `redirect_uri`, is delivered the way `response_mode`
 asks: `query` (the default, also for an empty value), `fragment`, or
 `form_post`, a page with `Cache-Control: no-store` whose form posts
 `code` or `error` and `error_description`, `state` when sent, and `iss`
-under the usual rule, to the `redirect_uri` and submits itself, and which
-names this server as its only allowed CORS origin, since it holds a code
-in a readable body. The mode
+under the usual rule, to the `redirect_uri` and submits itself. The mode
 is resolved before any answer is built, the request-object refusal
 included, so that refusal follows it too. An unknown value, or a repeated
 `response_mode`, names no usable channel and is a plain local `400`,
@@ -147,6 +145,11 @@ explicit host: with a private-scheme one (a native client) it is a local
 the transaction, so the login POST delivers the code in it, and travels
 into the GET form of a form-serialized request. The discovery document
 publishes `response_modes_supported: ["query", "fragment", "form_post"]`.
+
+The SAML POST page and the `form_post` page hold a credential in a
+readable body, so only an origin named in `cors_allowed_origins` may read
+them from a script: in every profile, `*` and the `stricter-dev` localhost
+pattern answer no `Access-Control-Allow-Origin` there (#478).
 
 One browser fact: the session cookie is `SameSite=Lax`, which a browser
 sends on a top-level navigation and not from a cross-site iframe. A
@@ -197,7 +200,9 @@ and `Pragma: no-cache`, success and error alike (RFC 6749 §5.1 for the
 responses that carry tokens or credentials; a policy of nanoidp's own for
 user data and token state, so that nothing between a test client and the
 IdP answers from a cache). The two registration responses that carry
-credentials (#190) say the same. A response the endpoint itself did not
+credentials (#190) say the same, and the page that carries a
+`SAMLResponse` answers `Cache-Control: no-cache, no-store` and `Pragma:
+no-cache`, as SAML Bindings 3.5.5.1 words it (#478). A response the endpoint itself did not
 build, such as a 405, a 429 from the rate limiter or a 503 while the
 configuration cannot be read, carries neither; nor do the discovery
 documents and the JWKS, which are public and cacheable.

@@ -21,6 +21,7 @@ from . import __version__
 from .config import ConfigManager, DeclaredConfigurationUnloadable, get_config, init_config
 from .config_writer import LockUnavailableError
 from .routes import api_bp, oauth_bp, registration_bp, runtime_bp, saml_bp, ui_bp
+from .routes._auth import is_credential_page
 from .routes._config import forget_after_this_request, remember_for_this_request
 from .services import activate_services
 from .services.dynamic_registration import prune_stale_registrations
@@ -232,6 +233,20 @@ def create_app(
             else ["*"]
         )
         applied = list(origins)
+    # Registered before CORS() so that it runs after it (Flask runs these in
+    # reverse): a page that holds a credential in its body is readable only
+    # by an origin the operator named (#478, routes/_auth.credential_page),
+    # not by a "*" or a profile's pattern. Compared ignoring case, as
+    # flask-cors matches them, and read here, once, as the rest of CORS is.
+    named_origins = frozenset(origin.lower() for origin in declared or ()) - {"*"}
+
+    @app.after_request
+    def _credential_pages_answer_named_origins_only(response: Any) -> Any:
+        origin = request.headers.get("Origin", "").lower()
+        if is_credential_page(response) and origin not in named_origins:
+            response.headers.pop("Access-Control-Allow-Origin", None)
+        return response
+
     CORS(app, resources={r"/*": {"origins": origins}}, **cors_options)
     if vary_on_origin:
 
