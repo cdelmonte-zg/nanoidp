@@ -9,7 +9,8 @@ surface) cannot drift:
    without a fragment component. "Absolute" means a scheme is present;
    an authority is NOT required, because native apps use private-use
    scheme URIs such as ``com.example.app:/oauth2redirect`` (RFC 8252 §7.1)
-   that have a path but no host.
+   that have a path but no host. An HTTP(S) URI is the exception: it must
+   name its host (#486).
 
 2. Does it match one of the client's registered URIs? RFC 6749 §3.1.2.3 /
    OAuth 2.1 draft §4.1.1: simple string comparison, with exactly one
@@ -64,14 +65,11 @@ def append_authorization_fragment(uri: str, params: Dict[str, str]) -> str:
 
 
 def is_http_redirect_uri(uri: str) -> bool:
-    """Whether a validated redirect URI is an absolute HTTP(S) URL with an
-    explicit host: the only kind that is safe as a form's action (the
-    ``form_post`` response mode, #472). A private-scheme URI of a native
-    client is reached by a redirect only, and ``https:/callback`` passes as
-    a scheme but a browser resolves it against the page's own URL, so the
-    form would post the code to the IdP itself."""
-    parts = urlparse(uri)
-    return parts.scheme in _WEB_SCHEMES and bool(parts.hostname)
+    """Whether a validated redirect URI is an HTTP(S) one: the only kind a
+    browser form can post to (the ``form_post`` response mode, #472); a
+    private-scheme URI of a native client is reached by a redirect only.
+    Validated: the gate has already seen to its host (#486)."""
+    return urlparse(uri).scheme in _WEB_SCHEMES
 
 # RFC 8252 §7.3: loopback interface redirection is defined for the IPv4 and
 # IPv6 loopback literals only. urlparse().hostname strips the brackets from
@@ -85,10 +83,7 @@ def is_absolute_redirect_uri(uri: str) -> bool:
     Accepts web URIs (``https://host/path``), private-use scheme URIs with a
     path and no authority (``com.example.app:/oauth2redirect``, RFC 8252
     §7.1) and loopback URIs. Rejects relative references, scheme-only
-    strings, anything carrying a fragment, and an HTTP(S) URI with no host
-    (#486): ``https:/callback`` has a scheme and a path, and a browser
-    resolves it against the current URL, so the response would go to the
-    IdP's own host.
+    strings and anything carrying a fragment.
     """
     try:
         parsed = urlparse(uri)
@@ -100,7 +95,7 @@ def is_absolute_redirect_uri(uri: str) -> bool:
         return False
     if parsed.fragment or uri.endswith("#"):
         return False
-    return parsed.scheme not in _WEB_SCHEMES or bool(parsed.hostname)
+    return True
 
 
 _WEB_SCHEMES = frozenset({"http", "https"})
@@ -109,6 +104,19 @@ PRIVATE_SCHEME_REASON = (
     "Invalid redirect_uri: private-use scheme must be reverse-domain based, "
     "e.g. com.example.app:/callback (RFC 8252 section 7.1)"
 )
+
+
+HOSTLESS_WEB_URI_REASON = "Invalid redirect_uri: an http or https URI must name its host"
+
+
+def names_its_host(uri: str) -> bool:
+    """False for an HTTP(S) URI with no host (#486). ``https:/callback`` is
+    absolute by RFC 3986, but a browser does not read it as written: it
+    resolves it against the current URL, or takes ``callback`` for the
+    host, and ``https:///evil.example/cb`` reaches evil.example. Any other
+    scheme has no authority to name."""
+    parsed = urlparse(uri)
+    return parsed.scheme not in _WEB_SCHEMES or bool(parsed.hostname)
 
 
 def has_acceptable_scheme(uri: str) -> bool:
@@ -136,11 +144,14 @@ def redirect_uri_rejection_reason(uri: str) -> str | None:
     Returns ``None`` when the URI is acceptable, otherwise the
     ``error_description`` to answer with: the generic "Invalid redirect_uri"
     for non-absolute URIs and fragments (RFC 6749 §3.1.2), or a message that
-    names the RFC 8252 §7.1 rule for a private-use scheme without a period,
-    so a client developer learns why ``myapp://`` is not enough.
+    names the rule for an HTTP(S) URI without a host (#486) or a private-use
+    scheme without a period (RFC 8252 §7.1), so a client developer learns
+    why ``https:/callback`` or ``myapp://`` is not enough.
     """
     if not is_absolute_redirect_uri(uri):
         return "Invalid redirect_uri"
+    if not names_its_host(uri):
+        return HOSTLESS_WEB_URI_REASON
     if not has_acceptable_scheme(uri):
         return PRIVATE_SCHEME_REASON
     return None

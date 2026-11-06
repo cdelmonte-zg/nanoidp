@@ -1853,8 +1853,20 @@ class NanoIDPTestAgent:
             # RFC 8252 section 7.1 minimum rule: a private-use scheme without
             # a period is rejected at the syntactic gate, registered or not.
             private_scheme_no_period = authorize("myapp://callback")
-            # An HTTP(S) URI names its host, at the same gate (#486).
-            web_without_host = authorize("https:/callback")
+            # An HTTP(S) URI names its host, at the same gate (#486): asked
+            # for the default client, which registers no URIs, so that only
+            # that rule can refuse it, and read by its own reason.
+            web_without_host = requests.get(
+                f"{self.base_url}/authorize",
+                params={
+                    "response_type": "code",
+                    "client_id": self.client_id,
+                    "redirect_uri": "https:/callback",
+                    "scope": "openid",
+                },
+                allow_redirects=False,
+                timeout=5,
+            )
 
             checks = {
                 "custom_scheme_accepted": custom.status_code == 200,
@@ -1862,7 +1874,8 @@ class NanoIDPTestAgent:
                 "loopback_no_port_accepted": loopback_no_port.status_code == 200,
                 "localhost_other_port_rejected": rejected(localhost_other_port),
                 "web_other_port_rejected": rejected(web_other_port),
-                "web_without_host_rejected": rejected(web_without_host),
+                "web_without_host_rejected": rejected(web_without_host)
+                and "must name its host" in web_without_host.text,
                 "loopback_other_path_rejected": rejected(loopback_other_path),
                 "private_scheme_without_period_rejected": rejected(private_scheme_no_period)
                 and "RFC 8252" in private_scheme_no_period.json().get("error_description", ""),

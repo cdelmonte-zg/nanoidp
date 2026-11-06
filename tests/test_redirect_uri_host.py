@@ -1,15 +1,16 @@
 """An HTTP(S) redirect URI names its host (#486).
 
-``https:/callback`` passes as a scheme and a path, but a browser resolves it
-against the current URL: the code would go to the IdP's own host. The rule
-lives in the gate the three callers share; a private-use scheme, which has
-no authority by design (RFC 8252 7.1), stays accepted.
+``https:/callback`` is absolute by RFC 3986, but a browser does not read it as
+written: it resolves it against the current URL or takes ``callback`` for
+the host. The rule lives in the gate the three callers share, with a reason
+of its own; a private-use scheme, which has no authority by design (RFC 8252
+7.1), stays accepted.
 """
 
 import pytest
 
 from nanoidp.services.client_metadata import DocumentInvalid, client_from_document
-from nanoidp.services.redirect_uri import redirect_uri_rejection_reason
+from nanoidp.services.redirect_uri import HOSTLESS_WEB_URI_REASON, redirect_uri_rejection_reason
 from tests.test_client_metadata_origin import URL, _document
 from tests.test_dynamic_registration_api import _app, _register
 
@@ -26,7 +27,7 @@ ACCEPTED = [
 class TestTheGate:
     @pytest.mark.parametrize("uri", HOSTLESS)
     def test_no_host_is_refused(self, uri):
-        assert redirect_uri_rejection_reason(uri) == "Invalid redirect_uri"
+        assert redirect_uri_rejection_reason(uri) == HOSTLESS_WEB_URI_REASON
 
     @pytest.mark.parametrize("uri", ACCEPTED)
     def test_a_host_or_a_private_scheme_passes(self, uri):
@@ -49,6 +50,7 @@ class TestTheCallers:
         assert refused.status_code == 400
         assert "Location" not in refused.headers
         assert refused.get_json()["error"] == "invalid_request"
+        assert refused.get_json()["error_description"] == HOSTLESS_WEB_URI_REASON
 
     def test_authorize_still_takes_a_private_scheme(self, client):
         page = client.get(

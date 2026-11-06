@@ -55,11 +55,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the page, not requesting an assertion: the ACS still comes from the
   AuthnRequest, as on any test IdP without registered service providers.
 - **An HTTP(S) `redirect_uri` must name its host** (#486). `https:/callback`
-  passed the syntactic gate as a scheme and a path, and a browser resolves
-  it against the current URL, so the response went to the IdP's own host.
+  passed the syntactic gate, and a browser does not read it as written: it
+  resolves it against the current URL, or takes `callback` for the host.
   `/authorize`, dynamic client registration and client metadata documents
-  now refuse it; private-use scheme URIs, which have no authority by
-  design, are unchanged.
+  now refuse it with a reason that says so; private-use scheme URIs, which
+  have no authority by design, are unchanged. A client declared with such
+  a URI loads as before and gets that refusal at `/authorize`.
 - **`/authorize` accepts the authorization request as a form POST** (#467,
   OIDC Core 3.1.2.1). A POST whose form-encoded body carries the request
   parameters and no login field was taken for the continuation of a

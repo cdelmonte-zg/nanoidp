@@ -676,6 +676,8 @@ app controls, in reverse order; NanoIDP applies the minimum rule the RFC
 asks of an authorization server, rejecting any non-`http(s)` scheme that
 contains no period (`myapp://callback` is answered with `400
 invalid_request` naming the rule), and does not verify domain ownership.
+An `http` or `https` URI, by contrast, must name its host: `https:/callback`
+is refused with a reason that says so (#486).
 A registered loopback URI,
 `http://127.0.0.1:{port}/callback` or `http://[::1]:{port}/callback`,
 matches any port (§7.3), because the app binds an ephemeral port at
