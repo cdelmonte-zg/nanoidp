@@ -60,7 +60,7 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urljoin, urlparse
 
 try:
     import requests
@@ -1366,9 +1366,10 @@ class NanoIDPTestAgent:
         """An authorization request sent as a form POST (#467, OIDC Core
         3.1.2.1): the request fields in the body of a POST to the bare
         /authorize, no cookie, the way the conformance suite's browser sends
-        it. Expected: a login page naming a transaction, then a code to the
-        body's redirect_uri with the body's state. A body that also carries
-        a login field, even empty, is a login, not a request: with nothing
+        it. Expected: a 303 to the same request in GET form, which renders
+        a login page naming a transaction, then a code to the body's
+        redirect_uri with the body's state. A body that also carries a
+        login field, even empty, is a login, not a request: with nothing
         pending it is refused, and its OAuth fields are never read.
         """
         state = "e2e-467"
@@ -1382,12 +1383,21 @@ class NanoIDPTestAgent:
         }
         try:
             sess = requests.Session()
-            page = sess.post(
+            answer = sess.post(
                 f"{self.base_url}/authorize", data=request_body,
                 allow_redirects=False, timeout=5,
             )
+            # The Location is a relative reference (RFC 7231 7.1.2), resolved
+            # against the request URL as a browser does.
+            target = urljoin(f"{self.base_url}/authorize", answer.headers.get("Location", ""))
+            redirect_ok = (
+                answer.status_code == 303
+                and urlparse(target).path == "/authorize"
+                and parse_qs(urlparse(target).query).get("state") == [state]
+            )
+            page = sess.get(target, allow_redirects=False, timeout=5) if redirect_ok else answer
             match = re.search(r'name="transaction_id" value="([^"]+)"', page.text)
-            page_ok = page.status_code == 200 and match is not None
+            page_ok = redirect_ok and page.status_code == 200 and match is not None
             done_status = None
             done_params: Dict[str, List[str]] = {}
             if match is not None:
@@ -1426,9 +1436,11 @@ class NanoIDPTestAgent:
                 "Authorization Request As Form POST",
                 TestCategory.OAUTH,
                 page_ok and code_ok and refused_ok,
-                "body request: login page, then a code with the body's state; "
-                "body request beside a login field: refused, fields not read",
+                "body request: 303 to its GET form, login page, then a code with "
+                "the body's state; body request beside a login field: refused, "
+                "fields not read",
                 {
+                    "redirect_status": answer.status_code,
                     "page_status": page.status_code,
                     "transaction_named": match is not None,
                     "login_status": done_status,

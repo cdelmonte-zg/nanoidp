@@ -2,17 +2,20 @@
 Core 3.1.2.1).
 
 A POST that carries OAuth request fields in its body and no login field is
-an authorization request in another serialization, and takes the GET's
-path: the same validators, persona auto-login under the same guards,
-otherwise a transaction and its login page. A POST that carries a login
-field, even empty, or names a transaction, keeps the contract #325 and
-#346 gave it: it never reads OAuth parameters from its body, and the
+an authorization request in another serialization. It is answered with a
+303 to the same request in GET form: the browser follows it as a top-level
+GET, which carries the SameSite=Lax session cookie a cross-site POST does
+not, and the GET is the one reader of a request. A POST that carries a
+login field, even empty, or names a transaction, keeps the contract #325
+and #346 gave it: it never reads OAuth parameters from its body, and the
 fields it carries are audited as a forged request.
 """
 
-
 import re
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
+
+from werkzeug.datastructures import MultiDict
 
 from nanoidp.config import get_config
 from nanoidp.routes.oauth import _AUTHORIZE_LOGIN_FIELDS
@@ -67,16 +70,33 @@ def _enable_auto_login(app):
         get_config().settings.auto_login = True
 
 
+def _redirected_to_get(response):
+    """The 303 a form-serialized request is answered with: its target is
+    /authorize with a query string, and the query string parsed."""
+    assert response.status_code == 303
+    target = urlsplit(response.headers["Location"])
+    assert target.path == "/authorize"
+    return target, parse_qs(target.query, keep_blank_values=True)
+
+
 class TestAFormPostIsAnAuthorizationRequest:
-    def test_the_suites_shape_renders_a_login_page_and_then_issues_a_code(self, client, app):
+    def test_the_suites_shape_is_redirected_to_its_get_and_then_issues_a_code(
+        self, client, app
+    ):
         """The conformance suite posts the authorization URL's query string
         as the body of a POST to the bare path, then fills the login form."""
-        page = client.post("/authorize", data=REQUEST_A)
+        answer = client.post("/authorize", data=REQUEST_A)
 
+        target, query = _redirected_to_get(answer)
+        assert query == {field: [value] for field, value in REQUEST_A.items()}
+        assert "Set-Cookie" not in answer.headers
+        assert pending_transaction_ids(client) == []
+        assert _ignored_body_fields(app) == []
+
+        page = client.get(f"/authorize?{target.query}")
         assert page.status_code == 200
         transaction_id = transaction_id_of(page)
         assert pending_transaction_ids(client) == [transaction_id]
-        assert _ignored_body_fields(app) == []
 
         done = client.post("/authorize", data={"transaction_id": transaction_id, **LOGIN})
 
@@ -88,12 +108,13 @@ class TestAFormPostIsAnAuthorizationRequest:
         assert pending_transaction_ids(client) == []
 
     def test_a_and_b_in_one_browser(self, client):
-        """With B pending from a GET, the initial POST of A renders A's login
-        page, its form completes A, and B stays pending."""
+        """With B pending from a GET, the initial POST of A leads to A's login
+        page in the same session, its form completes A, and B stays pending."""
         page_b = client.get(f"/authorize?{QS_B}")
         transaction_b = transaction_id_of(page_b)
 
-        page_a = client.post("/authorize", data=REQUEST_A)
+        target, _ = _redirected_to_get(client.post("/authorize", data=REQUEST_A))
+        page_a = client.get(f"/authorize?{target.query}")
 
         assert page_a.status_code == 200
         transaction_a = transaction_id_of(page_a)
@@ -106,66 +127,60 @@ class TestAFormPostIsAnAuthorizationRequest:
         assert authorization_response_params(done)["state"] == ["stA"]
         assert pending_transaction_ids(client) == [transaction_b]
 
-    def test_the_same_validators_as_a_get_before_the_redirect_uri(self, client, app):
-        """A body request refused before its redirect_uri is validated is a
-        local 400 without Location, the GET's answer to the same request,
-        never a resumed page or a redirect."""
-        client.get(f"/authorize?{QS_B}")
-        before = pending_transaction_ids(client)
+    def test_every_body_field_is_carried_as_sent(self, client):
+        """Repeated fields (resource, RFC 8707), unrelated ones (ignored by
+        the GET, #328), empty values and login_hint all travel: the GET
+        decides what they mean, the redirect does not."""
+        body = [
+            ("response_type", "code"),
+            ("client_id", "demo-client"),
+            ("redirect_uri", CALLBACK),
+            ("scope", "openid"),
+            ("resource", "https://api.example/a"),
+            ("resource", "https://api.example/b"),
+            ("state", ""),
+            ("login_hint", "persona-auto-login:admin"),
+            ("utm_source", "mail"),
+        ]
 
-        for body in (
-            _request(client_id="unknown-client"),
-            _request(client_id="registered-client", redirect_uri="http://evil.example/cb"),
-            _request(client_id=""),
-            {"client_id": ""},
-        ):
-            refused = client.post("/authorize", data=body)
-            as_a_get = client.get("/authorize", query_string=body)
-            assert refused.status_code == 400, body
-            assert "Location" not in refused.headers
-            assert refused.get_json() == as_a_get.get_json()
-            assert refused.get_json()["error_description"] != "No pending authorization request"
-        assert pending_transaction_ids(client) == before
-        assert _ignored_body_fields(app) == []
+        _, query = _redirected_to_get(client.post("/authorize", data=MultiDict(body)))
 
-    def test_the_same_validators_as_a_get_after_the_redirect_uri(self, client):
-        """An error after the redirect_uri is validated goes to it with the
-        body's state, as a GET's would."""
-        refused = client.post("/authorize", data=_request(response_type="token"))
+        assert query == {
+            "response_type": ["code"],
+            "client_id": ["demo-client"],
+            "redirect_uri": [CALLBACK],
+            "scope": ["openid"],
+            "resource": ["https://api.example/a", "https://api.example/b"],
+            "state": [""],
+            "login_hint": ["persona-auto-login:admin"],
+            "utm_source": ["mail"],
+        }
 
-        assert refused.status_code == 302
-        params = authorization_response_params(refused)
-        assert refused.headers["Location"].startswith(CALLBACK)
-        assert params["error"] == ["unsupported_response_type"]
-        assert params["state"] == ["stA"]
-        assert pending_transaction_ids(client) == []
+    def test_a_request_the_get_refuses_is_refused_after_the_redirect(self, client):
+        """The redirect validates nothing: a body the GET refuses before its
+        redirect_uri lands on the GET's local 400."""
+        body = _request(client_id="registered-client", redirect_uri="http://evil.example/cb")
 
-    def test_persona_auto_login_answers_a_body_request(self, client, app):
+        target, _ = _redirected_to_get(client.post("/authorize", data=body))
+        refused = client.get(f"/authorize?{target.query}")
+
+        assert refused.status_code == 400
+        assert "Location" not in refused.headers
+        assert refused.get_json() == client.get("/authorize", query_string=body).get_json()
+
+    def test_persona_auto_login_answers_a_body_request_through_its_get(self, client, app):
         _enable_auto_login(app)
 
-        response = client.post(
-            "/authorize", data=_request(login_hint="persona-auto-login:admin")
+        target, _ = _redirected_to_get(
+            client.post("/authorize", data=_request(login_hint="persona-auto-login:admin"))
         )
+        response = client.get(f"/authorize?{target.query}")
 
         assert response.status_code == 302
         params = authorization_response_params(response)
         assert "code" in params
         assert params["state"] == ["stA"]
         assert pending_transaction_ids(client) == []
-
-    def test_an_unknown_persona_in_a_body_request_is_reported_to_the_redirect_uri(
-        self, client, app
-    ):
-        _enable_auto_login(app)
-
-        response = client.post(
-            "/authorize", data=_request(login_hint="persona-auto-login:nobody")
-        )
-
-        assert response.status_code == 302
-        params = authorization_response_params(response)
-        assert params["error"] == ["invalid_request"]
-        assert params["state"] == ["stA"]
 
     def test_a_hint_alone_in_the_body_is_not_a_request(self, client, app):
         """A body carrying only login_hint resumes the pending page without
@@ -179,43 +194,23 @@ class TestAFormPostIsAnAuthorizationRequest:
         assert transaction_id_of(response) == transaction_id_of(page_b)
         assert pending_transaction_ids(client) == [transaction_id_of(page_b)]
 
-    def test_the_login_page_of_a_body_request_carries_the_same_forms_as_a_gets(
-        self, client
-    ):
-        from_get = client.get(f"/authorize?{QS_B}").get_data(as_text=True)
-        from_post = client.post("/authorize", data=REQUEST_B).get_data(as_text=True)
-
-        def shape(html):
-            return html.replace(transaction_id_of_html(html), "TID")
-
-        def transaction_id_of_html(html):
-            return re.search(r'name="transaction_id" value="([^"]+)"', html).group(1)
-
-        assert shape(from_get) == shape(from_post)
-
-    def test_a_multipart_body_is_read_as_a_form_too(self, client):
-        page = client.post(
-            "/authorize", data=REQUEST_A, content_type="multipart/form-data"
+    def test_a_multipart_body_is_a_form_too(self, client):
+        _, query = _redirected_to_get(
+            client.post("/authorize", data=REQUEST_A, content_type="multipart/form-data")
         )
 
-        assert page.status_code == 200
-        assert pending_transaction_ids(client) == [transaction_id_of(page)]
+        assert query["client_id"] == ["demo-client"]
 
-    def test_a_form_post_without_the_session_cookie_starts_a_new_browser_session(
-        self, app
-    ):
-        """A browser sends a SameSite=Lax cookie on a top-level GET but not
-        on a cross-site POST, so a form POST from another site's page
-        arrives without one, and the login page's response sets a new
-        session cookie that replaces the browser's. This pins the fact the
-        reference documents: the request is served, with a new session."""
+    def test_the_redirect_needs_no_cookie_and_sets_none(self, app):
+        """A cross-site form POST arrives without the SameSite=Lax cookie.
+        The 303 serves it without one and sets none, so the GET the browser
+        follows with runs in the session the browser already has."""
         assert app.config["SESSION_COOKIE_SAMESITE"] == "Lax"
 
-        page = app.test_client().post("/authorize", data=REQUEST_A)
+        answer = app.test_client().post("/authorize", data=REQUEST_A)
 
-        assert page.status_code == 200
-        assert "Set-Cookie" in page.headers
-        assert "session=" in page.headers["Set-Cookie"]
+        assert answer.status_code == 303
+        assert "Set-Cookie" not in answer.headers
 
 
 class TestTheLoginFieldsAreTheTemplatesFields:
