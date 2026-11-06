@@ -57,6 +57,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **An HTTP(S) `redirect_uri` must name its host** (#486). `https:/callback`
   passed the syntactic gate, and a browser does not read it as written: it
   resolves it against the current URL, or takes `callback` for the host.
+  A backslash in the authority is refused too, as a browser reads it as a
+  slash, so `https://\rp.example/cb` named one host here and another there.
   `/authorize`, dynamic client registration and client metadata documents
   now refuse it with a reason that says so; private-use scheme URIs, which
   have no authority by design, are unchanged. A client declared with such

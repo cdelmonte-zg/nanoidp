@@ -113,10 +113,15 @@ def names_its_host(uri: str) -> bool:
     """False for an HTTP(S) URI with no host (#486). ``https:/callback`` is
     absolute by RFC 3986, but a browser does not read it as written: it
     resolves it against the current URL, or takes ``callback`` for the
-    host, and ``https:///evil.example/cb`` reaches evil.example. Any other
-    scheme has no authority to name."""
+    host, and ``https:///evil.example/cb`` reaches evil.example. A backslash
+    in the authority is refused for the same reason: Python keeps it in the
+    host, a browser reads it as a slash, so ``https://\\rp.example/cb`` names
+    one host here and another there. Any other scheme has no authority to
+    name."""
     parsed = urlparse(uri)
-    return parsed.scheme not in _WEB_SCHEMES or bool(parsed.hostname)
+    if parsed.scheme not in _WEB_SCHEMES:
+        return True
+    return bool(parsed.hostname) and "\\" not in parsed.netloc
 
 
 def has_acceptable_scheme(uri: str) -> bool:

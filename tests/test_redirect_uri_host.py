@@ -14,7 +14,18 @@ from nanoidp.services.redirect_uri import HOSTLESS_WEB_URI_REASON, redirect_uri_
 from tests.test_client_metadata_origin import URL, _document
 from tests.test_dynamic_registration_api import _app, _register
 
-HOSTLESS = ["https:/callback", "http:callback", "https:///callback", "http:///x", "http://:80/cb"]
+HOSTLESS = [
+    "https:/callback",
+    "http:callback",
+    "https:///callback",
+    "http:///x",
+    "http://:80/cb",
+    # Python counts the backslash as part of the host, a browser reads it as
+    # a slash: https://\\rp.example/cb is https://rp.example/cb to it.
+    "https://\\rp.example/cb",
+    "https://rp.example\\@evil.example/cb",
+    "https:\\\\rp.example/cb",
+]
 ACCEPTED = [
     "https://app.example/cb",
     "http://127.0.0.1:3000/cb",
