@@ -1632,6 +1632,9 @@ def _validate_authorize_authentication_constraints(
                     "id_token_hint reference not resolvable",
                 )
             hint = parked
+        # The settings are read before the signing service is resolved
+        # (#359): the issuer this request answers for, then the keys.
+        issuer = effective_issuer(request_config().settings)
         try:
             payload = get_crypto_service().verify_id_token_hint(hint)
         except ValueError as e:
@@ -1639,7 +1642,7 @@ def _validate_authorize_authentication_constraints(
                 config, p, "invalid_request", "id_token_hint does not verify",
                 f"id_token_hint does not verify: {e}",
             )
-        if payload.get("iss") != effective_issuer(request_config().settings):
+        if payload.get("iss") != issuer:
             return _authorize_error_redirect(
                 config, p, "invalid_request", "id_token_hint does not verify",
                 "id_token_hint was not issued by this issuer",
