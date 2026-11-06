@@ -128,6 +128,19 @@ class TestNoOtherOriginReadsThePage:
         assert "SAMLResponse" in page.get_data(as_text=True)
         assert "Access-Control-Allow-Origin" not in page.headers
 
+    def test_a_named_origin_is_matched_ignoring_case(self, isolated_repo_config):
+        """As flask-cors matches it, and as the reference says: the hook and
+        the rule must not disagree on which origin was named."""
+        client = _client(
+            isolated_repo_config,
+            cors_allowed_origins=["HTTP://APP.TEST:3000"],
+            login={"mode": "persona"},
+        )
+
+        page = _one_shot_post(client, {"Origin": "http://app.test:3000"})
+
+        assert page.headers.get("Access-Control-Allow-Origin") == "http://app.test:3000"
+
     def test_a_named_origin_beside_a_star_may_still_read_it(self, isolated_repo_config):
         client = _client(
             isolated_repo_config,

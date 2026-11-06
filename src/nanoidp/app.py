@@ -236,12 +236,14 @@ def create_app(
     # Registered before CORS() so that it runs after it (Flask runs these in
     # reverse): a page that holds a credential in its body is readable only
     # by an origin the operator named (#478, routes/_auth.credential_page),
-    # not by a "*" or a profile's pattern.
-    named_origins = frozenset(declared or ()) - {"*"}
+    # not by a "*" or a profile's pattern. Compared ignoring case, as
+    # flask-cors matches them, and read here, once, as the rest of CORS is.
+    named_origins = frozenset(origin.lower() for origin in declared or ()) - {"*"}
 
     @app.after_request
     def _credential_pages_answer_named_origins_only(response: Any) -> Any:
-        if is_credential_page(response) and request.headers.get("Origin") not in named_origins:
+        origin = request.headers.get("Origin", "").lower()
+        if is_credential_page(response) and origin not in named_origins:
             response.headers.pop("Access-Control-Allow-Origin", None)
         return response
 
