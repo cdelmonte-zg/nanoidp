@@ -68,6 +68,11 @@ from ..services.device_code import (
     DeviceCodeStoreFull,
 )
 from ..services.discovery import issuer_qualifies_for_iss_parameter
+from ..services.id_token_hint_references import (
+    ParkedHintStoreFull,
+    get_parked_hint_store,
+    is_reference,
+)
 from ..services.introspection import build_introspection_response
 from ..services.redirect_uri import (
     append_authorization_params,
@@ -206,8 +211,11 @@ class _AuthorizeParams:
     # read into prompts / max_age_seconds by the validator.
     prompt: str = ""
     max_age: str = ""
+    id_token_hint: str = ""
     prompts: FrozenSet[str] = frozenset()
     max_age_seconds: Optional[int] = None
+    # The subject a verified id_token_hint names (#468), else None.
+    hint_subject: Optional[str] = None
     # OIDC Core 6.1 / 6.2 (#463): the request-object parameter a new
     # request's query string carries with a non-empty value - "request"
     # (Core 6.1), else "request_uri" (Core 6.2), else None - read only to
@@ -241,7 +249,12 @@ _AUTHORIZE_REQUEST_FIELDS = (
 # login_hint, which is read but is not what makes a request. A
 # form-serialized request carries exactly these into its GET form, so a
 # field the reader gains must be added here (pinned by a test).
-_AUTHORIZE_READ_FIELDS = _AUTHORIZE_REQUEST_FIELDS + ("login_hint", "prompt", "max_age")
+_AUTHORIZE_READ_FIELDS = _AUTHORIZE_REQUEST_FIELDS + (
+    "login_hint",
+    "prompt",
+    "max_age",
+    "id_token_hint",
+)
 
 # What a non-empty request-object value becomes in the GET form of a form
 # POST (#467): the GET refuses any non-empty value (#463) and never reads
@@ -302,6 +315,7 @@ def _read_authorize_params() -> _AuthorizeParams:
         login_hint=params.get("login_hint", ""),
         prompt=params.get("prompt", ""),
         max_age=params.get("max_age", ""),
+        id_token_hint=params.get("id_token_hint", ""),
         # Presence of a non-empty value, over every repetition
         # (request=&request=<object>, #463 review round 3): what is refused
         # is that an object was sent at all, not any one value of it. A
@@ -393,17 +407,43 @@ def _redirect_form_request_to_get(form: MultiDict) -> ResponseReturnValue:
     login bound to it. The redirect is followed as a top-level GET, which
     carries the cookie, and the GET is the one reader of a request.
     """
-    carried = [
-        (
-            field,
-            _REQUEST_OBJECT_PLACEHOLDER
-            if value and field in ("request", "request_uri")
-            else value,
+    try:
+        carried = [
+            (field, _carried_value(field, value))
+            for field in _AUTHORIZE_READ_FIELDS
+            for value in form.getlist(field)
+        ]
+    except ParkedHintStoreFull:
+        # Nothing of the request was validated yet, so this stays local,
+        # like a refusal before the redirect_uri; retryable, hence 503.
+        audit_event(
+            "authorization_request",
+            "failed",
+            endpoint="/authorize",
+            client_id=form.get("client_id") or None,
+            details={"reason": "too many id_token_hint references parked"},
         )
-        for field in _AUTHORIZE_READ_FIELDS
-        for value in form.getlist(field)
-    ]
+        return (
+            jsonify(
+                {
+                    "error": "temporarily_unavailable",
+                    "error_description": "The authorization request could not be accepted, please try again",
+                }
+            ),
+            503,
+        )
     return redirect(f"{url_for('oauth.authorize')}?{urlencode(carried)}", code=303)
+
+
+def _carried_value(field: str, value: str) -> str:
+    """What a body field's value becomes in the GET form (#467, #468): a
+    request object a placeholder, an ID token hint a parked reference,
+    anything else itself."""
+    if value and field in ("request", "request_uri"):
+        return _REQUEST_OBJECT_PLACEHOLDER
+    if value and field == "id_token_hint":
+        return get_parked_hint_store().park(value)
+    return value
 
 
 def _refuse_without_transaction(
@@ -1102,6 +1142,21 @@ def _issue_authorization_code(
             client_id=p.client_id,
         )
 
+    # The subject a verified id_token_hint named is the only one this
+    # request may be answered for (#468, Core 3.1.2.2): another user's
+    # login, interactive or auto-login, is login_required to the client.
+    # Decided after the transaction is consumed, so it yields nothing else.
+    bound = transaction.bound_subject if transaction is not None else p.hint_subject
+    if bound is not None and bound != username:
+        return _authorize_error_redirect(
+            config,
+            p,
+            "login_required",
+            "The user who authenticated is not the one id_token_hint names",
+            "login by another subject than id_token_hint names",
+            username=username,
+        )
+
     # Before the code exists, not after: a code whose client has gone is
     # one the client cannot redeem and cannot explain (#196). This is also
     # the continuity check of a transaction (#346): the client must still
@@ -1468,6 +1523,7 @@ def _begin_transaction(
     client: OAuthClient,
     requested: Dict[str, List[str]],
     interaction_required: bool = False,
+    bound_subject: Optional[str] = None,
 ) -> Tuple[Optional[AuthorizationTransaction], Optional[ResponseReturnValue]]:
     """Store a validated request as a transaction of this browser.
 
@@ -1505,6 +1561,7 @@ def _begin_transaction(
             ),
             requested=requested,
             interaction_required=interaction_required,
+            bound_subject=bound_subject,
             client=client,
             client_origin=resolved.origin,
         )
@@ -1562,8 +1619,35 @@ def _validate_authorize_authentication_constraints(
                 "max_age is not a non-negative integer",
             )
         max_age = int(p.max_age)
+    hint_subject: Optional[str] = None
+    if p.id_token_hint:
+        hint = p.id_token_hint
+        if is_reference(hint):
+            # A form POST's hint, parked under a reference by the 303
+            # (#467): taken once, here.
+            parked = get_parked_hint_store().take(hint)
+            if parked is None:
+                return _authorize_error_redirect(
+                    config, p, "invalid_request", "id_token_hint reference unknown, expired or already used",
+                    "id_token_hint reference not resolvable",
+                )
+            hint = parked
+        try:
+            payload = get_crypto_service().verify_id_token_hint(hint)
+        except ValueError as e:
+            return _authorize_error_redirect(
+                config, p, "invalid_request", "id_token_hint does not verify",
+                f"id_token_hint does not verify: {e}",
+            )
+        if payload.get("iss") != effective_issuer(request_config().settings):
+            return _authorize_error_redirect(
+                config, p, "invalid_request", "id_token_hint does not verify",
+                "id_token_hint was not issued by this issuer",
+            )
+        hint_subject = payload["sub"]
     p.prompts = prompts
     p.max_age_seconds = max_age
+    p.hint_subject = hint_subject
     return None
 
 
@@ -1612,7 +1696,9 @@ def _answer_from_session(
     usable = _usable_session(config, loaded)
     if usable is not None and not interaction:
         record, user = usable
-        if p.max_age_seconds is None or record.age() <= p.max_age_seconds:
+        fresh_enough = p.max_age_seconds is None or record.age() <= p.max_age_seconds
+        hinted_user = p.hint_subject is None or p.hint_subject == user.username
+        if fresh_enough and hinted_user:
             method = AuthMethod(record.method)
             return _issue_authorization_code(
                 config, p, user.username, method=method, amr=_session_amr(loaded, method), reused=record
@@ -1622,6 +1708,8 @@ def _answer_from_session(
             reason = "prompt=none with max_age=0"
         elif usable is None:
             reason = "prompt=none without an authenticated session"
+        elif p.hint_subject is not None and p.hint_subject != usable[1].username:
+            reason = "prompt=none with a session for another subject than id_token_hint names"
         else:
             reason = "prompt=none with a session older than max_age"
         return _authorize_error_redirect(
@@ -1701,7 +1789,12 @@ def _authorize_new_request(
             return auto_login_response
 
     transaction, error = _begin_transaction(
-        config, p, client, requested, interaction_required=interaction_required
+        config,
+        p,
+        client,
+        requested,
+        interaction_required=interaction_required,
+        bound_subject=p.hint_subject,
     )
     if error is not None:
         return error
@@ -1739,7 +1832,12 @@ def _authorize_direct_post(
     if answered is not None:
         return answered
     transaction, error = _begin_transaction(
-        config, p, client, requested, interaction_required=_interaction_required(p)
+        config,
+        p,
+        client,
+        requested,
+        interaction_required=_interaction_required(p),
+        bound_subject=p.hint_subject,
     )
     if error is not None:
         return error
