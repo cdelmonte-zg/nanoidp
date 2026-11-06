@@ -1362,6 +1362,85 @@ class NanoIDPTestAgent:
                 "Request Objects Refused", TestCategory.OAUTH, False, f"Error: {e}"
             )
 
+    def test_authorization_request_as_form_post(self) -> TestResult:
+        """An authorization request sent as a form POST (#467, OIDC Core
+        3.1.2.1): the request fields in the body of a POST to the bare
+        /authorize, no cookie, the way the conformance suite's browser sends
+        it. Expected: a login page naming a transaction, then a code to the
+        body's redirect_uri with the body's state. A body that also carries
+        a login field, even empty, is a login, not a request: with nothing
+        pending it is refused, and its OAuth fields are never read.
+        """
+        state = "e2e-467"
+        request_body = {
+            "response_type": "code",
+            "client_id": "registered-client",
+            "redirect_uri": "http://localhost:3000/callback",
+            "scope": "openid",
+            "state": state,
+            "nonce": secrets.token_urlsafe(16),
+        }
+        try:
+            sess = requests.Session()
+            page = sess.post(
+                f"{self.base_url}/authorize", data=request_body,
+                allow_redirects=False, timeout=5,
+            )
+            match = re.search(r'name="transaction_id" value="([^"]+)"', page.text)
+            page_ok = page.status_code == 200 and match is not None
+            done_status = None
+            done_params: Dict[str, List[str]] = {}
+            if match is not None:
+                done = sess.post(
+                    f"{self.base_url}/authorize",
+                    data={
+                        "transaction_id": match.group(1),
+                        "username": self.username,
+                        "password": self.password,
+                    },
+                    allow_redirects=False, timeout=5,
+                )
+                done_status = done.status_code
+                done_location = done.headers.get("Location", "")
+                done_params = parse_qs(urlparse(done_location).query)
+                code_ok = (
+                    done.status_code == 302
+                    and done_location.startswith("http://localhost:3000/callback")
+                    and "code" in done_params
+                    and done_params.get("state") == [state]
+                )
+            else:
+                code_ok = False
+            # Negative: a login field beside the request makes it a login.
+            refused = requests.post(
+                f"{self.base_url}/authorize", data={**request_body, "username": ""},
+                allow_redirects=False, timeout=5,
+            )
+            refused_ok = refused.status_code == 400 and "Location" not in refused.headers
+            if refused_ok:
+                try:
+                    refused_ok = refused.json().get("error") == "invalid_request"
+                except ValueError:
+                    refused_ok = False
+            return self._add_result(
+                "Authorization Request As Form POST",
+                TestCategory.OAUTH,
+                page_ok and code_ok and refused_ok,
+                "body request: login page, then a code with the body's state; "
+                "body request beside a login field: refused, fields not read",
+                {
+                    "page_status": page.status_code,
+                    "transaction_named": match is not None,
+                    "login_status": done_status,
+                    "state_returned": done_params.get("state"),
+                    "refused_status": refused.status_code,
+                },
+            )
+        except Exception as e:
+            return self._add_result(
+                "Authorization Request As Form POST", TestCategory.OAUTH, False, f"Error: {e}"
+            )
+
     def test_redirect_uri_exact_matching(self) -> TestResult:
         """Registered redirect URIs are enforced with exact matching (issue #67).
 
@@ -6891,6 +6970,7 @@ class NanoIDPTestAgent:
                 self.test_resource_indicators,
                 self.test_redirect_uri_exact_matching,
                 self.test_request_objects_refused,
+                self.test_authorization_request_as_form_post,
                 self.test_native_app_redirect_uris,
                 self.test_scope_enforcement,
                 self.test_client_branding,

@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`/authorize` accepts the authorization request as a form POST** (#467,
+  OIDC Core 3.1.2.1). A POST whose `application/x-www-form-urlencoded`
+  body carries the request parameters and no login field was taken for
+  the continuation of a pending login and refused with "No pending
+  authorization request", or shown another request's login page (OpenID
+  conformance, `oidcc-ensure-post-request-succeeds`). It now takes the
+  GET's path: the same validation, persona auto-login from a `login_hint`
+  in that body under the same guards, otherwise a transaction and its
+  login page. A POST that carries a login field, even empty, or a
+  `transaction_id` keeps its contract: it never reads OAuth parameters
+  from its body, and any it carries stay audited as ignored (#325).
 - **A reused authorization code revokes the tokens issued from it** (#466,
   RFC 6749 4.1.2). The reuse was denied, as it must be, but the access
   token and the refresh token of the first exchange stayed usable (OpenID

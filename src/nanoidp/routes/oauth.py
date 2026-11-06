@@ -25,6 +25,7 @@ from flask import (
     url_for,
 )
 from flask.typing import ResponseReturnValue
+from werkzeug.datastructures import MultiDict
 from werkzeug.exceptions import ClientDisconnected, RequestEntityTooLarge
 
 from ..branding import effective_logos_dir, resolve_client_logo
@@ -188,11 +189,13 @@ class _AuthorizeParams:
     nonce: str
     claims_param: str
     resources: List[str]
-    # OIDC Core 3.1.2.1 (#250): read from the CURRENT GET only and never
-    # stored - unlike the fields above, login_hint decides WHO gets
-    # authenticated (#318 review round 1, blocking 1; #325 review round 1,
-    # point 6). Ignored unless it carries the reserved 'persona-auto-login:'
-    # prefix - see _try_persona_auto_login.
+    # OIDC Core 3.1.2.1 (#250): read from the CURRENT request only, the
+    # one that carries the OAuth request it belongs to (a GET's query
+    # string, or the body of a form POST, #467), and never stored - unlike
+    # the fields above, login_hint decides WHO gets authenticated (#318
+    # review round 1, blocking 1; #325 review round 1, point 6). Ignored
+    # unless it carries the reserved 'persona-auto-login:' prefix - see
+    # _try_persona_auto_login.
     login_hint: str
     # OIDC Core 6.1 / 6.2 (#463): the request-object parameter a new
     # request's query string carries with a non-empty value - "request"
@@ -223,24 +226,41 @@ _AUTHORIZE_REQUEST_FIELDS = (
 )
 
 
-def _requested_fields() -> Dict[str, List[str]]:
-    """The OAuth request fields this request's query string carries, as sent.
+# The fields a login POST carries (#467): any of them present, even empty,
+# makes a POST a login - the continuation of a transaction, named by
+# ``transaction_id`` or resumed - and never an authorization request. The
+# login page's forms send them; a script that posts credentials after its
+# GET sends them; a form-serialized authorization request (Core 3.1.2.1)
+# sends none of them.
+_AUTHORIZE_LOGIN_FIELDS = (
+    "transaction_id",
+    "username",
+    "password",
+    "totp_code",
+    PENDING_SECOND_FACTOR_FIELD,
+    "change_username",
+)
+
+
+def _requested_fields(source: MultiDict) -> Dict[str, List[str]]:
+    """The OAuth request fields ``source`` carries, as sent: the query
+    string, or the body of a form POST (#467).
 
     Presence, not truthiness, makes a field part of the request (#329
     review): ``client_id=`` is a request with an empty client_id, not no
-    request. Unrelated query parameters are not request fields (#328).
+    request. Unrelated parameters are not request fields (#328).
     """
     return {
-        field: request.args.getlist(field)
+        field: source.getlist(field)
         for field in _AUTHORIZE_REQUEST_FIELDS
-        if field in request.args
+        if field in source
     }
 
 
-def _read_authorize_params() -> _AuthorizeParams:
-    """A new request, read in full from this GET's query string, with empty
+def _read_authorize_params(params: MultiDict) -> _AuthorizeParams:
+    """A new request, read in full from ``params`` - the query string of a
+    GET or of the direct POST, the body of a form POST (#467) - with empty
     defaults for what it omits (#328)."""
-    params = request.args
     return _AuthorizeParams(
         response_type=params.get("response_type", ""),
         client_id=params.get("client_id", ""),
@@ -289,11 +309,14 @@ def _params_of(transaction: AuthorizationTransaction, login_hint: str = "") -> _
 
 
 def _audit_body_oauth_fields() -> None:
-    """Keep the audit visibility a POST /authorize carrying OAuth fields in
-    its body has had since #325 (review round 1, point 5).
+    """Keep the audit visibility a login POST /authorize carrying OAuth
+    fields in its body has had since #325 (review round 1, point 5).
 
     The login form never legitimately carries them, so any of them showing
-    up in the POST body is a forged request; they are never read.
+    up beside a login field, a ``transaction_id`` or the direct entry
+    point's query string is a forged request; they are never read. A POST
+    whose body carries them and nothing of a login is not a login but an
+    authorization request (#467), and never reaches here.
     """
     # Any non-empty value over every repetition, as the query reader does
     # for the two refused fields (#463): an empty first value hides nothing.
@@ -1377,11 +1400,14 @@ def _validate_authorize_request(
 
 
 def _authorize_new_request(
-    config: ConfigManager, requested: Dict[str, List[str]]
+    config: ConfigManager, params: MultiDict, requested: Dict[str, List[str]]
 ) -> ResponseReturnValue:
-    """A GET carrying an OAuth request: validate it once, then answer it by
-    auto-login or store it as a transaction and render its login page."""
-    p = _read_authorize_params()
+    """A request carrying an OAuth request in ``params`` - a GET's query
+    string, or the body of a form POST that carries no login field (#467,
+    OIDC Core 3.1.2.1) - handled the same whatever its serialization:
+    validate it once, then answer it by auto-login or store it as a
+    transaction and render its login page."""
+    p = _read_authorize_params(params)
     client, error = _validate_authorize_request(config, p)
     if error is not None:
         return error
@@ -1418,9 +1444,10 @@ def _authorize_direct_post(
     transaction id, and its forms post back to the same URL, which is this
     entry point again.
     """
-    # login_hint is read into p but never acted on here: auto-login is a GET
-    # leg only (#325 review round 1, point 6).
-    p = _read_authorize_params()
+    # login_hint is read into p but never acted on here: this POST is a
+    # login leg, and auto-login answers a request that carries no login
+    # (#325 review round 1, point 6; the form POST of #467 is one).
+    p = _read_authorize_params(request.args)
     client, error = _validate_authorize_request(config, p)
     if error is not None:
         return error
@@ -1557,8 +1584,13 @@ def authorize() -> ResponseReturnValue:
     POST with ``transaction_id``: continue that transaction.
     POST without one, with a complete OAuth request in its query string:
     the direct entry point, validated on that POST.
-    POST with neither: continue this browser's one pending transaction.
-    OAuth parameters are never read from a POST body (#325).
+    POST with neither and no login field, with OAuth request parameters in
+    its body: the authorization request serialized as a form (OIDC Core
+    3.1.2.1, #467), handled exactly as the GET's.
+    POST with none of those: continue this browser's one pending
+    transaction.
+    A login POST never reads OAuth parameters from its body (#325): a
+    login field, even empty, or a ``transaction_id`` makes a POST a login.
 
     Required:
     - response_type: "code" for Authorization Code Flow
@@ -1573,11 +1605,11 @@ def authorize() -> ResponseReturnValue:
     - nonce: OIDC nonce for ID token
     """
     config = get_config()
-    requested = _requested_fields()
+    requested = _requested_fields(request.args)
 
     if request.method == "GET":
         if requested:
-            return _authorize_new_request(config, requested)
+            return _authorize_new_request(config, request.args, requested)
         transaction, error = _pending_transaction()
         if error is not None:
             return error
@@ -1591,6 +1623,10 @@ def authorize() -> ResponseReturnValue:
             return auto_login_response
         return _render_authorize_login(config, transaction, None)
 
+    if not requested and not any(field in request.form for field in _AUTHORIZE_LOGIN_FIELDS):
+        body_request = _requested_fields(request.form)
+        if body_request:
+            return _authorize_new_request(config, request.form, body_request)
     _audit_body_oauth_fields()
     transaction_id = request.form.get("transaction_id", "")
     if not transaction_id and requested:

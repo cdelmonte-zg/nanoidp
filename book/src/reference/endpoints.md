@@ -39,7 +39,11 @@ through the session cookie, and renders a login page whose forms carry its
 `transaction_id`. The request (`response_type`, `client_id`, `redirect_uri`,
 `scope`, `state`, PKCE, `nonce`, `claims`, `resource`) is validated once, on
 that GET; the `POST` that completes the login uses what the transaction
-holds and never reads OAuth parameters from its body. A transaction expires
+holds and never reads OAuth parameters from its body. The same request
+sent as a form `POST` (OIDC Core 3.1.2.1, #467), its parameters in an
+`application/x-www-form-urlencoded` body and no login field beside them,
+is handled exactly as the GET is: the same validation, `login_hint` read
+from that body, a transaction and its login page. A transaction expires
 after 10 minutes, yields at most one code, and can only be used with the
 cookie of the browser that created it. It is a snapshot: a configuration
 change while it is open does not revalidate it, and only a client that no
@@ -79,6 +83,11 @@ the POST unless a TOTP code is still to come. A POST with neither, such as
 a script posting `username`/`password` after its GET with the same cookie
 jar, continues the one pending transaction of that browser; with none or
 several pending it is refused with `invalid_request` rather than guessing.
+What makes a POST a login rather than a form-serialized request is a login
+field (`username`, `password`, `totp_code`, `pending_second_factor`,
+`change_username`) or `transaction_id` in its body, present even if empty:
+such a POST never reads OAuth parameters from its body, and any it carries
+are recorded in the audit log as ignored.
 A `GET` without OAuth request parameters (other query parameters do not
 count) follows the same "exactly one" rule, which is how a GET carrying
 only `login_hint` applies the hint to the pending request
