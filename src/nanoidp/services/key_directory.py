@@ -55,7 +55,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterator, List, Optional, Tuple
 
-from ..config_writer import LockNamespaceUnavailable, directory_lock
+from ..config_writer import LockNamespaceUnavailable, LockUnavailableError, directory_lock
 from ..serialization import atomic_write_bytes
 
 logger = logging.getLogger(__name__)
@@ -108,6 +108,26 @@ class KeysDirectoryNotWritable(LockNamespaceUnavailable):
         )
 
 
+class KeysDirectoryCannotBeCreated(LockUnavailableError):
+    """The keys directory is not there and this process cannot make it
+    (#476). The same refusal as ``KeysDirectoryNotWritable`` on every
+    surface, and deliberately not one of its kind: that one is a directory
+    that can still be read, which is what ``load_published`` falls back on,
+    while here there is nothing to read.
+
+    What stands in the way: what a write answers with, or a file in a path
+    component (``ENOTDIR``) or in its place (``EEXIST``). Any other failure
+    of ``mkdir`` (``EIO``, ``ENOSPC``) stays what it is."""
+
+    ERRNOS = (*KeysDirectoryNotWritable.ERRNOS, errno.ENOTDIR, errno.EEXIST)
+
+    def __init__(self, keys_dir: Path, failure: OSError) -> None:
+        super().__init__(
+            f"{keys_dir} cannot be created by this process ({failure.strerror or failure})",
+            kind="keys_directory_not_writable",
+        )
+
+
 def _checkpoint(step: str) -> None:
     """A seam and nothing else: the tests put a death here, at each step in
     turn."""
@@ -151,7 +171,7 @@ def locked(keys_dir: Path) -> Iterator[None]:
     """The exclusive section of one keys directory, across processes. Any
     rotation that died on the way is settled before the caller sees the
     directory. Not reentrant."""
-    keys_dir.mkdir(parents=True, exist_ok=True)
+    _create(keys_dir)
     with directory_lock(keys_dir, _thread_lock, of="keys directory"):
         try:
             _sweep_temporaries(keys_dir)
@@ -163,6 +183,16 @@ def locked(keys_dir: Path) -> Iterator[None]:
                 raise KeysDirectoryNotWritable(keys_dir, failure) from failure
             raise
         yield
+
+
+def _create(keys_dir: Path) -> None:
+    """Make the directory if it is not there (#476)."""
+    try:
+        keys_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as failure:
+        if failure.errno in KeysDirectoryCannotBeCreated.ERRNOS:
+            raise KeysDirectoryCannotBeCreated(keys_dir, failure) from failure
+        raise
 
 
 def _require_writable(keys_dir: Path) -> None:

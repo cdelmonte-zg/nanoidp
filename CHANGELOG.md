@@ -63,6 +63,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   now refuse it with a reason that says so; private-use scheme URIs, which
   have no authority by design, are unchanged. A client declared with such
   a URI loads as before and gets that refusal at `/authorize`.
+- **A keys directory that cannot be created answers the rotate refusal**
+  (#476). When the directory is gone and cannot be made again, whether the
+  parent is not writable or a file stands in the way, `POST /api/keys/rotate`
+  answered a bare `500` page, MCP `rotate_keys` an internal error with the
+  path on the wire, and the UI a generic flash. All three now answer
+  `keys_directory_not_writable`, as for a directory that cannot be written.
 - **`/authorize` accepts the authorization request as a form POST** (#467,
   OIDC Core 3.1.2.1). A POST whose form-encoded body carries the request
   parameters and no login field was taken for the continuation of a
