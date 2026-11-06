@@ -77,6 +77,7 @@ from ..services.id_token_hint_references import (
 )
 from ..services.introspection import build_introspection_response
 from ..services.redirect_uri import (
+    RESPONSE_MODES,
     append_authorization_fragment,
     append_authorization_params,
     is_http_redirect_uri,
@@ -258,6 +259,13 @@ _AUTHORIZE_REQUEST_FIELDS = (
     # transaction's query string unnoticed.
     "request",
     "request_uri",
+    # Request fields too (#468, #472), whatever their value: alone in a
+    # query they are a request with no client, not a resume of the pending
+    # page, and added to a named transaction's query they are noticed.
+    "prompt",
+    "max_age",
+    "id_token_hint",
+    "response_mode",
 )
 
 
@@ -265,15 +273,7 @@ _AUTHORIZE_REQUEST_FIELDS = (
 # login_hint, which is read but is not what makes a request. A
 # form-serialized request carries exactly these into its GET form, so a
 # field the reader gains must be added here (pinned by a test).
-_AUTHORIZE_READ_FIELDS = _AUTHORIZE_REQUEST_FIELDS + (
-    "login_hint",
-    "prompt",
-    "max_age",
-    "id_token_hint",
-    "response_mode",
-)
-
-_RESPONSE_MODES = ("query", "fragment", "form_post")
+_AUTHORIZE_READ_FIELDS = _AUTHORIZE_REQUEST_FIELDS + ("login_hint",)
 
 
 def _resolve_response_mode(values: List[str]) -> Tuple[str, Optional[str]]:
@@ -288,8 +288,10 @@ def _resolve_response_mode(values: List[str]) -> Tuple[str, Optional[str]]:
     value = values[0] if values else ""
     if not value:
         return "query", None
-    if value not in _RESPONSE_MODES:
-        return "query", f"unknown response_mode {value!r}"
+    if value not in RESPONSE_MODES:
+        # A fixed reason: this refusal runs before any client lookup, and
+        # the audit log is not a place for whatever a caller sends.
+        return "query", "unknown response_mode"
     return value, None
 
 # What a non-empty request-object value becomes in the GET form of a form
@@ -403,14 +405,7 @@ def _audit_body_oauth_fields() -> None:
     """
     # Any non-empty value over every repetition, as the query reader does
     # for the two refused fields (#463): an empty first value hides nothing.
-    # The request fields, and the ones a request may carry beside them
-    # (#468, #472) - never login_hint, which the login page itself may post.
-    forged = [
-        field
-        for field in _AUTHORIZE_REQUEST_FIELDS
-        + ("prompt", "max_age", "id_token_hint", "response_mode")
-        if any(request.form.getlist(field))
-    ]
+    forged = [field for field in _AUTHORIZE_REQUEST_FIELDS if any(request.form.getlist(field))]
     if not forged:
         return
     audit_event(
@@ -651,7 +646,13 @@ def _deliver_authorization_response(p: _AuthorizeParams, params: Dict[str, str])
     Response Mode), with no-store, since it carries the code. The one place
     a response reaches the client; ``p.redirect_uri`` is validated by now,
     and ``form_post`` only ever posts to an HTTP(S) one
-    (``_form_post_undeliverable``)."""
+    (``_redirect_uri_verdict``).
+
+    The page is the one answer of /authorize whose body holds a code, so it
+    names this server as its only allowed origin: flask-cors leaves a
+    response that already has the header alone, and the app-wide rule would
+    otherwise let a script of any origin read the code, which a Location
+    never did (persona auto-login needs no cookie)."""
     if p.response_mode == "fragment":
         return redirect(append_authorization_fragment(p.redirect_uri, params))
     if p.response_mode == "form_post":
@@ -660,19 +661,11 @@ def _deliver_authorization_response(p: _AuthorizeParams, params: Dict[str, str])
                 render_template("form_post.html", action=p.redirect_uri, params=params),
                 status=200,
                 content_type="text/html; charset=utf-8",
+                headers={"Access-Control-Allow-Origin": request.host_url.rstrip("/")},
             )
         )
     return redirect(append_authorization_params(p.redirect_uri, params))
 
-
-def _form_post_undeliverable(p: _AuthorizeParams) -> Optional[str]:
-    """Why a form_post response cannot reach this redirect_uri (#472), or
-    None: a browser form posts to HTTP(S) only, so a private-scheme URI of
-    a native client is not a channel for it, while it stays one for the
-    redirect modes."""
-    if p.response_mode == "form_post" and not is_http_redirect_uri(p.redirect_uri):
-        return "form_post response_mode needs an http(s) redirect_uri"
-    return None
 
 
 def _validate_authorize_client(
@@ -824,9 +817,7 @@ def _undeliverable_because(config: ConfigManager, p: _AuthorizeParams) -> Option
         return rejection.reason
     assert client is not None
     rejection = _redirect_uri_verdict(loaded.settings, p, client)
-    if rejection is not None:
-        return rejection.reason
-    return _form_post_undeliverable(p)
+    return rejection.reason if rejection is not None else None
 
 
 def _validate_authorize_response_type(
@@ -937,6 +928,15 @@ def _redirect_uri_verdict(
             "invalid_request",
             "the oauth21 profile requires this client to have registered redirect_uris",
             "oauth21 profile requires registered redirect_uris",
+        )
+    # A browser form posts to HTTP(S) only (#472): a native client's
+    # private-scheme URI is no channel for form_post, and stays one for the
+    # redirect modes.
+    if p.response_mode == "form_post" and not is_http_redirect_uri(p.redirect_uri):
+        return _Rejection(
+            "invalid_request",
+            "response_mode form_post requires an http or https redirect_uri",
+            "form_post response_mode needs an http(s) redirect_uri",
         )
     return None
 
@@ -1701,21 +1701,6 @@ def _begin_transaction(
     return transaction, None
 
 
-def _validate_authorize_form_post_channel(p: _AuthorizeParams) -> Optional[ResponseReturnValue]:
-    """Right after the redirect_uri is validated (#472): a form_post
-    response cannot reach a private-scheme redirect_uri, so the request is
-    refused locally, never delivered."""
-    reason = _form_post_undeliverable(p)
-    if reason is None:
-        return None
-    return _authorize_reject(
-        p.client_id or None,
-        reason,
-        "invalid_request",
-        "response_mode form_post requires an http or https redirect_uri",
-    )
-
-
 _PROMPT_VALUES = frozenset({"none", "login", "consent", "select_account"})
 
 
@@ -1880,9 +1865,11 @@ def _answer_from_session(
 def _take_parked_hint(p: _AuthorizeParams) -> None:
     """Swap a form POST's parked reference (#467, #468) for the hint it
     stands for. First thing in the validation, before anything can refuse
-    the request: a refused request gives its slot of the bounded store back
-    at once, whichever refusal it was. An unknown, expired or used
-    reference is judged where the hint is, after the redirect_uri."""
+    the request: a refused request with one hint gives its slot of the
+    bounded store back at once, whichever refusal it was. (A hand-built URL
+    repeating references leaves the others to their minute, as a 303 nobody
+    follows does.) An unknown, expired or used reference is judged where
+    the hint is, after the redirect_uri."""
     if not is_reference(p.id_token_hint):
         return
     parked = get_parked_hint_store().take(p.id_token_hint)
@@ -1931,7 +1918,6 @@ def _validate_authorize_request(
     # client as an OAuth error redirect carrying iss (#258 review).
     for check in (
         lambda: _validate_authorize_redirect_uri(config, p, client),
-        lambda: _validate_authorize_form_post_channel(p),
         lambda: _validate_authorize_authentication_constraints(config, p),
         lambda: _validate_authorize_response_type(config, p),
         lambda: _validate_authorize_scope(config, p, client),

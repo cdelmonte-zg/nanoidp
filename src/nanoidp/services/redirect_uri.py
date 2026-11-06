@@ -36,8 +36,8 @@ def append_authorization_params(uri: str, params: Dict[str, str]) -> str:
     """Append authorization-response parameters to a redirect URI, retaining
     any query the URI already carries byte-for-byte.
 
-    The single place that builds an authorization response URI (success or
-    error). RFC 6749 §3.1.2 lets a ``redirect_uri`` carry a query, and that
+    The single place that builds an authorization response URI in the
+    query (success or error; the fragment mode has its own, below, #472). RFC 6749 §3.1.2 lets a ``redirect_uri`` carry a query, and that
     query MUST be retained when the authorization server adds response
     parameters. The URI has already been validated and matched against the
     registered value, so there is nothing to interpret in the existing query
@@ -48,6 +48,12 @@ def append_authorization_params(uri: str, params: Dict[str, str]) -> str:
     """
     separator = "&" if "?" in uri else "?"
     return f"{uri}{separator}{urlencode(params)}"
+
+
+# The response modes /authorize honours for code (#472), query the default:
+# the one list, read by the request's validation and by discovery, so what
+# is advertised and what is accepted cannot drift.
+RESPONSE_MODES = ("query", "fragment", "form_post")
 
 
 def append_authorization_fragment(uri: str, params: Dict[str, str]) -> str:
@@ -61,7 +67,7 @@ def is_http_redirect_uri(uri: str) -> bool:
     """Whether a validated redirect URI is an HTTP(S) one: the only kind a
     browser form can post to (the ``form_post`` response mode, #472); a
     private-scheme URI of a native client is reached by a redirect only."""
-    return urlparse(uri).scheme in ("http", "https")
+    return urlparse(uri).scheme in _WEB_SCHEMES
 
 # RFC 8252 §7.3: loopback interface redirection is defined for the IPv4 and
 # IPv6 loopback literals only. urlparse().hostname strips the brackets from

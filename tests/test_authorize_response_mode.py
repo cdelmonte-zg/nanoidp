@@ -10,7 +10,7 @@ reach a private-scheme redirect_uri. Discovery says so.
 """
 
 import re
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 from nanoidp.config import get_config
 from tests.conftest import pending_transaction_ids, transaction_id_of
@@ -46,7 +46,7 @@ def _login(client, **extra):
     """The response that carries the code: after the login, or at once
     when the browser's session is reused (#468)."""
     page = client.get("/authorize", query_string={**BASE, **extra})
-    if page.status_code != 200:
+    if b'name="transaction_id"' not in page.data:
         return page
     return client.post("/authorize", data={"transaction_id": transaction_id_of(page), **LOGIN})
 
@@ -228,11 +228,86 @@ class TestFormPostRequest:
 
 
 class TestTheValueIsEscaped:
-    def test_a_state_with_markup_cannot_break_out_of_the_form(self, client, app):
+    def test_a_state_with_markup_cannot_break_out_of_the_form(self, client):
         done = _login(client, response_mode="form_post", state='"><script>x</script>')
 
         html = done.get_data(as_text=True)
         assert "<script>x</script>" not in html
         assert "&lt;script&gt;" in html
+
+
+class TestAReusedSession:
+    def test_the_code_follows_the_mode_of_the_request_that_reuses_it(self, client):
+        _login(client)
+
+        page = client.get("/authorize", query_string={**BASE, "response_mode": "form_post"})
+
+        assert page.status_code == 200
+        assert "code" in _form_of(page)[1]
+
+
+class TestAFormPostPageIsNotReadableCrossOrigin:
+    def test_the_app_wide_cors_rule_does_not_open_it(self, client, app):
+        """In the query mode a code leaves in a Location a script cannot
+        read; in a 200 body the app-wide CORS rule would hand it to any
+        origin, with persona auto-login needing no cookie."""
         with app.app_context():
-            assert get_config().settings  # the page rendered under the request's configuration
+            get_config().settings.login_mode = "persona"
+            get_config().settings.auto_login = True
+        origin = {"Origin": "http://evil.example"}
+
+        page = client.get(
+            "/authorize",
+            query_string={
+                **BASE,
+                "response_mode": "form_post",
+                "login_hint": "persona-auto-login:admin",
+            },
+            headers=origin,
+        )
+
+        assert "code" in _form_of(page)[1]
+        assert page.headers.get("Access-Control-Allow-Origin") not in ("*", origin["Origin"])
+        other = client.get("/.well-known/openid-configuration", headers=origin)
+        assert other.headers.get("Access-Control-Allow-Origin") is not None
+
+
+class TestTheConstraintsAreRequestFields:
+    """response_mode, prompt, max_age and id_token_hint make a request like
+    the others: never dropped, never a resume of the pending page."""
+
+    def test_alone_in_a_query_they_are_a_request_not_a_resume(self, client):
+        client.get("/authorize", query_string=BASE)
+
+        for query in ("prompt=none", "max_age=0", "id_token_hint=x", "response_mode=fragment"):
+            answer = client.get(f"/authorize?{query}")
+            assert answer.status_code == 400, query
+            assert b'name="transaction_id"' not in answer.data
+
+    def test_a_query_that_adds_one_to_a_named_transaction_is_refused(self, client):
+        page = client.get("/authorize", query_string=BASE)
+        query = urlencode({**BASE, "response_mode": "nonsense"})
+
+        refused = client.post(
+            f"/authorize?{query}", data={"transaction_id": transaction_id_of(page), **LOGIN}
+        )
+
+        assert refused.status_code == 400
+
+    def test_one_in_the_query_of_a_form_post_is_not_dropped_silently(self, client):
+        """A query field makes the POST the direct entry point, read from
+        that query: here it lacks the client, so a local 400, not a code in
+        another mode than the one asked."""
+        answer = client.post("/authorize?response_mode=form_post", data=BASE)
+
+        assert answer.status_code == 400
+        assert "Location" not in answer.headers
+
+    def test_the_audit_reason_does_not_carry_the_value(self, client, app):
+        client.get("/authorize", query_string={**BASE, "response_mode": "x" * 5000})
+
+        with app.app_context():
+            from nanoidp.services import get_audit_log
+
+            entries = get_audit_log().get_entries(event_type="authorization_request")
+        assert entries[0]["details"]["reason"] == "unknown response_mode"

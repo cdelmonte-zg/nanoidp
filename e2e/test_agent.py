@@ -1687,7 +1687,10 @@ class NanoIDPTestAgent:
                     unknown.status_code == 400 and "Location" not in unknown.headers
                 )
             finally:
-                self.session.delete(f"{clients_url}/{client_id}", timeout=5)
+                try:
+                    self.session.delete(f"{clients_url}/{client_id}", timeout=5)
+                except requests.RequestException:
+                    pass  # the probe's own outcome is the one to report
                 server.shutdown()
                 server.server_close()
             return self._add_result(
