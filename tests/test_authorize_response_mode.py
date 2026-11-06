@@ -184,10 +184,9 @@ class TestARequestThatNamesNoChannel:
         assert entry["status"] == "failed"
         assert entry["client_id"] == "registered-client"
 
-    def test_form_post_needs_an_explicit_host(self, client):
-        """https:/callback passes as a scheme, but a browser resolves it
-        against the page's own URL: the form would post the code to the IdP
-        itself. Only an absolute URL with a host is a form action."""
+    def test_a_uri_without_a_host_is_no_form_action(self, client):
+        """Refused by the syntactic gate before any mode applies (#486):
+        whatever the mode, no page is rendered for it."""
         for uri in ("https:/callback", "https:///callback", "http:callback"):
             refused = client.get(
                 "/authorize",
