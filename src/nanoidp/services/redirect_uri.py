@@ -49,6 +49,20 @@ def append_authorization_params(uri: str, params: Dict[str, str]) -> str:
     separator = "&" if "?" in uri else "?"
     return f"{uri}{separator}{urlencode(params)}"
 
+
+def append_authorization_fragment(uri: str, params: Dict[str, str]) -> str:
+    """The ``fragment`` response mode (#472): the same parameters in the
+    fragment of the redirect URI. A validated redirect URI carries no
+    fragment (RFC 6749 3.1.2), so a plain append is safe here too."""
+    return f"{uri}#{urlencode(params)}"
+
+
+def is_http_redirect_uri(uri: str) -> bool:
+    """Whether a validated redirect URI is an HTTP(S) one: the only kind a
+    browser form can post to (the ``form_post`` response mode, #472); a
+    private-scheme URI of a native client is reached by a redirect only."""
+    return urlparse(uri).scheme in ("http", "https")
+
 # RFC 8252 §7.3: loopback interface redirection is defined for the IPv4 and
 # IPv6 loopback literals only. urlparse().hostname strips the brackets from
 # an IPv6 literal, so "[::1]" is seen as "::1".

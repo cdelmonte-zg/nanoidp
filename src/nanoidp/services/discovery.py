@@ -97,6 +97,10 @@ def build_discovery_document(
         # Only the authorization code flow is implemented; the implicit flow is
         # deprecated by the OAuth 2.0 Security BCP and intentionally absent.
         "response_types_supported": ["code"],
+        # The three response modes /authorize honours for code (#472):
+        # query (the default), fragment, and form_post. Said explicitly:
+        # Discovery section 3 reads an omitted member as query + fragment.
+        "response_modes_supported": ["query", "fragment", "form_post"],
         # REQUIRED by Discovery section 3, missing until #464. Subjects are
         # public: sub is the username, or the client_id for client
         # credentials (#445); nothing pairwise exists.

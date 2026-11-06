@@ -1570,6 +1570,130 @@ class NanoIDPTestAgent:
                 "Authenticated Session", TestCategory.OAUTH, False, f"Error: {e}"
             )
 
+    def test_response_mode_form_post(self) -> TestResult:
+        """response_mode=form_post (#472): a code and an error are delivered
+        as a self-submitting form that posts to the redirect_uri. A real
+        callback listens on localhost:3000 (registered-client's URI); the
+        probe plays the browser: it reads the form the page carries and
+        posts its fields to the form's action, and the callback must
+        receive code+state, then error=login_required+state. The page
+        carries Cache-Control: no-store. Also: fragment delivers in the
+        fragment, an unknown mode is a local 400, and discovery lists the
+        three modes.
+        """
+        import http.server
+        import threading
+
+        received: List[Dict[str, List[str]]] = []
+
+        class Callback(http.server.BaseHTTPRequestHandler):
+            def do_POST(self) -> None:
+                body = self.rfile.read(int(self.headers.get("Content-Length") or 0)).decode()
+                received.append(parse_qs(body))
+                self.send_response(200)
+                self.end_headers()
+
+            def log_message(self, *args: Any) -> None:
+                pass
+
+        checks: Dict[str, bool] = {}
+        base = {
+            "response_type": "code",
+            "client_id": "registered-client",
+            "redirect_uri": "http://localhost:3000/callback",
+            "scope": "openid",
+        }
+        try:
+            try:
+                server = http.server.HTTPServer(("127.0.0.1", 3000), Callback)
+            except OSError as e:
+                return self._add_result(
+                    "Response Mode form_post", TestCategory.OAUTH, False,
+                    f"cannot listen on localhost:3000 for the callback: {e}",
+                )
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+            try:
+                discovery = requests.get(
+                    f"{self.base_url}/.well-known/openid-configuration", timeout=5
+                ).json()
+                checks["discovery"] = discovery.get("response_modes_supported") == [
+                    "query", "fragment", "form_post",
+                ]
+
+                def play_browser(page: requests.Response) -> Optional[Dict[str, List[str]]]:
+                    """Post the page's form to its action, as a browser would."""
+                    action = re.search(r'<form method="post" action="([^"]+)">', page.text)
+                    fields = dict(re.findall(r'name="([^"]+)" value="([^"]*)"', page.text))
+                    if page.status_code != 200 or action is None:
+                        return None
+                    before = len(received)
+                    requests.post(action.group(1), data=fields, timeout=5)
+                    return received[before] if len(received) > before else None
+
+                sess = requests.Session()
+                page = sess.get(
+                    f"{self.base_url}/authorize",
+                    params={**base, "state": "fp-ok", "response_mode": "form_post"},
+                    allow_redirects=False, timeout=5,
+                )
+                match = re.search(r'name="transaction_id" value="([^"]+)"', page.text)
+                done = sess.post(
+                    f"{self.base_url}/authorize",
+                    data={"transaction_id": match.group(1) if match else "", "username": self.username, "password": self.password},
+                    allow_redirects=False, timeout=5,
+                )
+                checks["success_page_no_store"] = done.headers.get("Cache-Control") == "no-store"
+                posted = play_browser(done)
+                checks["callback_got_code_and_state"] = bool(
+                    posted and "code" in posted and posted.get("state") == ["fp-ok"]
+                )
+
+                error_page = requests.get(
+                    f"{self.base_url}/authorize",
+                    params={**base, "state": "fp-err", "response_mode": "form_post", "prompt": "none"},
+                    allow_redirects=False, timeout=5,
+                )
+                posted = play_browser(error_page)
+                checks["callback_got_error_and_state"] = bool(
+                    posted and posted.get("error") == ["login_required"] and posted.get("state") == ["fp-err"]
+                )
+
+                fragment = requests.get(
+                    f"{self.base_url}/authorize",
+                    params={**base, "state": "fr", "response_mode": "fragment", "prompt": "none"},
+                    allow_redirects=False, timeout=5,
+                )
+                location = fragment.headers.get("Location", "")
+                checks["fragment_mode"] = (
+                    fragment.status_code == 302
+                    and parse_qs(urlparse(location).fragment).get("error") == ["login_required"]
+                    and urlparse(location).query == ""
+                )
+
+                unknown = requests.get(
+                    f"{self.base_url}/authorize",
+                    params={**base, "state": "x", "response_mode": "nonsense"},
+                    allow_redirects=False, timeout=5,
+                )
+                checks["unknown_mode_local_400"] = (
+                    unknown.status_code == 400 and "Location" not in unknown.headers
+                )
+            finally:
+                server.shutdown()
+                server.server_close()
+            return self._add_result(
+                "Response Mode form_post",
+                TestCategory.OAUTH,
+                all(checks.values()),
+                "a real callback received the code and the error as form POSTs; "
+                "fragment in the fragment; unknown mode refused locally; discovery lists the modes",
+                checks,
+            )
+        except Exception as e:
+            return self._add_result(
+                "Response Mode form_post", TestCategory.OAUTH, False, f"Error: {e}"
+            )
+
     def test_redirect_uri_exact_matching(self) -> TestResult:
         """Registered redirect URIs are enforced with exact matching (issue #67).
 
@@ -7109,6 +7233,7 @@ class NanoIDPTestAgent:
                 self.test_request_objects_refused,
                 self.test_authorization_request_as_form_post,
                 self.test_authenticated_session,
+                self.test_response_mode_form_post,
                 self.test_native_app_redirect_uris,
                 self.test_scope_enforcement,
                 self.test_client_branding,

@@ -77,7 +77,9 @@ from ..services.id_token_hint_references import (
 )
 from ..services.introspection import build_introspection_response
 from ..services.redirect_uri import (
+    append_authorization_fragment,
     append_authorization_params,
+    is_http_redirect_uri,
     redirect_uri_is_registered,
     redirect_uri_rejection_reason,
 )
@@ -209,6 +211,14 @@ class _AuthorizeParams:
     # Ignored unless it carries the reserved 'persona-auto-login:' prefix -
     # see _try_persona_auto_login.
     login_hint: str
+    # OAuth 2.0 Multiple Response Type Encoding Practices 2.1 (#472): how
+    # the response is to be delivered, resolved before any response is
+    # built - "query" (the default, also for an empty value), "fragment"
+    # or "form_post". ``response_mode_rejected`` is the reason the request
+    # names no usable channel (an unknown value, or the parameter
+    # repeated), refused locally before anything else.
+    response_mode: str = "query"
+    response_mode_rejected: Optional[str] = None
     # OIDC Core 3.1.2.1 (#468): the authentication constraints, as sent;
     # read into prompts / max_age_seconds by the validator.
     prompt: str = ""
@@ -258,7 +268,27 @@ _AUTHORIZE_READ_FIELDS = _AUTHORIZE_REQUEST_FIELDS + (
     "prompt",
     "max_age",
     "id_token_hint",
+    "response_mode",
 )
+
+_RESPONSE_MODES = ("query", "fragment", "form_post")
+
+
+def _resolve_response_mode(values: List[str]) -> Tuple[str, Optional[str]]:
+    """The response mode a request asks for (#472), from every value the
+    parameter was sent with, and why it cannot be honoured when it cannot:
+    ("query", None) for an omitted or empty parameter; (mode, None) for one
+    of the three; ("query", reason) for an unknown value or a repeated
+    parameter. Resolved from the raw query before any response to the
+    client is built."""
+    if len(values) > 1:
+        return "query", "response_mode repeated"
+    value = values[0] if values else ""
+    if not value:
+        return "query", None
+    if value not in _RESPONSE_MODES:
+        return "query", f"unknown response_mode {value!r}"
+    return value, None
 
 # What a non-empty request-object value becomes in the GET form of a form
 # POST (#467): the GET refuses any non-empty value (#463) and never reads
@@ -321,6 +351,8 @@ def _read_authorize_params() -> _AuthorizeParams:
         max_age=params.get("max_age", ""),
         id_token_hint=params.get("id_token_hint", ""),
         id_token_hint_repeated=len(params.getlist("id_token_hint")) > 1,
+        response_mode=_resolve_response_mode(params.getlist("response_mode"))[0],
+        response_mode_rejected=_resolve_response_mode(params.getlist("response_mode"))[1],
         # Presence of a non-empty value, over every repetition
         # (request=&request=<object>, #463 review round 3): what is refused
         # is that an object was sent at all, not any one value of it. A
@@ -352,6 +384,7 @@ def _params_of(transaction: AuthorizationTransaction, login_hint: str = "") -> _
         claims_param=stored.claims,
         resources=list(stored.resources),
         login_hint=login_hint,
+        response_mode=stored.response_mode,
     )
 
 
@@ -603,7 +636,39 @@ def _authorize_error_redirect(
     issuer = effective_issuer(loaded.settings)
     if issuer_qualifies_for_iss_parameter(issuer):
         params["iss"] = issuer
+    return _deliver_authorization_response(p, params)
+
+
+def _deliver_authorization_response(p: _AuthorizeParams, params: Dict[str, str]) -> ResponseReturnValue:
+    """An authorization response - a code, or an error after the
+    redirect_uri - delivered the way the request asked (#472): in the query
+    (the default), in the fragment, or as a page whose form posts the
+    parameters to the redirect_uri and submits itself (OAuth 2.0 Form Post
+    Response Mode), with no-store, since it carries the code. The one place
+    a response reaches the client; ``p.redirect_uri`` is validated by now,
+    and ``form_post`` only ever posts to an HTTP(S) one
+    (``_form_post_undeliverable``)."""
+    if p.response_mode == "fragment":
+        return redirect(append_authorization_fragment(p.redirect_uri, params))
+    if p.response_mode == "form_post":
+        return no_store(
+            Response(
+                render_template("form_post.html", action=p.redirect_uri, params=params),
+                status=200,
+                content_type="text/html; charset=utf-8",
+            )
+        )
     return redirect(append_authorization_params(p.redirect_uri, params))
+
+
+def _form_post_undeliverable(p: _AuthorizeParams) -> Optional[str]:
+    """Why a form_post response cannot reach this redirect_uri (#472), or
+    None: a browser form posts to HTTP(S) only, so a private-scheme URI of
+    a native client is not a channel for it, while it stays one for the
+    redirect modes."""
+    if p.response_mode == "form_post" and not is_http_redirect_uri(p.redirect_uri):
+        return "form_post response_mode needs an http(s) redirect_uri"
+    return None
 
 
 def _validate_authorize_client(
@@ -755,7 +820,9 @@ def _undeliverable_because(config: ConfigManager, p: _AuthorizeParams) -> Option
         return rejection.reason
     assert client is not None
     rejection = _redirect_uri_verdict(loaded.settings, p, client)
-    return rejection.reason if rejection is not None else None
+    if rejection is not None:
+        return rejection.reason
+    return _form_post_undeliverable(p)
 
 
 def _validate_authorize_response_type(
@@ -1249,8 +1316,6 @@ def _issue_authorization_code(
     if issuer_qualifies_for_iss_parameter(issuer):
         redirect_params["iss"] = issuer
 
-    callback_url = append_authorization_params(p.redirect_uri, redirect_params)
-
     audit_event(
         "authorization_request",
         "success",
@@ -1277,7 +1342,7 @@ def _issue_authorization_code(
     else:
         logger.info("Authorization code issued")
 
-    return redirect(callback_url)
+    return _deliver_authorization_response(p, redirect_params)
 
 
 # OIDC Core 3.1.2.1 (#250): the reserved login_hint prefix that opts an
@@ -1592,6 +1657,7 @@ def _begin_transaction(
         transaction = store.create(
             browser_binding=binding,
             params=AuthorizationParameters(
+                response_mode=p.response_mode,
                 response_type=p.response_type,
                 client_id=p.client_id,
                 redirect_uri=p.redirect_uri,
@@ -1629,6 +1695,21 @@ def _begin_transaction(
             "the cached metadata document could not be held for the transaction",
         )
     return transaction, None
+
+
+def _validate_authorize_form_post_channel(p: _AuthorizeParams) -> Optional[ResponseReturnValue]:
+    """Right after the redirect_uri is validated (#472): a form_post
+    response cannot reach a private-scheme redirect_uri, so the request is
+    refused locally, never delivered."""
+    reason = _form_post_undeliverable(p)
+    if reason is None:
+        return None
+    return _authorize_reject(
+        p.client_id or None,
+        reason,
+        "invalid_request",
+        "response_mode form_post requires an http or https redirect_uri",
+    )
 
 
 _PROMPT_VALUES = frozenset({"none", "login", "consent", "select_account"})
@@ -1807,6 +1888,17 @@ def _validate_authorize_request(
     Each step is a named helper; every rejection keeps its historical error
     body and audit behavior (#212). A rejected request creates nothing (#331).
     """
+    # The channel first (#472): a request whose response_mode names no
+    # usable one is refused locally before any answer, the request-object
+    # refusal below included, is built for the client.
+    if p.response_mode_rejected is not None:
+        return None, _authorize_reject(
+            p.client_id or None,
+            p.response_mode_rejected,
+            "invalid_request",
+            "response_mode is not supported",
+        )
+
     # A request object is refused whatever the rest of the request says,
     # before any validator runs (#463): one answer, one authorization_request
     # event.
@@ -1825,6 +1917,7 @@ def _validate_authorize_request(
     # client as an OAuth error redirect carrying iss (#258 review).
     for check in (
         lambda: _validate_authorize_redirect_uri(config, p, client),
+        lambda: _validate_authorize_form_post_channel(p),
         lambda: _validate_authorize_authentication_constraints(config, p),
         lambda: _validate_authorize_response_type(config, p),
         lambda: _validate_authorize_scope(config, p, client),
