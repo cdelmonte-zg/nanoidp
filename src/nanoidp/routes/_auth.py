@@ -508,7 +508,7 @@ def bearer_header_credential() -> tuple[bool, str]:
     return scheme.casefold() == "bearer", credential
 
 
-def no_store(response: ResponseReturnValue) -> Response:
+def no_store(response: ResponseReturnValue, cache_control: str = "no-store") -> Response:
     """Mark a response one that no cache may keep: the one home of the pair
     RFC 6749 section 5.1 asks for on every response carrying a token, a
     credential or other sensitive information (#462). Its callers are the
@@ -519,11 +519,24 @@ def no_store(response: ResponseReturnValue) -> Response:
     Both headers, although OpenID Connect Core 3.1.3.3 (errata set 2) lists
     only Cache-Control and HTTP deprecates Pragma: RFC 6749 is the text
     that governs the token endpoint, and a header a client never reads
-    costs nothing."""
+    costs nothing. ``cache_control`` is for a text that words it otherwise:
+    SAML Bindings 3.5.5.1 asks for ``no-cache, no-store`` (#478)."""
     resp = make_response(response)
-    resp.headers["Cache-Control"] = "no-store"
+    resp.headers["Cache-Control"] = cache_control
     resp.headers["Pragma"] = "no-cache"
     return resp
+
+
+def own_origin_only(response: Response) -> Response:
+    """Keep a page that holds a credential in its body from other origins'
+    scripts: the form_post page (#472) and the SAML POST page (#478). A
+    credential in a Location or a cookie was never readable, a 200 body is,
+    and the app-wide CORS rule answers ``*``, which a flow that needs no
+    cookie (persona mode) does not survive. flask-cors leaves a response
+    that already names its origin alone, so naming this server's closes it
+    for this response and for no other."""
+    response.headers["Access-Control-Allow-Origin"] = request.host_url.rstrip("/")
+    return response
 
 
 def no_store_responses(view: Callable[..., ResponseReturnValue]) -> Callable[..., Response]:

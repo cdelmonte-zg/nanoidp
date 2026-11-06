@@ -197,7 +197,11 @@ and `Pragma: no-cache`, success and error alike (RFC 6749 §5.1 for the
 responses that carry tokens or credentials; a policy of nanoidp's own for
 user data and token state, so that nothing between a test client and the
 IdP answers from a cache). The two registration responses that carry
-credentials (#190) say the same. A response the endpoint itself did not
+credentials (#190) say the same, and the page that carries a
+`SAMLResponse` answers `Cache-Control: no-cache, no-store` and `Pragma:
+no-cache`, as SAML Bindings 3.5.5.1 words it (#478). That page and the
+`form_post` page hold a credential in a readable body, so each names the
+IdP as its only allowed CORS origin. A response the endpoint itself did not
 build, such as a 405, a 429 from the rate limiter or a 503 while the
 configuration cannot be read, carries neither; nor do the discovery
 documents and the JWKS, which are public and cacheable.

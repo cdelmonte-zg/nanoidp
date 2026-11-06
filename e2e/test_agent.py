@@ -3980,10 +3980,18 @@ class NanoIDPTestAgent:
                         audience = audience_match.group(1) if audience_match else None
                         audience_ok = audience == "test-sp"
 
+                        # A signed assertion in a 200 body (#478): Bindings
+                        # 3.5.5.1's directives, and no other origin reads it.
+                        page_protected = (
+                            response.headers.get("Cache-Control") == "no-cache, no-store"
+                            and response.headers.get("Pragma") == "no-cache"
+                            and response.headers.get("Access-Control-Allow-Origin") != "*"
+                        )
+
                         return self._add_result(
                             "SAML SSO (POST binding)",
                             TestCategory.SAML,
-                            parsing_ok and acs_in_response and audience_ok,
+                            parsing_ok and acs_in_response and audience_ok and page_protected,
                             f"HTTP-POST binding: InResponseTo={'OK' if parsing_ok else 'FAIL'}, ACS={'OK' if acs_in_response else 'FAIL'}, Audience={'OK' if audience_ok else audience}",
                             {"binding": "HTTP-POST", "request_id": request_id, "in_response_to": in_response_to, "parsing_ok": parsing_ok, "audience": audience}
                         )

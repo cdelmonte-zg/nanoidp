@@ -55,6 +55,7 @@ from ._auth import (
     discard_pending_second_factor,
     establish_login_session,
     no_store,
+    own_origin_only,
     session_auth_method,
     two_step_phase,
 )
@@ -817,7 +818,7 @@ def _sso_success_response(
     # Auto-submit form (escape user-controlled values to prevent XSS)
     safe_acs_url = html.escape(acs_url, quote=True)
     safe_relay_state = html.escape(relay_state, quote=True)
-    return f"""<!DOCTYPE html>
+    page = f"""<!DOCTYPE html>
 <html><body onload="document.forms[0].submit()">
 <form method="post" action="{safe_acs_url}">
   <input type="hidden" name="SAMLResponse" value="{saml_b64}"/>
@@ -825,6 +826,9 @@ def _sso_success_response(
   <noscript><button type="submit">Continue</button></noscript>
 </form>
 </body></html>"""
+    # A signed assertion in a 200 body (#478): Bindings 3.5.5.1's directives
+    # for a cache, and no other origin's script reads it.
+    return own_origin_only(no_store(page, cache_control="no-cache, no-store"))
 
 
 @saml_bp.route("/sso", methods=["GET", "POST"])
