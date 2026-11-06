@@ -204,6 +204,22 @@ class TestARequestThatNamesNoChannel:
 
 
 class TestFormPostRequest:
+    def test_a_refused_request_gives_its_parked_hint_back(self, client):
+        """The reference is taken before any refusal, so a request refused
+        locally leaves no slot of the bounded store held until expiry."""
+        from nanoidp.services.id_token_hint_references import get_parked_hint_store
+
+        native = {**BASE, "client_id": "ui-native", "redirect_uri": "com.example.app:/oauth2redirect"}
+        answer = client.post(
+            "/authorize", data={**native, "response_mode": "form_post", "id_token_hint": "any"}
+        )
+        assert len(get_parked_hint_store()._repository.list()) == 1
+
+        refused = client.get(answer.headers["Location"])
+
+        assert refused.status_code == 400
+        assert get_parked_hint_store()._repository.list() == []
+
     def test_the_mode_travels_into_the_get_form(self, client):
         answer = client.post("/authorize", data={**BASE, "response_mode": "form_post"})
 

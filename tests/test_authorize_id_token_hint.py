@@ -268,10 +268,11 @@ class TestFormPost:
                 "id_token_hint": hint,
                 "prompt": "none",
                 "max_age": "0",
+                "response_mode": "fragment",
             },
         )
 
-        assert "code" in authorization_response_params(done)
+        assert "code" in authorization_response_params(done)  # in the query: not read
         with app.app_context():
             from nanoidp.services import get_audit_log
 
@@ -280,7 +281,7 @@ class TestFormPost:
                 for e in get_audit_log().get_entries(event_type="authorization_request")
                 if e["details"].get("reason") == "OAuth parameters in POST body are ignored"
             ]
-        assert ignored == [["prompt", "max_age", "id_token_hint"]]
+        assert ignored == [["prompt", "max_age", "id_token_hint", "response_mode"]]
 
     def test_an_unknown_reference_is_invalid_request(self, client, app):
         response = client.get(f"/authorize?{QS}&id_token_hint=ref:nothing")

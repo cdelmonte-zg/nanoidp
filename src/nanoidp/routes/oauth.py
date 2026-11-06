@@ -226,6 +226,8 @@ class _AuthorizeParams:
     id_token_hint: str = ""
     # Sent more than once (RFC 6749 3.1): refused, whatever the values.
     id_token_hint_repeated: bool = False
+    # A reference that resolved to nothing (_take_parked_hint).
+    id_token_hint_unresolved: bool = False
     prompts: FrozenSet[str] = frozenset()
     max_age_seconds: Optional[int] = None
     # The subject a verified id_token_hint names (#468), else None.
@@ -334,6 +336,7 @@ def _read_authorize_params() -> _AuthorizeParams:
     redirected to its GET form first (#467), so the query string is the one
     place a request is read from."""
     params = request.args
+    response_mode, response_mode_rejected = _resolve_response_mode(params.getlist("response_mode"))
     return _AuthorizeParams(
         response_type=params.get("response_type", ""),
         client_id=params.get("client_id", ""),
@@ -351,8 +354,8 @@ def _read_authorize_params() -> _AuthorizeParams:
         max_age=params.get("max_age", ""),
         id_token_hint=params.get("id_token_hint", ""),
         id_token_hint_repeated=len(params.getlist("id_token_hint")) > 1,
-        response_mode=_resolve_response_mode(params.getlist("response_mode"))[0],
-        response_mode_rejected=_resolve_response_mode(params.getlist("response_mode"))[1],
+        response_mode=response_mode,
+        response_mode_rejected=response_mode_rejected,
         # Presence of a non-empty value, over every repetition
         # (request=&request=<object>, #463 review round 3): what is refused
         # is that an object was sent at all, not any one value of it. A
@@ -400,11 +403,12 @@ def _audit_body_oauth_fields() -> None:
     """
     # Any non-empty value over every repetition, as the query reader does
     # for the two refused fields (#463): an empty first value hides nothing.
-    # The request fields, and the three a request may carry beside them
-    # (#468) - never login_hint, which the login page itself may post.
+    # The request fields, and the ones a request may carry beside them
+    # (#468, #472) - never login_hint, which the login page itself may post.
     forged = [
         field
-        for field in _AUTHORIZE_REQUEST_FIELDS + ("prompt", "max_age", "id_token_hint")
+        for field in _AUTHORIZE_REQUEST_FIELDS
+        + ("prompt", "max_age", "id_token_hint", "response_mode")
         if any(request.form.getlist(field))
     ]
     if not forged:
@@ -578,10 +582,10 @@ def _authorize_reject(
 
     The pre-lookup checks (response_type, missing client_id/redirect_uri,
     redirect_uri syntax) intentionally do NOT audit - they never have - and
-    come through here with ``audit=False``. The one pre-lookup caller that
-    audits is the request-object refusal (#463), because it is the
-    request's whole answer; ``client_id`` is None when the request named
-    none. ``details`` extends the event beyond its reason.
+    come through here with ``audit=False``. The pre-lookup callers that
+    audit are the request-object refusal (#463) and the response_mode
+    refusal (#472), because each is the request's whole answer;
+    ``client_id`` is None when the request named none. ``details`` extends the event beyond its reason.
     """
     if audit:
         audit_event(
@@ -1753,18 +1757,13 @@ def _validate_authorize_authentication_constraints(
             config, p, "invalid_request", "id_token_hint must not be repeated",
             "id_token_hint repeated",
         )
+    if p.id_token_hint_unresolved:
+        return _authorize_error_redirect(
+            config, p, "invalid_request", "id_token_hint reference unknown, expired or already used",
+            "id_token_hint reference not resolvable",
+        )
     if p.id_token_hint:
         hint = p.id_token_hint
-        if is_reference(hint):
-            # A form POST's hint, parked under a reference by the 303
-            # (#467): taken once, here.
-            parked = get_parked_hint_store().take(hint)
-            if parked is None:
-                return _authorize_error_redirect(
-                    config, p, "invalid_request", "id_token_hint reference unknown, expired or already used",
-                    "id_token_hint reference not resolvable",
-                )
-            hint = parked
         # The settings are read before the signing service is resolved
         # (#359): the issuer this request answers for, then the keys.
         issuer = effective_issuer(request_config().settings)
@@ -1878,6 +1877,19 @@ def _answer_from_session(
     return None
 
 
+def _take_parked_hint(p: _AuthorizeParams) -> None:
+    """Swap a form POST's parked reference (#467, #468) for the hint it
+    stands for. First thing in the validation, before anything can refuse
+    the request: a refused request gives its slot of the bounded store back
+    at once, whichever refusal it was. An unknown, expired or used
+    reference is judged where the hint is, after the redirect_uri."""
+    if not is_reference(p.id_token_hint):
+        return
+    parked = get_parked_hint_store().take(p.id_token_hint)
+    p.id_token_hint = parked or ""
+    p.id_token_hint_unresolved = parked is None
+
+
 def _validate_authorize_request(
     config: ConfigManager, p: _AuthorizeParams
 ) -> Tuple[Optional[OAuthClient], Optional[ResponseReturnValue]]:
@@ -1888,6 +1900,8 @@ def _validate_authorize_request(
     Each step is a named helper; every rejection keeps its historical error
     body and audit behavior (#212). A rejected request creates nothing (#331).
     """
+    _take_parked_hint(p)
+
     # The channel first (#472): a request whose response_mode names no
     # usable one is refused locally before any answer, the request-object
     # refusal below included, is built for the client.

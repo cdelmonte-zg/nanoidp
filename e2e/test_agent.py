@@ -1573,8 +1573,9 @@ class NanoIDPTestAgent:
     def test_response_mode_form_post(self) -> TestResult:
         """response_mode=form_post (#472): a code and an error are delivered
         as a self-submitting form that posts to the redirect_uri. A real
-        callback listens on localhost:3000 (registered-client's URI); the
-        probe plays the browser: it reads the form the page carries and
+        callback listens on a free loopback port, registered for a runtime
+        client made for the probe; the probe plays the browser: it reads
+        the form the page carries and
         posts its fields to the form's action, and the callback must
         receive code+state, then error=login_required+state. The page
         carries Cache-Control: no-store. Also: fragment delivers in the
@@ -1597,22 +1598,29 @@ class NanoIDPTestAgent:
                 pass
 
         checks: Dict[str, bool] = {}
-        base = {
-            "response_type": "code",
-            "client_id": "registered-client",
-            "redirect_uri": "http://localhost:3000/callback",
-            "scope": "openid",
-        }
+        client_id = f"e2e-form-post-{secrets.token_hex(4)}"
+        clients_url = f"{self.base_url}/api/runtime/clients"
         try:
-            try:
-                server = http.server.HTTPServer(("127.0.0.1", 3000), Callback)
-            except OSError as e:
-                return self._add_result(
-                    "Response Mode form_post", TestCategory.OAUTH, False,
-                    f"cannot listen on localhost:3000 for the callback: {e}",
-                )
+            server = http.server.HTTPServer(("127.0.0.1", 0), Callback)
+            callback = f"http://127.0.0.1:{server.server_address[1]}/callback"
+            base = {
+                "response_type": "code",
+                "client_id": client_id,
+                "redirect_uri": callback,
+                "scope": "openid",
+            }
             threading.Thread(target=server.serve_forever, daemon=True).start()
             try:
+                created = self.session.post(
+                    clients_url,
+                    json={
+                        "client_id": client_id,
+                        "client_secret": secrets.token_urlsafe(16),
+                        "redirect_uris": [callback],
+                    },
+                    timeout=5,
+                )
+                checks["client_created"] = created.status_code == 201
                 discovery = requests.get(
                     f"{self.base_url}/.well-known/openid-configuration", timeout=5
                 ).json()
@@ -1679,6 +1687,7 @@ class NanoIDPTestAgent:
                     unknown.status_code == 400 and "Location" not in unknown.headers
                 )
             finally:
+                self.session.delete(f"{clients_url}/{client_id}", timeout=5)
                 server.shutdown()
                 server.server_close()
             return self._add_result(
