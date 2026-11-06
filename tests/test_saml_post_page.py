@@ -137,9 +137,10 @@ class TestNoOtherOriginReadsThePage:
             login={"mode": "persona"},
         )
 
-        page = _one_shot_post(client, {"Origin": "http://app.test:3000"})
+        for origin in ("http://app.test:3000", "HTTP://App.Test:3000"):
+            page = _one_shot_post(client, {"Origin": origin})
 
-        assert page.headers.get("Access-Control-Allow-Origin") == "http://app.test:3000"
+            assert page.headers.get("Access-Control-Allow-Origin") == origin
 
     def test_a_named_origin_beside_a_star_may_still_read_it(self, isolated_repo_config):
         client = _client(
