@@ -146,6 +146,11 @@ the transaction, so the login POST delivers the code in it, and travels
 into the GET form of a form-serialized request. The discovery document
 publishes `response_modes_supported: ["query", "fragment", "form_post"]`.
 
+The SAML POST page and the `form_post` page hold a credential in a
+readable body, so only an origin named in `cors_allowed_origins` may read
+them from a script: in every profile, `*` and the `stricter-dev` localhost
+pattern answer no `Access-Control-Allow-Origin` there (#478).
+
 One browser fact: the session cookie is `SameSite=Lax`, which a browser
 sends on a top-level navigation and not from a cross-site iframe. A
 silent login (`prompt=none`) as a top-level redirect finds the session;
@@ -197,10 +202,7 @@ user data and token state, so that nothing between a test client and the
 IdP answers from a cache). The two registration responses that carry
 credentials (#190) say the same, and the page that carries a
 `SAMLResponse` answers `Cache-Control: no-cache, no-store` and `Pragma:
-no-cache`, as SAML Bindings 3.5.5.1 words it (#478). That page and the
-`form_post` page hold a credential in a readable body, so they leave the
-permissive CORS rule: they answer no `Access-Control-Allow-Origin` under
-`*`, and an origin named in `cors_allowed_origins` stays allowed. A response the endpoint itself did not
+no-cache`, as SAML Bindings 3.5.5.1 words it (#478). A response the endpoint itself did not
 build, such as a 405, a 429 from the rate limiter or a 503 while the
 configuration cannot be read, carries neither; nor do the discovery
 documents and the JWKS, which are public and cacheable.

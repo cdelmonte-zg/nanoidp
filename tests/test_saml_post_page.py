@@ -12,6 +12,7 @@ import zlib
 from urllib.parse import quote
 
 from nanoidp.config import get_config
+from tests.test_timing_and_cors_settings import _client
 
 ACS = "http://localhost:8080/acs"
 EVIL = {"Origin": "http://evil.example"}
@@ -98,13 +99,15 @@ class TestNoOtherOriginReadsThePage:
         _assert_delivers_to_the_acs(page)
         assert "Access-Control-Allow-Origin" not in page.headers
 
-    def test_a_forwarded_host_cannot_name_the_allowed_origin(self, client, app):
+    def test_a_forwarded_host_cannot_name_the_allowed_origin(self, isolated_repo_config):
         """X-Forwarded-Host is a header a script may set: nothing about
-        this page's CORS answer comes from the request."""
-        with app.app_context():
-            settings = get_config().settings
-            settings.login_mode = "persona"
-            settings.issuer_from_proxy_headers = True
+        this page's CORS answer comes from the request. Set in the file, as
+        ProxyFix is installed by create_app."""
+        client = _client(
+            isolated_repo_config,
+            oauth={"issuer_from_proxy_headers": True},
+            login={"mode": "persona"},
+        )
 
         page = _one_shot_post(
             client,
@@ -113,12 +116,47 @@ class TestNoOtherOriginReadsThePage:
 
         assert "Access-Control-Allow-Origin" not in page.headers
 
+    def test_the_profiles_localhost_rule_is_not_a_named_origin(self, isolated_repo_config):
+        """stricter-dev opens localhost on any port by pattern: nobody named
+        that origin, so it does not read this page."""
+        client = _client(
+            isolated_repo_config, security_profile="stricter-dev", login={"mode": "persona"}
+        )
+
+        page = _one_shot_post(client, {"Origin": "http://localhost:5555"})
+
+        assert "SAMLResponse" in page.get_data(as_text=True)
+        assert "Access-Control-Allow-Origin" not in page.headers
+
+    def test_a_named_origin_beside_a_star_may_still_read_it(self, isolated_repo_config):
+        client = _client(
+            isolated_repo_config,
+            cors_allowed_origins=["*", "http://harness.test:3000"],
+            login={"mode": "persona"},
+        )
+
+        named = _one_shot_post(client, {"Origin": "http://harness.test:3000"})
+        other = _one_shot_post(client, EVIL)
+
+        assert named.headers.get("Access-Control-Allow-Origin") is not None
+        assert "Access-Control-Allow-Origin" not in other.headers
+
+    def test_the_mark_is_on_the_response_not_on_the_context(self, app):
+        """Under one long-lived app context the mark of one page does not
+        reach the next response."""
+        with app.app_context():
+            get_config().settings.login_mode = "persona"
+            client = app.test_client()
+            _one_shot_post(client, EVIL)
+
+            other = client.get("/.well-known/openid-configuration", headers=EVIL)
+
+        assert other.headers.get("Access-Control-Allow-Origin") is not None
+
     def test_an_origin_the_operator_named_may_still_read_it(self, isolated_repo_config):
         """A declared cors_allowed_origins is the operator's decision: it
         stays the list on these pages too (a browser test harness), and an
         origin outside it reads nothing."""
-        from tests.test_timing_and_cors_settings import _client
-
         client = _client(
             isolated_repo_config,
             cors_allowed_origins=["http://harness.test:3000"],

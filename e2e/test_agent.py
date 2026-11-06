@@ -1648,9 +1648,11 @@ class NanoIDPTestAgent:
                 done = sess.post(
                     f"{self.base_url}/authorize",
                     data={"transaction_id": match.group(1) if match else "", "username": self.username, "password": self.password},
+                    headers={"Origin": "http://evil.example"},
                     allow_redirects=False, timeout=5,
                 )
                 checks["success_page_no_store"] = done.headers.get("Cache-Control") == "no-store"
+                checks["success_page_no_cors"] = "Access-Control-Allow-Origin" not in done.headers
                 posted = play_browser(done)
                 checks["callback_got_code_and_state"] = bool(
                     posted and "code" in posted and posted.get("state") == ["fp-ok"]
@@ -3982,12 +3984,12 @@ class NanoIDPTestAgent:
 
                         # A signed assertion in a 200 body (#478): Bindings
                         # 3.5.5.1's directives, and no other origin reads it.
-                        page_protected = (
+                        cache_ok = (
                             response.headers.get("Cache-Control") == "no-cache, no-store"
                             and response.headers.get("Pragma") == "no-cache"
                         )
-                        # Asked from another origin, as a script would: the
-                        # permissive rule does not answer on this page.
+                        # With an Origin the operator did not name, the CORS
+                        # rule does not answer on this page.
                         cross_origin = session.post(
                             f"{self.base_url}/saml/sso",
                             data={"SAMLRequest": encoded_request, "RelayState": "test-relay-state"},
@@ -3995,18 +3997,17 @@ class NanoIDPTestAgent:
                             allow_redirects=False,
                             timeout=5,
                         )
-                        page_protected = (
-                            page_protected
-                            and "SAMLResponse" in cross_origin.text
+                        cors_ok = (
+                            "SAMLResponse" in cross_origin.text
                             and "Access-Control-Allow-Origin" not in cross_origin.headers
                         )
 
                         return self._add_result(
                             "SAML SSO (POST binding)",
                             TestCategory.SAML,
-                            parsing_ok and acs_in_response and audience_ok and page_protected,
-                            f"HTTP-POST binding: InResponseTo={'OK' if parsing_ok else 'FAIL'}, ACS={'OK' if acs_in_response else 'FAIL'}, Audience={'OK' if audience_ok else audience}, page protected={'OK' if page_protected else 'FAIL'}",
-                            {"binding": "HTTP-POST", "request_id": request_id, "in_response_to": in_response_to, "parsing_ok": parsing_ok, "audience": audience, "page_protected": page_protected}
+                            parsing_ok and acs_in_response and audience_ok and cache_ok and cors_ok,
+                            f"HTTP-POST binding: InResponseTo={'OK' if parsing_ok else 'FAIL'}, ACS={'OK' if acs_in_response else 'FAIL'}, Audience={'OK' if audience_ok else audience}, cache headers={'OK' if cache_ok else 'FAIL'}, CORS={'OK' if cors_ok else 'FAIL'}",
+                            {"binding": "HTTP-POST", "request_id": request_id, "in_response_to": in_response_to, "parsing_ok": parsing_ok, "audience": audience, "cache_ok": cache_ok, "cors_ok": cors_ok}
                         )
 
                 # Got login form instead of SAML response

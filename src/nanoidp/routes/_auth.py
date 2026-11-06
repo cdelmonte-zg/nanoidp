@@ -21,7 +21,6 @@ from typing import Any, Callable, Mapping, Optional, Sequence
 from flask import (
     Response,
     current_app,
-    g,
     jsonify,
     make_response,
     redirect,
@@ -538,17 +537,26 @@ def no_store(response: ResponseReturnValue, *, no_cache: bool = False) -> Respon
     return resp
 
 
+_CREDENTIAL_PAGE_MARK = "nanoidp_credential_page"
+
+
 def credential_page(page: ResponseReturnValue, *, no_cache: bool = False) -> Response:
     """A page that holds a credential in a readable 200 body: the form_post
-    page (#472) and the SAML POST page (#478). No cache keeps it, and it
-    leaves the permissive CORS rule: in a Location or a cookie the
-    credential was never readable by a script, in a body it is, and a flow
-    that needs no cookie (persona mode) does not survive ``*``. The flag is
-    read by the hook in ``create_app``, which drops the header; an origin
-    the operator named in ``cors_allowed_origins`` stays allowed. Nothing
-    of this comes from the request, which a script can steer."""
-    g.credential_page = True
-    return no_store(page, no_cache=no_cache)
+    page (#472) and the SAML POST page (#478). No cache keeps it, and only
+    an origin the operator named in ``cors_allowed_origins`` may read it:
+    in a Location or a cookie the credential was never readable by a
+    script, in a body it is, and a flow that needs no cookie (persona mode)
+    survives neither ``*`` nor the localhost pattern of stricter-dev. The
+    mark is on the response, read by the hook in ``create_app``; no origin
+    is computed from the request, which a script can steer."""
+    response = no_store(page, no_cache=no_cache)
+    setattr(response, _CREDENTIAL_PAGE_MARK, True)
+    return response
+
+
+def is_credential_page(response: Response) -> bool:
+    """Whether ``credential_page`` built this response."""
+    return getattr(response, _CREDENTIAL_PAGE_MARK, False)
 
 
 def no_store_responses(view: Callable[..., ResponseReturnValue]) -> Callable[..., Response]:

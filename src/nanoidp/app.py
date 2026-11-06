@@ -11,7 +11,7 @@ import os
 import re
 from typing import Any, Optional
 
-from flask import Flask, Response, g, jsonify, make_response, request
+from flask import Flask, Response, jsonify, make_response, request
 from flask_cors import CORS
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
@@ -21,6 +21,7 @@ from . import __version__
 from .config import ConfigManager, DeclaredConfigurationUnloadable, get_config, init_config
 from .config_writer import LockUnavailableError
 from .routes import api_bp, oauth_bp, registration_bp, runtime_bp, saml_bp, ui_bp
+from .routes._auth import is_credential_page
 from .routes._config import forget_after_this_request, remember_for_this_request
 from .services import activate_services
 from .services.dynamic_registration import prune_stale_registrations
@@ -232,17 +233,17 @@ def create_app(
             else ["*"]
         )
         applied = list(origins)
-    if "*" in origins:
+    # Registered before CORS() so that it runs after it (Flask runs these in
+    # reverse): a page that holds a credential in its body is readable only
+    # by an origin the operator named (#478, routes/_auth.credential_page),
+    # not by a "*" or a profile's pattern.
+    named_origins = frozenset(declared or ()) - {"*"}
 
-        @app.after_request
-        def _credential_pages_leave_the_permissive_rule(response: Any) -> Any:
-            # Registered before CORS() so that it runs after it. A page that
-            # holds a credential in its body is not for every origin's
-            # scripts (#478, routes/_auth.credential_page); a named list is
-            # the operator's decision and stays in force on it.
-            if g.get("credential_page"):
-                response.headers.pop("Access-Control-Allow-Origin", None)
-            return response
+    @app.after_request
+    def _credential_pages_answer_named_origins_only(response: Any) -> Any:
+        if is_credential_page(response) and request.headers.get("Origin") not in named_origins:
+            response.headers.pop("Access-Control-Allow-Origin", None)
+        return response
 
     CORS(app, resources={r"/*": {"origins": origins}}, **cors_options)
     if vary_on_origin:
