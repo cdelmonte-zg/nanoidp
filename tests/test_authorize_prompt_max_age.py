@@ -229,6 +229,29 @@ class TestMaxAge:
 
         assert _is_login_page(client.get(f"/authorize?{QS}&max_age=1"))
 
+    def test_an_expired_max_age_is_not_satisfied_by_auto_login(self, client, app):
+        """Core 3.1.2.1: past max_age the End-User is actively
+        re-authenticated; persona auto-login is no interaction, now or on a
+        later hint-only GET of the transaction this creates."""
+        _login(client)
+        _enable_auto_login(app)
+        time.sleep(2.1)
+
+        page = client.get(f"/authorize?{QS}&max_age=1&login_hint=persona-auto-login:user1")
+        assert _is_login_page(page)
+
+        resumed = client.get("/authorize?login_hint=persona-auto-login:user1")
+
+        assert _is_login_page(resumed)
+        assert transaction_id_of(resumed) == transaction_id_of(page)
+
+    def test_max_age_without_a_session_asks_the_user_not_the_auto_login(self, client, app):
+        _enable_auto_login(app)
+
+        page = client.get(f"/authorize?{QS}&max_age=300&login_hint=persona-auto-login:user1")
+
+        assert _is_login_page(page)
+
     def test_auth_time_is_present_when_max_age_was_requested(self, client):
         claims = _login(client, "&max_age=300")
 

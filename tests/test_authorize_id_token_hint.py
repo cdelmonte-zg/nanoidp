@@ -220,6 +220,30 @@ class TestFormPost:
         assert "id_token_hint=ref%3Aunparked" in answer.headers["Location"]
         assert get_parked_hint_store()._repository.list() == []
 
+    def test_a_repeated_hint_parks_nothing_and_is_refused(self, client, app):
+        """One POST cannot fill the parked store: a repeated id_token_hint
+        is refused locally before any reference is written."""
+        from werkzeug.datastructures import MultiDict
+
+        from nanoidp.services.id_token_hint_references import get_parked_hint_store
+
+        body = MultiDict(list(self._body(_mint(app, sub="admin")).items()))
+        body.add("id_token_hint", _mint(app, sub="user1"))
+
+        refused = client.post("/authorize", data=body)
+
+        assert refused.status_code == 400
+        assert refused.get_json()["error"] == "invalid_request"
+        assert get_parked_hint_store()._repository.list() == []
+
+    def test_a_repeated_hint_on_a_get_is_invalid_request(self, client, app):
+        hint = _mint(app, sub="admin")
+
+        response = client.get(f"/authorize?{QS}&id_token_hint={hint}&id_token_hint={hint}")
+
+        assert _error_of(response) == "invalid_request"
+        assert pending_transaction_ids(client) == []
+
     def test_a_runtime_reset_drops_parked_references(self, client, app):
         hint = _mint(app, sub="admin")
         answer = client.post("/authorize", data=self._body(hint))

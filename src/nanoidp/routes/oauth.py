@@ -214,6 +214,8 @@ class _AuthorizeParams:
     prompt: str = ""
     max_age: str = ""
     id_token_hint: str = ""
+    # Sent more than once (RFC 6749 3.1): refused, whatever the values.
+    id_token_hint_repeated: bool = False
     prompts: FrozenSet[str] = frozenset()
     max_age_seconds: Optional[int] = None
     # The subject a verified id_token_hint names (#468), else None.
@@ -318,6 +320,7 @@ def _read_authorize_params() -> _AuthorizeParams:
         prompt=params.get("prompt", ""),
         max_age=params.get("max_age", ""),
         id_token_hint=params.get("id_token_hint", ""),
+        id_token_hint_repeated=len(params.getlist("id_token_hint")) > 1,
         # Presence of a non-empty value, over every repetition
         # (request=&request=<object>, #463 review round 3): what is refused
         # is that an object was sent at all, not any one value of it. A
@@ -415,6 +418,16 @@ def _redirect_form_request_to_get(config: ConfigManager, form: MultiDict) -> Res
     login bound to it. The redirect is followed as a top-level GET, which
     carries the cookie, and the GET is the one reader of a request.
     """
+    # One hint, or none (RFC 6749 3.1: a parameter is not repeated): a
+    # repeated id_token_hint parks nothing, and is refused here, locally,
+    # before any reference is written, as the GET refuses it.
+    if len(form.getlist("id_token_hint")) > 1:
+        return _authorize_reject(
+            form.get("client_id") or None,
+            "id_token_hint repeated",
+            "invalid_request",
+            "id_token_hint must not be repeated",
+        )
     # A hint is parked only for a client this server already knows
     # (declared, runtime, or a cached metadata document): the parked store
     # is bounded, and a sender who names no real client fills nothing. For
@@ -1654,6 +1667,11 @@ def _validate_authorize_authentication_constraints(
             )
         max_age = int(p.max_age)
     hint_subject: Optional[str] = None
+    if p.id_token_hint_repeated:
+        return _authorize_error_redirect(
+            config, p, "invalid_request", "id_token_hint must not be repeated",
+            "id_token_hint repeated",
+        )
     if p.id_token_hint:
         hint = p.id_token_hint
         if is_reference(hint):
@@ -1696,6 +1714,16 @@ def _interaction_required(p: _AuthorizeParams) -> bool:
     return (
         "login" in p.prompts or "select_account" in p.prompts or p.max_age_seconds == 0
     )
+
+
+def _fresh_authentication_required(p: _AuthorizeParams) -> bool:
+    """Once no session answered the request (#468): whether the user's own
+    interaction is what must follow. ``_interaction_required`` asks for it
+    outright; a ``max_age`` that no session satisfied asks for it too (Core
+    3.1.2.1: the End-User MUST be actively re-authenticated), so persona
+    auto-login does not stand in, now or on a later hint-only GET of the
+    transaction this creates."""
+    return _interaction_required(p) or p.max_age_seconds is not None
 
 
 def _answer_from_session(
@@ -1827,7 +1855,7 @@ def _authorize_new_request(
     answered = _answer_from_session(config, loaded, p)
     if answered is not None:
         return answered
-    interaction_required = _interaction_required(p)
+    interaction_required = _fresh_authentication_required(p)
 
     # #250: a login_hint carrying the reserved auto-login prefix bypasses
     # the login page/picker entirely - inert (returns None) unless
@@ -1887,7 +1915,7 @@ def _authorize_direct_post(
         p,
         client,
         requested,
-        interaction_required=_interaction_required(p),
+        interaction_required=_fresh_authentication_required(p),
         bound_subject=p.hint_subject,
     )
     if error is not None:

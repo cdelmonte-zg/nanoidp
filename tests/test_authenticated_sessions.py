@@ -129,6 +129,50 @@ class TestStore:
         assert MAX_AUTHENTICATED_SESSIONS == 1000
 
 
+class TestAReplacementIsOneDecision:
+    def test_a_read_during_a_replacement_finds_the_old_or_the_new_record_never_none(
+        self, monkeypatch
+    ):
+        """A new login replaces the browser's record in one decision: a
+        reader meanwhile sees the record as it was or as it is, never the
+        browser without a session, so a concurrent logout or login cannot
+        catch it half replaced."""
+        import threading
+
+        import nanoidp.services.authenticated_sessions as module
+
+        store = get_authenticated_session_store()
+        now = int(time.time())
+        store.establish(
+            browser_binding="b", username="admin", method="password", auth_time=now - 10, lifetime_seconds=3600
+        )
+        in_the_middle, release = threading.Event(), threading.Event()
+
+        def paused(record):
+            in_the_middle.set()
+            assert release.wait(5)
+
+        monkeypatch.setattr(module, "_about_to_write", paused)
+        writer = threading.Thread(
+            target=lambda: store.establish(
+                browser_binding="b", username="user1", method="persona", auth_time=now, lifetime_seconds=3600
+            )
+        )
+        writer.start()
+        assert in_the_middle.wait(5)
+        seen = []
+        reader = threading.Thread(target=lambda: seen.append(store.live("b")))
+        reader.start()
+        reader.join(0.2)
+        release.set()
+        writer.join(5)
+        reader.join(5)
+
+        assert seen[0] is not None, "the read found the browser without a session"
+        assert seen[0].username in ("admin", "user1")
+        assert store.live("b").username == "user1"
+
+
 class TestSingleSignOn:
     def test_a_second_request_reuses_the_login_with_the_same_auth_time(self, client, app):
         first = _login(client)

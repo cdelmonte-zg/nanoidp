@@ -28,11 +28,11 @@ shares the store.
 """
 
 import time
-from typing import Optional
+from typing import Optional, Union
 
 from pydantic import BaseModel
 
-from .runtime_repository import RuntimeObjectExists, create_within
+from .runtime_repository import Entry, RepositoryTransaction, transact_refusing
 from .runtime_repository import consume as consume_entry
 from .runtime_store import PydanticCodec, RuntimeRepository, get_runtime_store
 
@@ -97,26 +97,27 @@ class AuthenticatedSessionStore:
             auth_time=auth_time,
             expires_at=auth_time + lifetime_seconds,
         )
-        repository = self._repository
-        # The browser's previous record, live or not, makes room for its
-        # own replacement before the cap is counted.
-        consume_entry(repository, browser_binding)
-        try:
-            return create_within(
-                repository,
-                record,
-                MAX_AUTHENTICATED_SESSIONS,
-                expires_at=record.expires_at,
-                full=AuthenticatedSessionStoreFull(
+
+        # One decision (#404): the expired records go, the browser's own
+        # record, live or not, is replaced in place (it holds its slot, so
+        # the cap is not counted against it), and only a browser without one
+        # needs room. No reader, and no concurrent login or logout, can find
+        # the browser between a record and its replacement.
+        def decide(
+            view: RepositoryTransaction[AuthenticatedSession],
+        ) -> Union[Entry[AuthenticatedSession], Exception]:
+            view.delete_expired(time.time())
+            _about_to_write(record)
+            if view.entry(browser_binding) is not None:
+                view.replace(browser_binding, record)
+                return view.set_expires_at(browser_binding, record.expires_at)
+            if view.count() >= MAX_AUTHENTICATED_SESSIONS:
+                return AuthenticatedSessionStoreFull(
                     f"{MAX_AUTHENTICATED_SESSIONS} browsers already hold a live session"
-                ),
-            ).value
-        except RuntimeObjectExists:
-            # A concurrent login of the same browser got in between the two
-            # steps: its record is this browser's too, and as fresh.
-            current = repository.get(browser_binding)
-            assert current is not None
-            return current
+                )
+            return view.create(record, record.expires_at)
+
+        return transact_refusing(self._repository, decide).value
 
     def live(self, browser_binding: Optional[str]) -> Optional[AuthenticatedSession]:
         """This browser's record, if live now."""
@@ -139,6 +140,11 @@ class AuthenticatedSessionStore:
     def delete_all(self) -> int:
         """End every session: a runtime reset."""
         return self._repository.delete_all()
+
+
+def _about_to_write(record: AuthenticatedSession) -> None:
+    """Called inside the establishing decision, just before it writes: a
+    seam for a test to hold the decision open and read meanwhile."""
 
 
 def get_authenticated_session_store() -> AuthenticatedSessionStore:

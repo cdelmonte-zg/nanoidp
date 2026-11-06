@@ -108,7 +108,9 @@ it with `login_required`. `prompt=login` and `max_age=0` ask for the user's own
 interaction: the login page, whatever session exists, a new `auth_time`,
 and no auto-login, not even on a later hint-only GET resuming that
 transaction. `max_age=N` reuses a session whose authentication is no
-older than N seconds and shows the page otherwise. `prompt=consent` is
+older than N seconds and shows the page otherwise, and that page asks the
+user: a `max_age` no session satisfied is actively re-authenticated, not
+auto-logged in. `prompt=consent` is
 `consent_required`: there is no consent screen. `prompt=select_account`
 is `account_selection_required` under password mode, and the picker, as
 an interaction, under persona mode. `prompt=none` combined with another
@@ -118,7 +120,8 @@ server keys (signature by `kid`, issuer, an ID token; its expiry does not
 matter) and names the subject: a session for that user is reused, one for
 another is not, and a login that follows is accepted only from that user,
 any other being `login_required`; a hint that does not verify is
-`invalid_request`. In a form POST (#467) the hint never enters the URL:
+`invalid_request`, and so is a repeated `id_token_hint`. In a form POST
+(#467) the hint never enters the URL:
 the 303 carries a single-use reference, resolved by the GET within a
 minute. The hint is parked only for a client the server already knows
 (declared, runtime, or a cached metadata document); for any other the
