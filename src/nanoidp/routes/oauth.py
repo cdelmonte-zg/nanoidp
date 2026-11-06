@@ -8,7 +8,7 @@ import os
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
-from urllib.parse import parse_qsl
+from urllib.parse import parse_qsl, urlencode
 
 import jwt as pyjwt
 from flask import (
@@ -25,6 +25,7 @@ from flask import (
     url_for,
 )
 from flask.typing import ResponseReturnValue
+from werkzeug.datastructures import MultiDict
 from werkzeug.exceptions import ClientDisconnected, RequestEntityTooLarge
 
 from ..branding import effective_logos_dir, resolve_client_logo
@@ -77,6 +78,7 @@ from ._audit import audit_event
 from ._auth import (
     PENDING_SECOND_FACTOR_FIELD,
     SECOND_FACTOR_STORE_FULL,
+    TOTP_CODE_FIELD,
     AuthMethod,
     SecondFactorPhase,
     TwoStepPhase,
@@ -188,11 +190,12 @@ class _AuthorizeParams:
     nonce: str
     claims_param: str
     resources: List[str]
-    # OIDC Core 3.1.2.1 (#250): read from the CURRENT GET only and never
-    # stored - unlike the fields above, login_hint decides WHO gets
-    # authenticated (#318 review round 1, blocking 1; #325 review round 1,
-    # point 6). Ignored unless it carries the reserved 'persona-auto-login:'
-    # prefix - see _try_persona_auto_login.
+    # OIDC Core 3.1.2.1 (#250): read from the CURRENT GET only (a form POST
+    # carrying the request becomes that GET, #467) and never stored -
+    # unlike the fields above, login_hint decides WHO gets authenticated
+    # (#318 review round 1, blocking 1; #325 review round 1, point 6).
+    # Ignored unless it carries the reserved 'persona-auto-login:' prefix -
+    # see _try_persona_auto_login.
     login_hint: str
     # OIDC Core 6.1 / 6.2 (#463): the request-object parameter a new
     # request's query string carries with a non-empty value - "request"
@@ -223,23 +226,55 @@ _AUTHORIZE_REQUEST_FIELDS = (
 )
 
 
-def _requested_fields() -> Dict[str, List[str]]:
-    """The OAuth request fields this request's query string carries, as sent.
+# Every field _read_authorize_params reads (#467): the request fields and
+# login_hint, which is read but is not what makes a request. A
+# form-serialized request carries exactly these into its GET form, so a
+# field the reader gains must be added here (pinned by a test).
+_AUTHORIZE_READ_FIELDS = _AUTHORIZE_REQUEST_FIELDS + ("login_hint",)
+
+# What a non-empty request-object value becomes in the GET form of a form
+# POST (#467): the GET refuses any non-empty value (#463) and never reads
+# it, so the object itself has no reason to reach a URL.
+_REQUEST_OBJECT_PLACEHOLDER = "unsupported"
+
+# The fields a login POST carries (#467): any of them present, even empty,
+# makes a POST a login - the continuation of a transaction, named by
+# ``transaction_id`` or resumed - and never an authorization request to
+# redirect to its GET form. The login page's forms send them; a script that
+# posts credentials after its GET sends them; a form-serialized
+# authorization request (Core 3.1.2.1) sends none of them.
+_AUTHORIZE_LOGIN_FIELDS = (
+    "transaction_id",
+    "username",
+    "password",
+    TOTP_CODE_FIELD,
+    PENDING_SECOND_FACTOR_FIELD,
+    "change_username",
+)
+
+
+def _requested_fields(source: MultiDict) -> Dict[str, List[str]]:
+    """The OAuth request fields ``source`` carries, as sent: a request's
+    query string, or the body of a POST asked whether it is a
+    form-serialized request (#467).
 
     Presence, not truthiness, makes a field part of the request (#329
     review): ``client_id=`` is a request with an empty client_id, not no
-    request. Unrelated query parameters are not request fields (#328).
+    request. Unrelated parameters are not request fields (#328).
     """
     return {
-        field: request.args.getlist(field)
+        field: source.getlist(field)
         for field in _AUTHORIZE_REQUEST_FIELDS
-        if field in request.args
+        if field in source
     }
 
 
 def _read_authorize_params() -> _AuthorizeParams:
-    """A new request, read in full from this GET's query string, with empty
-    defaults for what it omits (#328)."""
+    """A new request, read in full from this request's query string - a
+    GET's, or the direct POST's - with empty defaults for what it omits
+    (#328). A form POST carrying the request never reaches a reader: it is
+    redirected to its GET form first (#467), so the query string is the one
+    place a request is read from."""
     params = request.args
     return _AuthorizeParams(
         response_type=params.get("response_type", ""),
@@ -289,11 +324,14 @@ def _params_of(transaction: AuthorizationTransaction, login_hint: str = "") -> _
 
 
 def _audit_body_oauth_fields() -> None:
-    """Keep the audit visibility a POST /authorize carrying OAuth fields in
-    its body has had since #325 (review round 1, point 5).
+    """Keep the audit visibility a login POST /authorize carrying OAuth
+    fields in its body has had since #325 (review round 1, point 5).
 
     The login form never legitimately carries them, so any of them showing
-    up in the POST body is a forged request; they are never read.
+    up beside a login field, a ``transaction_id`` or the direct entry
+    point's query string is a forged request; they are never read. A POST
+    whose body carries them and nothing of a login is not a login but an
+    authorization request, redirected to its GET form (#467) before this.
     """
     # Any non-empty value over every repetition, as the query reader does
     # for the two refused fields (#463): an empty first value hides nothing.
@@ -307,6 +345,52 @@ def _audit_body_oauth_fields() -> None:
         client_id=request.form.get("client_id") or None,
         details={"reason": "OAuth parameters in POST body are ignored", "fields": forged},
     )
+
+
+def _is_form_serialized_request(requested: Dict[str, List[str]], form: MultiDict) -> bool:
+    """Whether a POST is an authorization request serialized as a form
+    (OIDC Core 3.1.2.1, #467): its query string carries no request field
+    (``requested``: those make it the direct entry point), its body
+    carries no login field - present, even empty, a login field makes the
+    POST a login, which never reads OAuth parameters from its body (#325)
+    - and its body carries a request field. A login POST with no query
+    string resumes or names a transaction.
+    """
+    if requested or any(field in form for field in _AUTHORIZE_LOGIN_FIELDS):
+        return False
+    return bool(_requested_fields(form))
+
+
+def _redirect_form_request_to_get(form: MultiDict) -> ResponseReturnValue:
+    """Answer a form-serialized authorization request with a 303 to the
+    same request in GET form (#467): the fields the GET reads, from the
+    body only, as sent - empty and repeated values included, a repeated
+    field's values in their order. The body is the request: the POST's own
+    query string carries no request field (the classification above), and
+    a ``login_hint`` in it is not the request's. Nothing else in the body
+    reaches the URL: an unexpected field is not read by the GET anyway, and
+    a non-empty ``request`` or ``request_uri`` value becomes a placeholder,
+    so the GET refuses the request as it refuses any such (#463) without
+    the object entering a URL, a log or a history.
+
+    Served in place, a cross-site form POST would arrive without the
+    session cookie - ``SameSite=Lax``, sent on a top-level GET navigation
+    and not on a cross-site POST - and its login page would replace the
+    browser's session, with the transactions, second factor and web UI
+    login bound to it. The redirect is followed as a top-level GET, which
+    carries the cookie, and the GET is the one reader of a request.
+    """
+    carried = [
+        (
+            field,
+            _REQUEST_OBJECT_PLACEHOLDER
+            if value and field in ("request", "request_uri")
+            else value,
+        )
+        for field in _AUTHORIZE_READ_FIELDS
+        for value in form.getlist(field)
+    ]
+    return redirect(f"{url_for('oauth.authorize')}?{urlencode(carried)}", code=303)
 
 
 def _refuse_without_transaction(
@@ -1557,8 +1641,14 @@ def authorize() -> ResponseReturnValue:
     POST with ``transaction_id``: continue that transaction.
     POST without one, with a complete OAuth request in its query string:
     the direct entry point, validated on that POST.
-    POST with neither: continue this browser's one pending transaction.
-    OAuth parameters are never read from a POST body (#325).
+    POST with neither and no login field, with OAuth request parameters in
+    its body: the authorization request serialized as a form (OIDC Core
+    3.1.2.1, #467), answered with a 303 to the same request as a GET, which
+    the browser follows with its session cookie.
+    POST with none of those: continue this browser's one pending
+    transaction.
+    OAuth parameters are never read from a POST body (#325): a login
+    field, even empty, or a ``transaction_id`` makes a POST a login.
 
     Required:
     - response_type: "code" for Authorization Code Flow
@@ -1573,7 +1663,7 @@ def authorize() -> ResponseReturnValue:
     - nonce: OIDC nonce for ID token
     """
     config = get_config()
-    requested = _requested_fields()
+    requested = _requested_fields(request.args)
 
     if request.method == "GET":
         if requested:
@@ -1591,6 +1681,8 @@ def authorize() -> ResponseReturnValue:
             return auto_login_response
         return _render_authorize_login(config, transaction, None)
 
+    if _is_form_serialized_request(requested, request.form):
+        return _redirect_form_request_to_get(request.form)
     _audit_body_oauth_fields()
     transaction_id = request.form.get("transaction_id", "")
     if not transaction_id and requested:

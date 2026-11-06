@@ -60,7 +60,7 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urljoin, urlparse
 
 try:
     import requests
@@ -1360,6 +1360,107 @@ class NanoIDPTestAgent:
         except Exception as e:
             return self._add_result(
                 "Request Objects Refused", TestCategory.OAUTH, False, f"Error: {e}"
+            )
+
+    def test_authorization_request_as_form_post(self) -> TestResult:
+        """An authorization request sent as a form POST (#467, OIDC Core
+        3.1.2.1): the request fields in the body of a POST to the bare
+        /authorize, no cookie, the way the conformance suite's browser sends
+        it. Expected: a 303 to the same request in GET form, which renders
+        a login page naming a transaction, then a code to the body's
+        redirect_uri with the body's state. A body that also carries a
+        login field, even empty, is a login, not a request: with nothing
+        pending it is refused, and its OAuth fields are never read.
+        """
+        state = "e2e-467"
+        request_body = {
+            "response_type": "code",
+            "client_id": "registered-client",
+            "redirect_uri": "http://localhost:3000/callback",
+            "scope": "openid",
+            "state": state,
+            "nonce": secrets.token_urlsafe(16),
+        }
+        try:
+            sess = requests.Session()
+            answer = sess.post(
+                f"{self.base_url}/authorize", data=request_body,
+                allow_redirects=False, timeout=5,
+            )
+            # The Location is a relative reference (RFC 7231 7.1.2), resolved
+            # against the request URL as a browser does.
+            target = urljoin(f"{self.base_url}/authorize", answer.headers.get("Location", ""))
+            redirect_ok = (
+                answer.status_code == 303
+                and urlparse(target).path == "/authorize"
+                and parse_qs(urlparse(target).query).get("state") == [state]
+            )
+            page = sess.get(target, allow_redirects=False, timeout=5) if redirect_ok else answer
+            match = re.search(r'name="transaction_id" value="([^"]+)"', page.text)
+            page_ok = redirect_ok and page.status_code == 200 and match is not None
+            done_status = None
+            done_params: Dict[str, List[str]] = {}
+            if match is not None:
+                done = sess.post(
+                    f"{self.base_url}/authorize",
+                    data={
+                        "transaction_id": match.group(1),
+                        "username": self.username,
+                        "password": self.password,
+                    },
+                    allow_redirects=False, timeout=5,
+                )
+                done_status = done.status_code
+                done_location = done.headers.get("Location", "")
+                done_params = parse_qs(urlparse(done_location).query)
+                code_ok = (
+                    done.status_code == 302
+                    and done_location.startswith("http://localhost:3000/callback")
+                    and "code" in done_params
+                    and done_params.get("state") == [state]
+                )
+            else:
+                code_ok = False
+            # Negative: a login field beside the request, even empty, makes
+            # it a login. With a request pending in the session it continues
+            # that one (its page, "Username is required") instead of being
+            # redirected as a new request; its OAuth fields are not read.
+            other = requests.Session()
+            pending = other.get(
+                f"{self.base_url}/authorize",
+                params={**request_body, "state": "e2e-467-pending"},
+                allow_redirects=False, timeout=5,
+            )
+            pending_match = re.search(r'name="transaction_id" value="([^"]+)"', pending.text)
+            refused = other.post(
+                f"{self.base_url}/authorize", data={**request_body, "username": ""},
+                allow_redirects=False, timeout=5,
+            )
+            refused_ok = (
+                pending_match is not None
+                and refused.status_code == 200
+                and "Location" not in refused.headers
+                and f'name="transaction_id" value="{pending_match.group(1)}"' in refused.text
+            )
+            return self._add_result(
+                "Authorization Request As Form POST",
+                TestCategory.OAUTH,
+                page_ok and code_ok and refused_ok,
+                "body request: 303 to its GET form, login page, then a code with "
+                "the body's state; body request beside an empty login field: the "
+                "pending request's page, fields not read",
+                {
+                    "redirect_status": answer.status_code,
+                    "page_status": page.status_code,
+                    "transaction_named": match is not None,
+                    "login_status": done_status,
+                    "state_returned": done_params.get("state"),
+                    "refused_status": refused.status_code,
+                },
+            )
+        except Exception as e:
+            return self._add_result(
+                "Authorization Request As Form POST", TestCategory.OAUTH, False, f"Error: {e}"
             )
 
     def test_redirect_uri_exact_matching(self) -> TestResult:
@@ -6891,6 +6992,7 @@ class NanoIDPTestAgent:
                 self.test_resource_indicators,
                 self.test_redirect_uri_exact_matching,
                 self.test_request_objects_refused,
+                self.test_authorization_request_as_form_post,
                 self.test_native_app_redirect_uris,
                 self.test_scope_enforcement,
                 self.test_client_branding,
