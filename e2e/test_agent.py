@@ -1463,6 +1463,113 @@ class NanoIDPTestAgent:
                 "Authorization Request As Form POST", TestCategory.OAUTH, False, f"Error: {e}"
             )
 
+    def test_authenticated_session(self) -> TestResult:
+        """An authenticated browser session at /authorize (#468, OIDC Core
+        3.1.2.1), on the default login.session_minutes. In one cookie jar:
+        a login, then a bare request answered with a code and no page, the
+        two ID tokens carrying one auth_time; prompt=login showing the page
+        again; prompt=none with id_token_hint answered with a code; after
+        /logout, prompt=none answered login_required. In a fresh jar,
+        prompt=none is login_required and prompt=consent is
+        consent_required, both to the redirect_uri with state.
+        """
+        redirect_uri = "http://localhost:3000/callback"
+        base = {
+            "response_type": "code",
+            "client_id": "registered-client",
+            "redirect_uri": redirect_uri,
+            "scope": "openid",
+        }
+
+        def token_of(sess, code):
+            resp = sess.post(
+                f"{self.base_url}/token",
+                data={"grant_type": "authorization_code", "code": code, "redirect_uri": redirect_uri},
+                auth=("registered-client", "registered-secret"),
+                timeout=5,
+            )
+            return resp.json() if resp.status_code == 200 else {}
+
+        def params_of(resp):
+            return parse_qs(urlparse(resp.headers.get("Location", "")).query)
+
+        checks: Dict[str, bool] = {}
+        try:
+            sess = requests.Session()
+            page = sess.get(
+                f"{self.base_url}/authorize", params={**base, "state": "s1"},
+                allow_redirects=False, timeout=5,
+            )
+            match = re.search(r'name="transaction_id" value="([^"]+)"', page.text)
+            done = sess.post(
+                f"{self.base_url}/authorize",
+                data={"transaction_id": match.group(1) if match else "", "username": self.username, "password": self.password},
+                allow_redirects=False, timeout=5,
+            )
+            first = token_of(sess, params_of(done).get("code", [""])[0])
+            first_claims = jwt.decode(first.get("id_token", ""), options={"verify_signature": False}) if first else {}
+            checks["login"] = bool(first_claims)
+
+            time.sleep(1.1)
+            reused = sess.get(
+                f"{self.base_url}/authorize", params={**base, "state": "s2"},
+                allow_redirects=False, timeout=5,
+            )
+            second = token_of(sess, params_of(reused).get("code", [""])[0])
+            second_claims = jwt.decode(second.get("id_token", ""), options={"verify_signature": False}) if second else {}
+            checks["sso_without_page"] = reused.status_code == 302 and "code" in params_of(reused)
+            checks["same_auth_time"] = (
+                bool(second_claims) and second_claims.get("auth_time") == first_claims.get("auth_time")
+            )
+
+            again = sess.get(
+                f"{self.base_url}/authorize", params={**base, "state": "s3", "prompt": "login"},
+                allow_redirects=False, timeout=5,
+            )
+            checks["prompt_login_shows_page"] = again.status_code == 200 and 'name="transaction_id"' in again.text
+
+            hinted = sess.get(
+                f"{self.base_url}/authorize",
+                params={**base, "state": "s4", "prompt": "none", "id_token_hint": first.get("id_token", "")},
+                allow_redirects=False, timeout=5,
+            )
+            checks["hint_with_session"] = "code" in params_of(hinted)
+
+            sess.get(f"{self.base_url}/logout", allow_redirects=False, timeout=5)
+            after = sess.get(
+                f"{self.base_url}/authorize", params={**base, "state": "s5", "prompt": "none"},
+                allow_redirects=False, timeout=5,
+            )
+            checks["logout_ends_it"] = params_of(after).get("error") == ["login_required"]
+
+            fresh = requests.Session()
+            none = fresh.get(
+                f"{self.base_url}/authorize", params={**base, "state": "s6", "prompt": "none"},
+                allow_redirects=False, timeout=5,
+            )
+            checks["prompt_none_not_logged_in"] = (
+                params_of(none).get("error") == ["login_required"] and params_of(none).get("state") == ["s6"]
+            )
+            consent = fresh.get(
+                f"{self.base_url}/authorize", params={**base, "state": "s7", "prompt": "consent"},
+                allow_redirects=False, timeout=5,
+            )
+            checks["consent_required"] = params_of(consent).get("error") == ["consent_required"]
+
+            return self._add_result(
+                "Authenticated Session",
+                TestCategory.OAUTH,
+                all(checks.values()),
+                "login remembered: bare request answered with a code, same auth_time; "
+                "prompt=login shows the page; hint reuses; logout ends; prompt=none "
+                "and consent refused without a session",
+                checks,
+            )
+        except Exception as e:
+            return self._add_result(
+                "Authenticated Session", TestCategory.OAUTH, False, f"Error: {e}"
+            )
+
     def test_redirect_uri_exact_matching(self) -> TestResult:
         """Registered redirect URIs are enforced with exact matching (issue #67).
 
@@ -5512,7 +5619,15 @@ class NanoIDPTestAgent:
             checks["exactly_one_promoted_event"] = len(promoted_events) == 1
 
             reset = self.session.delete(base, timeout=5)
-            checks["reset_counts"] = reset.status_code == 200 and reset.json() == {"users_deleted": 1, "clients_deleted": 1}
+            # sessions_ended (#468) counts the browsers logged in at
+            # /authorize, which earlier probes of this run may have left.
+            reset_body = reset.json() if reset.status_code == 200 else {}
+            checks["reset_counts"] = (
+                reset.status_code == 200
+                and {k: reset_body.get(k) for k in ("users_deleted", "clients_deleted")}
+                == {"users_deleted": 1, "clients_deleted": 1}
+                and isinstance(reset_body.get("sessions_ended"), int)
+            )
             refused = requests.post(
                 f"{self.base_url}/token",
                 data={"grant_type": "password", "username": username, "password": "rt-pw"},
@@ -6993,6 +7108,7 @@ class NanoIDPTestAgent:
                 self.test_redirect_uri_exact_matching,
                 self.test_request_objects_refused,
                 self.test_authorization_request_as_form_post,
+                self.test_authenticated_session,
                 self.test_native_app_redirect_uris,
                 self.test_scope_enforcement,
                 self.test_client_branding,

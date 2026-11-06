@@ -381,6 +381,26 @@ a challenge store, replay protection, an administrator reset/recovery flow
 `login.totp` was turned on. A demo needs the visible flow. The rest is
 what a production IdP needs.
 
+### Authenticated session
+
+`login.session_minutes` (default `60`, #468) is how long a browser's login
+at `/authorize` lives, counted from the authentication and not renewed by
+reuse. While it lives, a request without `prompt`, `max_age` or
+`id_token_hint` is answered with a code and no login page (single
+sign-on), `prompt=none` succeeds, and `max_age` and `id_token_hint` are
+checked against it; `prompt=login` and `max_age=0` always show the login
+page. `0` disables the session: every request logs in again, as before
+3.5. The session is distinct from the web UI's login, and `/device` and
+SAML neither create nor use it. `/logout` and `DELETE /api/runtime` end
+it. The rules per parameter are in the
+[endpoints reference](endpoints.md).
+
+```yaml
+# settings.yaml
+login:
+  session_minutes: 60   # default; 0 disables, at most 10080 (a week)
+```
+
 ## Settings (`config/settings.yaml`)
 
 ```yaml
@@ -519,6 +539,7 @@ saml:
 #   auto_login: true  # default: false; requires mode: persona - see "Auto-login" above
 #   two_step: true    # default: false; see "Two-step login" above
 #   totp: true         # default: false; see "Second factor (TOTP)" above
+#   session_minutes: 60  # default; 0 disables - see "Authenticated session" above
 
 # Optional; how an unknown key is reported - see "Validating your configuration"
 # below. Also settable at startup with --strict-config, which wins over this
