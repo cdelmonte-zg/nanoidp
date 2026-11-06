@@ -193,7 +193,7 @@ class TestReset:
 
         response = client.delete("/api/runtime")
 
-        assert response.get_json() == {"users_deleted": 2, "clients_deleted": 1}
+        assert response.get_json() == {"users_deleted": 2, "clients_deleted": 1, "sessions_ended": 0}
         assert client.get("/api/runtime/users").get_json()["count"] == 0
         assert client.post(
             "/token",
@@ -201,7 +201,7 @@ class TestReset:
             headers=_basic("demo-client", "demo-secret"),
         ).status_code == 400
         assert _files(config_dir) == before
-        assert _events("runtime_identities_reset")[0]["details"] == {"users_deleted": 2, "clients_deleted": 1}
+        assert _events("runtime_identities_reset")[0]["details"] == {"users_deleted": 2, "clients_deleted": 1, "sessions_ended": 0}
 
 
 class TestPromotion:
@@ -421,7 +421,7 @@ class TestPromotionAcrossFailuresAndConcurrency:
         resetter.join()
 
         assert results["promote"] == 200
-        assert results["reset"] == {"users_deleted": 0, "clients_deleted": 1}
+        assert results["reset"] == {"users_deleted": 0, "clients_deleted": 1, "sessions_ended": 0}
         assert len(_events("runtime_identity_promoted")) == 1
 
     def test_reset_keeps_an_object_whose_promotion_awaits_a_successful_reload(self, idp):
@@ -432,7 +432,7 @@ class TestPromotionAcrossFailuresAndConcurrency:
         settings.write_text("oauth: [broken\n")
         assert client.post("/api/runtime/users/ci-alice/promote").status_code == 500
 
-        assert client.delete("/api/runtime").get_json() == {"users_deleted": 0, "clients_deleted": 1}
+        assert client.delete("/api/runtime").get_json() == {"users_deleted": 0, "clients_deleted": 1, "sessions_ended": 0}
         assert client.get("/api/runtime/users/ci-alice").status_code == 200
 
         settings.write_text(good)

@@ -7,7 +7,8 @@ import logging
 import os
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+from datetime import datetime, timezone
+from typing import Any, Dict, FrozenSet, List, Optional, Sequence, Tuple, Union
 from urllib.parse import parse_qsl, urlencode
 
 import jwt as pyjwt
@@ -41,6 +42,11 @@ from ..services import (
     identities_for,
 )
 from ..services.auth_code import CODE_LIFETIME_SECONDS
+from ..services.authenticated_sessions import (
+    AuthenticatedSession,
+    AuthenticatedSessionStoreFull,
+    get_authenticated_session_store,
+)
 from ..services.authorization_transactions import (
     AuthorizationParameters,
     AuthorizationTransaction,
@@ -63,6 +69,12 @@ from ..services.device_code import (
     DeviceCodeStoreFull,
 )
 from ..services.discovery import issuer_qualifies_for_iss_parameter
+from ..services.id_token_hint_references import (
+    UNPARKED_REFERENCE,
+    ParkedHintStoreFull,
+    get_parked_hint_store,
+    is_reference,
+)
 from ..services.introspection import build_introspection_response
 from ..services.redirect_uri import (
     append_authorization_params,
@@ -197,6 +209,17 @@ class _AuthorizeParams:
     # Ignored unless it carries the reserved 'persona-auto-login:' prefix -
     # see _try_persona_auto_login.
     login_hint: str
+    # OIDC Core 3.1.2.1 (#468): the authentication constraints, as sent;
+    # read into prompts / max_age_seconds by the validator.
+    prompt: str = ""
+    max_age: str = ""
+    id_token_hint: str = ""
+    # Sent more than once (RFC 6749 3.1): refused, whatever the values.
+    id_token_hint_repeated: bool = False
+    prompts: FrozenSet[str] = frozenset()
+    max_age_seconds: Optional[int] = None
+    # The subject a verified id_token_hint names (#468), else None.
+    hint_subject: Optional[str] = None
     # OIDC Core 6.1 / 6.2 (#463): the request-object parameter a new
     # request's query string carries with a non-empty value - "request"
     # (Core 6.1), else "request_uri" (Core 6.2), else None - read only to
@@ -230,7 +253,12 @@ _AUTHORIZE_REQUEST_FIELDS = (
 # login_hint, which is read but is not what makes a request. A
 # form-serialized request carries exactly these into its GET form, so a
 # field the reader gains must be added here (pinned by a test).
-_AUTHORIZE_READ_FIELDS = _AUTHORIZE_REQUEST_FIELDS + ("login_hint",)
+_AUTHORIZE_READ_FIELDS = _AUTHORIZE_REQUEST_FIELDS + (
+    "login_hint",
+    "prompt",
+    "max_age",
+    "id_token_hint",
+)
 
 # What a non-empty request-object value becomes in the GET form of a form
 # POST (#467): the GET refuses any non-empty value (#463) and never reads
@@ -289,6 +317,10 @@ def _read_authorize_params() -> _AuthorizeParams:
         # RFC 8707 resource is repeatable (#187): read every value.
         resources=params.getlist("resource"),
         login_hint=params.get("login_hint", ""),
+        prompt=params.get("prompt", ""),
+        max_age=params.get("max_age", ""),
+        id_token_hint=params.get("id_token_hint", ""),
+        id_token_hint_repeated=len(params.getlist("id_token_hint")) > 1,
         # Presence of a non-empty value, over every repetition
         # (request=&request=<object>, #463 review round 3): what is refused
         # is that an object was sent at all, not any one value of it. A
@@ -335,7 +367,13 @@ def _audit_body_oauth_fields() -> None:
     """
     # Any non-empty value over every repetition, as the query reader does
     # for the two refused fields (#463): an empty first value hides nothing.
-    forged = [field for field in _AUTHORIZE_REQUEST_FIELDS if any(request.form.getlist(field))]
+    # The request fields, and the three a request may carry beside them
+    # (#468) - never login_hint, which the login page itself may post.
+    forged = [
+        field
+        for field in _AUTHORIZE_REQUEST_FIELDS + ("prompt", "max_age", "id_token_hint")
+        if any(request.form.getlist(field))
+    ]
     if not forged:
         return
     audit_event(
@@ -361,7 +399,7 @@ def _is_form_serialized_request(requested: Dict[str, List[str]], form: MultiDict
     return bool(_requested_fields(form))
 
 
-def _redirect_form_request_to_get(form: MultiDict) -> ResponseReturnValue:
+def _redirect_form_request_to_get(config: ConfigManager, form: MultiDict) -> ResponseReturnValue:
     """Answer a form-serialized authorization request with a 303 to the
     same request in GET form (#467): the fields the GET reads, from the
     body only, as sent - empty and repeated values included, a repeated
@@ -380,17 +418,64 @@ def _redirect_form_request_to_get(form: MultiDict) -> ResponseReturnValue:
     login bound to it. The redirect is followed as a top-level GET, which
     carries the cookie, and the GET is the one reader of a request.
     """
-    carried = [
-        (
-            field,
-            _REQUEST_OBJECT_PLACEHOLDER
-            if value and field in ("request", "request_uri")
-            else value,
+    # One hint, or none (RFC 6749 3.1: a parameter is not repeated): a
+    # repeated id_token_hint parks nothing, and is refused here, locally,
+    # before any reference is written, as the GET refuses it.
+    if len(form.getlist("id_token_hint")) > 1:
+        return _authorize_reject(
+            form.get("client_id") or None,
+            "id_token_hint repeated",
+            "invalid_request",
+            "id_token_hint must not be repeated",
         )
-        for field in _AUTHORIZE_READ_FIELDS
-        for value in form.getlist(field)
-    ]
+    # A hint is parked only for a client this server already knows
+    # (declared, runtime, or a cached metadata document): the parked store
+    # is bounded, and a sender who names no real client fills nothing. For
+    # a client it would first have to fetch, the hint becomes a reference
+    # that resolves to nothing and the GET refuses the request
+    # (invalid_request), rather than serving it without the hint.
+    known_client = any(form.getlist("id_token_hint")) and bool(
+        form.get("client_id")
+        and identities_for(config, request_config()).get_client(form.get("client_id", ""))
+    )
+    try:
+        carried = [
+            (field, _carried_value(field, value, known_client))
+            for field in _AUTHORIZE_READ_FIELDS
+            for value in form.getlist(field)
+        ]
+    except ParkedHintStoreFull:
+        # Nothing of the request was validated yet, so this stays local,
+        # like a refusal before the redirect_uri; retryable, hence 503.
+        audit_event(
+            "authorization_request",
+            "failed",
+            endpoint="/authorize",
+            client_id=form.get("client_id") or None,
+            details={"reason": "too many id_token_hint references parked"},
+        )
+        return (
+            jsonify(
+                {
+                    "error": "temporarily_unavailable",
+                    "error_description": "The authorization request could not be accepted, please try again",
+                }
+            ),
+            503,
+        )
     return redirect(f"{url_for('oauth.authorize')}?{urlencode(carried)}", code=303)
+
+
+def _carried_value(field: str, value: str, known_client: bool) -> str:
+    """What a body field's value becomes in the GET form (#467, #468): a
+    request object a placeholder, an ID token hint a parked reference
+    (or one that resolves to nothing, for a client not known), anything
+    else itself."""
+    if value and field in ("request", "request_uri"):
+        return _REQUEST_OBJECT_PLACEHOLDER
+    if value and field == "id_token_hint":
+        return get_parked_hint_store().park(value) if known_client else UNPARKED_REFERENCE
+    return value
 
 
 def _refuse_without_transaction(
@@ -965,6 +1050,86 @@ def _hold_cached_client_for_the_code(
     return retain_cached_client_until(p.client_id, time.time() + CODE_LIFETIME_SECONDS)
 
 
+def _record_authenticated_session(
+    loaded: ConfigSnapshot,
+    username: str,
+    method: AuthMethod,
+    auth_time: int,
+    reused: Optional[AuthenticatedSession],
+) -> str:
+    """Keep the browser's authenticated session up to date for the code
+    being issued (#468), and say what happened, for the audit: "reused",
+    "established", "disabled" (``login.session_minutes`` is 0) or
+    "not kept, store full"."""
+    if reused is not None:
+        return "reused"
+    lifetime = loaded.settings.authenticated_session_seconds
+    if lifetime <= 0:
+        return "disabled"
+    binding = browser_flow_binding(create=True)
+    if not binding:
+        # Never with create=True; and a session keyed by nothing would be
+        # every cookieless browser's, so none is kept.
+        return "not kept, no browser binding"
+    try:
+        get_authenticated_session_store().establish(
+            browser_binding=binding,
+            username=username,
+            method=method.value,
+            auth_time=auth_time,
+            lifetime_seconds=lifetime,
+        )
+    except AuthenticatedSessionStoreFull:
+        return "not kept, store full"
+    return "established"
+
+
+def _usable_session(
+    config: ConfigManager, loaded: ConfigSnapshot
+) -> Optional[Tuple[AuthenticatedSession, User]]:
+    """This browser's live authenticated session (#468) with its user
+    resolved again, or None.
+
+    A session is only as good as the login it records is today: the user
+    must still exist; a persona selection counts only while persona mode
+    is on; a password login counts only while a password is what the
+    login mode asks for, and not once a TOTP code has become required of
+    that user (``login.totp`` turned on, or the user given a secret) that
+    the session never checked. A password-and-code login counts under
+    password mode whatever the TOTP setting now says.
+    """
+    settings = loaded.settings
+    if settings.authenticated_session_seconds <= 0:
+        # 0 disables reuse as well as keeping: a session established under
+        # an earlier setting is not consulted.
+        return None
+    record = get_authenticated_session_store().live(browser_flow_binding())
+    if record is None or record.age() > settings.authenticated_session_seconds:
+        # The setting in force now bounds a session too: lowering it
+        # shortens the sessions already established, as the reference says.
+        return None
+    user = identities_for(config, loaded).get_user(record.username)
+    if user is None:
+        return None
+    persona = settings.persona_mode_enabled
+    if record.method == AuthMethod.PERSONA.value:
+        usable = persona
+    elif record.method == AuthMethod.PASSWORD.value:
+        usable = not persona and not (settings.totp_active and bool(user.totp_secret))
+    elif record.method == AuthMethod.PASSWORD_OTP.value:
+        usable = not persona
+    else:
+        usable = False
+    return (record, user) if usable else None
+
+
+def _session_amr(loaded: ConfigSnapshot, method: AuthMethod) -> Optional[Sequence[str]]:
+    """The amr a reused session's code carries: the method's, gated on
+    ``login.totp`` being active exactly as a fresh login's is
+    (``authenticate_interactively``)."""
+    return method.amr if loaded.settings.totp_active else None
+
+
 def _issue_authorization_code(
     config: ConfigManager,
     p: _AuthorizeParams,
@@ -973,16 +1138,27 @@ def _issue_authorization_code(
     transaction: Optional[AuthorizationTransaction] = None,
     verified_username: Optional[str] = None,
     auto_login: bool = False,
+    method: AuthMethod,
     amr: Optional[Sequence[str]] = None,
+    reused: Optional[AuthenticatedSession] = None,
 ) -> ResponseReturnValue:
     """Consume the transaction, mint the code, audit success and redirect to
     the client - shared by a normal inline login (``_handle_authorize_login``),
-    the TOTP step (``_complete_second_factor``) and #250's persona auto-login
-    (``_try_persona_auto_login``), which are otherwise indistinguishable on
-    the wire once a user is known. ``auto_login`` only affects the audit
-    record and log line. ``amr`` (#348) is the OIDC amr for the login that
-    produced this code - ``None`` for a persona/auto-login, since no
-    password was checked.
+    the TOTP step (``_complete_second_factor``), #250's persona auto-login
+    (``_try_persona_auto_login``) and the reuse of an authenticated session
+    (#468), which are otherwise indistinguishable on the wire once a user
+    is known. ``auto_login`` only affects the audit record and log line.
+    ``method`` is how the user authenticated; ``amr`` (#348) is the OIDC amr
+    for that login - ``None`` for a persona/auto-login, since no password
+    was checked.
+
+    ``reused`` is the authenticated session this code rests on (#468): its
+    ``auth_time`` is the code's, and no new session is recorded. Otherwise
+    the user authenticated now: ``auth_time`` is now, and the browser's
+    session is established (replacing any it had) for
+    ``login.session_minutes``, unless that is 0, or every slot is held by
+    another browser, in which case the login completes without one and the
+    audit says so.
 
     ``transaction`` is ``None`` only for an auto-login answered on the GET
     that carried the request, which never had a transaction. Otherwise it is
@@ -1005,6 +1181,21 @@ def _issue_authorization_code(
             client_id=p.client_id,
         )
 
+    # The subject a verified id_token_hint named is the only one this
+    # request may be answered for (#468, Core 3.1.2.2): another user's
+    # login, interactive or auto-login, is login_required to the client.
+    # Decided after the transaction is consumed, so it yields nothing else.
+    bound = transaction.bound_subject if transaction is not None else p.hint_subject
+    if bound is not None and bound != username:
+        return _authorize_error_redirect(
+            config,
+            p,
+            "login_required",
+            "The user who authenticated is not the one id_token_hint names",
+            "login by another subject than id_token_hint names",
+            username=username,
+        )
+
     # Before the code exists, not after: a code whose client has gone is
     # one the client cannot redeem and cannot explain (#196). This is also
     # the continuity check of a transaction (#346): the client must still
@@ -1019,6 +1210,13 @@ def _issue_authorization_code(
             username=username,
         )
 
+    # One instant for the code's creation, the session and the ID token:
+    # a fresh login's auth_time is the code's created_at, so the two never
+    # disagree at a second's boundary.
+    created_at = datetime.now(timezone.utc)
+    auth_time = reused.auth_time if reused is not None else int(created_at.timestamp())
+    session_outcome = _record_authenticated_session(loaded, username, method, auth_time, reused)
+
     auth_code_store = get_auth_code_store()
     code = auth_code_store.create_code(
         client_id=p.client_id,
@@ -1032,6 +1230,8 @@ def _issue_authorization_code(
         claims=_parse_claims_parameter(p.claims_param),
         resource=list(p.resources) if p.resources else None,
         amr=amr,
+        auth_time=auth_time,
+        created_at=created_at,
     )
 
     # Build redirect URL with code
@@ -1063,6 +1263,9 @@ def _issue_authorization_code(
             # Distinguishes a persona-picker/password login from a
             # login_hint-triggered auto-login (#250 design contract point 4).
             **({"auto_login": True} if auto_login else {}),
+            # #468: what became of the browser's authenticated session.
+            "auth_time": auth_time,
+            "session": session_outcome,
         },
     )
 
@@ -1126,7 +1329,8 @@ def _try_persona_auto_login(
         )
 
     return _issue_authorization_code(
-        config, p, user.username, transaction=transaction, auto_login=True
+        config, p, user.username, transaction=transaction, auto_login=True,
+        method=AuthMethod.PERSONA,
     )
 
 
@@ -1204,7 +1408,8 @@ def _handle_authorize_login(
         return (
             None,
             _issue_authorization_code(
-                config, p, login.user.username, transaction=transaction, amr=login.amr
+                config, p, login.user.username, transaction=transaction,
+                method=login.method, amr=login.amr,
             ),
             False,
         )
@@ -1302,6 +1507,7 @@ def _complete_second_factor(
         username,
         transaction=transaction,
         verified_username=username,
+        method=login.method,
         amr=login.amr,
     )
 
@@ -1360,6 +1566,8 @@ def _begin_transaction(
     p: _AuthorizeParams,
     client: OAuthClient,
     requested: Dict[str, List[str]],
+    interaction_required: bool = False,
+    bound_subject: Optional[str] = None,
 ) -> Tuple[Optional[AuthorizationTransaction], Optional[ResponseReturnValue]]:
     """Store a validated request as a transaction of this browser.
 
@@ -1396,6 +1604,8 @@ def _begin_transaction(
                 resources=list(p.resources),
             ),
             requested=requested,
+            interaction_required=interaction_required,
+            bound_subject=bound_subject,
             client=client,
             client_origin=resolved.origin,
         )
@@ -1419,6 +1629,172 @@ def _begin_transaction(
             "the cached metadata document could not be held for the transaction",
         )
     return transaction, None
+
+
+_PROMPT_VALUES = frozenset({"none", "login", "consent", "select_account"})
+
+
+def _validate_authorize_authentication_constraints(
+    config: ConfigManager, p: _AuthorizeParams
+) -> Optional[ResponseReturnValue]:
+    """``prompt`` and ``max_age`` (OIDC Core 3.1.2.1, #468), read into
+    ``p.prompts`` and ``p.max_age_seconds``: a space-separated list of the
+    four defined values, ``none`` alone; a non-negative integer. Anything
+    else is ``invalid_request``, delivered to the client like every error
+    after the redirect_uri. Each is an omitted parameter when sent empty,
+    as every other field (RFC 6749 3.1)."""
+    prompts = frozenset(p.prompt.split()) if p.prompt else frozenset()
+    unknown = sorted(prompts - _PROMPT_VALUES)
+    if unknown:
+        return _authorize_error_redirect(
+            config, p, "invalid_request", "Unsupported prompt value",
+            f"prompt carries an unknown value: {', '.join(unknown)}",
+        )
+    if "none" in prompts and len(prompts) > 1:
+        return _authorize_error_redirect(
+            config, p, "invalid_request", "prompt=none cannot be combined with another prompt value",
+            "prompt=none combined with another value",
+        )
+    max_age: Optional[int] = None
+    if p.max_age:
+        # ASCII digits only, bounded: str.isdigit accepts other scripts'
+        # digits and superscripts that int() refuses, and int() refuses
+        # very long strings; neither is an answer this endpoint gives.
+        if not (p.max_age.isascii() and p.max_age.isdigit() and len(p.max_age) <= 10):
+            return _authorize_error_redirect(
+                config, p, "invalid_request", "max_age must be a non-negative integer",
+                "max_age is not a non-negative integer",
+            )
+        max_age = int(p.max_age)
+    hint_subject: Optional[str] = None
+    if p.id_token_hint_repeated:
+        return _authorize_error_redirect(
+            config, p, "invalid_request", "id_token_hint must not be repeated",
+            "id_token_hint repeated",
+        )
+    if p.id_token_hint:
+        hint = p.id_token_hint
+        if is_reference(hint):
+            # A form POST's hint, parked under a reference by the 303
+            # (#467): taken once, here.
+            parked = get_parked_hint_store().take(hint)
+            if parked is None:
+                return _authorize_error_redirect(
+                    config, p, "invalid_request", "id_token_hint reference unknown, expired or already used",
+                    "id_token_hint reference not resolvable",
+                )
+            hint = parked
+        # The settings are read before the signing service is resolved
+        # (#359): the issuer this request answers for, then the keys.
+        issuer = effective_issuer(request_config().settings)
+        try:
+            payload = get_crypto_service().verify_id_token_hint(hint)
+        except ValueError as e:
+            return _authorize_error_redirect(
+                config, p, "invalid_request", "id_token_hint does not verify",
+                f"id_token_hint does not verify: {e}",
+            )
+        if payload.get("iss") != issuer:
+            return _authorize_error_redirect(
+                config, p, "invalid_request", "id_token_hint does not verify",
+                "id_token_hint was not issued by this issuer",
+            )
+        hint_subject = payload["sub"]
+    p.prompts = prompts
+    p.max_age_seconds = max_age
+    p.hint_subject = hint_subject
+    return None
+
+
+def _interaction_required(p: _AuthorizeParams) -> bool:
+    """Whether the request asks for the user's own interaction (#468):
+    ``prompt=login``, ``prompt=select_account`` (the picker, where there is
+    one) or ``max_age=0``. A live session is not reused for it, and persona
+    auto-login does not stand in for it."""
+    return (
+        "login" in p.prompts or "select_account" in p.prompts or p.max_age_seconds == 0
+    )
+
+
+def _fresh_authentication_required(p: _AuthorizeParams) -> bool:
+    """Once no session answered the request (#468): whether the user's own
+    interaction is what must follow. ``_interaction_required`` asks for it
+    outright; a ``max_age`` that no session satisfied asks for it too (Core
+    3.1.2.1: the End-User MUST be actively re-authenticated), so persona
+    auto-login does not stand in, now or on a later hint-only GET of the
+    transaction this creates."""
+    return _interaction_required(p) or p.max_age_seconds is not None
+
+
+def _answer_from_session(
+    config: ConfigManager, loaded: ConfigSnapshot, p: _AuthorizeParams, *, reuse: bool = True
+) -> Optional[ResponseReturnValue]:
+    """What a validated request gets before any login page is considered
+    (#468): a code resting on the browser's authenticated session, an
+    error the request's constraints call for, or None, meaning the login
+    page (or persona auto-login, where the request allows it) comes next.
+
+    ``prompt=consent`` is ``consent_required``: there is no consent screen.
+    ``prompt=select_account`` under password mode is
+    ``account_selection_required``: the login form selects no account;
+    under persona mode the picker does, so it is an interaction like
+    ``prompt=login``. A live session is reused when the request asks for
+    no interaction and, with ``max_age``, the authentication is not older
+    than that. ``prompt=none`` forbids every interaction: without a
+    reusable session it is ``login_required``, whatever a ``login_hint``
+    says (persona auto-login is no interaction either, and stands in for
+    none). A hint that names a user - ``id_token_hint``'s subject, or the
+    persona of an auto-login ``login_hint`` - is honoured: a session for
+    another user is not reused for it. ``reuse`` is off for the direct
+    POST, which carries credentials and authenticates with them: it never
+    takes a code from the session, and ``prompt=none`` on it is
+    ``login_required``.
+    """
+    prompts = p.prompts
+    if "consent" in prompts:
+        return _authorize_error_redirect(
+            config, p, "consent_required", "Consent is required and this server has no consent screen",
+            "prompt=consent: no consent screen",
+        )
+    if "select_account" in prompts and not loaded.settings.persona_mode_enabled:
+        return _authorize_error_redirect(
+            config, p, "account_selection_required",
+            "Account selection is required and the login form selects no account",
+            "prompt=select_account under password login mode",
+        )
+    interaction = _interaction_required(p)
+    # Resolved only where it decides something: the store round-trip and
+    # the user lookup are not paid for a request that asks for a login.
+    usable = _usable_session(config, loaded) if reuse and not interaction else None
+    hinted = p.hint_subject
+    if hinted is None and loaded.settings.auto_login_enabled and p.login_hint.startswith(
+        _AUTO_LOGIN_HINT_PREFIX
+    ):
+        hinted = p.login_hint[len(_AUTO_LOGIN_HINT_PREFIX) :]
+    if usable is not None:
+        record, user = usable
+        fresh_enough = p.max_age_seconds is None or record.age() <= p.max_age_seconds
+        hinted_user = hinted is None or hinted == user.username
+        if fresh_enough and hinted_user:
+            method = AuthMethod(record.method)
+            return _issue_authorization_code(
+                config, p, user.username, method=method, amr=_session_amr(loaded, method), reused=record
+            )
+    if "none" in prompts:
+        if not reuse:
+            reason = "prompt=none on a request carrying credentials"
+        elif interaction:
+            reason = "prompt=none with max_age=0"
+        elif usable is None:
+            reason = "prompt=none without an authenticated session"
+        elif hinted is not None and hinted != usable[1].username:
+            reason = "prompt=none with a session for another user than the hint names"
+        else:
+            reason = "prompt=none with a session older than max_age"
+        return _authorize_error_redirect(
+            config, p, "login_required", "Authentication is required and prompt=none forbids it", reason
+        )
+    return None
 
 
 def _validate_authorize_request(
@@ -1449,6 +1825,7 @@ def _validate_authorize_request(
     # client as an OAuth error redirect carrying iss (#258 review).
     for check in (
         lambda: _validate_authorize_redirect_uri(config, p, client),
+        lambda: _validate_authorize_authentication_constraints(config, p),
         lambda: _validate_authorize_response_type(config, p),
         lambda: _validate_authorize_scope(config, p, client),
         lambda: _validate_authorize_pkce(config, p, client),
@@ -1471,15 +1848,33 @@ def _authorize_new_request(
         return error
     assert client is not None
 
+    # #468: a browser whose login is still live is not asked to log in
+    # again, unless the request asks for an interaction; prompt=none gets
+    # a code or an error, never a page.
+    loaded = request_config()
+    answered = _answer_from_session(config, loaded, p)
+    if answered is not None:
+        return answered
+    interaction_required = _fresh_authentication_required(p)
+
     # #250: a login_hint carrying the reserved auto-login prefix bypasses
     # the login page/picker entirely - inert (returns None) unless
     # login.auto_login and login.mode: persona are both active. Answered on
-    # this GET, so no transaction is created for it.
-    auto_login_response = _try_persona_auto_login(config, p)
-    if auto_login_response is not None:
-        return auto_login_response
+    # this GET, so no transaction is created for it. Not for a request that
+    # asked for the user's own interaction (#468).
+    if not interaction_required:
+        auto_login_response = _try_persona_auto_login(config, p)
+        if auto_login_response is not None:
+            return auto_login_response
 
-    transaction, error = _begin_transaction(config, p, client, requested)
+    transaction, error = _begin_transaction(
+        config,
+        p,
+        client,
+        requested,
+        interaction_required=interaction_required,
+        bound_subject=p.hint_subject,
+    )
     if error is not None:
         return error
     assert transaction is not None
@@ -1509,7 +1904,20 @@ def _authorize_direct_post(
     if error is not None:
         return error
     assert client is not None
-    transaction, error = _begin_transaction(config, p, client, requested)
+    # The constraints a GET decides first apply here too (#468), but the
+    # credentials this POST carries are what it authenticates with: no
+    # session is reused for it, and prompt=none is never a login.
+    answered = _answer_from_session(config, request_config(), p, reuse=False)
+    if answered is not None:
+        return answered
+    transaction, error = _begin_transaction(
+        config,
+        p,
+        client,
+        requested,
+        interaction_required=_fresh_authentication_required(p),
+        bound_subject=p.hint_subject,
+    )
     if error is not None:
         return error
     assert transaction is not None
@@ -1672,17 +2080,18 @@ def authorize() -> ResponseReturnValue:
         if error is not None:
             return error
         assert transaction is not None
-        auto_login_response = _try_persona_auto_login(
-            config,
-            _params_of(transaction, login_hint=request.args.get("login_hint", "")),
-            transaction,
-        )
-        if auto_login_response is not None:
-            return auto_login_response
+        if not transaction.interaction_required:
+            auto_login_response = _try_persona_auto_login(
+                config,
+                _params_of(transaction, login_hint=request.args.get("login_hint", "")),
+                transaction,
+            )
+            if auto_login_response is not None:
+                return auto_login_response
         return _render_authorize_login(config, transaction, None)
 
     if _is_form_serialized_request(requested, request.form):
-        return _redirect_form_request_to_get(request.form)
+        return _redirect_form_request_to_get(config, request.form)
     _audit_body_oauth_fields()
     transaction_id = request.form.get("transaction_id", "")
     if not transaction_id and requested:
@@ -2686,6 +3095,9 @@ def end_session() -> ResponseReturnValue:
         except Exception:
             pass  # Invalid token, continue anyway
 
+    # The browser's authenticated session at /authorize ends here (#468),
+    # before the cookie that names it goes.
+    get_authenticated_session_store().end(browser_flow_binding())
     # Clear session
     session.clear()
 

@@ -66,6 +66,7 @@ class TestApiConfigLoginParity:
         login = resp.get_json()["login"]
         assert login == {
             "mode": "password", "auto_login": False, "two_step": False, "totp": False,
+            "session_minutes": 60,
         }
 
     def test_e2e_round_trip_preserves_auto_login(self, client, app, preserve_config_files):
@@ -83,6 +84,7 @@ class TestApiConfigLoginParity:
         oauth = doc["oauth"]
         assert login == {
             "mode": "persona", "auto_login": True, "two_step": False, "totp": False,
+            "session_minutes": 60,
         }
 
         resp = client.post(

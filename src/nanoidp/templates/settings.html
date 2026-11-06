@@ -286,6 +286,12 @@
                         </div>
                         <div class="form-text">After a successful password check, a user carrying a <code>totp_secret</code> (written directly in <code>users.yaml</code> - a demo factor, not a managed enrollment) gets one more screen asking for a 6-digit code, on /login, /authorize, /saml/sso and the device flow. Opt-in, off by default; has no effect while Login Mode is "Persona", and no effect for a user without a secret.</div>
                     </div>
+                    <div class="mb-3">
+                        <label for="session_minutes" class="form-label">Authenticated Session (minutes)</label>
+                        <input type="number" class="form-control" id="session_minutes" name="session_minutes"
+                               value="{{ settings.session_minutes }}" min="0" max="10080">
+                        <div class="form-text">How long a browser's login at <code>/authorize</code> lives (default: 60), counted from the authentication and not renewed by reuse. While it lives, a request without <code>prompt</code>, <code>max_age</code> or <code>id_token_hint</code> gets a code without a login page, <code>prompt=none</code> succeeds, and <code>max_age</code> and <code>id_token_hint</code> are checked against it. 0 disables the session: every request logs in again. Separate from the dashboard login; the device flow and SAML do not use it.</div>
+                    </div>
                 </div>
             </div>
         </div>

@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **An authenticated browser session at `/authorize`** (#468, OIDC Core
+  3.1.2.1). A successful login is remembered for the browser for
+  `login.session_minutes` (new setting, default 60, counted from the
+  authentication, not renewed by reuse, `0` disables), distinct from the
+  web UI's login. While it lives, a request without `prompt`, `max_age`
+  or `id_token_hint` gets a code without a login page and the ID token
+  carries the session's `auth_time` (single sign-on; a script that GETs
+  and then POSTs credentials with one cookie jar now gets the code on the
+  GET). `prompt=none` is a code or `login_required`, never a page and
+  never persona auto-login; `prompt=login` and `max_age=0` always ask the
+  user; `max_age=N` reuses a session no older than N; `prompt=consent` is
+  `consent_required`; `prompt=select_account` is
+  `account_selection_required` under password mode and the picker under
+  persona mode; `id_token_hint`, verified with the server keys, binds the
+  subject; malformed values are `invalid_request`. `/logout` and
+  `DELETE /api/runtime` (which now answers `sessions_ended`) end sessions.
+  Four OpenID conformance tests failed on the missing session
+  (`oidcc-prompt-none-not-logged-in`, `oidcc-prompt-none-logged-in`,
+  `oidcc-max-age-10000`, `oidcc-id-token-hint`). A code that rests on
+  an earlier authentication carries an `auth_time` the 3.4.0 record did
+  not have: a 3.4.0 process sharing the runtime store cannot redeem such
+  a code, while a code issued at the login reads back as before.
+
 ### Fixed
 
 - **`/authorize` accepts the authorization request as a form POST** (#467,

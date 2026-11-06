@@ -12,7 +12,7 @@
 | `GET/POST /userinfo` | UserInfo endpoint |
 | `POST /introspect` | Token Introspection (RFC 7662) |
 | `POST /revoke` | Token Revocation (RFC 7009) |
-| `GET/POST /logout` | OIDC End Session / Logout (alias: `/end_session`) |
+| `GET/POST /logout` | OIDC End Session / Logout (alias: `/end_session`); ends the browser's authenticated session at `/authorize` (#468) |
 | `GET /ui/logout` | Dashboard session logout (the web UI's Logout button) |
 | `POST /device_authorization` | Device Authorization (RFC 8628; alias: `/device/code`) |
 | `GET/POST /device` | Device verification page |
@@ -75,6 +75,64 @@ audit event says which, and why when it stayed local. The discovery
 document publishes
 `request_parameter_supported` and `request_uri_parameter_supported` as
 `false` (#463).
+
+A successful login at `/authorize` leaves the browser an **authenticated
+session** (#468, OIDC Core 3.1.2.1): a record in the runtime store bound
+to the browser through the same cookie value as its transactions, holding
+who authenticated, how, and when (`auth_time`), for
+`login.session_minutes` (default 60, counted from the authentication and
+not renewed by reuse; the value in force when a request arrives bounds a
+session established under a longer one; `0` keeps and consults none). It is distinct from
+the web UI's login; `/device` and SAML neither create nor use it. While it
+lives, a request that carries no `prompt`, `max_age` or `id_token_hint`
+is answered with a code at once, no login page, and the ID token carries
+the session's `auth_time`: single sign-on, as a real OP does. A script
+that always GETs and then POSTs credentials with one cookie jar must
+expect the code on the GET once a session exists. The session is only as
+good as its login is today: a user that no longer exists, a persona
+selection under password mode, a password login under persona mode or one
+made before a TOTP code became required of that user, are no session.
+`/logout` ends it, and so does `DELETE /api/runtime`. The direct entry
+point (the request in the query string, credentials in the body)
+authenticates with the credentials it carries and never takes a code from
+the session. A persona auto-login `login_hint` names the persona: a
+session for another user is not reused for it, the hinted persona is
+logged in and the session is theirs.
+
+The three parameters that speak to the session are decided after the
+`redirect_uri`, so every answer reaches the client with `state` and
+`iss`. `prompt=none` is never a page: a code resting on a usable session,
+else `login_required`; persona auto-login does not stand in for a
+session, and the direct entry point, which carries credentials, answers
+it with `login_required`. `prompt=login` and `max_age=0` ask for the user's own
+interaction: the login page, whatever session exists, a new `auth_time`,
+and no auto-login, not even on a later hint-only GET resuming that
+transaction. `max_age=N` reuses a session whose authentication is no
+older than N seconds and shows the page otherwise, and that page asks the
+user: a `max_age` no session satisfied is actively re-authenticated, not
+auto-logged in. `prompt=consent` is
+`consent_required`: there is no consent screen. `prompt=select_account`
+is `account_selection_required` under password mode, and the picker, as
+an interaction, under persona mode. `prompt=none` combined with another
+value, an unknown value, or a `max_age` that is not a non-negative
+integer, is `invalid_request`. `id_token_hint` is verified with the
+server keys (signature by `kid`, issuer, an ID token; its expiry does not
+matter) and names the subject: a session for that user is reused, one for
+another is not, and a login that follows is accepted only from that user,
+any other being `login_required`; a hint that does not verify is
+`invalid_request`, and so is a repeated `id_token_hint`. In a form POST
+(#467) the hint never enters the URL:
+the 303 carries a single-use reference, resolved by the GET within a
+minute. The hint is parked only for a client the server already knows
+(declared, runtime, or a cached metadata document); for any other the
+reference resolves to nothing and the GET answers `invalid_request`.
+
+One browser fact: the session cookie is `SameSite=Lax`, which a browser
+sends on a top-level navigation and not from a cross-site iframe. A
+silent login (`prompt=none`) as a top-level redirect finds the session;
+a silent renew in a hidden iframe from an application on another site
+does not, and is answered `login_required`, unless the application and
+NanoIDP share a site.
 
 An authorization code is redeemed once. A second redemption is denied
 with `invalid_grant` and revokes what the first issued (RFC 6749 4.1.2):
@@ -185,4 +243,4 @@ never written to the declared files unless promoted; see
 | `GET /api/runtime/clients/{client_id}` | Get a runtime client |
 | `DELETE /api/runtime/clients/{client_id}` | Delete a runtime client |
 | `POST /api/runtime/clients/{client_id}/promote` | Write it into `settings.yaml` and retire the runtime object |
-| `DELETE /api/runtime` | Remove every runtime user and client; answers `users_deleted` and `clients_deleted` |
+| `DELETE /api/runtime` | Remove every runtime user and client, end every authenticated session at `/authorize` and drop the parked `id_token_hint` references; answers `users_deleted`, `clients_deleted` and `sessions_ended` |

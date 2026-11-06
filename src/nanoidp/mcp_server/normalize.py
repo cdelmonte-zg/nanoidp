@@ -118,6 +118,7 @@ _UPDATE_SETTINGS_FIELDS: tuple[str, ...] = (
     "auto_login",
     "two_step",
     "totp",
+    "session_minutes",
 )
 
 _UPDATE_SETTINGS_NORMALIZERS: dict[str, Callable[[str, Any], Any]] = {

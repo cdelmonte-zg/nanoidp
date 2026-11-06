@@ -795,6 +795,12 @@ class Settings(BaseModel):
         "login_mode: persona, which is passwordless. A user with no "
         "totp_secret sees no change either way.",
     )
+    session_minutes: int = Field(
+        default=60,
+        ge=0,
+        le=10080,
+        description="How long a browser's authenticated session at /authorize lives, in minutes, counted from the authentication that created it and not renewed by reuse (#468). While it lives, a request without prompt, max_age or id_token_hint is answered with a code without a login page (single sign-on), prompt=none succeeds, and max_age and id_token_hint are checked against it. 0 disables the session: every request authenticates, as before 3.5. Distinct from the web UI login session; /device and SAML neither create nor use it.",
+    )
 
     # Security (stricter-dev profile)
     security_profile: str = Field(
@@ -974,6 +980,12 @@ class Settings(BaseModel):
         (local dev/testing convenience only; unrelated to 'security_profile'
         and to the OAuth password grant - see 'login_mode' above)."""
         return self.login_mode == "persona"
+
+    @property
+    def authenticated_session_seconds(self) -> int:
+        """How long an authenticated browser session at /authorize lives
+        (#468), in seconds; 0 means no session is kept or reused."""
+        return self.session_minutes * 60
 
     @property
     def auto_login_enabled(self) -> bool:

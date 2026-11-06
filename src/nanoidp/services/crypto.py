@@ -580,27 +580,59 @@ class CryptoService:
         signed regardless of who it was audienced to, and the id/refresh type
         guard is ``token_use``, not the audience (RFC 7662, issue #34).
         """
+        return self._decode_own_token(
+            token,
+            audience=audience,
+            options={
+                "verify_signature": True,
+                "verify_aud": audience is not None,
+                "require": ["exp"],
+            },
+        )
+
+    def _decode_own_token(
+        self, token: str, *, audience: Optional[Union[str, List[str]]], options: "jwt.api_jwt.Options"
+    ) -> Dict[str, Any]:
+        """Decode a token this service signed, under ``options``: the one
+        place the key is chosen by ``kid`` and PyJWT's errors become
+        ValueError, for every verification this service does."""
         try:
             # Verified against the key the token names, among the ones this
             # service keeps (#420): the JWKS publishes the previous keys so
             # that tokens signed with them stay valid, and that has to hold
             # for nanoidp's own endpoints too.
-            payload = jwt.decode(
+            return jwt.decode(
                 token,
                 self._verification_key(jwt.get_unverified_header(token).get("kid"), self._keys),
                 algorithms=["RS256"],
                 audience=audience,
-                options={
-                    "verify_signature": True,
-                    "verify_aud": audience is not None,
-                    "require": ["exp"],
-                },
+                options=options,
             )
-            return payload
         except jwt.ExpiredSignatureError as e:
             raise ValueError("Token has expired") from e
         except jwt.InvalidTokenError as e:
             raise ValueError(f"Invalid token: {str(e)}") from e
+
+    def verify_id_token_hint(self, token: str) -> Dict[str, Any]:
+        """Verify an ID token handed back as ``id_token_hint`` (OIDC Core
+        3.1.2.2, #468): one this service signed, by the key its ``kid``
+        names (#420), carrying ``token_use: id``. Expiry is not checked -
+        the hint says who the user is, and that an ID token issued earlier
+        has since expired does not change it; what the hint may do is the
+        caller's decision against the browser's session. The audience is
+        not checked either: the hint may have been issued to another client
+        of the same user. Raises ValueError for anything else.
+        """
+        payload = self._decode_own_token(
+            token,
+            audience=None,
+            options={"verify_signature": True, "verify_aud": False, "verify_exp": False},
+        )
+        if payload.get("token_use") != "id":
+            raise ValueError("Not an ID token")
+        if not isinstance(payload.get("sub"), str) or not payload["sub"]:
+            raise ValueError("ID token carries no subject")
+        return payload
 
     def _verification_key(self, kid: Any, keys: SigningKeys) -> bytes:
         """The public key a token is checked against, by the ``kid`` of its

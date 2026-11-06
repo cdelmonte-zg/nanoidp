@@ -92,6 +92,7 @@ def _applied_login_keys(
     auto_login: Optional[bool],
     two_step: Optional[bool],
     totp: Optional[bool],
+    session_minutes: Optional[int],
 ) -> Dict[str, Any]:
     """Which ``login.*`` keys this call actually applies.
 
@@ -104,7 +105,12 @@ def _applied_login_keys(
     applied: Dict[str, Any] = {}
     if mode:
         applied["mode"] = mode
-    for key, value in (("auto_login", auto_login), ("two_step", two_step), ("totp", totp)):
+    for key, value in (
+        ("auto_login", auto_login),
+        ("two_step", two_step),
+        ("totp", totp),
+        ("session_minutes", session_minutes),
+    ):
         if value is not None:
             applied[key] = value
     return applied
@@ -497,6 +503,7 @@ class YamlWriter:
         auto_login: Optional[bool] = None,
         two_step: Optional[bool] = None,
         totp: Optional[bool] = None,
+        session_minutes: Optional[int] = None,
         expected_revision: Optional[str] = None,
     ) -> str:
         """Update the 'login' section (persona login mode, local dev
@@ -525,7 +532,7 @@ class YamlWriter:
         if mode:
             validate_login_mode(mode)
         defaults = _login_settings_defaults()
-        applied = _applied_login_keys(mode, auto_login, two_step, totp)
+        applied = _applied_login_keys(mode, auto_login, two_step, totp, session_minutes)
 
         def mutate(data: Dict[str, Any]) -> None:
             _one_save(data, lambda emptied: _mutate_login_keys(data, applied, defaults, emptied))
@@ -541,6 +548,7 @@ class YamlWriter:
         auto_login: Optional[bool] = None,
         two_step: Optional[bool] = None,
         totp: Optional[bool] = None,
+        session_minutes: Optional[int] = None,
         expected_revision: Optional[str] = None,
     ) -> str:
         """Apply the settings page's whole submission as ONE write (#229
@@ -581,7 +589,7 @@ class YamlWriter:
         if saml_fields.get("c14n_algorithm"):
             validate_saml_c14n_algorithm(saml_fields["c14n_algorithm"])
         defaults = _login_settings_defaults()
-        applied = _applied_login_keys(login_mode, auto_login, two_step, totp)
+        applied = _applied_login_keys(login_mode, auto_login, two_step, totp, session_minutes)
 
         def mutate(data: Dict[str, Any]) -> None:
             if allowed_identity_classes:

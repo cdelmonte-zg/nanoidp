@@ -64,6 +64,10 @@ class AuthorizationCode:
     # Carried to the token exchange the same way auth_time is, so a refresh
     # can keep honouring it (#112's pattern).
     amr: Optional[Sequence[str]] = None
+    # When the user authenticated (#468): the authenticated session's
+    # instant when the code rests on one, else the code's own creation
+    # (__post_init__). The ID token's auth_time.
+    auth_time: Optional[int] = None
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     expires_at: datetime = field(
         default_factory=lambda: datetime.now(timezone.utc)
@@ -86,6 +90,11 @@ class AuthorizationCode:
         # list becomes a tuple: a bare string is not a list of methods, and
         # tuple("pwd") would make it look like one to the choke point that
         # mints the token, which drops anything else, and says so.
+        # auth_time left out means the user authenticated when the code was
+        # created (#42, #468): the shape a 3.4.0 record reads back in, and
+        # what a code issued at the login is.
+        if self.auth_time is None:
+            self.auth_time = int(self.created_at.timestamp())
         if isinstance(self.amr, list):
             self.amr = tuple(self.amr)
         if isinstance(self.resource, tuple):
@@ -130,12 +139,20 @@ class AuthorizationCodeCodec:
         for key in ("issued", "issued_at"):
             if written[key] is None:
                 del written[key]
+        # Written only when the user authenticated earlier than the code
+        # (#468, a reused session): a code issued at the login reads back on
+        # a 3.4.0 process as before, and the skew breaks only where that
+        # process could not have answered right anyway.
+        if written["auth_time"] is None or written["auth_time"] == int(value.created_at.timestamp()):
+            del written["auth_time"]
         return written
 
     def load(self, data: Any) -> AuthorizationCode:
         read = dict(data)
         read["created_at"] = datetime.fromisoformat(read["created_at"])
         read["expires_at"] = datetime.fromisoformat(read["expires_at"])
+        # Absent (a code issued at the login, or a 3.4.0 record): the user
+        # authenticated when the code was created (#42, #468).
         if read.get("issued") is not None:
             read["issued"] = IssuedTokens(**read["issued"])
         return AuthorizationCode(**read)
@@ -208,6 +225,8 @@ class AuthCodeStore:
         claims: Optional[Dict[str, Any]] = None,
         resource: Optional[list] = None,
         amr: Optional[Sequence[str]] = None,
+        auth_time: Optional[int] = None,
+        created_at: Optional[datetime] = None,
     ) -> str:
         """
         Create a new authorization code.
@@ -230,6 +249,7 @@ class AuthCodeStore:
         # Generate a secure random code
         code = secrets.token_urlsafe(32)
 
+        instant = created_at if created_at is not None else datetime.now(timezone.utc)
         auth_code = AuthorizationCode(
             code=code,
             client_id=client_id,
@@ -243,6 +263,11 @@ class AuthCodeStore:
             claims=claims,
             resource=resource,
             amr=amr,
+            auth_time=auth_time,
+            # The caller's instant when it has one (#468: the same instant
+            # as the session's auth_time), with the expiry counted from it.
+            created_at=instant,
+            expires_at=instant + timedelta(seconds=CODE_LIFETIME_SECONDS),
         )
 
         def decide(view: RepositoryTransaction[AuthorizationCode]) -> None:
