@@ -5,13 +5,25 @@ the #229 revision-precondition semantics on save_config and the settings
 normalizer table contract (tests/test_settings_plumbing_parity.py).
 """
 
+import logging
 from typing import Any, Optional
 
 from ..config import ConfigManager, ConfigSnapshot, ConfigurationRejected, ReloadAfterSaveError
 from ..config_documents import DocumentRejected
 from ..config_validation import UNAVAILABLE, validate_config_result
-from ..config_writer import ConflictError, LockUnavailableError
+from ..config_writer import (
+    ConflictError,
+    DocumentNotEditable,
+    DocumentUnreadable,
+    LockUnavailableError,
+)
 from ..hooks import HookError
+from ..refusal_texts import (
+    SAVE_FILES_NOT_EDITABLE_TEXT,
+    SAVE_FILES_UNAVAILABLE_TEXT,
+    SAVE_FILES_UNLOADABLE_TEXT,
+    SAVE_LOCK_UNAVAILABLE_TEXT,
+)
 from ..services import (
     ExternalKeysNotRotatable,
     build_discovery_document,
@@ -21,6 +33,8 @@ from ..services import (
 )
 from ..services.runtime_store import runtime_store_report
 from .normalize import _UPDATE_SETTINGS_FIELDS, _UPDATE_SETTINGS_NORMALIZERS
+
+logger = logging.getLogger(__name__)
 
 
 # Configuration
@@ -255,13 +269,40 @@ def _tool_save_config(arguments: dict[str, Any], config: ConfigManager, loaded: 
     except ConflictError as exc:
         # Nothing was written - a supplied expected_*_revision was stale.
         return {"success": False, "error": exc.message, "kind": exc.kind}
+    except DocumentUnreadable as exc:
+        # Nothing was written - a file already on disk could not be read or
+        # parsed to be edited (#477). Not "unloadable", which is what this
+        # runtime would write and is refused above. One kind for the failed
+        # read; retryable says whether it was the OS, as a load classifies it.
+        logger.warning("save_config wrote nothing: %s", exc)
+        return {
+            "success": False,
+            "error": SAVE_FILES_UNAVAILABLE_TEXT if exc.temporary else SAVE_FILES_UNLOADABLE_TEXT,
+            "kind": "configuration_unloadable",
+            "retryable": exc.temporary,
+        }
+    except DocumentNotEditable as exc:
+        # Nothing was written - the files load, and repeat a key this writer
+        # cannot write back without choosing which one stays (#477).
+        logger.warning("save_config wrote nothing: %s", exc)
+        return {
+            "success": False,
+            "error": SAVE_FILES_NOT_EDITABLE_TEXT,
+            "kind": "configuration_not_editable",
+            "retryable": False,
+        }
     except LockUnavailableError as exc:
         # Nothing was written either - the lock is acquired before
         # compare_and_replace_many touches any file (#229 review,
-        # blocking 4). "lock_timeout" is worth retrying; the file's
-        # filesystem does not support advisory locks at all under
-        # "lock_unsupported", which a retry cannot fix.
-        return {"success": False, "error": exc.message, "kind": exc.kind}
+        # blocking 4). The kind says which refusal it was, retryable
+        # whether coming back may help (#477).
+        logger.warning("save_config wrote nothing: %s", exc)
+        return {
+            "success": False,
+            "error": SAVE_LOCK_UNAVAILABLE_TEXT,
+            "kind": exc.kind,
+            "retryable": exc.retryable,
+        }
     except HookError as exc:
         # Both files were written; only the on_config_saved mirror push
         # failed under hooks.strict (#229).

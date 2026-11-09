@@ -252,7 +252,7 @@ def _decided_by_the_bytes(failure: BaseException) -> bool:
     )
 
 
-def _lock_behind(failure: BaseException) -> Optional[LockUnavailableError]:
+def lock_behind(failure: BaseException) -> Optional[LockUnavailableError]:
     """The lock a failed load could not take, if that is what failed,
     however deep a load wrapped it: the configuration directory's is a
     ConfigurationRejected of the lock's kind, the keys directory's (taken by
@@ -267,6 +267,23 @@ def _lock_behind(failure: BaseException) -> Optional[LockUnavailableError]:
             return current
         current = current.__cause__
     return None
+
+
+def a_retry_may_load(failure: BaseException) -> bool:
+    """Whether coming back may load what this failure refused (#477): a lock
+    held by a peer, or anything outside the bytes (an I/O error, an
+    activation, a plugin). Not a lock this filesystem cannot give, nor a
+    directory this process cannot write, nor files that do not parse or
+    validate. What a surface says as ``retryable``, or
+    as ``DeclaredConfigurationUnloadable.temporary``."""
+    lock = lock_behind(failure)
+    if lock is not None:
+        return lock.retryable
+    if any(isinstance(cause, LockNamespaceUnavailable) for cause in _causes(failure)):
+        # A directory this process cannot write, which lock_behind leaves
+        # out on purpose: not here, and not later either.
+        return False
+    return not _decided_by_the_bytes(failure)
 
 
 class ConfigManager:
@@ -937,7 +954,7 @@ class ConfigManager:
             try:
                 self.reload_local()
             except Exception as failure:
-                lock = _lock_behind(failure)
+                lock = lock_behind(failure)
                 if lock is not None:
                     raise lock from failure
                 if self._commits != commits:
@@ -1018,13 +1035,13 @@ class ConfigManager:
                 try:
                     self.reload_local()
                 except (ConfigurationRejected, HookError) as rejected:
-                    lock = _lock_behind(rejected)
+                    lock = lock_behind(rejected)
                     if lock is not None:
                         raise lock from rejected
                     raise DeclaredConfigurationUnloadable(
                         f"the configuration files in {self.config_dir} do not load, so this cannot be checked "
                         f"against them: {rejected.message}",
-                        temporary=not _decided_by_the_bytes(rejected),
+                        temporary=a_retry_may_load(rejected),
                     ) from rejected
 
     def act_if_files_are_loaded(self, act: Callable[[], _T]) -> Tuple[bool, Optional[_T]]:

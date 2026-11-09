@@ -171,7 +171,7 @@ def locked(keys_dir: Path) -> Iterator[None]:
     """The exclusive section of one keys directory, across processes. Any
     rotation that died on the way is settled before the caller sees the
     directory. Not reentrant."""
-    _create(keys_dir)
+    ensure_directory(keys_dir)
     with directory_lock(keys_dir, _thread_lock, of="keys directory"):
         try:
             _sweep_temporaries(keys_dir)
@@ -185,8 +185,10 @@ def locked(keys_dir: Path) -> Iterator[None]:
         yield
 
 
-def _create(keys_dir: Path) -> None:
-    """Make the directory if it is not there (#476)."""
+def ensure_directory(keys_dir: Path) -> None:
+    """Make the directory if it is not there (#476): one that cannot be made
+    is KeysDirectoryCannotBeCreated, for a rotation and for a load alike
+    (#477), so both say it the same way and neither invites a retry."""
     try:
         keys_dir.mkdir(parents=True, exist_ok=True)
     except OSError as failure:

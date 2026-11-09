@@ -115,10 +115,10 @@ def rotation_refusal(refused: Union[ExternalKeysNotRotatable, LockUnavailableErr
     file is there) or cannot create (#476) is permanent too. A lock that was not had is not
     permanent: another process holding it (lock_timeout) is worth coming
     back for, a filesystem without advisory locks (lock_unsupported) is
-    not, which is how the configuration handlers classify the two kinds
-    as well. The lock exceptions name the keys directory: it is logged
-    here, once, and never answered. The HTTP route, the MCP tool and the
-    UI all answer through here."""
+    not, as the refusal's own ``retryable`` says (#477). The lock
+    exceptions name the keys directory: it is logged here, once, and never
+    answered. The HTTP route, the MCP tool and the UI all answer through
+    here."""
     if isinstance(refused, ExternalKeysNotRotatable):
         # A documented configuration state, not something to warn about.
         return RotationRefusal(EXTERNAL_KEYS_NOT_ROTATABLE, refused.kind, permanent=True, retryable=False)
@@ -127,7 +127,7 @@ def rotation_refusal(refused: Union[ExternalKeysNotRotatable, LockUnavailableErr
         refused, (LockNamespaceUnavailable, key_directory.KeysDirectoryCannotBeCreated)
     )
     message = KEYS_DIRECTORY_NOT_WRITABLE if permanent else KEYS_DIRECTORY_LOCK_UNAVAILABLE
-    return RotationRefusal(message, refused.kind, permanent=permanent, retryable=refused.kind == "lock_timeout")
+    return RotationRefusal(message, refused.kind, permanent=permanent, retryable=refused.retryable)
 
 
 def _signing_inputs(
@@ -219,7 +219,9 @@ class CryptoService:
 
     def _ensure_keys(self) -> None:
         """Ensure RSA keys and certificate exist."""
-        self.keys_dir.mkdir(parents=True, exist_ok=True)
+        # Classified like the rotation's (#477): a directory that cannot be
+        # made is no I/O error worth coming back for.
+        key_directory.ensure_directory(self.keys_dir)
 
         # Check for external keys first
         if self._external_private_key and self._external_public_key:

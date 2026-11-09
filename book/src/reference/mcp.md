@@ -121,6 +121,27 @@ it: `issuer` is checked by a rule rather than by a bound on the field, and
 `update_settings(issuer="not-a-url")` succeeds where `save_config` then
 refuses. The message names the key.
 
+Three more refusals write nothing, and each carries `retryable`. A file
+already on disk that cannot be read or parsed, edited by hand since the
+server loaded it, is `kind: "configuration_unloadable"`: `retryable: true`
+when the operating system refused the read (an I/O error), `false` when the
+bytes do not parse; `unloadable` stays the configuration this server would
+write. A file that repeats a key loads (the last one wins) and cannot be
+written back without choosing which one stays: `kind:
+"configuration_not_editable"`. A lock of the configuration directory that
+could not be taken carries the lock's `kind`: `retryable: true` for
+`lock_timeout` (another process holds it), `false` for `lock_unsupported`.
+All three answer a fixed `error`; the file, the parser's words and the
+directory are in the server log.
+
+A configuration that does not load is no internal error. `nanoidp-mcp`
+loads the configuration before it serves and exits with `error:
+configuration rejected: ...` on stderr when it does not load. A call that
+finds no configuration loaded (a server embedded without its `main()`), or
+whose configuration files cannot be looked at, answers
+`MCP_CONFIGURATION_UNAVAILABLE` with a fixed `error` and `retryable`, as
+the HTTP app answers `503`.
+
 `save_config` always writes both files, so there are exactly two modes.
 Omitting both revisions keeps the save unconditional (last write wins),
 same as before. Supplying either revision makes the whole save

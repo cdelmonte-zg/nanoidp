@@ -1124,7 +1124,7 @@ class TestTheLockedSection:
 class TestTheLockBehindAFailedLoad:
     @pytest.mark.parametrize("depth", [0, 1, 2, 3])
     def test_a_lock_is_found_however_deep_it_was_wrapped(self, depth):
-        from nanoidp.config import ConfigurationRejected, _lock_behind
+        from nanoidp.config import ConfigurationRejected, lock_behind
 
         lock = LockUnavailableError("held by a peer", kind="lock_timeout")
         failure: BaseException = lock
@@ -1134,10 +1134,10 @@ class TestTheLockBehindAFailedLoad:
             except BaseException as wrapped:  # noqa: BLE001
                 failure = wrapped
 
-        assert _lock_behind(failure) is lock
+        assert lock_behind(failure) is lock
 
     def test_a_directory_with_no_lock_namespace_is_no_lock_held(self):
-        from nanoidp.config import ConfigurationRejected, _lock_behind
+        from nanoidp.config import ConfigurationRejected, lock_behind
         from nanoidp.services.key_directory import KeysDirectoryNotWritable
 
         try:
@@ -1145,15 +1145,15 @@ class TestTheLockBehindAFailedLoad:
                 Path("/keys"), OSError(30, "Read-only file system")
             )
         except ConfigurationRejected as failure:
-            assert _lock_behind(failure) is None
+            assert lock_behind(failure) is None
 
     def test_a_chain_that_comes_back_on_itself_ends(self):
-        from nanoidp.config import _lock_behind
+        from nanoidp.config import lock_behind
 
         first, second = ValueError("a"), ValueError("b")
         first.__cause__, second.__cause__ = second, first
 
-        assert _within(lambda: _lock_behind(first)) is None
+        assert _within(lambda: lock_behind(first)) is None
 
     def test_an_io_error_anywhere_behind_a_rejection_is_not_the_bytes(self):
         from nanoidp.config import ConfigurationRejected, _decided_by_the_bytes
@@ -1178,12 +1178,12 @@ class TestTheLockBehindAFailedLoad:
         assert _decided_by_the_bytes(ConfigurationRejected("x", kind="activation")) is False
 
     def test_a_failure_that_is_no_lock_is_none(self):
-        from nanoidp.config import ConfigurationRejected, _lock_behind
+        from nanoidp.config import ConfigurationRejected, lock_behind
 
         try:
             raise ConfigurationRejected("x", kind="invalid") from ValueError("not a mapping")
         except ConfigurationRejected as failure:
-            assert _lock_behind(failure) is None
+            assert lock_behind(failure) is None
 
     def test_the_bytes_that_were_loaded_back_again_are_no_reload(self, shared, monkeypatch):
         """An editor's mistake undone: the files are the loaded ones again."""
@@ -1417,6 +1417,43 @@ class TestTheCriticalCreation:
             "error_description": CONFIGURATION_UNLOADABLE_TEXT,
         }
         assert str(config_dir) not in response.get_data(as_text=True)
+        assert "Retry-After" not in response.headers
+
+    @pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0, reason="mode bits do not refuse here")
+    @pytest.mark.parametrize(
+        "keys, error",
+        [
+            # There and read-only: the activation's refusal wraps a directory
+            # with no lock namespace.
+            (".", "configuration_unloadable"),
+            # Absent under a parent that cannot be written: the lock helper's
+            # own refusal, which the load raises as such.
+            ("keys", "configuration_unavailable"),
+        ],
+        ids=["present-read-only", "absent-cannot-be-created"],
+    )
+    def test_a_keys_directory_this_process_cannot_write_has_no_retry_after(self, tmp_path, keys, error):
+        """Files that changed to name a keys directory this process cannot
+        write or create: the activation refuses them, and coming back does
+        not help (#477), so no Retry-After."""
+        from nanoidp.app import create_app
+
+        config_dir = _config_dir(tmp_path)
+        runtime_store.publish_runtime_store(SqliteRuntimeStore(tmp_path / "runtime.db"), ("memory",))
+        application = create_app(str(config_dir))
+        application.config["TESTING"] = True
+        client = application.test_client()
+        read_only = tmp_path / "read-only-keys"
+        read_only.mkdir()
+        _set_setting(config_dir, "jwt", "keys_dir", str((read_only / keys).resolve()))
+        read_only.chmod(0o555)
+        try:
+            response = client.post("/api/runtime/users", json={"username": "x", "password": "pw"})
+        finally:
+            read_only.chmod(0o755)
+
+        assert response.status_code == 503
+        assert response.get_json()["error"] == error
         assert "Retry-After" not in response.headers
 
     @pytest.mark.parametrize(
