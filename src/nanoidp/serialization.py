@@ -219,7 +219,10 @@ def load_yaml_document(file_path: Path) -> Dict[str, Any]:
     """
     if not file_path.exists():
         return CommentedMap()
-    with open(file_path, "r") as f:
+    # UTF-8 whatever the locale (#477): the loader reads the same bytes as
+    # UTF-8, so a writer reading them another way would accept what the
+    # loader refuses, or refuse what it loads.
+    with open(file_path, "r", encoding="utf-8") as f:
         content = f.read()
     return _new_yaml_rt().load(StringIO(content)) or CommentedMap()
 
@@ -730,7 +733,8 @@ def atomic_write_yaml(file_path: Path, data: Dict[str, Any]) -> None:
         suffix=".yaml", prefix=file_path.stem + "_", dir=file_path.parent
     )
     try:
-        with os.fdopen(fd, "w") as f:
+        # UTF-8, what the loader reads, whatever the locale (#477).
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             _new_yaml_rt().dump(data, f)
         _replace_with_retry(temp_path, file_path)
         logger.info(f"Successfully wrote {file_path}")
@@ -770,7 +774,7 @@ def atomic_write_text(file_path: Path, text: str) -> None:
         suffix=".yaml", prefix=file_path.stem + "_", dir=file_path.parent
     )
     try:
-        with os.fdopen(fd, "w") as f:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(text)
         _replace_with_retry(temp_path, file_path)
         logger.info(f"Successfully wrote {file_path}")

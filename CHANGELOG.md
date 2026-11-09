@@ -83,6 +83,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   HTTP, nor `retryable: true` over MCP: coming back does not help. A load
   now makes the keys directory as a rotation does, so a start on one that
   cannot be created says so (`... cannot be created by this process`).
+  The configuration writers read and write the files as UTF-8 whatever the
+  locale, as the loader reads them: under another default encoding (cp1252
+  on Windows, ASCII under the C locale) a save could accept bytes the loader
+  refuses, refuse a file it loads, or write a non-ASCII value the next load
+  could not read.
 - **A keys directory that cannot be created answers the rotate refusal**
   (#476). When the directory is gone and cannot be made again, whether the
   parent is not writable or a file stands in the way, `POST /api/keys/rotate`

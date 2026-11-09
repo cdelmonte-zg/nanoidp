@@ -145,7 +145,6 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, Tuple
 
 from ruamel.yaml.constructor import DuplicateKeyError
-from ruamel.yaml.error import YAMLError
 
 from .serialization import atomic_write_yaml, load_yaml_document
 
@@ -490,11 +489,15 @@ def _reading(file_path: Path) -> Iterator[None]:
         yield
     except DuplicateKeyError as repeated:
         raise DocumentNotEditable(f"{file_path} cannot be edited in place: {repeated}") from repeated
-    except (OSError, UnicodeDecodeError, YAMLError) as unreadable:
-        raise DocumentUnreadable(
-            f"{file_path} could not be read to be edited: {unreadable}",
-            temporary=isinstance(unreadable, OSError),
-        ) from unreadable
+    except OSError as unreadable:
+        # The OS refused the read: coming back may help, as a load says.
+        raise DocumentUnreadable(f"{file_path} could not be read to be edited: {unreadable}", temporary=True) from unreadable
+    except Exception as unparseable:
+        # Anything else is the bytes: the decoding or the parse, including a
+        # tag whose value its constructor refuses (``!!int x`` is a
+        # ValueError, ``!!bool x`` a KeyError, not YAMLErrors). The block
+        # reads and parses and does nothing else, so nothing else lands here.
+        raise DocumentUnreadable(f"{file_path} could not be read to be edited: {unparseable}") from unparseable
 
 
 def _read_bytes(file_path: Path) -> bytes:

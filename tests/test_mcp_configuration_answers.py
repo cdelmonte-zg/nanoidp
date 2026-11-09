@@ -12,6 +12,9 @@ import json
 import logging
 import os
 import shutil
+import subprocess
+import sys
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -343,6 +346,15 @@ class TestSaveConfig:
         assert payload["error"] == SAVE_FILES_UNLOADABLE_TEXT
         assert payload["retryable"] is False
 
+    async def test_a_tag_whose_value_does_not_construct_is_not_retryable(self, loaded, mcp_call_tool):
+        (loaded / "settings.yaml").write_text("config_version: !!int invalid-demo-value\n")
+
+        payload = _payload(await mcp_call_tool("save_config", {}))
+
+        assert payload["kind"] == "configuration_unloadable"
+        assert payload["error"] == SAVE_FILES_UNLOADABLE_TEXT
+        assert payload["retryable"] is False
+
     @_NOT_ROOT
     async def test_a_file_on_disk_the_os_refuses_is_retryable(self, loaded, mcp_call_tool):
         users = loaded / "users.yaml"
@@ -411,8 +423,17 @@ class TestTheWriterNamesAnUnreadableDocument:
 
     @pytest.mark.parametrize(
         "content",
-        [b"users: caf\xe9\n", b"- a\n", b"just a string\n"],
-        ids=["not-utf-8", "a-list", "a-scalar"],
+        [
+            b"users: caf\xe9\n",
+            b"- a\n",
+            b"just a string\n",
+            # Tags whose constructor refuses the value: a ValueError, an
+            # IndexError and a KeyError out of ruamel, none a YAMLError.
+            b"config_version: !!int invalid-demo-value\n",
+            b"config_version: !!float nope\n",
+            b"config_version: !!bool maybe\n",
+        ],
+        ids=["not-utf-8", "a-list", "a-scalar", "bad-int", "bad-float", "bad-bool"],
     )
     def test_what_the_loader_refuses_is_refused_before_anything_is_written(self, tmp_path, content):
         on_disk = tmp_path / "settings.yaml"
@@ -441,3 +462,65 @@ class TestTheWriterNamesAnUnreadableDocument:
         assert "settings.yaml" in refused.value.message
         assert good.read_text() == "users: {}\n"
         assert broken.read_text() == _BROKEN
+
+
+# UTF-8 whatever the locale: the loader reads the bytes as UTF-8, so the
+# writer must too (#477 review). Under the C locale with coercion and UTF-8
+# mode off, Python's default text encoding is ASCII.
+_ASCII_LOCALE = {**os.environ, "LC_ALL": "C", "PYTHONUTF8": "0", "PYTHONCOERCECLOCALE": "0"}
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the C locale is a POSIX thing")
+class TestTheConfigurationFilesAreUtf8WhateverTheLocale:
+    def _run(self, script, tmp_path):
+        src = Path(__file__).resolve().parent.parent / "src"
+        env = {**_ASCII_LOCALE, "PYTHONPATH": str(src)}
+        check = subprocess.run(
+            [sys.executable, "-c", "import locale; print(locale.getpreferredencoding(False))"],
+            env=env, capture_output=True, text=True,
+        )
+        if "UTF" in check.stdout.upper():
+            pytest.skip("this interpreter reads the C locale as UTF-8")
+        return subprocess.run(
+            [sys.executable, "-c", textwrap.dedent(script), str(tmp_path)],
+            env=env, capture_output=True, text=True, timeout=60,
+        )
+
+    def test_a_valid_utf_8_file_is_edited_under_an_ascii_locale(self, tmp_path):
+        on_disk = tmp_path / "users.yaml"
+        on_disk.write_bytes("users:\n  jose:\n    name: Jos\u00e9\n".encode("utf-8"))
+
+        result = self._run(
+            """
+            import sys
+            from pathlib import Path
+            from nanoidp.config_writer import compare_and_replace_many
+
+            def rename(document):
+                # chr(): the command line itself stays ASCII under this locale.
+                document["users"]["jose"]["name"] = "Jos" + chr(0xE9) + " Mar" + chr(0xED) + "a"
+
+            compare_and_replace_many([(Path(sys.argv[1]) / "users.yaml", None, rename)])
+            """,
+            tmp_path,
+        )
+
+        assert result.returncode == 0, result.stderr
+        # Written as UTF-8 too, which is what the loader reads.
+        assert yaml.safe_load(on_disk.read_bytes())["users"]["jose"]["name"] == "Jos\u00e9 Mar\u00eda"
+
+    def test_a_literal_template_is_written_as_utf_8_under_an_ascii_locale(self, tmp_path):
+        """The wizard's and init's writer: the same files, the same encoding."""
+        result = self._run(
+            """
+            import sys
+            from pathlib import Path
+            from nanoidp.serialization import atomic_write_text
+
+            atomic_write_text(Path(sys.argv[1]) / "users.yaml", "users: {}  # Jos" + chr(0xE9) + "\\n")
+            """,
+            tmp_path,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert (tmp_path / "users.yaml").read_bytes() == "users: {}  # Jos\u00e9\n".encode("utf-8")
