@@ -20,6 +20,7 @@ import pytest
 import yaml
 
 from nanoidp.config import ConfigManager, ConfigurationRejected
+from nanoidp.refusal_texts import RUNTIME_STORE_UNAVAILABLE_TEXT
 from nanoidp.services import activate_services, runtime_store
 from nanoidp.services.runtime_store import (
     get_runtime_store,
@@ -312,6 +313,8 @@ class TestTheSurfaces:
 
         assert result["code"] == "MCP_RUNTIME_STORE_UNAVAILABLE"
         assert result["retryable"] is True
+        # The store's own words are for the log (#477).
+        assert result["error"] == RUNTIME_STORE_UNAVAILABLE_TEXT
 
 
 class TestTwoProcessesFromOneSettingsYaml:
@@ -372,6 +375,8 @@ class TestTheReviewOf4c:
 
         assert result["code"] == "MCP_RUNTIME_STORE_UNAVAILABLE"
         assert result["retryable"] is True
+        # The store's own words are for the log (#477).
+        assert result["error"] == RUNTIME_STORE_UNAVAILABLE_TEXT
 
     async def test_a_configuration_that_is_rejected_otherwise_is_no_store_contention(self, tmp_path, monkeypatch, mcp_call_tool):
         import json
@@ -381,8 +386,8 @@ class TestTheReviewOf4c:
 
         result = json.loads((await mcp_call_tool("get_settings", {})).content[0].text)
 
-        assert result["code"] != "MCP_RUNTIME_STORE_UNAVAILABLE"
-        assert "retryable" not in result
+        # A configuration that does not load, said as such (#477).
+        assert result["code"] == "MCP_CONFIGURATION_UNAVAILABLE"
 
     def test_the_report_is_of_the_file_in_use_not_of_where_the_path_points_now(self, tmp_path):
         """A path through a symlink retargeted after the start: the process

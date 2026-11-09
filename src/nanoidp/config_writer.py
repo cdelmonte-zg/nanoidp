@@ -144,6 +144,9 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, Tuple
 
+from ruamel.yaml.constructor import DuplicateKeyError
+from ruamel.yaml.error import YAMLError
+
 from .serialization import atomic_write_yaml, load_yaml_document
 
 # Platform-specific advisory-lock backend (#229 review round 8): fcntl
@@ -198,10 +201,20 @@ class LockUnavailableError(RuntimeError):
     ``ConflictError``/``HookError`` (``message``, ``kind``).
     """
 
+    # The kinds that coming back may resolve: a peer holding the lock past
+    # the timeout, another call establishing the configuration right now.
+    # Every other kind is the directory's or the filesystem's, and stays.
+    # Decided here, once, for every surface that says it (#477).
+    RETRYABLE_KINDS = frozenset({"lock_timeout", "freshness_in_progress"})
+
     def __init__(self, message: str, kind: str = "lock_unavailable") -> None:
         super().__init__(message)
         self.message = message
         self.kind = kind
+
+    @property
+    def retryable(self) -> bool:
+        return self.kind in self.RETRYABLE_KINDS
 
 
 class LockNamespaceUnavailable(LockUnavailableError):
@@ -440,6 +453,50 @@ class ConflictError(RuntimeError):
         self.kind = kind
 
 
+class DocumentUnreadable(RuntimeError):
+    """A document already on disk could not be read or parsed, so it could
+    not be edited in place: nothing was written (#477). What is there, not
+    what this process would write: a candidate that would not load back is
+    ``DocumentRejected``. The message names the file and the parser's or the
+    OS's words, for the log.
+
+    ``temporary`` when the OS refused the read, which coming back may
+    resolve, as a load classifies it; otherwise the bytes are what they are
+    until someone fixes them."""
+
+    def __init__(self, message: str, temporary: bool = False) -> None:
+        super().__init__(message)
+        self.message = message
+        self.temporary = temporary
+
+
+class DocumentNotEditable(RuntimeError):
+    """A document on disk that loads and that this writer cannot edit in
+    place (#477): it repeats a key, which the loader accepts (the last one
+    wins) and the round-trip parser refuses, since writing it back means
+    choosing which one stays. Nothing was written."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.message = message
+
+
+@contextlib.contextmanager
+def _reading(file_path: Path) -> Iterator[None]:
+    """A file this write reads before it writes: one that cannot be read or
+    parsed is DocumentUnreadable, one that repeats a key DocumentNotEditable,
+    and nothing is written (#477)."""
+    try:
+        yield
+    except DuplicateKeyError as repeated:
+        raise DocumentNotEditable(f"{file_path} cannot be edited in place: {repeated}") from repeated
+    except (OSError, UnicodeDecodeError, YAMLError) as unreadable:
+        raise DocumentUnreadable(
+            f"{file_path} could not be read to be edited: {unreadable}",
+            temporary=isinstance(unreadable, OSError),
+        ) from unreadable
+
+
 def _read_bytes(file_path: Path) -> bytes:
     if not file_path.exists():
         return b""
@@ -577,7 +634,8 @@ def compare_and_replace_many(
 
         # Phase 1: every precondition checked before anything is loaded.
         for file_path, expected_revision, _mutate in items:
-            actual = current_revision(file_path)
+            with _reading(file_path):
+                actual = current_revision(file_path)
             if expected_revision is not None and expected_revision != actual:
                 raise ConflictError(
                     f"{file_path.name} changed since it was last read "
@@ -588,7 +646,12 @@ def compare_and_replace_many(
         # yet, so a mutate that raises leaves every file untouched too.
         loaded = []
         for file_path, _expected_revision, mutate in items:
-            document = load_yaml_document(file_path)
+            with _reading(file_path):
+                document = load_yaml_document(file_path)
+            if not isinstance(document, dict):
+                # A list or a scalar at the top, which the loader refuses
+                # too: nothing to edit in place.
+                raise DocumentUnreadable(f"{file_path} could not be edited: it is not a mapping")
             mutate(document)
             loaded.append((file_path, document))
 

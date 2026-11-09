@@ -63,6 +63,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   now refuse it with a reason that says so; private-use scheme URIs, which
   have no authority by design, are unchanged. A client declared with such
   a URI loads as before and gets that refusal at `/authorize`.
+- **MCP answers a configuration that does not load as the HTTP app does**
+  (#477). `save_config` over a file edited by hand into something that does
+  not parse answered the parser's text with no `kind`; it now answers
+  `kind: "configuration_unloadable"` with a fixed text and `retryable`
+  (`true` only when the operating system refused the read), a file that
+  repeats a key, which loads but cannot be written back, `kind:
+  "configuration_not_editable"`, and a lock refusal a fixed text with
+  `retryable`. A call that finds no configuration loaded,
+  which only an embedder of the server reaches since `nanoidp-mcp` refuses
+  to start on one, was `MCP_INTERNAL_ERROR` with a traceback; it is now
+  `MCP_CONFIGURATION_UNAVAILABLE` with `retryable`, and the same holds for
+  a tool checked against files that changed and do not load. The detail is
+  in the server log, and `MCP_RUNTIME_STORE_UNAVAILABLE` answers the HTTP
+  app's fixed text too. Whether a lock refusal is worth a retry is now
+  decided in one place for the HTTP `Retry-After`, MCP and the rotate
+  refusal. Files that changed to name a keys directory this process cannot
+  write, or cannot create, are no longer answered with `Retry-After` over
+  HTTP, nor `retryable: true` over MCP: coming back does not help. A load
+  now makes the keys directory as a rotation does, so a start on one that
+  cannot be created says so (`... cannot be created by this process`).
 - **A keys directory that cannot be created answers the rotate refusal**
   (#476). When the directory is gone and cannot be made again, whether the
   parent is not writable or a file stands in the way, `POST /api/keys/rotate`

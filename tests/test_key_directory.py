@@ -1085,13 +1085,16 @@ class TestADirectoryThatCannotBeCreated:
         assert "see the server log" not in html
 
     def test_at_startup_it_stays_a_failure(self, tmp_path):
-        """Not a refusal to classify: the service makes the directory itself
-        before anything else, and a process with no keys does not start."""
+        """A process with no keys does not start. The service makes the
+        directory through the same helper as a rotation (#477), so the
+        failure is the classified one, not a bare FileExistsError."""
         keys_dir = tmp_path / "keys"
         keys_dir.write_text("not a directory")
 
-        with pytest.raises(FileExistsError):
+        with pytest.raises(key_directory.KeysDirectoryCannotBeCreated) as refused:
             CryptoService(keys_dir=str(keys_dir))
+
+        assert isinstance(refused.value.__cause__, FileExistsError)
 
     @pytest.mark.asyncio
     async def test_the_mcp_tool_answers_the_same_refusal(self, tmp_path, app):

@@ -61,10 +61,20 @@ from ..config import (
     ConfigManager,
     ConfigSnapshot,
     ConfigurationRejected,
+    DeclaredConfigurationUnloadable,
+    a_retry_may_load,
     get_config_if_loaded,
     init_config,
 )
 from ..config_writer import LockUnavailableError
+from ..hooks import HookError
+from ..refusal_texts import (
+    CONFIGURATION_LOCK_UNAVAILABLE_TEXT,
+    CONFIGURATION_UNAVAILABLE_TEXT,
+    CONFIGURATION_UNLOADABLE_TEXT,
+    NO_CONFIGURATION_TEXT,
+    RUNTIME_STORE_UNAVAILABLE_TEXT,
+)
 from ..security import verify_secret
 from ..services import activate_services, get_audit_log
 from ..services.runtime_repository import RuntimeStoreUnavailable
@@ -287,7 +297,7 @@ def _reject(name: str, code: str, message: str, retryable: Optional[bool] = None
     - DISPATCH refusals (this function): the call never reached a tool -
       ``{"error", "code", "tool"}`` with ``is_error=True``. The ``code``
       taxonomy (MCP_CONFIGURATION_UNAVAILABLE and MCP_RUNTIME_STORE_UNAVAILABLE, with
-      ``retryable``, MCP_READONLY_MODE,
+      ``retryable`` and a fixed ``error`` text, MCP_READONLY_MODE,
       MCP_ADMIN_SECRET_REQUIRED, MCP_UNKNOWN_TOOL,
       MCP_INVALID_ARGUMENTS, MCP_INTERNAL_ERROR) is transport-level.
     - DOMAIN results (the handlers): the tool ran and answered -
@@ -313,6 +323,41 @@ def _reject(name: str, code: str, message: str, retryable: Optional[bool] = None
     return _text_result(payload, is_error=True)
 
 
+def _configuration_lock_unavailable(name: str, refused: LockUnavailableError) -> CallToolResult:
+    logger.warning("Tool %s refused, the configuration lock was not had: %s", name, refused)
+    return _reject(
+        name,
+        "MCP_CONFIGURATION_UNAVAILABLE",
+        CONFIGURATION_LOCK_UNAVAILABLE_TEXT,
+        retryable=refused.retryable,
+    )
+
+
+def _no_configuration(name: str, refused: Exception) -> CallToolResult:
+    """A first load that failed (#477). The operator wrote the files or owns
+    what the load needs; the detail is theirs, in the log, and no traceback:
+    no fault of the server. A store held by another process is said as such
+    by the caller. A lock behind the load decides ``retryable`` by its kind."""
+    logger.warning("Tool %s refused, no configuration could be loaded: %s", name, refused)
+    return _reject(
+        name,
+        "MCP_CONFIGURATION_UNAVAILABLE",
+        NO_CONFIGURATION_TEXT,
+        retryable=a_retry_may_load(refused),
+    )
+
+
+def _declaration_unloadable(name: str, refused: DeclaredConfigurationUnloadable) -> CallToolResult:
+    """The same words as the HTTP app's 503 for the same condition (#477)."""
+    logger.warning("Tool %s refused against a configuration that does not load: %s", name, refused)
+    return _reject(
+        name,
+        "MCP_CONFIGURATION_UNAVAILABLE",
+        CONFIGURATION_UNAVAILABLE_TEXT if refused.temporary else CONFIGURATION_UNLOADABLE_TEXT,
+        retryable=refused.temporary,
+    )
+
+
 def _runtime_store_unavailable_behind(failure: BaseException) -> Optional[RuntimeStoreUnavailable]:
     seen = set()
     current: Optional[BaseException] = failure
@@ -335,7 +380,16 @@ async def call_tool(ctx: ServerRequestContext, params: CallToolRequestParams) ->
     """
     name = params.name
     try:
-        config = _ensure_config()
+        try:
+            config = _ensure_config()
+        except (ConfigurationRejected, HookError) as refused:
+            # Reached only when this process was not started through main(),
+            # which loads before serving and exits on a refusal: an embedder,
+            # the tests. A store held by another process is still contention,
+            # answered below.
+            if _runtime_store_unavailable_behind(refused) is not None:
+                raise
+            return _no_configuration(name, refused)
         # Before the read-only and admin checks: the management secret is
         # configuration too. With a store shared by other processes the files
         # are looked at here, once per call (#354, step 4a).
@@ -346,15 +400,7 @@ async def call_tool(ctx: ServerRequestContext, params: CallToolRequestParams) ->
             # as an HTTP request, in the other implementation of it.
             loaded = config.snapshot
         except LockUnavailableError as exc:
-            return _reject(
-                name,
-                "MCP_CONFIGURATION_UNAVAILABLE",
-                f"The configuration could not be observed: {exc.message}",
-                # A lock held past the timeout, or another call establishing
-                # the configuration right now: both pass. A filesystem with
-                # no advisory locking does not.
-                retryable=exc.kind in ("lock_timeout", "freshness_in_progress"),
-            )
+            return _configuration_lock_unavailable(name, exc)
         # Copied because _check_admin_secret pops admin_secret off it, and params
         # is a validated protocol model. `arguments` is None when the call
         # carried none.
@@ -395,6 +441,10 @@ async def call_tool(ctx: ServerRequestContext, params: CallToolRequestParams) ->
             details["error"] = result.get("error") or "tool reported failure"
         _log_mcp_tool(name, success=not failed, details=details)
         return _text_result(result, is_error=failed)
+    except DeclaredConfigurationUnloadable as refused:
+        # A tool checked against configuration files that changed and do not
+        # load: refused, as over HTTP, and no fault of the server.
+        return _declaration_unloadable(name, refused)
     except Exception as e:
         # A store held by another process past its wait (#354): coming back
         # may help, and it is no internal error. Also on the first call,
@@ -403,7 +453,8 @@ async def call_tool(ctx: ServerRequestContext, params: CallToolRequestParams) ->
         # activation, and is still contention.
         held = _runtime_store_unavailable_behind(e)
         if held is not None:
-            return _reject(name, "MCP_RUNTIME_STORE_UNAVAILABLE", str(held), retryable=True)
+            logger.warning("Tool %s refused, runtime store unavailable: %s", name, held)
+            return _reject(name, "MCP_RUNTIME_STORE_UNAVAILABLE", RUNTIME_STORE_UNAVAILABLE_TEXT, retryable=True)
         logger.exception(f"Error executing tool {name}")
         _log_mcp_tool(name, success=False, details={"error": str(e), "tool": name})
         return _text_result(

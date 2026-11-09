@@ -5,7 +5,9 @@ The unit tests call ``_execute_tool`` directly, which is why the stdio
 entrypoint could crash at startup for years without a test noticing (#56).
 This script exercises the actual transport: it launches ``nanoidp-mcp`` as a
 subprocess, performs the MCP handshake, lists the tools and calls a couple of
-read-only ones, asserting on the results.
+read-only ones, asserting on the results. A last leg breaks a COPY of the
+configuration under a running server (#477); the directory given is never
+written.
 
 Usage:
     python e2e/mcp_smoke_test.py [--config ./config]
@@ -17,8 +19,13 @@ import argparse
 import asyncio
 import json
 import os
+import shutil
+import subprocess
 import sys
+import tempfile
+from pathlib import Path
 
+import yaml
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
@@ -27,12 +34,79 @@ from mcp.client.stdio import stdio_client
 EXPECTED_TOOLS = 26
 
 
-async def run(config_dir: str) -> int:
-    params = StdioServerParameters(
+# What the parser says about _BROKEN; never part of an answer (#477).
+_BROKEN = "oauth: [broken\n"
+_PARSER_WORDS = ("parsing", "flow sequence", "line 1")
+
+
+def _server(config_dir: str) -> StdioServerParameters:
+    return StdioServerParameters(
         command=sys.executable,
         args=["-m", "nanoidp.mcp_server"],
         env={**os.environ, "NANOIDP_CONFIG_DIR": config_dir},
     )
+
+
+def _copy_of(config_dir: str, into: Path) -> Path:
+    """The configuration in a directory of its own, keys included, so a leg
+    that breaks a file never touches the one this script was given."""
+    copy = into / "config"
+    copy.mkdir()
+    for name in ("settings.yaml", "users.yaml"):
+        shutil.copy(Path(config_dir) / name, copy / name)
+    settings = yaml.safe_load((copy / "settings.yaml").read_text())
+    settings.setdefault("jwt", {})["keys_dir"] = str(into / "keys")
+    (copy / "settings.yaml").write_text(yaml.safe_dump(settings))
+    return copy
+
+
+async def run_with_files_that_do_not_load(config_dir: str) -> int:
+    """#477, through the real entry point: a server started on a good
+    configuration, whose settings.yaml is broken afterwards, answers
+    save_config with the fixed text and writes nothing; a server started
+    on the broken file refuses to start."""
+    with tempfile.TemporaryDirectory() as scratch:
+        copy = _copy_of(config_dir, Path(scratch))
+        settings = copy / "settings.yaml"
+        async with stdio_client(_server(str(copy))) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                settings.write_text(_BROKEN)
+                result = await session.call_tool("save_config", {})
+                refused = json.loads(result.content[0].text)
+                from nanoidp.refusal_texts import SAVE_FILES_UNLOADABLE_TEXT
+
+                if (
+                    refused.get("success") is not False
+                    or refused.get("kind") != "configuration_unloadable"
+                    or refused.get("error") != SAVE_FILES_UNLOADABLE_TEXT
+                    or refused.get("retryable") is not False
+                    or any(word in refused.get("error", "") for word in _PARSER_WORDS)
+                ):
+                    print(f"[FAIL] save_config over a broken file: {refused!r}")
+                    return 1
+                if settings.read_text() != _BROKEN:
+                    print("[FAIL] save_config wrote over the broken file")
+                    return 1
+        print("[OK] save_config over a file that does not parse: configuration_unloadable, fixed text, nothing written")
+
+        started = subprocess.run(
+            [sys.executable, "-m", "nanoidp.mcp_server"],
+            env={**os.environ, "NANOIDP_CONFIG_DIR": str(copy)},
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if started.returncode != 1 or "error: configuration rejected:" not in started.stderr:
+            print(f"[FAIL] a server on a broken file started or failed otherwise: {started.returncode} {started.stderr!r}")
+            return 1
+        print("[OK] a server on a file that does not parse refuses to start")
+    return 0
+
+
+async def run(config_dir: str) -> int:
+    params = _server(config_dir)
 
     async with stdio_client(params) as (read, write):
         async with ClientSession(read, write) as session:
@@ -165,6 +239,9 @@ async def run(config_dir: str) -> int:
                     print(f"[FAIL] plugin {expected_plugin!r} not in get_settings hooks: {names}, failed={failed}")
                     return 1
                 print(f"[OK] get_settings lists plugin {expected_plugin!r} (hook API {block.get('hook_api_version')})")
+
+    if await run_with_files_that_do_not_load(config_dir):
+        return 1
 
     print("\n[SUCCESS] MCP stdio smoke test passed")
     return 0

@@ -20,6 +20,15 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 from . import __version__
 from .config import ConfigManager, DeclaredConfigurationUnloadable, get_config, init_config
 from .config_writer import LockUnavailableError
+
+# What the 503s for a configuration or a store that cannot be used right now
+# say to the caller: fixed texts, shared with the MCP server (#477). The
+# exceptions' own words are for the server log (the handlers write it).
+from .refusal_texts import (
+    CONFIGURATION_UNAVAILABLE_TEXT,
+    CONFIGURATION_UNLOADABLE_TEXT,
+    RUNTIME_STORE_UNAVAILABLE_TEXT,
+)
 from .routes import api_bp, oauth_bp, registration_bp, runtime_bp, saml_bp, ui_bp
 from .routes._auth import is_credential_page
 from .routes._config import forget_after_this_request, remember_for_this_request
@@ -28,23 +37,6 @@ from .services.dynamic_registration import prune_stale_registrations
 from .services.identities import identities_for, reconcile_runtime_identities
 from .services.runtime_repository import RuntimeStoreUnavailable
 from .services.runtime_store import fresh_configuration
-
-# What the 503s for a configuration or a store that cannot be used right now
-# say to the caller: fixed text. The exceptions name the configuration
-# directory, the file that does not load or the store's failure, which is
-# for the server log (the handlers write it), not for a body that reaches
-# every client of every endpoint.
-CONFIGURATION_UNAVAILABLE_TEXT = (
-    "The configuration files could not be read or loaded right now; the configuration "
-    "loaded before stays in force. Try again."
-)
-CONFIGURATION_UNLOADABLE_TEXT = (
-    "The configuration files changed and do not load; the configuration loaded before stays "
-    "in force until they are fixed."
-)
-# "Another writer": SQLite reports contention between processes and between
-# this process's own connections the same way.
-RUNTIME_STORE_UNAVAILABLE_TEXT = "The runtime store is held by another writer; try again."
 
 # Global limiter instance (initialized in create_app)
 limiter: Optional[Limiter] = None
@@ -326,7 +318,7 @@ def create_app(
                 "right now. Another process may be writing it. Try again.</p>"
             )
         response.status_code = 503
-        if exc.kind in ("lock_timeout", "freshness_in_progress"):
+        if exc.retryable:
             # When one request may be tried again; not the configuration's
             # own retry interval.
             response.headers["Retry-After"] = "1"

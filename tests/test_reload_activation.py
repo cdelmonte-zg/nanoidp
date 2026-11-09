@@ -16,6 +16,7 @@ import sys
 from pathlib import Path
 
 import jwt
+import pytest
 import yaml
 
 import nanoidp.routes.oauth as oauth_module
@@ -413,6 +414,27 @@ class TestStartup:
         assert "error: configuration rejected:" in result.stderr
         assert unusable in result.stderr
         assert "Traceback" not in result.stderr
+
+    @pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0, reason="mode bits do not refuse here")
+    def test_a_keys_dir_that_cannot_be_created_is_said_as_such(self, tmp_path):
+        """Absent, under a parent this process cannot write: the activation
+        makes it through the same helper as a rotation (#477), so the error
+        says it cannot be created, and the start is still refused."""
+        parent = tmp_path / "read-only"
+        parent.mkdir()
+        keys = parent / "keys"
+        config_dir = _config_dir(tmp_path, str(keys))
+        parent.chmod(0o555)
+        try:
+            result = self._start(config_dir)
+        finally:
+            parent.chmod(0o755)
+
+        assert result.returncode == 1
+        assert "error: configuration rejected:" in result.stderr
+        assert f"{keys} cannot be created by this process" in result.stderr
+        assert "Traceback" not in result.stderr
+        assert not keys.exists()
 
     def test_an_invalid_file_is_a_configuration_error_not_a_traceback(self, tmp_path):
         config_dir = _config_dir(tmp_path, str(tmp_path / "keys"))
