@@ -105,6 +105,52 @@ async def run_with_files_that_do_not_load(config_dir: str) -> int:
     return 0
 
 
+async def run_with_a_tag_the_parser_refuses(config_dir: str) -> int:
+    """#494, through the real entry point: a tagged value PyYAML refuses
+    with a KeyError, not with its own error, is a refused configuration on
+    reload and a finding on validate, never an internal error; and a
+    server started on it refuses to start without a traceback."""
+    with tempfile.TemporaryDirectory() as scratch:
+        copy = _copy_of(config_dir, Path(scratch))
+        users = copy / "users.yaml"
+        async with stdio_client(_server(str(copy))) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                users.write_text(users.read_text() + "zz_probe: !!bool maybe\n")
+                refused = json.loads((await session.call_tool("reload_config", {})).content[0].text)
+                if (
+                    refused.get("success") is not False
+                    or refused.get("kind") != "invalid"
+                    or "users.yaml: not valid YAML: " not in refused.get("error", "")
+                ):
+                    print(f"[FAIL] reload_config over a tag the parser refuses: {refused!r}")
+                    return 1
+                validation = json.loads((await session.call_tool("validate_config", {})).content[0].text)
+                errors = [f for f in validation.get("findings", []) if f.get("level") == "error"]
+                if validation.get("valid") is not False or [f.get("file") for f in errors] != ["users.yaml"]:
+                    print(f"[FAIL] validate_config over a tag the parser refuses: {validation!r}")
+                    return 1
+        print("[OK] a tag the parser refuses: reload_config kind invalid, validate_config one finding")
+
+        started = subprocess.run(
+            [sys.executable, "-m", "nanoidp.mcp_server"],
+            env={**os.environ, "NANOIDP_CONFIG_DIR": str(copy)},
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if (
+            started.returncode != 1
+            or "error: configuration rejected: users.yaml: not valid YAML: " not in started.stderr
+            or "Traceback" in started.stderr
+        ):
+            print(f"[FAIL] a server on a tag the parser refuses: {started.returncode} {started.stderr!r}")
+            return 1
+        print("[OK] a server on a tag the parser refuses does not start, and says which file")
+    return 0
+
+
 async def run(config_dir: str) -> int:
     params = _server(config_dir)
 
@@ -241,6 +287,9 @@ async def run(config_dir: str) -> int:
                 print(f"[OK] get_settings lists plugin {expected_plugin!r} (hook API {block.get('hook_api_version')})")
 
     if await run_with_files_that_do_not_load(config_dir):
+        return 1
+
+    if await run_with_a_tag_the_parser_refuses(config_dir):
         return 1
 
     print("\n[SUCCESS] MCP stdio smoke test passed")
