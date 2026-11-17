@@ -21,7 +21,7 @@ import yaml
 import nanoidp.mcp_server as mcp
 from nanoidp.app import create_app
 from nanoidp.config import User, get_config
-from nanoidp.services.activation import after_load_services
+from nanoidp.services import after_load_services
 from nanoidp.services.audit import get_audit_log
 from nanoidp.services.dynamic_registration import registrations
 from nanoidp.services.identities import identities_for
@@ -124,6 +124,28 @@ class TestTheSweepFollowsTheReconciliation:
         assert registrations().list() == []
 
 
+class TestStartupOverAStoreHeldByAnotherProcess:
+    def test_it_is_contention_said_in_one_line_not_a_traceback(self, as_nanoidp_mcp, monkeypatch, capsys):
+        """The step after the first load reads the runtime store. One held
+        by a peer past its wait stops the start, as a configuration that
+        does not load does, without a traceback."""
+        from nanoidp.services.runtime_repository import RuntimeStoreUnavailable
+
+        as_nanoidp_mcp()
+
+        def held(config):
+            raise RuntimeStoreUnavailable("database is locked")
+
+        monkeypatch.setattr("nanoidp.services.activation.reconcile_runtime_identities", held)
+        monkeypatch.setattr("sys.argv", ["nanoidp-mcp"])
+
+        with pytest.raises(SystemExit) as stopped:
+            mcp.main()
+
+        assert stopped.value.code == 1
+        assert "error: The runtime store is held by another writer; try again." in capsys.readouterr().err
+
+
 def _the_server(config_dir, reloads, stop, declared):
     """A server over the same directory and store, adopting the files
     whenever they change, as it does at the start of every request."""
@@ -169,13 +191,16 @@ class TestAPromotionFromTheMcpProcessWhileTheServerReloads:
             assert get_runtime_store().shared
             own_reload = config.reload_local
             server_went_first = []
+            # The server's count of reloads, read BEFORE the promotion
+            # writes anything: read after the write, it could already
+            # include the reload it is meant to wait for.
+            before_the_write = [0]
 
             def after_the_server(*args, **kwargs):
-                before = reloads.value
                 deadline = time.monotonic() + 5
-                while reloads.value == before and time.monotonic() < deadline:
+                while reloads.value == before_the_write[0] and time.monotonic() < deadline:
                     time.sleep(0.002)
-                server_went_first.append(reloads.value > before)
+                server_went_first.append(reloads.value > before_the_write[0])
                 return own_reload(*args, **kwargs)
 
             config.reload_local = after_the_server
@@ -184,6 +209,7 @@ class TestAPromotionFromTheMcpProcessWhileTheServerReloads:
                 fresh_configuration()
                 resolver = identities_for(config, config.snapshot)
                 resolver.create_runtime_user(User(username=name, password="pw"))
+                before_the_write[0] = reloads.value
                 resolver.promote_runtime_user(name, MCP_CONTEXT)
         finally:
             stop.set()

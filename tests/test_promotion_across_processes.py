@@ -31,8 +31,8 @@ import yaml
 
 from nanoidp.app import create_app
 from nanoidp.config import ConfigManager, OAuthClient, get_config
+from nanoidp.services import after_load_services
 from nanoidp.services import identities as identities_module
-from nanoidp.services.activation import after_load_services
 from nanoidp.services.audit import get_audit_log
 from nanoidp.services.identities import IdentityResolver, PromotionInProgress
 from nanoidp.services.runtime_repository import MemoryRuntimeRepository, replace

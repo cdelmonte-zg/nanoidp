@@ -1283,8 +1283,9 @@ def init_config(
     --strict-config, with the same contract over config_validation (#175).
     activate is the activation step every load of this manager runs (#359);
     the server and the MCP server pass the signing service's. after_load
-    runs after every successful load (#235); the server passes the runtime
-    identity reconciliation.
+    runs after every successful load (#235); the server and the MCP server
+    pass ``services.after_load_services``, the runtime identity
+    reconciliation and what follows it (#432).
     """
     global _config
     _config = ConfigManager(

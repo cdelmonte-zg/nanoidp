@@ -92,7 +92,12 @@ the tools change, and who sees it:
   the files. Once saved, the change is declared configuration like any
   other entry.
 - `reload_config` rebuilds the MCP server's copy from the files, dropping
-  every change not saved yet. `save_config` writes the whole copy: every
+  every change not saved yet. Like every load, at startup included, it is
+  followed by the reconciliation of runtime identities: with a
+  [runtime store shared with a server](../guides/shared-runtime-store.md),
+  a runtime user or client whose name the files now declare is removed
+  from that store, in read-only mode too, since it follows from the files
+  and not from a tool. `save_config` writes the whole copy: every
   pending user, client and setting at once, not only the last change.
 - `get_audit_log`, `get_audit_stats` and `clear_audit_log` act on the MCP
   server's own audit log. The events of a running nanoidp server are in

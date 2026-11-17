@@ -585,7 +585,7 @@ In Claude Code settings:
 }
 ```
 
-Use readonly mode when you only need introspection (listing users, decoding tokens, viewing settings) but want to prevent accidental modifications.
+Use readonly mode when you only need introspection (listing users, decoding tokens, viewing settings) but want to prevent accidental modifications. It disables the mutating tools; it does not stop what follows from the configuration files themselves: over a shared runtime store, a load in the MCP server still removes a runtime identity whose name the files now declare, as a load in the server does.
 
 ### Audit Logging
 

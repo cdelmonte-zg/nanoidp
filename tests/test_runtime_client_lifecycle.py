@@ -596,7 +596,7 @@ class TestALoadThatDeclaresTheId:
 
     def _declare(self, application, tmp_path, client_id, during):
         # Where the step after a load looks the reconciliation up (#432).
-        import nanoidp.services.activation as app_module
+        import nanoidp.services.activation as activation_module
 
         settings = tmp_path / "config" / "settings.yaml"
         document = yaml.safe_load(settings.read_text())
@@ -604,22 +604,22 @@ class TestALoadThatDeclaresTheId:
             {"client_id": client_id, "client_secret": "the-declared-secret", "redirect_uris": [REDIRECT]}
         )
         settings.write_text(yaml.safe_dump(document))
-        reconcile = app_module.reconcile_runtime_identities
+        reconcile = activation_module.reconcile_runtime_identities
         seen = []
 
         def before_reconciling(config):
             seen.append(during())
             return reconcile(config)
 
-        return app_module, before_reconciling, seen
+        return activation_module, before_reconciling, seen
 
     def test_the_registration_has_already_ended(self, application, tmp_path, monkeypatch):
         client_id, token = _register(application)
-        app_module, before_reconciling, seen = self._declare(
+        activation_module, before_reconciling, seen = self._declare(
             application, tmp_path, client_id,
             lambda: application.test_client().get(f"/register/{client_id}", headers=_bearer(token)),
         )
-        monkeypatch.setattr(app_module, "reconcile_runtime_identities", before_reconciling)
+        monkeypatch.setattr(activation_module, "reconcile_runtime_identities", before_reconciling)
 
         assert application.test_client().post("/api/config/reload").status_code == 200
 
@@ -634,7 +634,7 @@ class TestALoadThatDeclaresTheId:
         from nanoidp.services.audit import get_audit_log
 
         client_id, _ = _register(application)
-        app_module, _, _ = self._declare(application, tmp_path, client_id, lambda: None)
+        activation_module, _, _ = self._declare(application, tmp_path, client_id, lambda: None)
         listed = MemoryRuntimeRepository.entries
         once = []
 

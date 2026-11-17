@@ -76,8 +76,7 @@ from ..refusal_texts import (
     RUNTIME_STORE_UNAVAILABLE_TEXT,
 )
 from ..security import verify_secret
-from ..services import activate_services, get_audit_log
-from ..services.activation import after_load_services
+from ..services import activate_services, after_load_services, get_audit_log
 from ..services.runtime_repository import RuntimeStoreUnavailable
 from ..services.runtime_store import fresh_configuration
 
@@ -595,6 +594,11 @@ Examples:
         # A configuration error, not a crash (#359). stdout is the MCP
         # protocol stream, so the message goes to stderr.
         print(f"error: configuration rejected: {exc.message}", file=sys.stderr)
+        sys.exit(1)
+    except RuntimeStoreUnavailable:
+        # The step after the load reads the runtime store (#432); one held
+        # by another process past its wait is contention, not a crash.
+        print(f"error: {RUNTIME_STORE_UNAVAILABLE_TEXT}", file=sys.stderr)
         sys.exit(1)
 
     # Run the server. stdio_server() is an async context manager yielding the

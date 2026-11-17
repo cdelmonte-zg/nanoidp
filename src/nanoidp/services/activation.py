@@ -1,5 +1,6 @@
-"""The activation step of a load, for everything the configuration governs
-in ``services`` (#359, #354).
+"""The two steps a process composition hands to a load, for everything the
+configuration governs in ``services``: the activation (#359, #354) and the
+step after it (#432), at the end of this module.
 
 Handed to ``init_config(activate=...)`` by each process composition (the
 Flask app and the MCP server). Given the candidate settings it prepares, in

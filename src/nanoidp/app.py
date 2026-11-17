@@ -32,8 +32,7 @@ from .refusal_texts import (
 from .routes import api_bp, oauth_bp, registration_bp, runtime_bp, saml_bp, ui_bp
 from .routes._auth import is_credential_page
 from .routes._config import forget_after_this_request, remember_for_this_request
-from .services import activate_services
-from .services.activation import after_load_services
+from .services import activate_services, after_load_services
 from .services.runtime_repository import RuntimeStoreUnavailable
 from .services.runtime_store import fresh_configuration
 
