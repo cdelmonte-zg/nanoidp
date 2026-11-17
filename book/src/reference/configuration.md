@@ -124,6 +124,18 @@ configuration can be parsed into settings and users, not whether every
 service could be built from it. A configuration that parses but whose
 signing keys cannot be used is still refused at load, where it belongs.
 
+A file that is not valid YAML is refused the same way, at startup, on
+reload and by `validate-config`. Two cases have a fixed message that names
+the file and nothing of its content, because the parser's own words would
+quote the value, which may be a secret:
+
+- `users.yaml: not valid YAML: invalid value for an explicit YAML tag` - a
+  value its tag does not accept, such as `!!bool maybe` or `!!int x`.
+- `users.yaml: not valid YAML: nesting exceeds the parser's recursion
+  limit` - collections nested some hundreds of levels deep. The exact depth
+  is not fixed: it depends on the entry point, so a file close to it can
+  load at startup and be refused on reload, or the reverse.
+
 To check a directory without starting anything:
 
 ```bash

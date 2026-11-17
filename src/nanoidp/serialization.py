@@ -35,8 +35,9 @@ import time
 from dataclasses import dataclass
 from io import StringIO
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, Mapping, Optional, Set
+from typing import TYPE_CHECKING, Any, Dict, Mapping, Optional, Set, Union
 
+import yaml
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap
 from ruamel.yaml.scalarstring import SingleQuotedScalarString
@@ -191,6 +192,59 @@ def check_config_version(data: Dict[str, Any], file_path: Path) -> int:
             f"downgrade the file"
         )
     return value
+
+
+class NotValidYaml(ValueError):
+    """A document the YAML parser refused with an exception that is not its
+    own ``yaml.YAMLError`` (#494). The message names the file, not its path:
+    it is what a caller is told to fix. ``reason`` is the part after the
+    file, for a caller that names the file its own way. Both are fixed
+    texts: what the parser said is not repeated, see ``parse_yaml``."""
+
+    def __init__(self, name: str, reason: str) -> None:
+        super().__init__(f"{name}: not valid YAML: {reason}")
+        self.reason = reason
+
+
+# What PyYAML raises for a document it refuses, apart from YAMLError, as
+# found by trying documents (#494). A list and not ``Exception``: a failure
+# no document is known to cause stays what it is.
+#
+# A tag whose constructor refuses the value: ``!!int x`` a ValueError,
+# ``!!bool maybe`` a KeyError, ``!!int ''`` an IndexError, ``!!timestamp x``
+# an AttributeError.
+_REFUSED_BY_A_TAG = (ValueError, KeyError, IndexError, AttributeError)
+INVALID_TAG_VALUE = "invalid value for an explicit YAML tag"
+# Nesting deeper than the interpreter's stack allows the parser. The depth
+# that reaches it is not a property of the bytes alone: it depends on how
+# deep the caller already is, so the same document near the limit can load
+# from one entry point and be refused from another (a few hundred levels;
+# no configuration nests like that).
+NESTING_TOO_DEEP = "nesting exceeds the parser's recursion limit"
+
+
+def parse_yaml(raw: Union[bytes, str], name: str) -> Any:
+    """The document in ``raw``, bytes or text already read from the file
+    called ``name``. ``yaml.YAMLError`` passes as the parser raised it; the
+    other ways the parser refuses a document are ``NotValidYaml``.
+
+    The ``try`` holds the parse and nothing else, so that nothing else is
+    reported as a document that is not valid YAML.
+
+    What the constructor said is dropped, not chained and not logged: it
+    quotes the value it refused, whole, and that value can be a password or
+    a key (``password: !!int ...``). The log gets the file and the type of
+    the exception."""
+    try:
+        return yaml.safe_load(raw)
+    except _REFUSED_BY_A_TAG as refused:
+        refused_as, reason = type(refused).__name__, INVALID_TAG_VALUE
+    except RecursionError as refused:
+        refused_as, reason = type(refused).__name__, NESTING_TOO_DEEP
+    # Raised out of the handlers, so that the parser's exception is not this
+    # one's context either: a traceback of it would print the value.
+    logger.info("%s: the YAML parser refused the document with a %s", name, refused_as)
+    raise NotValidYaml(name, reason)
 
 
 def load_yaml_document(file_path: Path) -> Dict[str, Any]:

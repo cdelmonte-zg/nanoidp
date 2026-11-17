@@ -45,6 +45,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A document the YAML parser refuses outside its own error type is a
+  refused configuration** (#494). Some documents make the parser raise an
+  exception that is not a YAML error: a tag whose value its type does not
+  accept (`!!bool maybe`, `!!int ''`, `!!timestamp x`), or nesting that
+  exceeds the recursion limit during parsing. In `settings.yaml` or
+  `users.yaml` these were a traceback at startup of `nanoidp` and
+  `nanoidp-mcp`, a `500` HTML page on `POST /api/config/reload`,
+  `MCP_INTERNAL_ERROR` on `reload_config` and `validate_config`, and a
+  traceback from `nanoidp validate-config` (which also failed that way on
+  `!!int x`, and on all of them in `bootstrap.yaml`). They are now answered
+  like any file that is not valid YAML: `error: configuration rejected: ...`
+  and exit 1, `422` with `kind: invalid`, a `not valid YAML` finding. The
+  message is one of two fixed texts and names the file: `users.yaml: not
+  valid YAML: invalid value for an explicit YAML tag` or `... nesting
+  exceeds the parser's recursion limit`. It no longer repeats the parser's
+  words, which quote the refused value in full (for `!!int x` they were
+  already in the answer); the log gets the file and the exception type.
+  The depth that reaches the recursion limit depends on the entry point, so
+  a file close to it can load from one and be refused from another. A
+  process sharing its runtime store took such files for a temporary failure
+  and tried them again every 5 seconds; it now leaves them until their
+  bytes change. `bootstrap.yaml` at startup and `nanoidp plugins` are
+  unchanged (#496).
+
 - **The SAML POST page is neither cached nor readable from another origin**
   (#478, SAML 2.0 Bindings 3.5.5.1). The page that carries `SAMLResponse`
   now answers `Cache-Control: no-cache, no-store` and `Pragma: no-cache`,

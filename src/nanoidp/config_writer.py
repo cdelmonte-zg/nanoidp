@@ -480,6 +480,11 @@ class DocumentNotEditable(RuntimeError):
         self.message = message
 
 
+def _refused_by_the_os(file_path: Path, unreadable: OSError) -> DocumentUnreadable:
+    """The OS refused the read: coming back may help, as a load says."""
+    return DocumentUnreadable(f"{file_path} could not be read to be edited: {unreadable}", temporary=True)
+
+
 @contextlib.contextmanager
 def _reading(file_path: Path) -> Iterator[None]:
     """A file this write reads before it writes: one that cannot be read or
@@ -490,8 +495,7 @@ def _reading(file_path: Path) -> Iterator[None]:
     except DuplicateKeyError as repeated:
         raise DocumentNotEditable(f"{file_path} cannot be edited in place: {repeated}") from repeated
     except OSError as unreadable:
-        # The OS refused the read: coming back may help, as a load says.
-        raise DocumentUnreadable(f"{file_path} could not be read to be edited: {unreadable}", temporary=True) from unreadable
+        raise _refused_by_the_os(file_path, unreadable) from unreadable
     except Exception as unparseable:
         # Anything else is the bytes: the decoding or the parse, including a
         # tag whose value its constructor refuses (``!!int x`` is a
@@ -637,8 +641,13 @@ def compare_and_replace_many(
 
         # Phase 1: every precondition checked before anything is loaded.
         for file_path, expected_revision, _mutate in items:
-            with _reading(file_path):
+            try:
                 actual = current_revision(file_path)
+            except OSError as unreadable:
+                # This step reads bytes and parses nothing: the OS refusing
+                # the read is all a document can answer for here, and any
+                # other failure is not the document's (#494).
+                raise _refused_by_the_os(file_path, unreadable) from unreadable
             if expected_revision is not None and expected_revision != actual:
                 raise ConflictError(
                     f"{file_path.name} changed since it was last read "

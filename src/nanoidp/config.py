@@ -47,6 +47,7 @@ from .serialization import (
     apply_settings_document,
     apply_users_document,
     check_config_version,
+    parse_yaml,
 )
 from .serialization import expand_env_vars as _expand_env_vars
 from .token_subject import shared_name_warning
@@ -634,7 +635,7 @@ class ConfigManager:
             # observation, carried by the snapshot rather than recomputed.
             raw = settings_observed.data
             staged["settings_revision"] = settings_observed.revision
-            data = yaml.safe_load(raw) or {}
+            data = parse_yaml(raw, "settings.yaml") or {}
             # Candidate strictness: an edited config_validation takes effect
             # on the load that reads it, an explicit --strict-config keeps
             # winning, and a load that FAILS never changes the running mode
@@ -662,7 +663,7 @@ class ConfigManager:
         else:
             uraw = users_observed.data
             staged["users_revision"] = users_observed.revision
-            udata = yaml.safe_load(uraw) or {}
+            udata = parse_yaml(uraw, "users.yaml") or {}
             # config_version is checked BEFORE placeholder expansion: it must
             # be a literal integer, never ${VAR} (#175 review).
             users_version = check_config_version(udata, users_file)

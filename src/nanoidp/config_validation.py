@@ -37,7 +37,7 @@ from .config_documents import (
 )
 from .config_store import ConfigFileStore, FileSnapshot
 from .config_writer import LockUnavailableError
-from .serialization import check_config_version
+from .serialization import NotValidYaml, check_config_version, parse_yaml
 from .serialization import expand_env_vars as _expand_env_vars
 
 ERROR = "error"
@@ -84,12 +84,18 @@ def _read_yaml(
     the tool operators use to gate a deploy.
     """
     try:
-        data = yaml.safe_load(raw.decode("utf-8")) or {}
+        text = raw.decode("utf-8")
     except UnicodeDecodeError as exc:
         findings.append(Finding(ERROR, f"{path}: cannot be read: {exc}", path.name))
         return None
+    try:
+        data = parse_yaml(text, path.name) or {}
     except yaml.YAMLError as exc:
         findings.append(Finding(ERROR, f"{path}: not valid YAML: {exc}", path.name))
+        return None
+    except NotValidYaml as exc:
+        # The path, as every finding of this report names its file (#494).
+        findings.append(Finding(ERROR, f"{path}: not valid YAML: {exc.reason}", path.name))
         return None
     if not isinstance(data, dict):
         findings.append(
@@ -282,8 +288,8 @@ def _declared_mode_of(settings: FileSnapshot) -> str:
     if not settings.exists:
         return "warn"
     try:
-        data = yaml.safe_load(settings.data.decode("utf-8")) or {}
-    except (yaml.YAMLError, UnicodeDecodeError):
+        data = parse_yaml(settings.data.decode("utf-8"), SETTINGS_FILE) or {}
+    except (yaml.YAMLError, UnicodeDecodeError, NotValidYaml):
         return "warn"
     return declared_validation_mode(data) if isinstance(data, dict) else "warn"
 
