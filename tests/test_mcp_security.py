@@ -339,8 +339,10 @@ class TestMCPSecurityDocumentation:
         # From README: create_user, create_persona_user, update_user,
         #              delete_user, create_client, update_client,
         #              delete_client, generate_token, update_settings,
-        #              save_config, clear_audit_log, rotate_keys (#48)
-        expected_count = 12
+        #              save_config, clear_audit_log, rotate_keys (#48),
+        #              and the seven runtime identity tools that write (#432):
+        #              create/delete/promote for users and for clients, reset
+        expected_count = 19
         assert len(MUTATING_TOOLS) == expected_count
 
     def test_mcp_server_has_security_docstring(self):

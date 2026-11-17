@@ -35,6 +35,11 @@ readonly mode, and the exposure warnings, see the
 | `get_audit_log` | Get audit log entries (filter by limit, event type, username) |
 | `get_audit_stats` | Get audit statistics |
 | `clear_audit_log` | Clear the audit log |
+| `create_runtime_user`, `create_runtime_client` | Create a disposable runtime user or client on the running NanoIDP, from a YAML-shaped entry |
+| `list_runtime_users`, `get_runtime_user`, `list_runtime_clients`, `get_runtime_client` | Read the runtime users and clients (not the declared ones) |
+| `delete_runtime_user`, `delete_runtime_client` | Delete one |
+| `promote_runtime_user`, `promote_runtime_client` | Write one into `users.yaml` or `settings.yaml` and retire the runtime object |
+| `reset_runtime_identities` | Remove every runtime user and client, and end the browser sessions at `/authorize` |
 | `get_keys_info` | Get signing key info (active kid, previous keys) |
 | `rotate_keys` | Rotate signing keys (old key stays valid for verification). A refusal answers `success: false` with a fixed `error` and a `kind`, the same as `POST /api/keys/rotate`: `external_keys_not_rotatable`, `keys_directory_not_writable`, `lock_namespace_unavailable`, `lock_timeout` (worth a retry) or `lock_unsupported` |
 
@@ -102,6 +107,19 @@ the tools change, and who sees it:
 - `get_audit_log`, `get_audit_stats` and `clear_audit_log` act on the MCP
   server's own audit log. The events of a running nanoidp server are in
   that server's `/api/audit`.
+
+With a [runtime store shared with the server](../guides/shared-runtime-store.md)
+(`runtime.store: sqlite`) the two processes do share one thing, the runtime
+state, and the audit with it. The eleven `*_runtime_*` tools act on it: a
+runtime user created through MCP logs in at the server at once, with no
+`save_config` and no reload, and is removed the same way. They are the MCP
+form of `/api/runtime`, with the same entries, views and refusal kinds; see
+[Disposable test identities](../guides/runtime-identities.md#the-same-operations-as-mcp-tools).
+With the default in-memory store they are refused with
+`MCP_RUNTIME_STORE_NOT_SHARED`, since what they created would exist in the
+MCP server only. The tools of the first list above are not affected by the
+store: they answer from the declared configuration either way, so
+`list_users`, `get_user` and `generate_token` do not know a runtime user.
 
 ## Conflict-checked saves
 

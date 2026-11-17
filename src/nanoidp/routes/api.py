@@ -18,10 +18,10 @@ from ..services import (
     identities_for,
     rotation_refusal,
 )
+from ..services.identity_views import user_summary
 from ..services.runtime_store import runtime_store_report
 from ._auth import management_secret_required_for_api, no_store_responses
 from ._config import request_config
-from ._identity_views import user_summary
 from ._issuer import effective_issuer, effective_saml_entity_id, effective_saml_sso_url
 
 logger = logging.getLogger(__name__)

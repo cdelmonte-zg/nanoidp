@@ -11,7 +11,10 @@ process records, the other serves, and it is consumed once for both.
     3. a token revoked at A is refused at B;
     4. a login begun at A is finished at B;
     5. a user promoted at A is declared for B;
-    6. the audit of both reads as one.
+    6. the audit of both reads as one;
+    7. with ``--mcp-config-dir``: a runtime user created through a real
+       ``nanoidp-mcp`` process on the same directory logs in at a server,
+       and is gone for the servers once the MCP process deletes it (#432).
 
 Scenario 5 writes `users.yaml` and removes the user again, so a run leaves
 the configuration directory as it found it.
@@ -26,8 +29,11 @@ Exit code 0 on success, 1 on any failure.
 """
 
 import argparse
+import asyncio
 import base64
 import hashlib
+import json
+import os
 import secrets
 import sys
 from typing import Callable, List, Optional, Tuple
@@ -223,12 +229,58 @@ def the_audit_of_both_reads_as_one(a: str, b: str) -> None:
         requests.delete(f"{a}/api/runtime/users/{name}", timeout=TIMEOUT)
 
 
+def an_agent_creates_a_user_the_servers_authenticate(a: str, b: str, config_dir: str) -> None:
+    """What an agent does with the tools of #432: create a runtime identity
+    through MCP, use it at the server, remove it when done."""
+    from mcp import ClientSession, StdioServerParameters
+    from mcp.client.stdio import stdio_client
+
+    username = f"e2e-mcp-{secrets.token_hex(4)}"
+
+    async def through_mcp() -> None:
+        params = StdioServerParameters(
+            command=sys.executable,
+            args=["-m", "nanoidp.mcp_server"],
+            env={**os.environ, "NANOIDP_CONFIG_DIR": config_dir},
+        )
+        async with stdio_client(params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                created = json.loads(
+                    (await session.call_tool("create_runtime_user", {"username": username, "password": "pw"})).content[0].text
+                )
+                check(created.get("success") is True, f"create_runtime_user answered {created!r}")
+                try:
+                    served = requests.get(f"{a}/api/runtime/users/{username}", timeout=TIMEOUT)
+                    check(served.status_code == 200, f"A does not serve the user MCP created ({served.status_code})")
+                    check(served.json() == created["user"], "A serves another view of the user than the tool returned")
+                    code, verifier = code_from(a, username, "pw", finish_at=b)
+                    check(redeem(b, code, verifier).status_code == 200, "the user MCP created cannot log in at the servers")
+                finally:
+                    # Whatever failed above, the shared store is left as it
+                    # was found, as the other scenarios leave it.
+                    deleted = json.loads(
+                        (await session.call_tool("delete_runtime_user", {"username": username})).content[0].text
+                    )
+                check(deleted.get("success") is True, f"delete_runtime_user answered {deleted!r}")
+                for server in (a, b):
+                    gone = requests.get(f"{server}/api/runtime/users/{username}", timeout=TIMEOUT)
+                    check(gone.status_code == 404, f"{server} still serves the user MCP deleted ({gone.status_code})")
+
+    asyncio.run(through_mcp())
+
+
 # ---- the run ----------------------------------------------------------------
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--a", default="http://localhost:8007", help="the first server")
     parser.add_argument("--b", default="http://localhost:8008", help="the second server")
+    parser.add_argument(
+        "--mcp-config-dir",
+        default=None,
+        help="the servers' configuration directory: also run the scenario that starts nanoidp-mcp on it",
+    )
     args = parser.parse_args()
     a, b = args.a.rstrip("/"), args.b.rstrip("/")
 
@@ -253,6 +305,14 @@ def main() -> int:
         ("a user promoted at A is declared for B", lambda: a_promotion_at_one_is_declared_for_the_other(a, b, str(username)), True),
         ("the audit of both reads as one", lambda: the_audit_of_both_reads_as_one(a, b), False),
     ]
+    if args.mcp_config_dir:
+        scenarios.append(
+            (
+                "a runtime user created through nanoidp-mcp logs in at the servers",
+                lambda: an_agent_creates_a_user_the_servers_authenticate(a, b, args.mcp_config_dir),
+                False,
+            )
+        )
 
     failures = 0
     skipped = 0

@@ -192,6 +192,8 @@ Prompt: "I need to test role-based access. Create a user 'role-test' with
 | `get_audit_log` | Get audit entries | "Show the last 20 audit entries" |
 | `get_audit_stats` | Get audit statistics | "Show audit stats" |
 | `get_keys_info` | Get signing key info | "Which signing key is active?" |
+| `list_runtime_users`, `get_runtime_user` | Read the runtime users of the running NanoIDP (needs `runtime.store: sqlite`) | "List the runtime users" |
+| `list_runtime_clients`, `get_runtime_client` | Read its runtime clients | "List the runtime clients" |
 
 ### Mutating Tools (disabled in `--readonly` mode)
 
@@ -208,6 +210,10 @@ Prompt: "I need to test role-based access. Create a user 'role-test' with
 | `save_config` | Save to YAML | "Save nanoidp config to files" |
 | `clear_audit_log` | Clear the audit log | "Clear the nanoidp audit log" |
 | `rotate_keys` | Rotate signing keys | "Rotate the signing keys" |
+| `create_runtime_user`, `create_runtime_client` | Create a disposable identity on the running NanoIDP (needs `runtime.store: sqlite`) | "Create a runtime user 'qa-1' with password 'pw'" |
+| `delete_runtime_user`, `delete_runtime_client` | Delete one | "Delete the runtime user 'qa-1'" |
+| `promote_runtime_user`, `promote_runtime_client` | Write one into the configuration files | "Promote the runtime user 'qa-1'" |
+| `reset_runtime_identities` | Remove every runtime identity | "Reset the runtime identities" |
 
 ---
 

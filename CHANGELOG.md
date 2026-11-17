@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Runtime identities through MCP** (#432). Eleven tools give an agent the
+  lifecycle `/api/runtime` offers over HTTP: `create_runtime_user`,
+  `list_runtime_users`, `get_runtime_user`, `delete_runtime_user`,
+  `promote_runtime_user`, the same five for clients, and
+  `reset_runtime_identities`. A runtime user created through MCP logs in at
+  the server at once and is removed the same way, with no `save_config` and
+  no reload. The entries, the views and the `kind` of each refusal are those
+  of the HTTP surface, and the audit records the same events with `mcp` as
+  the endpoint. The tools need a runtime store shared with the server
+  (`runtime.store: sqlite`): with the default in-memory store an identity
+  created by the MCP server would exist in that process only, so each of
+  them is refused with `MCP_RUNTIME_STORE_NOT_SHARED` (`retryable: false`)
+  and nothing is created. The seven that write are mutating tools: read-only
+  mode disables them and a `management_secret` is asked of them. `list_users`,
+  `get_user` and `generate_token` keep answering from the declared
+  configuration. The MCP server now has 37 tools.
 - **`response_mode` at `/authorize`: `query`, `fragment` and `form_post`**
   (#472, OAuth 2.0 Multiple Response Type Encoding Practices, OAuth 2.0
   Form Post Response Mode). The parameter was ignored and discovery omitted
@@ -59,6 +75,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A runtime store or a configuration that is unavailable during a
+  promotion is said as such** (#432). `POST /api/runtime/.../promote`
+  answered `500 write_failed` for a runtime store held by another process
+  and for configuration files that changed and do not load; it now answers
+  the `503` those conditions have everywhere else. A lock that cannot be
+  taken on this filesystem no longer says "try again".
 - **A load in the MCP server reconciles the runtime identities, as a load in
   the server does** (#432). After every load the server retires the runtime
   users and clients the configuration now declares, resolves the promotions
