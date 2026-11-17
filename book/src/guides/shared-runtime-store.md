@@ -116,6 +116,11 @@ the whole 10 seconds answers the same with `lock_timeout`. A worker with one
 thread cannot run those requests alongside the waiting one, so its requests
 queue behind it instead. Health and static-file requests do not check.
 
+Whichever process loads the configuration, a server or `nanoidp-mcp`, then
+reconciles the runtime identities with it: a runtime user or client whose
+name the files now declare is removed, and the audit says whether that was
+a promotion or a collision. One process records each outcome.
+
 Orders of magnitude measured on one host, not promises
 ([#426](https://github.com/cdelmonte-zg/nanoidp/issues/426)): a freshness
 read holds the lock for about 0.1 ms, a small write for 7 to 9 ms, a write

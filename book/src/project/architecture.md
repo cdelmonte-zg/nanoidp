@@ -156,7 +156,9 @@ the service, then the settings. Readers take the settings first and the
 signing service second (`get_crypto_service()` has no arguments), so a
 request can pair older settings with a newer key but never newer settings
 with an older key. `create_app` and the MCP server pass that activation
-step to `init_config`; `config` itself never imports `services`.
+step to `init_config`, and with it the step that follows every load (the
+reconciliation of runtime identities); `config` itself never imports
+`services`.
 
 ## The five modules to know before changing anything
 

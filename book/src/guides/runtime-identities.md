@@ -46,8 +46,10 @@ surface that authenticates: `/authorize` (persona auto-login included),
 `GET /api/users`, the persona picker, and the users and clients pages of the
 web UI, where they are read-only: edit and delete there act on the declared
 configuration, and a runtime object's lifecycle is `/api/runtime`'s. The
-MCP server is a separate process and keeps working on the declared
-configuration only.
+MCP server is a separate process and its tools work on the declared
+configuration only. Its loads follow the same rule as the server's, though:
+over a [shared runtime store](shared-runtime-store.md), a load in the MCP
+server removes a runtime object whose name the files now declare.
 
 ## Operations
 
