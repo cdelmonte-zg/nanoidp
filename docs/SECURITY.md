@@ -344,6 +344,8 @@ never part of a token, and never treated as a custom attribute.
 
 Like the rest of NanoIDP, this is a local development/testing convenience - it is never intended as an authentication mode for a deployed environment.
 
+**SAML on a shared instance**: nanoidp registers no service providers, so an assertion goes to whatever usable Assertion Consumer Service URL a request names. With persona mode a request needs no password either. On an instance that several people or tests share, prefer one instance per test, or require signed AuthnRequests; see [No service provider is registered](../reference/saml.md#no-service-provider-is-registered).
+
 ### Auto-Login (automated testing)
 
 A further opt-in on top of persona mode, for driving a real OIDC client library in automated integration tests - no username/password entry, no HTTP calls of your own into nanoidp's login form:
