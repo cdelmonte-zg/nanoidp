@@ -650,6 +650,127 @@ _TOOLS: list[Tool] = [
     ),
 ]
 
+# Runtime identities (#432): the lifecycle of /api/runtime. A creation takes
+# an entry shaped like the YAML one and hands it to the parser the HTTP
+# route uses, so its schema constrains the name only: every other field is
+# the parser's to judge, in every form the file accepts (a scalar where a
+# list is usual, a null password for a persona-only user). The schemas of
+# create_user and create_client are stricter than the file, on purpose, for
+# tools that build the model themselves.
+_REQUIRES_A_SHARED_STORE = (
+    " Acts on the runtime store shared with a running NanoIDP (runtime.store: sqlite); "
+    "with the default in-memory store it is refused with MCP_RUNTIME_STORE_NOT_SHARED."
+)
+
+
+def _entry(model: type[BaseModel], name: str, name_description: str) -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": {name: _domain(model, name, name_description)},
+        "required": [name],
+        "additionalProperties": True,
+    }
+
+
+def _named(model: type[BaseModel], argument: str, description: str) -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": {argument: _domain(model, argument, description)},
+        "required": [argument],
+    }
+
+
+_NOTHING: dict[str, Any] = {"type": "object", "properties": {}, "required": []}
+
+_TOOLS.extend(
+    [
+        Tool(
+            name="create_runtime_user",
+            description=(
+                "Create a disposable runtime user on the running NanoIDP, from 'username' plus the fields of a "
+                "users.yaml entry (password, email, roles, groups, tenant, identity_class, entitlements, "
+                "source_acl, attributes, description, totp_secret; all optional, validated as the file is): "
+                "usable in every protocol flow at once, never written to the configuration unless promoted. "
+                "Refusal kinds: invalid, declared, exists." + _REQUIRES_A_SHARED_STORE
+            ),
+            input_schema=_entry(User, "username", "The runtime user's name"),
+        ),
+        Tool(
+            name="list_runtime_users",
+            description="List the runtime users of the running NanoIDP (not the declared ones: see list_users)."
+            + _REQUIRES_A_SHARED_STORE,
+            input_schema=_NOTHING,
+        ),
+        Tool(
+            name="get_runtime_user",
+            description="Get one runtime user of the running NanoIDP; found false if there is none by that name."
+            + _REQUIRES_A_SHARED_STORE,
+            input_schema=_named(User, "username", "The runtime user's name"),
+        ),
+        Tool(
+            name="delete_runtime_user",
+            description="Delete a runtime user of the running NanoIDP." + _REQUIRES_A_SHARED_STORE,
+            input_schema=_named(User, "username", "The runtime user's name"),
+        ),
+        Tool(
+            name="promote_runtime_user",
+            description=(
+                "Write a runtime user into users.yaml and retire the runtime object: it becomes declared "
+                "configuration. Refusal kinds: not_found, promotion_in_progress, declared, conflict, unloadable, "
+                "lock_unavailable (retryable), reload_failed, write_failed." + _REQUIRES_A_SHARED_STORE
+            ),
+            input_schema=_named(User, "username", "The runtime user's name"),
+        ),
+        Tool(
+            name="create_runtime_client",
+            description=(
+                "Create a disposable runtime OAuth client on the running NanoIDP, from 'client_id' plus the fields "
+                "of an oauth.clients[] entry (client_secret, required unless token_endpoint_auth_method is "
+                "'none'; redirect_uris, allowed_scopes, allowed_resources, additional_audiences, description, "
+                "token_endpoint_auth_method; validated as the file is): usable at once, never written to the "
+                "configuration unless promoted. Refusal kinds: invalid, declared, exists." + _REQUIRES_A_SHARED_STORE
+            ),
+            input_schema=_entry(OAuthClient, "client_id", "The runtime client's id"),
+        ),
+        Tool(
+            name="list_runtime_clients",
+            description=(
+                "List the runtime clients of the running NanoIDP, dynamically registered ones included "
+                "(source 'dcr'); not the declared ones: see list_clients." + _REQUIRES_A_SHARED_STORE
+            ),
+            input_schema=_NOTHING,
+        ),
+        Tool(
+            name="get_runtime_client",
+            description="Get one runtime client of the running NanoIDP; found false if there is none by that id."
+            + _REQUIRES_A_SHARED_STORE,
+            input_schema=_named(OAuthClient, "client_id", "The runtime client's id"),
+        ),
+        Tool(
+            name="delete_runtime_client",
+            description="Delete a runtime client of the running NanoIDP, with its registration record if it has one."
+            + _REQUIRES_A_SHARED_STORE,
+            input_schema=_named(OAuthClient, "client_id", "The runtime client's id"),
+        ),
+        Tool(
+            name="promote_runtime_client",
+            description=(
+                "Write a runtime client into settings.yaml and retire the runtime object: it becomes declared "
+                "configuration. Refusal kinds as for promote_runtime_user." + _REQUIRES_A_SHARED_STORE
+            ),
+            input_schema=_named(OAuthClient, "client_id", "The runtime client's id"),
+        ),
+        Tool(
+            name="reset_runtime_identities",
+            description=(
+                "Remove every runtime user and client of the running NanoIDP, and end the browser sessions at "
+                "/authorize: the per-test reset. Never touches the declared configuration." + _REQUIRES_A_SHARED_STORE
+            ),
+            input_schema=_NOTHING,
+        ),
+    ]
+)
+
 _TOOL_SCHEMAS: dict[str, dict[str, Any]] = {tool.name: tool.input_schema for tool in _TOOLS}
 # Compile each tool's schema once at import instead of recompiling on every
 # call. check_schema() comes first because the constructor assumes its schema

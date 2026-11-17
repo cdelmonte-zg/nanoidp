@@ -533,6 +533,12 @@ The following MCP tools modify configuration and require extra caution:
 | `generate_token` | Generate access tokens |
 | `update_settings` | Modify IdP settings |
 | `save_config` | Persist configuration changes |
+| `clear_audit_log` | Clear the audit log |
+| `rotate_keys` | Rotate the signing keys |
+| `create_runtime_user`, `create_runtime_client` | Create a runtime identity on the running NanoIDP |
+| `delete_runtime_user`, `delete_runtime_client` | Delete one |
+| `promote_runtime_user`, `promote_runtime_client` | Write one into the configuration files |
+| `reset_runtime_identities` | Remove every runtime identity |
 
 ### Admin Secret Protection
 

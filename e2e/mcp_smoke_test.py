@@ -31,7 +31,7 @@ from mcp.client.stdio import stdio_client
 
 # Deliberately a hard number: the docs advertise the tool count, so growing or
 # shrinking the MCP surface must consciously update both (metadata never lies).
-EXPECTED_TOOLS = 26
+EXPECTED_TOOLS = 37
 
 
 # What the parser says about _BROKEN; never part of an answer (#477).
@@ -176,6 +176,24 @@ async def run(config_dir: str) -> int:
                 print(f"[FAIL] list_users returned no users: {payload!r}")
                 return 1
             print(f"[OK] list_users: {len(users)} user(s)")
+
+            # The runtime identity tools (#432) act on a store shared with a
+            # running NanoIDP. With a store of this process's alone, which
+            # is what the default configuration gives, they refuse and say
+            # what to configure; nothing is created. Skipped on a directory
+            # that does declare a shared store.
+            result = await session.call_tool("list_runtime_users", {})
+            runtime = json.loads(result.content[0].text)
+            if runtime.get("code") == "MCP_RUNTIME_STORE_NOT_SHARED":
+                if runtime.get("retryable") is not False or "runtime.store: sqlite" not in runtime.get("error", ""):
+                    print(f"[FAIL] the refusal over a store that is not shared: {runtime!r}")
+                    return 1
+                print("[OK] list_runtime_users over a store of this process's alone: refused, and says why")
+            elif "users" not in runtime:
+                print(f"[FAIL] list_runtime_users: {runtime!r}")
+                return 1
+            else:
+                print(f"[OK] list_runtime_users over a shared store: {runtime.get('count')} runtime user(s)")
 
             result = await session.call_tool("get_oidc_discovery", {})
             discovery = json.loads(result.content[0].text)

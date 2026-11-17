@@ -46,9 +46,11 @@ surface that authenticates: `/authorize` (persona auto-login included),
 `GET /api/users`, the persona picker, and the users and clients pages of the
 web UI, where they are read-only: edit and delete there act on the declared
 configuration, and a runtime object's lifecycle is `/api/runtime`'s. The
-MCP server is a separate process and its tools work on the declared
-configuration only. Its loads follow the same rule as the server's, though:
-over a [shared runtime store](shared-runtime-store.md), a load in the MCP
+MCP server is a separate process: its `*_runtime_*` tools manage runtime
+identities over a [shared runtime store](shared-runtime-store.md) (see
+[The same operations as MCP tools](#the-same-operations-as-mcp-tools)), and
+its other tools work on the declared configuration only. Its loads follow
+the same rule as the server's: over a shared store, a load in the MCP
 server removes a runtime object whose name the files now declare.
 
 ## Operations
@@ -69,6 +71,45 @@ object), `promotion_in_progress` (`409`), `conflict` (`409`) and
 `lock_unavailable` (`503`) from the file writer, `unloadable` (`422`, the
 file the promotion would write would not load back, so it was not written),
 and `write_failed` or `reload_failed` (`500`) for a promotion.
+
+### The same operations as MCP tools
+
+An agent has the same lifecycle through the [MCP server](../reference/mcp.md):
+
+| Tool | HTTP counterpart |
+|---|---|
+| `create_runtime_user`, `create_runtime_client` | `POST /api/runtime/users`, `POST /api/runtime/clients` |
+| `list_runtime_users`, `get_runtime_user`, `list_runtime_clients`, `get_runtime_client` | the `GET`s |
+| `delete_runtime_user`, `delete_runtime_client` | the `DELETE`s |
+| `promote_runtime_user`, `promote_runtime_client` | `POST .../promote` |
+| `reset_runtime_identities` | `DELETE /api/runtime` |
+
+The entries, the views and the `kind` of each refusal are those above. A
+creation takes the name plus the fields of the YAML entry, in every form
+the file accepts. A refusal is a tool result with `success: false`, the
+`error` and the `kind`; `lock_unavailable` also carries `retryable`, true
+for a lock another writer holds. A success carries no `kind`. A `get_*`
+that finds nothing answers `found: false`, as `get_user` does, and is not
+a failed call. The audit records the same events, with `mcp` as the
+endpoint and the tool as the method.
+
+`nanoidp-mcp` is a process of its own, so these tools need a
+[runtime store shared with the server](shared-runtime-store.md)
+(`runtime.store: sqlite`, the same configuration directory). With the
+default in-memory store an identity created by the MCP server would exist
+in that process only, so every one of these tools is refused with
+`MCP_RUNTIME_STORE_NOT_SHARED` (`retryable: false`) and nothing is created.
+
+```text
+agent --create_runtime_user--> nanoidp-mcp --+
+                                             +--> runtime.db <-- nanoidp server <-- the application under test
+agent --delete_runtime_user--> nanoidp-mcp --+
+```
+
+`list_users`, `get_user`, `list_clients`, `get_client` and `generate_token`
+keep answering from the declared configuration: a runtime user is not
+listed by `list_users`, and a token for one is obtained from the server,
+as the application under test obtains it.
 
 ## The rules
 

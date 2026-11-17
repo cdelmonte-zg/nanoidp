@@ -73,12 +73,13 @@ from ..refusal_texts import (
     CONFIGURATION_UNAVAILABLE_TEXT,
     CONFIGURATION_UNLOADABLE_TEXT,
     NO_CONFIGURATION_TEXT,
+    RUNTIME_STORE_NOT_SHARED_TEXT,
     RUNTIME_STORE_UNAVAILABLE_TEXT,
 )
 from ..security import verify_secret
 from ..services import activate_services, after_load_services, get_audit_log
 from ..services.runtime_repository import RuntimeStoreUnavailable
-from ..services.runtime_store import fresh_configuration
+from ..services.runtime_store import fresh_configuration, get_runtime_store
 
 # Split into a package (#286); these re-imports keep the EXPLICITLY listed
 # names importable as before: `from nanoidp.mcp_server import <name>` and
@@ -111,6 +112,7 @@ from .handlers_config import (  # noqa: F401
     _tool_update_settings,
     _tool_validate_config,
 )
+from .handlers_runtime import RUNTIME_STATE_HANDLERS, RUNTIME_STATE_READERS
 from .handlers_tokens import (  # noqa: F401
     _tool_decode_token,
     _tool_generate_token,
@@ -170,7 +172,16 @@ MUTATING_TOOLS = {
     "save_config",
     "clear_audit_log",
     "rotate_keys",
+    # The runtime identity tools that write (#432).
+    *(RUNTIME_STATE_HANDLERS.keys() - RUNTIME_STATE_READERS),
 }
+
+# The tools that act on the runtime state of a running NanoIDP (#432): the
+# lifecycle of /api/runtime. With a store that is this process's alone they
+# would act on a state nobody else can see, so call_tool refuses them there,
+# once, before any of them runs. Derived from the module's own table, so a
+# tool added there is inside the guard.
+RUNTIME_STATE_TOOLS = frozenset(RUNTIME_STATE_HANDLERS)
 
 
 def _check_admin_secret(
@@ -300,8 +311,9 @@ def _reject(name: str, code: str, message: str, retryable: Optional[bool] = None
 
     - DISPATCH refusals (this function): the call never reached a tool -
       ``{"error", "code", "tool"}`` with ``is_error=True``. The ``code``
-      taxonomy (MCP_CONFIGURATION_UNAVAILABLE and MCP_RUNTIME_STORE_UNAVAILABLE, with
-      ``retryable`` and a fixed ``error`` text, MCP_READONLY_MODE,
+      taxonomy (MCP_CONFIGURATION_UNAVAILABLE, MCP_RUNTIME_STORE_UNAVAILABLE and
+      MCP_RUNTIME_STORE_NOT_SHARED, with ``retryable`` and a fixed ``error``
+      text, MCP_READONLY_MODE,
       MCP_ADMIN_SECRET_REQUIRED, MCP_UNKNOWN_TOOL,
       MCP_INVALID_ARGUMENTS, MCP_INTERNAL_ERROR) is transport-level.
     - DOMAIN results (the handlers): the tool ran and answered -
@@ -419,6 +431,11 @@ async def call_tool(ctx: ServerRequestContext, params: CallToolRequestParams) ->
         allowed, error_msg = _check_admin_secret(loaded, name, arguments)
         if not allowed:
             return _reject(name, "MCP_ADMIN_SECRET_REQUIRED", error_msg)
+        # Never an argument of a tool: the gate takes it off when it checks
+        # it, and it is taken off here when there was nothing to check (no
+        # secret configured in this process), or a tool that passes its
+        # arguments on as an entry would store it (#432).
+        arguments.pop("admin_secret", None)
 
         # mcp 1.x's @server.call_tool(validate_input=True) ran this same check
         # before dispatch; the 2.0 on_call_tool path does not, so it is done
@@ -432,6 +449,12 @@ async def call_tool(ctx: ServerRequestContext, params: CallToolRequestParams) ->
             field = ".".join(str(p) for p in error.absolute_path)
             message = f"{field}: {error.message}" if field else error.message
             return _reject(name, "MCP_INVALID_ARGUMENTS", f"Input validation error: {message}")
+
+        if name in RUNTIME_STATE_TOOLS and not get_runtime_store().shared:
+            # One guard for the whole group (#432): nothing is created in,
+            # or read from, a store only this process has. Not retryable:
+            # it is a matter of configuration.
+            return _reject(name, "MCP_RUNTIME_STORE_NOT_SHARED", RUNTIME_STORE_NOT_SHARED_TEXT, retryable=False)
 
         result = await _execute_tool(name, arguments, config, loaded)
         # Domain-level failures ({"success": False, ...} or an "error" key,
@@ -449,6 +472,12 @@ async def call_tool(ctx: ServerRequestContext, params: CallToolRequestParams) ->
         # A tool checked against configuration files that changed and do not
         # load: refused, as over HTTP, and no fault of the server.
         return _declaration_unloadable(name, refused)
+    except LockUnavailableError as lock_refused:
+        # A tool that checks a name against the files takes the directory's
+        # lock (the creation of a runtime identity over a shared store,
+        # #432): one held by a peer is the answer the freshness check above
+        # gives for the same lock, not an internal error.
+        return _configuration_lock_unavailable(name, lock_refused)
     except Exception as e:
         # A store held by another process past its wait (#354): coming back
         # may help, and it is no internal error. Also on the first call,
@@ -506,6 +535,7 @@ _TOOL_HANDLERS: dict[str, Callable[[dict[str, Any], ConfigManager, ConfigSnapsho
     "clear_audit_log": _tool_clear_audit_log,
     "get_keys_info": _tool_get_keys_info,
     "rotate_keys": _tool_rotate_keys,
+    **RUNTIME_STATE_HANDLERS,
 }
 
 

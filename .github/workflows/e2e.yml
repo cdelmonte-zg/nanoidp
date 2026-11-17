@@ -360,7 +360,9 @@ jobs:
           exit 1
 
       - name: Two processes, one runtime state
-        run: python e2e/shared_store_e2e.py --a http://localhost:8007 --b http://localhost:8008
+        run: |
+          python e2e/shared_store_e2e.py --a http://localhost:8007 --b http://localhost:8008 \
+            --mcp-config-dir ${{ github.workspace }}/e2e-shared-config
 
       - name: The store is where it was asked for, and nowhere else
         run: |

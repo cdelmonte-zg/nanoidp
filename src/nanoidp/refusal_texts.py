@@ -38,3 +38,10 @@ SAVE_LOCK_UNAVAILABLE_TEXT = "The lock of the configuration files could not be t
 # "Another writer": SQLite reports contention between processes and between
 # this process's own connections the same way.
 RUNTIME_STORE_UNAVAILABLE_TEXT = "The runtime store is held by another writer; try again."
+# A tool of the runtime state over a store that is this process's alone
+# (#432): what it would create would exist nowhere else.
+RUNTIME_STORE_NOT_SHARED_TEXT = (
+    "This tool acts on the runtime state of a running NanoIDP, which this MCP server reaches only "
+    "through a shared runtime store. Set runtime.store: sqlite in settings.yaml, for the NanoIDP "
+    "server and for this MCP server, and restart both. Nothing was done."
+)

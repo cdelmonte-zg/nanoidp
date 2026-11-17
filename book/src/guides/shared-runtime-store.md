@@ -116,6 +116,11 @@ the whole 10 seconds answers the same with `lock_timeout`. A worker with one
 thread cannot run those requests alongside the waiting one, so its requests
 queue behind it instead. Health and static-file requests do not check.
 
+`nanoidp-mcp` on the same configuration directory is one more process over
+the store: its `*_runtime_*` tools create, read, delete, promote and reset
+the runtime identities the servers use (see
+[Disposable test identities](runtime-identities.md#the-same-operations-as-mcp-tools)).
+
 Whichever process loads the configuration, a server or `nanoidp-mcp`, then
 reconciles the runtime identities with it: a runtime user or client whose
 name the files now declare is removed, and the audit says whether that was
