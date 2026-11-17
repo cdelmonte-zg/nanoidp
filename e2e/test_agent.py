@@ -4215,10 +4215,12 @@ class NanoIDPTestAgent:
         envelope is a malformed request (#295 review found this test had
         ALWAYS sent it bare, always landed in a 400 fallback branch, and
         never exercised the success path or the #275 unknown-user leg).
-        Three legs: valid query -> attributes; unknown NameID -> SAML
+        Four legs: valid query -> attributes; unknown NameID -> SAML
         Requester/UnknownPrincipal status with no assertion (#275);
         malformed query (no Subject) -> SOAP 1.1 Fault, HTTP 500,
-        faultcode soap:Client (#287).
+        faultcode soap:Client (#287); the valid query from a script of
+        another origin -> answered, not readable (#488). The first three
+        carry the cache headers of SAML Bindings 3.2.3.2 (#488).
         """
         def _enveloped(inner: str) -> str:
             return (
@@ -4241,7 +4243,7 @@ class NanoIDPTestAgent:
             checks = {}
             ids = {
                 leg: self._attribute_query_id("query", leg)
-                for leg in ("valid", "unknown", "malformed")
+                for leg in ("valid", "unknown", "malformed", "cross_origin")
             }
 
             valid = requests.post(
@@ -4281,6 +4283,29 @@ class NanoIDPTestAgent:
                 and "soap:Client" in malformed.text
             )
 
+            # SAML Bindings 3.2.3.2 (#488): no cache keeps a SOAP answer,
+            # whatever the outcome, and none carries a validator.
+            checks["soap_answers_carry_the_binding_cache_headers"] = all(
+                answer.headers.get("Cache-Control") == "no-cache, no-store, must-revalidate, private"
+                and answer.headers.get("Pragma") == "no-cache"
+                and "ETag" not in answer.headers
+                and "Last-Modified" not in answer.headers
+                for answer in (valid, unknown, malformed)
+            )
+            # A script of another origin: text/plain needs no preflight, the
+            # query is answered, and the answer is not readable (#488).
+            cross_origin = requests.post(
+                f"{self.base_url}/saml/attribute-query",
+                data=_query(self.username, ids["cross_origin"]),
+                headers={"Content-Type": "text/plain", "Origin": "http://evil.example"},
+                timeout=5,
+            )
+            checks["cross_origin_script_cannot_read_the_answer"] = (
+                cross_origin.status_code == 200
+                and "Attribute" in cross_origin.text
+                and "Access-Control-Allow-Origin" not in cross_origin.headers
+            )
+
             success = all(checks.values())
             message = "; ".join(f"{k}={v}" for k, v in checks.items())
             if not success:
@@ -4292,9 +4317,12 @@ class NanoIDPTestAgent:
                     ("valid", valid),
                     ("unknown", unknown),
                     ("malformed", malformed),
+                    ("cross_origin", cross_origin),
                 ):
                     message += (
                         f" | {leg}: id={ids[leg]} {response.status_code}"
+                        f" cache={response.headers.get('Cache-Control')!r}"
+                        f" acao={response.headers.get('Access-Control-Allow-Origin')!r}"
                         f" {response.text[:160]!r}"
                     )
                 message += self._attribute_query_audit(list(ids.values()))

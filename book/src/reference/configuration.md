@@ -779,8 +779,9 @@ so a file that does not mention them behaves as it always did.
   `code_expiry_seconds: 1`, a test sees `expired_token` a second later.
 - **`cors_allowed_origins`**: the origins a browser may call nanoidp from.
   The two pages that hold a credential in their body, the SAML POST page
-  and the `form_post` page, are readable only by an origin named here, in
-  every profile.
+  and the `form_post` page, and the SOAP answers of
+  `/saml/attribute-query`, a backend exchange, are readable only by an
+  origin named here, in every profile.
   Absent, the security profile decides: every origin under `dev` and
   `oauth21`, `localhost` and `127.0.0.1` on any port under `stricter-dev`.
   Present, it is the list in every profile: `[]` allows no origin, `"*"`
