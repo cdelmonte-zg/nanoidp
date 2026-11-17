@@ -23,8 +23,8 @@ another server. A relative URL, another scheme, or a URL without a host is
 not one. Such a request is answered `400` before a login page is shown, and
 the refusal is in the audit log.
 
-A `SAMLRequest` of the HTTP-Redirect binding may inflate to one mebibyte at
-most; a larger one is not read.
+A DEFLATE-compressed `SAMLRequest` may inflate to one mebibyte at most; a
+larger one is answered `400`.
 
 ## Strict binding mode
 

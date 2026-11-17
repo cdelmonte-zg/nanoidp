@@ -55,7 +55,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   audited, before a login page is shown. A request whose ACS is missing
   while `saml.default_acs_url` is blank was refused after the login and is
   now refused before it. The `SAMLRequest` is parsed before the login for
-  this, and one that inflates to more than one mebibyte is not read.
+  this, and one that inflates to more than one mebibyte is answered `400`.
 
 ### Fixed
 

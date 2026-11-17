@@ -9,7 +9,7 @@ or an assertion is issued.
 """
 
 import base64
-import resource
+import sys
 import zlib
 from html import escape
 from urllib.parse import quote
@@ -319,6 +319,14 @@ def _deflated(raw):
     return compressor.compress(raw) + compressor.flush()
 
 
+def _deflated_zeros(mebibytes):
+    """A DEFLATE stream of that many mebibytes of zeros, built a mebibyte
+    at a time: the test itself never holds what the stream inflates to."""
+    compressor = zlib.compressobj(9, wbits=-15)
+    chunk = b"\0" * (1024 * 1024)
+    return b"".join(compressor.compress(chunk) for _ in range(mebibytes)) + compressor.flush()
+
+
 class TestARequestInflatesToABoundedSize:
     """A DEFLATE-compressed request is read up to a bound."""
 
@@ -333,7 +341,7 @@ class TestARequestInflatesToABoundedSize:
         assert saml_module._inflate(_deflated(raw)) == raw
 
     def test_one_byte_more_is_refused(self):
-        with pytest.raises(ValueError, match="inflates to more than"):
+        with pytest.raises(saml_module.SamlRequestTooLarge, match="inflates to more than"):
             saml_module._inflate(_deflated(b"a" * (self.BOUND + 1)))
 
     def test_bytes_that_are_not_deflate_are_a_zlib_error_as_before(self):
@@ -345,19 +353,44 @@ class TestARequestInflatesToABoundedSize:
             saml_module._inflate(_deflated(_authn_request(GOOD).encode())[:-5])
 
     @pytest.mark.parametrize("signed_requests", [False, True])
-    def test_a_request_past_the_bound_is_not_inflated(self, isolated_repo_config, signed_requests):
-        """A stream of 300 MiB: not inflated, not an internal error. With
-        signed requests required it is refused, otherwise it is a request
-        that names no ACS."""
+    @pytest.mark.parametrize("method", ["GET", "POST"])
+    def test_a_request_past_the_bound_is_refused(self, isolated_repo_config, app, signed_requests, method):
+        """Refused as what it is, whether or not requests must be signed:
+        not read as a request that names no ACS, which would get the login
+        page and the default ACS."""
         client = _client(isolated_repo_config, saml={"want_authn_requests_signed": signed_requests})
-        oversized = base64.b64encode(_deflated(b"\0" * (300 * 1024 * 1024))).decode()
+        oversized = base64.b64encode(_deflated_zeros(2)).decode()
+
+        if method == "GET":
+            answer = client.get(f"/saml/sso?SAMLRequest={quote(oversized)}")
+        else:
+            answer = client.post(
+                "/saml/sso", data={"SAMLRequest": oversized, "username": "admin", "password": "admin"}
+            )
+
+        assert _refused(answer)
+        entry = get_audit_log().get_entries(limit=1)[0]
+        assert (entry["event_type"], entry["status"]) == ("saml_request", "failed")
+        if signed_requests and method == "GET":
+            # Refused earlier, unread: the Redirect binding's signature is
+            # in the query, and this request has none.
+            assert "AuthnRequest signature rejected" in _text(answer)
+        else:
+            assert "inflates to more than 1048576 bytes" in _text(answer)
+            assert "inflates to more than" in entry["details"]["reason"]
+
+    @pytest.mark.skipif(sys.platform != "linux", reason="ru_maxrss is read in Linux's unit, kibibytes")
+    def test_a_request_past_the_bound_is_not_inflated(self, client):
+        """A stream of 300 MiB: the process does not grow by it."""
+        import resource
+
+        oversized = base64.b64encode(_deflated_zeros(300)).decode()
         before = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
 
         answer = client.post("/saml/sso", data={"SAMLRequest": oversized})
 
         grown_mib = (resource.getrusage(resource.RUSAGE_SELF).ru_maxrss - before) / 1024
-        assert answer.status_code == (400 if signed_requests else 200)
-        assert "SAMLResponse" not in _text(answer)
+        assert _refused(answer)
         assert grown_mib < 50
 
     def test_a_request_of_ordinary_size_still_takes_the_redirect_binding(self, client):

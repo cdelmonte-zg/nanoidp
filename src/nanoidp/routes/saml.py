@@ -156,9 +156,7 @@ def _decode_saml_request_bytes(saml_request_b64: str) -> bytes:
     decoded = b64decode(saml_request_b64)
     try:
         return _inflate(decoded)
-    except (zlib.error, ValueError):
-        # Not DEFLATE, or DEFLATE past the bound: the bytes as they came,
-        # which the verification then refuses if they are not a request.
+    except zlib.error:
         return decoded
 
 
@@ -167,15 +165,21 @@ def _decode_saml_request_bytes(saml_request_b64: str) -> bytes:
 MAX_INFLATED_SAML_REQUEST_BYTES = 1024 * 1024
 
 
+class SamlRequestTooLarge(ValueError):
+    """A SAMLRequest whose DEFLATE stream inflates past the bound. Not a
+    request that is not compressed, which a caller reads as it came, and
+    not one that does not parse: this one is refused as what it is."""
+
+
 def _inflate(deflated: bytes) -> bytes:
     """Raw DEFLATE (the HTTP-Redirect binding), bounded. ``zlib.error`` for
     bytes that are not DEFLATE, as ``zlib.decompress`` raises, so a caller
-    that falls back to the raw bytes still does; ``ValueError`` for a
-    stream that would inflate past the bound, which is no fallback."""
+    that falls back to the raw bytes still does; ``SamlRequestTooLarge``
+    for a stream that would inflate past the bound, which is no fallback."""
     inflater = zlib.decompressobj(-zlib.MAX_WBITS)
     inflated = inflater.decompress(deflated, MAX_INFLATED_SAML_REQUEST_BYTES + 1)
     if len(inflated) > MAX_INFLATED_SAML_REQUEST_BYTES or inflater.unconsumed_tail:
-        raise ValueError(f"SAMLRequest inflates to more than {MAX_INFLATED_SAML_REQUEST_BYTES} bytes")
+        raise SamlRequestTooLarge(f"SAMLRequest inflates to more than {MAX_INFLATED_SAML_REQUEST_BYTES} bytes")
     if not inflater.eof:
         # zlib.decompress refuses a truncated stream; decompressobj returns
         # what it has.
@@ -249,6 +253,10 @@ def _parse_saml_request(
             "acs_url": acs_url,
             "issuer": issuer,
         }
+    except SamlRequestTooLarge:
+        # Not a request that failed to parse, which falls back to the
+        # default ACS: the caller refuses it.
+        raise
     except Exception as e:
         logger.warning(f"Failed to parse SAMLRequest: {e}")
         return None
@@ -920,15 +928,21 @@ def sso() -> ResponseReturnValue:
     if not saml_request_b64:
         return abort(400, description="missing SAMLRequest")
 
-    rejected = _verify_authn_request_signature(loaded, saml_request_b64, relay_state)
-    if rejected is not None:
-        return rejected
+    try:
+        rejected = _verify_authn_request_signature(loaded, saml_request_b64, relay_state)
+        if rejected is not None:
+            return rejected
 
-    # Where the assertion would go is settled before anyone is asked to log
-    # in: a request this IdP will not answer shows no login page.
-    acs_url, in_response_to, sp_issuer, invalid = _sso_parse_request(loaded, saml_request_b64)
-    if invalid is not None:
-        return invalid
+        # Where the assertion would go is settled before anyone is asked to
+        # log in: a request this IdP will not answer shows no login page.
+        acs_url, in_response_to, sp_issuer, invalid = _sso_parse_request(loaded, saml_request_b64)
+        if invalid is not None:
+            return invalid
+    except SamlRequestTooLarge as too_large:
+        # Whether or not requests must be signed: it is not read, and it is
+        # not taken for a request that names no ACS.
+        audit_event("saml_request", "failed", endpoint="/saml/sso", details={"reason": str(too_large)})
+        return abort(400, description=str(too_large))
     refused = _refuse_an_unusable_acs(acs_url)
     if refused is not None:
         return refused
