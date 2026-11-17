@@ -228,7 +228,8 @@ def create_app(
     # Registered before CORS() so that it runs after it (Flask runs these in
     # reverse): a page that holds a credential in its body is readable only
     # by an origin the operator named (#478, routes/_auth.credential_page),
-    # not by a "*" or a profile's pattern. Compared ignoring case, as
+    # not by a "*" or a profile's pattern. So is every SOAP answer of the
+    # attribute query, marked by the same function (#488). Compared ignoring case, as
     # flask-cors matches them, and read here, once, as the rest of CORS is.
     named_origins = frozenset(origin.lower() for origin in declared or ()) - {"*"}
 

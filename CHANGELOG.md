@@ -45,6 +45,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The SAML attribute query answers are not cached, and a script reads
+  them only from a named origin** (#488, SAML 2.0 Bindings 3.2.3.2). Every
+  SOAP answer of `POST /saml/attribute-query` (the assertion, a SAML error
+  status, a SOAP fault) now carries `Cache-Control: no-cache, no-store,
+  must-revalidate, private` and `Pragma: no-cache`; it had neither. The
+  answers were also under the app-wide CORS rule, so a page of any origin
+  could read a statement of a user's attributes, signed by the IdP when
+  `saml.sign_responses` is on, with a `text/plain` POST that needs no
+  preflight. They now follow the rule of the SAML POST page (#478).
+  **Behaviour change, in every profile:** a script in a browser reads these
+  answers only if its origin is listed in `cors_allowed_origins`. Under
+  `dev`, `oauth21` or a declared `"*"` every origin read them, and under
+  `stricter-dev` every `localhost` origin did; none does now unless it is
+  named. Backend callers, which send no `Origin`, are answered as before.
 - **A document the YAML parser refuses outside its own error type is a
   refused configuration** (#494). Some documents make the parser raise an
   exception that is not a YAML error: a tag whose value its type does not

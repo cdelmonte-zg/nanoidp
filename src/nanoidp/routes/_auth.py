@@ -517,7 +517,15 @@ def bearer_header_credential() -> tuple[bool, str]:
     return scheme.casefold() == "bearer", credential
 
 
-def no_store(response: ResponseReturnValue, *, no_cache: bool = False) -> Response:
+# The Cache-Control wording each text asks for. One home, so that a surface
+# names the text it follows and not a string of directives.
+NO_STORE = "no-store"  # RFC 6749 section 5.1
+SAML_POST_BINDING = "no-cache, no-store"  # SAML Bindings 3.5.5.1 (#478)
+SAML_SOAP_BINDING = "no-cache, no-store, must-revalidate, private"  # SAML Bindings 3.2.3.2 (#488)
+_WORDINGS = frozenset({NO_STORE, SAML_POST_BINDING, SAML_SOAP_BINDING})
+
+
+def no_store(response: ResponseReturnValue, *, wording: str = NO_STORE) -> Response:
     """Mark a response one that no cache may keep: the one home of the pair
     RFC 6749 section 5.1 asks for on every response carrying a token, a
     credential or other sensitive information (#462). Its callers are the
@@ -529,10 +537,13 @@ def no_store(response: ResponseReturnValue, *, no_cache: bool = False) -> Respon
     Both headers, although OpenID Connect Core 3.1.3.3 (errata set 2) lists
     only Cache-Control and HTTP deprecates Pragma: RFC 6749 is the text
     that governs the token endpoint, and a header a client never reads
-    costs nothing. ``no_cache`` is for SAML Bindings 3.5.5.1, whose wording
-    is ``no-cache, no-store`` (#478)."""
+    costs nothing. ``wording`` is one of the three above: the two SAML
+    bindings each recommend their own directives, and all three forbid the
+    store."""
+    if wording not in _WORDINGS:
+        raise ValueError(f"not a Cache-Control wording of no_store: {wording!r}")
     resp = make_response(response)
-    resp.headers["Cache-Control"] = "no-cache, no-store" if no_cache else "no-store"
+    resp.headers["Cache-Control"] = wording
     resp.headers["Pragma"] = "no-cache"
     return resp
 
@@ -540,16 +551,21 @@ def no_store(response: ResponseReturnValue, *, no_cache: bool = False) -> Respon
 _CREDENTIAL_PAGE_MARK = "nanoidp_credential_page"
 
 
-def credential_page(page: ResponseReturnValue, *, no_cache: bool = False) -> Response:
+def credential_page(page: ResponseReturnValue, *, wording: str = NO_STORE) -> Response:
     """A page that holds a credential in a readable 200 body: the form_post
-    page (#472) and the SAML POST page (#478). No cache keeps it, and only
+    page (#472) and the SAML POST page (#478). Also every SOAP answer of the
+    attribute query (#488), faults included, although those are neither
+    pages nor credentials: a backend exchange no browser calls, one rule
+    for the endpoint, and its success is a statement of a user's attributes
+    that the IdP signs when ``saml.sign_responses`` is on. No cache keeps
+    it, and only
     an origin the operator named in ``cors_allowed_origins`` may read it:
     in a Location or a cookie the credential was never readable by a
     script, in a body it is, and a flow that needs no cookie (persona mode)
     survives neither ``*`` nor the localhost pattern of stricter-dev. The
     mark is on the response, read by the hook in ``create_app``; no origin
     is computed from the request, which a script can steer."""
-    response = no_store(page, no_cache=no_cache)
+    response = no_store(page, wording=wording)
     setattr(response, _CREDENTIAL_PAGE_MARK, True)
     return response
 

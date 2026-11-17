@@ -45,6 +45,8 @@ from ..services.saml_verified_requests import (
 from ._audit import audit_event
 from ._auth import (
     PENDING_SECOND_FACTOR_FIELD,
+    SAML_POST_BINDING,
+    SAML_SOAP_BINDING,
     SECOND_FACTOR_STORE_FULL,
     AuthMethod,
     SecondFactorPhase,
@@ -826,7 +828,7 @@ def _sso_success_response(
   <noscript><button type="submit">Continue</button></noscript>
 </form>
 </body></html>"""
-    return credential_page(page, no_cache=True)
+    return credential_page(page, wording=SAML_POST_BINDING)
 
 
 @saml_bp.route("/sso", methods=["GET", "POST"])
@@ -1032,7 +1034,18 @@ def _soap_fault(message: str, *, client_fault: bool = True) -> "ResponseReturnVa
         </soap:Fault>
     </soap:Body>
 </soap:Envelope>"""
-    return Response(body, status=500, mimetype="text/xml")
+    return _soap_answer(body, status=500)
+
+
+def _soap_answer(body: str, status: int = 200) -> Response:
+    """Every SOAP answer of the attribute query, whatever the outcome
+    (#488). SAML Bindings 3.2.3.2: no cache keeps a SAML protocol message,
+    and no validator is sent (none is set here or by Flask). And only an
+    origin the operator named reads it from a script: the exchange is
+    backend to backend, and on success the body is a statement the IdP
+    signs when ``saml.sign_responses`` is on. One rule for the endpoint, so
+    the faults and the unsigned answer follow it too."""
+    return credential_page(Response(body, status=status, mimetype="text/xml"), wording=SAML_SOAP_BINDING)
 
 
 def _query_id_of(root: Optional[Any]) -> Optional[str]:
@@ -1258,7 +1271,7 @@ def attribute_query() -> ResponseReturnValue:
         {error_xml}
     </soap:Body>
 </soap:Envelope>"""
-            return Response(soap_error, mimetype="text/xml")
+            return _soap_answer(soap_error)
 
         # Build SAML Response
         issuer_url = effective_saml_entity_id(loaded.settings)
@@ -1298,7 +1311,7 @@ def attribute_query() -> ResponseReturnValue:
             f"AttributeQuery response issued for user '{user_id}' with {len(attributes)} attributes"
         )
 
-        return Response(soap_response, mimetype="text/xml")
+        return _soap_answer(soap_response)
 
     except Exception as e:
         logger.exception(f"AttributeQuery error: {e}")

@@ -149,7 +149,8 @@ publishes `response_modes_supported: ["query", "fragment", "form_post"]`.
 The SAML POST page and the `form_post` page hold a credential in a
 readable body, so only an origin named in `cors_allowed_origins` may read
 them from a script: in every profile, `*` and the `stricter-dev` localhost
-pattern answer no `Access-Control-Allow-Origin` there (#478).
+pattern answer no `Access-Control-Allow-Origin` there (#478). The SOAP
+answers of `/saml/attribute-query` follow the same rule (#488).
 
 One browser fact: the session cookie is `SameSite=Lax`, which a browser
 sends on a top-level navigation and not from a cross-site iframe. A
@@ -228,7 +229,12 @@ the REST read surfaces (reads are never gated): nanoidp is a testing IdP and
 its user directory is test data. On a shared instance, anyone who can reach
 the endpoint can read any configured user's attributes; deploy accordingly.
 An unknown NameID gets a SAML error status (`Requester`/`UnknownPrincipal`),
-never a fabricated assertion. Every query it answers is audited, refusals
+never a fabricated assertion. Every SOAP answer, faults included, carries
+`Cache-Control: no-cache, no-store, must-revalidate, private` and `Pragma:
+no-cache` (SAML Bindings 3.2.3.2). It is a backend exchange: a script in a
+browser reads the answer only from an origin named in
+`cors_allowed_origins`, in every profile, not under `*` and not under the
+localhost rule of `stricter-dev`. Every query it answers is audited, refusals
 included (#309), so the same reachability that lets a stranger read
 attributes also lets one fill the audit ring and push older entries out of
 it; the recorded query id is truncated so a single request cannot store more
