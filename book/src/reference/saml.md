@@ -26,6 +26,46 @@ the refusal is in the audit log.
 A DEFLATE-compressed `SAMLRequest` may inflate to one mebibyte at most; a
 larger one is answered `400`.
 
+### No service provider is registered
+
+nanoidp keeps no list of service providers (#487). Every AuthnRequest is
+answered, and the assertion goes to whatever usable ACS it names, with the
+`Audience` taken from its `Issuer`. That is what lets a test point any
+service provider at nanoidp with no setup, and it is the SAML counterpart
+of an OAuth client without `redirect_uris`, which accepts any redirect
+URI. Unlike a client, a service provider has nothing to register.
+
+What follows from it: whoever can make a browser send a request to
+`/saml/sso` receives an assertion for the user that browser logs in as, at
+the ACS of their choice. On a developer machine or in a CI job, where the
+only service provider is the application under test and the users are
+test data, that is the intended behaviour. It matters on an instance that
+several people or several tests share and that browsers reach while
+visiting other pages, more so in [persona mode](../guides/SECURITY.md#persona-login-mode),
+with the passwords of the example configuration, or in a browser that is
+already logged in.
+
+For such an instance:
+
+- **One instance per test** is the simplest boundary: its own
+  configuration directory, keys and runtime store. Several processes of
+  one test (the HTTP server and `nanoidp-mcp`, say) can still share that
+  instance's state.
+- **Signed requests** are the control that exists today:
+  [`saml.want_authn_requests_signed`](#signed-authnrequests) with the
+  service providers' certificates in `saml.sp_certificates` answers only
+  requests a known service provider signed, and the ACS is part of what
+  it signed.
+
+### The login a SAML request reuses
+
+A browser that has logged in at `/saml/sso` or at the web UI's `/login` is
+not asked again: `/saml/sso` reuses that login, the web UI's session, for
+as long as its cookie lives (31 days, or until `/ui/logout` or `/end_session`).
+`login.session_minutes` does not govern it: that setting is the
+authenticated session of `/authorize`, which SAML neither creates nor
+uses, so `session_minutes: 0` leaves SAML single sign-on as it is.
+
 ## Strict binding mode
 
 By default, NanoIDP operates in **lenient mode** for developer
