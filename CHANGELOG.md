@@ -43,6 +43,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   not have: a 3.4.0 process sharing the runtime store cannot redeem such
   a code, while a code issued at the login reads back as before.
 
+### Changed
+
+- **The SAML Assertion Consumer Service URL is validated before the login**.
+  The URL the assertion is posted to, from the AuthnRequest's
+  `AssertionConsumerServiceURL` or from `saml.default_acs_url`, must be an
+  absolute `http` or `https` URL that names its host, with no whitespace or
+  control character and a valid port, and must not be the address of
+  nanoidp itself. A relative URL, another scheme, `https:/host` or a
+  backslash in the authority were accepted and are now answered `400`,
+  audited, before a login page is shown. A request whose ACS is missing
+  while `saml.default_acs_url` is blank was refused after the login and is
+  now refused before it. The `SAMLRequest` is parsed before the login for
+  this, and one that inflates to more than one mebibyte is not read.
+
 ### Fixed
 
 - **The SAML attribute query answers are not cached, and a script reads

@@ -124,6 +124,42 @@ def names_its_host(uri: str) -> bool:
     return bool(parsed.hostname) and "\\" not in parsed.netloc
 
 
+def is_http_url_with_a_host(uri: str) -> bool:
+    """Whether ``uri`` is an absolute ``http`` or ``https`` URL that names
+    its host: what a browser form posts to. The two questions ``form_post``
+    asks of a redirect URI (#472, #486), as one, for a URL that no gate has
+    seen yet: the SAML Assertion Consumer Service URL, which an
+    AuthnRequest names freely.
+
+    Stricter than those two on what only an unvalidated URL can carry: no
+    whitespace or control character anywhere (a URL has none; Python strips
+    some of them before parsing and which ones depends on its version, so
+    the answer would too), and a port that is a port."""
+    if any(character <= " " or character == "\x7f" for character in uri):
+        return False
+    try:
+        urlparse(uri).port  # noqa: B018 - raises on a port that is not one
+        return is_http_redirect_uri(uri) and names_its_host(uri)
+    except ValueError:
+        # An authority urlparse cannot read: an unclosed bracket, a port
+        # that is not a number or is out of range.
+        return False
+
+
+def _host_and_port(url: str) -> tuple[str, int]:
+    parsed = urlparse(url)
+    # hostname is lower-cased by urlparse.
+    return parsed.hostname or "", parsed.port or (443 if parsed.scheme == "https" else 80)
+
+
+def is_the_same_host_and_port(uri: str, other: str) -> bool:
+    """Whether two http(s) URLs reach the same server: the same host name,
+    compared ignoring case, and the same port, each one's default filled in
+    from its own scheme. The scheme itself is not compared: one port is one
+    server. For an ACS that names the identity provider itself."""
+    return _host_and_port(uri) == _host_and_port(other)
+
+
 def has_acceptable_scheme(uri: str) -> bool:
     """True when the scheme is ``http``/``https`` or a reverse-domain private-use
     scheme (RFC 8252 §7.1).
