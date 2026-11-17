@@ -17,6 +17,7 @@ from lxml import etree
 from ..config import ConfigSnapshot, get_config
 from ..exceptions import SAMLSignatureError
 from ..services import get_crypto_service, identities_for
+from ..services.redirect_uri import is_http_url_with_a_host, is_the_same_host_and_port
 from ..services.saml_assertion import (
     SAML2_NS,
     STATUS_REQUESTER,
@@ -154,9 +155,36 @@ def _decode_saml_request_bytes(saml_request_b64: str) -> bytes:
     """
     decoded = b64decode(saml_request_b64)
     try:
-        return zlib.decompress(decoded, -zlib.MAX_WBITS)
+        return _inflate(decoded)
     except zlib.error:
         return decoded
+
+
+# What a DEFLATE-compressed SAMLRequest may inflate to. An AuthnRequest is a
+# few kilobytes, signature and certificate included.
+MAX_INFLATED_SAML_REQUEST_BYTES = 1024 * 1024
+
+
+class SamlRequestTooLarge(ValueError):
+    """A SAMLRequest whose DEFLATE stream inflates past the bound. Not a
+    request that is not compressed, which a caller reads as it came, and
+    not one that does not parse: this one is refused as what it is."""
+
+
+def _inflate(deflated: bytes) -> bytes:
+    """Raw DEFLATE (the HTTP-Redirect binding), bounded. ``zlib.error`` for
+    bytes that are not DEFLATE, as ``zlib.decompress`` raises, so a caller
+    that falls back to the raw bytes still does; ``SamlRequestTooLarge``
+    for a stream that would inflate past the bound, which is no fallback."""
+    inflater = zlib.decompressobj(-zlib.MAX_WBITS)
+    inflated = inflater.decompress(deflated, MAX_INFLATED_SAML_REQUEST_BYTES + 1)
+    if len(inflated) > MAX_INFLATED_SAML_REQUEST_BYTES or inflater.unconsumed_tail:
+        raise SamlRequestTooLarge(f"SAMLRequest inflates to more than {MAX_INFLATED_SAML_REQUEST_BYTES} bytes")
+    if not inflater.eof:
+        # zlib.decompress refuses a truncated stream; decompressobj returns
+        # what it has.
+        raise zlib.error("incomplete or truncated DEFLATE stream")
+    return inflated
 
 
 def _parse_saml_request(
@@ -187,7 +215,7 @@ def _parse_saml_request(
         if strict:
             if http_verb == "GET":
                 # Strict GET: must be DEFLATE compressed per HTTP-Redirect binding
-                saml_xml = zlib.decompress(saml_decoded, -zlib.MAX_WBITS)
+                saml_xml = _inflate(saml_decoded)
                 logger.debug("Strict mode: decompressed GET request (HTTP-Redirect binding)")
             else:
                 # Strict POST: must NOT be compressed per HTTP-POST binding
@@ -200,7 +228,7 @@ def _parse_saml_request(
             # - POST uncompressed (HTTP-POST) → decompress fails → use raw
             # - Inline login: original GET compressed, but form POSTs → decompress works
             try:
-                saml_xml = zlib.decompress(saml_decoded, -zlib.MAX_WBITS)
+                saml_xml = _inflate(saml_decoded)
                 logger.debug("Lenient mode: decompressed OK (likely HTTP-Redirect binding)")
             except zlib.error:
                 saml_xml = saml_decoded
@@ -225,6 +253,10 @@ def _parse_saml_request(
             "acs_url": acs_url,
             "issuer": issuer,
         }
+    except SamlRequestTooLarge:
+        # Not a request that failed to parse, which falls back to the
+        # default ACS: the caller refuses it.
+        raise
     except Exception as e:
         logger.warning(f"Failed to parse SAMLRequest: {e}")
         return None
@@ -576,11 +608,10 @@ def _sso_authenticate_inline(
         # of this flow has request.method equal to that original verb, so
         # every subsequent render must forward the value the prior screen
         # already carried, exactly like saml_request and relay_state do.
-        # Whitelisted here rather than left to _sso_parse_request, which
-        # only runs once authentication succeeds: without this, a tampered
-        # value rides along through every intermediate screen and is only
-        # rejected after the user has typed credentials (#322/#323 review
-        # round 3, before-merge 5).
+        # Whitelisted here too (#322/#323 review round 3, before-merge 5),
+        # although _sso_parse_request now refuses a tampered value before
+        # any screen is rendered: this function forwards the value, so it
+        # does not rely on its caller having looked.
         form_verb = request.form.get("saml_original_verb")
         if form_verb and form_verb.upper() not in ("GET", "POST"):
             return abort(400, description="invalid saml_original_verb")
@@ -831,6 +862,47 @@ def _sso_success_response(
     return credential_page(page, wording=SAML_POST_BINDING)
 
 
+_NO_ACS = "AuthnRequest has no AssertionConsumerServiceURL and saml.default_acs_url is not configured"
+_ACS_NOT_AN_HTTP_URL = (
+    "The Assertion Consumer Service URL (the AuthnRequest's AssertionConsumerServiceURL, or "
+    "saml.default_acs_url when it names none) must be an absolute http or https URL that names its host"
+)
+_ACS_IS_THIS_INSTANCE = "The Assertion Consumer Service URL must not name this identity provider itself"
+# The refused value in an audit entry, bounded.
+_MAX_AUDITED_ACS_CHARS = 200
+
+
+def _refuse_an_unusable_acs(acs_url: Optional[str]) -> Optional[ResponseReturnValue]:
+    """Refuse a request whose effective ACS is not a place to post the
+    assertion to: None when it is usable.
+
+    None named anywhere (#227): the request carries none and
+    saml.default_acs_url is blank.
+
+    Not an absolute http(s) URL with a host: the ACS is the ``action`` of
+    the form that delivers the assertion, and a form posts to a web
+    address. The same rule ``form_post`` applies to a redirect URI.
+
+    This instance itself, by the host and port of the request: a service
+    provider is another server, and the assertion is not posted back to
+    the identity provider that issued it."""
+    if not acs_url:
+        reason = _NO_ACS
+        details: dict[str, Any] = {"reason": reason}
+    elif not is_http_url_with_a_host(acs_url):
+        reason = _ACS_NOT_AN_HTTP_URL
+        details = {"reason": reason, "acs_url": acs_url[:_MAX_AUDITED_ACS_CHARS]}
+    elif is_the_same_host_and_port(acs_url, request.host_url):
+        reason = _ACS_IS_THIS_INSTANCE
+        details = {"reason": reason, "acs_url": acs_url[:_MAX_AUDITED_ACS_CHARS]}
+    else:
+        return None
+    # The browser's session user, if it has one; nobody has authenticated
+    # for this request yet.
+    audit_event("saml_request", "failed", endpoint="/saml/sso", username=session.get("user"), details=details)
+    return abort(400, description=reason)
+
+
 @saml_bp.route("/sso", methods=["GET", "POST"])
 def sso() -> ResponseReturnValue:
     """SAML SSO endpoint.
@@ -842,8 +914,9 @@ def sso() -> ResponseReturnValue:
     If user is not authenticated, shows login form inline (no redirect)
     to preserve the original binding context.
 
-    Each step is a named helper; every rejection keeps its historical
-    error and audit behavior (#212).
+    Each step is a named helper (#212). The request is parsed and the
+    place its assertion would go is decided before the login: a request
+    that would be refused shows no login page.
     """
     config = get_config()
     # The configuration this request began with (#406).
@@ -855,9 +928,25 @@ def sso() -> ResponseReturnValue:
     if not saml_request_b64:
         return abort(400, description="missing SAMLRequest")
 
-    rejected = _verify_authn_request_signature(loaded, saml_request_b64, relay_state)
-    if rejected is not None:
-        return rejected
+    try:
+        rejected = _verify_authn_request_signature(loaded, saml_request_b64, relay_state)
+        if rejected is not None:
+            return rejected
+
+        # Where the assertion would go is settled before anyone is asked to
+        # log in: a request this IdP will not answer shows no login page.
+        acs_url, in_response_to, sp_issuer, invalid = _sso_parse_request(loaded, saml_request_b64)
+        if invalid is not None:
+            return invalid
+    except SamlRequestTooLarge as too_large:
+        # Whether or not requests must be signed: it is not read, and it is
+        # not taken for a request that names no ACS.
+        audit_event("saml_request", "failed", endpoint="/saml/sso", details={"reason": str(too_large)})
+        return abort(400, description=str(too_large))
+    refused = _refuse_an_unusable_acs(acs_url)
+    if refused is not None:
+        return refused
+    assert acs_url is not None
 
     username, login_page = _sso_authenticate_inline(config, saml_request_b64, relay_state)
     if login_page is not None:
@@ -878,35 +967,6 @@ def sso() -> ResponseReturnValue:
             details={"reason": "User not found"},
         )
         return abort(401, description=f"user '{username}' not found")
-
-    acs_url, in_response_to, sp_issuer, invalid = _sso_parse_request(loaded, saml_request_b64)
-    if invalid is not None:
-        return invalid
-
-    # No ACS URL to send the assertion to: the request names none and
-    # saml.default_acs_url is blank. Reject cleanly (#227). The None arm of
-    # this used to 500 on html.escape(None) but became unreachable when the
-    # document models gave default_acs_url a non-None default (#175); the
-    # arm that IS reachable is an explicit default_acs_url: "" (a valid str),
-    # which used to render an auto-submit form posting to action="" - the
-    # IdP's own page - instead of failing. The message names both missing
-    # sources, in the spirit of "metadata never lies": neither should errors.
-    if not acs_url:
-        audit_event(
-            "saml_request",
-            "failed",
-            endpoint="/saml/sso",
-            username=username,
-            details={
-                "reason": "AuthnRequest has no AssertionConsumerServiceURL "
-                "and saml.default_acs_url is not configured"
-            },
-        )
-        return abort(
-            400,
-            description="AuthnRequest has no AssertionConsumerServiceURL "
-            "and saml.default_acs_url is not configured",
-        )
 
     return _sso_success_response(user, username, acs_url, in_response_to, sp_issuer, relay_state)
 

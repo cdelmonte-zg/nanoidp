@@ -11,6 +11,21 @@ NanoIDP supports both standard SAML 2.0 bindings for the SSO endpoint:
 
 Both bindings are advertised in the SAML metadata (`/saml/metadata`).
 
+## Where the assertion is delivered
+
+The assertion goes to the Assertion Consumer Service URL the AuthnRequest
+names in `AssertionConsumerServiceURL`, or to `saml.default_acs_url` when
+the request names none. It must be an absolute `http` or `https` URL that
+names its host, with no whitespace in it and a valid port, and it must not
+be the address of nanoidp itself (the host and port of the request): the
+assertion is delivered by a form, and a form posts to the web address of
+another server. A relative URL, another scheme, or a URL without a host is
+not one. Such a request is answered `400` before a login page is shown, and
+the refusal is in the audit log.
+
+A DEFLATE-compressed `SAMLRequest` may inflate to one mebibyte at most; a
+larger one is answered `400`.
+
 ## Strict binding mode
 
 By default, NanoIDP operates in **lenient mode** for developer

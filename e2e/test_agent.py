@@ -4667,6 +4667,65 @@ class NanoIDPTestAgent:
         except Exception as e:
             return self._add_result("SAML IdP-Initiated (not supported)", TestCategory.SAML, False, str(e))
 
+    def test_saml_acs_must_be_an_http_url(self) -> TestResult:
+        """The Assertion Consumer Service URL must be an absolute http(s) URL
+        with a host, and not the IdP itself: the assertion is delivered by
+        a form posting to it. Anything else is refused with 400 before a
+        login page, credentials or not; a usable one still gets the login
+        page.
+        """
+        name = "SAML ACS must be an http(s) URL"
+
+        def _request(acs: str) -> str:
+            xml = (
+                '<samlp:AuthnRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"'
+                ' ID="_e2e_acs" Version="2.0" IssueInstant="2024-01-01T00:00:00Z"'
+                f' AssertionConsumerServiceURL="{acs}">'
+                '<saml:Issuer xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion">e2e-sp</saml:Issuer>'
+                "</samlp:AuthnRequest>"
+            )
+            return base64.b64encode(xml.encode()).decode()
+
+        try:
+            checks = {}
+            for label, acs in (
+                ("not_http", "javascript:void(0)"),
+                ("relative", "/api/config"),
+                ("no_host", "https:/sp.example/acs"),
+                # nanoidp itself is not a service provider.
+                ("this_instance", f"{self.base_url}/acs"),
+            ):
+                first = requests.post(
+                    f"{self.base_url}/saml/sso", data={"SAMLRequest": _request(acs)}, timeout=5
+                )
+                with_credentials = requests.post(
+                    f"{self.base_url}/saml/sso",
+                    data={"SAMLRequest": _request(acs), "username": self.username, "password": self.password},
+                    timeout=5,
+                )
+                checks[f"{label}_refused_before_login"] = (
+                    first.status_code == 400 and "<form" not in first.text
+                )
+                checks[f"{label}_refused_with_credentials"] = (
+                    with_credentials.status_code == 400 and "SAMLResponse" not in with_credentials.text
+                )
+            usable = requests.post(
+                f"{self.base_url}/saml/sso",
+                data={"SAMLRequest": _request("http://localhost:8080/acs")},
+                timeout=5,
+            )
+            checks["usable_acs_gets_the_login_page"] = usable.status_code == 200 and "<form" in usable.text
+
+            return self._add_result(
+                name,
+                TestCategory.SAML,
+                all(checks.values()),
+                "; ".join(f"{k}={v}" for k, v in checks.items()),
+                checks,
+            )
+        except Exception as e:
+            return self._add_result(name, TestCategory.SAML, False, str(e))
+
     def test_saml_strict_binding_mode(self) -> TestResult:
         """Test SAML strict binding mode behavior.
 
@@ -7342,6 +7401,7 @@ class NanoIDPTestAgent:
                 self.test_saml_sso_post_binding,
                 self.test_saml_sso_redirect_binding,
                 self.test_saml_idp_initiated_not_supported,
+                self.test_saml_acs_must_be_an_http_url,
                 self.test_saml_strict_binding_mode,
                 self.test_saml_login_flow_preserves_binding,
                 self.test_saml_attribute_query,
