@@ -595,7 +595,8 @@ class TestALoadThatDeclaresTheId:
     that answers to the id is already the declared one."""
 
     def _declare(self, application, tmp_path, client_id, during):
-        import nanoidp.app as app_module
+        # Where the step after a load looks the reconciliation up (#432).
+        import nanoidp.services.activation as app_module
 
         settings = tmp_path / "config" / "settings.yaml"
         document = yaml.safe_load(settings.read_text())

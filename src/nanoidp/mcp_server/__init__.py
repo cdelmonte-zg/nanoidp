@@ -77,6 +77,7 @@ from ..refusal_texts import (
 )
 from ..security import verify_secret
 from ..services import activate_services, get_audit_log
+from ..services.activation import after_load_services
 from ..services.runtime_repository import RuntimeStoreUnavailable
 from ..services.runtime_store import fresh_configuration
 
@@ -258,7 +259,11 @@ def _ensure_config() -> ConfigManager:
     config = get_config_if_loaded()
     if config is None:
         config = init_config(
-            os.getenv("NANOIDP_CONFIG_DIR", "./config"), activate=activate_services
+            os.getenv("NANOIDP_CONFIG_DIR", "./config"),
+            activate=activate_services,
+            # A load is a load whichever process makes it (#432): the
+            # reconciliation of runtime identities follows it here too.
+            after_load=after_load_services,
         )
     return config
 

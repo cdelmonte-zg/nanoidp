@@ -59,6 +59,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A load in the MCP server reconciles the runtime identities, as a load in
+  the server does** (#432). After every load the server retires the runtime
+  users and clients the configuration now declares and sweeps the
+  registration records of the clients that went. `nanoidp-mcp` loaded
+  without that step. Over a runtime store shared with a server
+  (`runtime.store: sqlite`), a runtime object promoted from a process built
+  like `nanoidp-mcp` was therefore not retired by that process's own reload,
+  and the server's next load removed it as a collision: the audit recorded
+  `runtime_identity_removed_on_reload` and no `runtime_identity_promoted`.
+  Both processes now run the same step. **Behaviour change:** `reload_config`
+  and `save_config` through MCP, and a freshness check in the MCP process,
+  now remove a runtime object whose name the files declare, and record it.
+  With the default in-memory store the MCP process has a store of its own,
+  which holds no runtime identities, so nothing changes there.
 - **The SAML attribute query answers are not cached, and a script reads
   them only from a named origin** (#488, SAML 2.0 Bindings 3.2.3.2). Every
   SOAP answer of `POST /saml/attribute-query` (the assertion, a SAML error

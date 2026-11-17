@@ -29,10 +29,10 @@ from pathlib import Path
 import pytest
 import yaml
 
-import nanoidp.app as app_module
 from nanoidp.app import create_app
 from nanoidp.config import ConfigManager, OAuthClient, get_config
 from nanoidp.services import identities as identities_module
+from nanoidp.services.activation import after_load_services
 from nanoidp.services.audit import get_audit_log
 from nanoidp.services.identities import IdentityResolver, PromotionInProgress
 from nanoidp.services.runtime_repository import MemoryRuntimeRepository, replace
@@ -47,7 +47,7 @@ class OtherProcess:
     def __init__(self, config_dir):
         self._marks = {}
         with self.acting():
-            self.config = ConfigManager(str(config_dir), after_load=app_module._after_load)
+            self.config = ConfigManager(str(config_dir), after_load=after_load_services)
         self.resolver = IdentityResolver(self.config, self.config.snapshot, get_runtime_store())
 
     @contextlib.contextmanager
