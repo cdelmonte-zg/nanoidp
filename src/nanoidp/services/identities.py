@@ -245,9 +245,24 @@ class IdentityResolver:
             return self.store.users.create_entry(user)
 
         created = self._checked_against_the_declaration(create)
-        if self.get_client(created.name) is not None:
-            logger.warning(shared_name_warning(created.name))
+        self._warn_of_a_shared_name(created.name, self.get_client)
         return created
+
+    @staticmethod
+    def _warn_of_a_shared_name(name: str, other_kind: Callable[[str], Any]) -> None:
+        """Warn when an identity of the other kind goes by the name just
+        created. The object is in the store by now: the creation has
+        happened, and this look, which only warns, must not turn it into a
+        failure. A caller told that it failed would undo nothing (it has
+        no instance to name) and collide with its own object at the next
+        try (#402)."""
+        try:
+            shared = other_kind(name) is not None
+        except Exception:
+            logger.exception("%r was created; whether another identity shares the name could not be looked up", name)
+            return
+        if shared:
+            logger.warning(shared_name_warning(name))
 
     def _checked_against_the_declaration(self, create: Callable[[], _Created]) -> _Created:
         """A creation whose check against the declared names and whose insert
@@ -377,8 +392,7 @@ class IdentityResolver:
             return self.store.clients.create_entry(client)
 
         created = self._checked_against_the_declaration(create)
-        if self.get_user(client.client_id) is not None:
-            logger.warning(shared_name_warning(client.client_id))
+        self._warn_of_a_shared_name(client.client_id, self.get_user)
         return created
 
     # ---- lifecycle (#192) ------------------------------------------------

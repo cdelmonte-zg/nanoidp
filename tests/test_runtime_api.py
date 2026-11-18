@@ -57,6 +57,49 @@ def _create_both(client) -> None:
     assert client.post("/api/runtime/clients", json=APP).status_code == 201
 
 
+class TestACreationThatHappenedIsAnswered:
+    """Once the object is in the store the creation has happened. The look
+    for an identity of the other kind under the same name, which only
+    warns, cannot turn it into a failure: the caller would come back and
+    collide with what it created."""
+
+    def test_a_user_whose_shared_name_look_fails_is_created(self, idp, monkeypatch, caplog):
+        from nanoidp.services.identities import IdentityResolver
+        from nanoidp.services.runtime_repository import RuntimeStoreUnavailable
+
+        client, _ = idp
+
+        def held(self, *args, **kwargs):
+            raise RuntimeStoreUnavailable("held")
+
+        monkeypatch.setattr(IdentityResolver, "get_client", held)
+        with caplog.at_level(logging.ERROR):
+            created = client.post("/api/runtime/users", json=ALICE)
+        monkeypatch.undo()
+
+        assert created.status_code == 201
+        assert "could not be looked up" in caplog.text
+        assert client.get("/api/runtime/users/ci-alice").status_code == 200
+
+    def test_a_client_whose_shared_name_look_fails_is_created(self, idp, monkeypatch, caplog):
+        from nanoidp.services.identities import IdentityResolver
+        from nanoidp.services.runtime_repository import RuntimeStoreUnavailable
+
+        client, _ = idp
+
+        def held(self, *args, **kwargs):
+            raise RuntimeStoreUnavailable("held")
+
+        monkeypatch.setattr(IdentityResolver, "get_user", held)
+        with caplog.at_level(logging.ERROR):
+            created = client.post("/api/runtime/clients", json=APP)
+        monkeypatch.undo()
+
+        assert created.status_code == 201
+        assert "could not be looked up" in caplog.text
+        assert client.get("/api/runtime/clients/ci-app").status_code == 200
+
+
 class TestCreateReadDelete:
     def test_created_identities_work_in_protocol_flows_and_leave_the_files_alone(self, idp):
         client, config_dir = idp

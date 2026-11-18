@@ -27,6 +27,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the guide [Stateful identity
   scenarios](https://cdelmonte-zg.github.io/nanoidp/guides/stateful-scenarios.html).
 
+### Fixed
+
+- **A runtime user or client that was stored is answered as created**.
+  After storing it, the creation looks for an identity of the other kind
+  under the same name, to warn. When that look failed (the runtime store
+  held by another process), `POST /api/runtime/users` and
+  `POST /api/runtime/clients` answered `503` for an object that existed,
+  and the retry the answer invites met `409`. The look can no longer fail
+  the creation: its failure is logged.
+
 ## [3.5.0] - 2026-11-18
 
 ### Migration notes

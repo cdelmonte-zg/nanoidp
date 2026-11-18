@@ -201,7 +201,12 @@ def scenario_from(body: Dict[str, Any], where: str) -> Tuple[Scenario, User]:
         raise EntryInvalid(f"{where}: {_message(exc)}") from None
     user = parse_runtime_user(spec.given.user, f"{where}: given.user")
     username = user.username
-    entry = {key: value for key, value in spec.given.user.items() if key != "username"}
+    # The user as it was read, not the entry as it was written: an entry
+    # may carry attributes as keys of its own, which the reading folds
+    # into ``attributes``. A change validated over the written entry would
+    # have them folded back in, and a step that sets ``attributes`` would
+    # not replace them.
+    entry = user.model_dump(exclude={"username"}, exclude_none=True)
     steps = []
     for index, step in enumerate(spec.steps):
         unknown = sorted(set(step.update_user) - set(UPDATABLE))

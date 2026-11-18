@@ -399,6 +399,30 @@ class TestTheDeclaration:
         assert get_runtime_store().users.get("alice").attributes == {"a": 9}
 
 
+    def test_attributes_given_at_the_top_level_are_replaced_with_the_rest(self, idp):
+        """A users.yaml entry may carry attributes as keys of its own, and
+        so may given.user. A step that sets attributes replaces those too:
+        the change is validated against the user as it was read, not
+        against the entry as it was written."""
+        client, _ = idp
+        armed = _arm(
+            client,
+            legacy_attr="old",
+            attributes={"team": "blue"},
+            steps=[
+                {"after": {"event": "token_issued"}, "update_user": {"attributes": {}}},
+                {"after": {"event": "token_issued", "count": 2}, "update_user": {"attributes": {"team": "red"}}},
+            ],
+        )
+        assert get_runtime_store().users.get("alice").attributes == {"team": "blue", "legacy_attr": "old"}
+        assert [step["update_user"] for step in armed["steps"]] == [{"attributes": {}}, {"attributes": {"team": "red"}}]
+
+        _password(client)
+        assert get_runtime_store().users.get("alice").attributes == {}
+        _password(client)
+        assert get_runtime_store().users.get("alice").attributes == {"team": "red"}
+
+
 class TestCollisions:
     def test_a_scenario_of_that_name_is_refused_and_its_user_is_not_created(self, idp):
         client, _ = idp
@@ -755,6 +779,26 @@ class TestArmingIsTwoRepositories:
         assert answers == [{"deleted": "role-change", "kind": "scenario", "user": "alice", "user_removed": True}]
         assert client.get(URL).get_json()["count"] == 0
         assert client.get("/api/runtime/users/alice").status_code == 404
+
+    def test_what_fails_after_the_user_is_stored_does_not_lose_the_user(self, idp, monkeypatch, caplog):
+        """The creation looks for a client of the same name, to warn, once
+        the user is in the store. That look failing is no failed creation:
+        the scenario is armed with the user that exists, not left to
+        collide with it at the next try."""
+        client, _ = idp
+
+        def held(self, client_id, *args, **kwargs):
+            raise RuntimeStoreUnavailable("held")
+
+        monkeypatch.setattr(IdentityResolver, "get_client", held)
+        with caplog.at_level(logging.ERROR):
+            armed = client.post(URL, json=_declaration())
+        monkeypatch.undo()
+
+        assert armed.status_code == 201 and armed.get_json()["state"] == "armed"
+        assert "could not be looked up" in caplog.text
+        _password(client)
+        assert _roles(client) == ["ADMIN"]
 
     def test_a_reset_while_arming_leaves_neither_the_scenario_nor_its_user(self, idp, monkeypatch):
         client, _ = idp
