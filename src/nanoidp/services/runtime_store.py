@@ -42,6 +42,7 @@ from pathlib import Path
 from typing import Any, Callable, ContextManager, Dict, Iterator, Optional, Protocol, Tuple, cast
 
 from ..config import OAuthClient, Settings, User, get_config_if_loaded
+from ..runtime_store_location import outside_the_configuration, resolved_runtime_path
 from .audit_store import AuditStore, MemoryAuditStore
 from .runtime_repository import (
     Codec,
@@ -204,34 +205,6 @@ class RuntimeStoreRestartRequired(ValueError):
     """A configuration asked for another runtime store than the one in use."""
 
 
-def resolved_runtime_path(settings: Settings, config_dir: Optional[Path] = None) -> Optional[Path]:
-    """The file of the SQLite runtime store these settings name, as the
-    process uses it; None for a store that has no file (#354, step 4c).
-
-    The one place it is resolved: the inputs, the check against the
-    configuration directory and what /api/config and MCP report all go
-    through here. A relative ``runtime.path`` is relative to the
-    configuration directory, not to the process's working directory: it is
-    the identity of a store several processes share, and the same
-    settings.yaml in the same directory must name the same store however the
-    processes were started."""
-    if settings.runtime_store != "sqlite":
-        return None
-    if settings.runtime_path is None:
-        # The document cannot say it; settings made in code can, and this is
-        # no store without a file.
-        raise ValueError("runtime.store: sqlite needs runtime.path, and these settings have none")
-    path = Path(settings.runtime_path)
-    if not path.is_absolute():
-        if config_dir is None:
-            raise ValueError(
-                f"runtime.path {settings.runtime_path!r} is relative to the configuration directory, "
-                "and none was given"
-            )
-        path = Path(config_dir) / path
-    return path.resolve()
-
-
 def runtime_store_inputs(settings: Settings, config_dir: Optional[Path] = None) -> RuntimeStoreInputs:
     """What the store these settings ask for is built from: the kind, and
     for SQLite the file, resolved."""
@@ -255,25 +228,6 @@ def runtime_store_report(settings: Settings, config_dir: Optional[Path] = None) 
     if path is not None:
         report["path"] = str(path)
     return report
-
-
-def _outside_the_configuration(path: Path, config_dir: Optional[Path]) -> None:
-    """The store's files are a secret of the processes that share it: none
-    of them (the database, its audit, its owners' leases) may lie in the
-    configuration directory, which is read, copied and committed as
-    configuration. Resolved, so that a symlink does not hide it."""
-    from .sqlite_runtime_store import audit_path_of, owners_path_of
-
-    if config_dir is None:
-        raise ValueError("the SQLite runtime store is activated with its configuration directory")
-    configuration = Path(config_dir).resolve()
-    for part in (path, audit_path_of(path), owners_path_of(path)):
-        resolved = part.resolve()
-        if resolved == configuration or configuration in resolved.parents:
-            raise ValueError(
-                f"runtime.path: {resolved} is inside the configuration directory {configuration}; "
-                "the runtime store's files are a secret, and must lie outside it"
-            )
 
 
 def prepare_runtime_store(
@@ -320,7 +274,8 @@ def prepare_runtime_store(
     if factory is None:
         raise ValueError(f"runtime.store: {wanted[0]} is not a runtime store nanoidp has")
     if wanted[0] == "sqlite":
-        _outside_the_configuration(Path(wanted[1]), config_dir)
+        # The path the factory opens, as it was resolved for the inputs.
+        outside_the_configuration(Path(wanted[1]), config_dir)
     return factory(wanted), wanted
 
 

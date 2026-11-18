@@ -14,7 +14,11 @@ here is a finding there, and it deliberately does NOT:
 the file's whole purpose is to name commands and plugins, and a lint step
 that ran them would be a remote-execution primitive triggered by looking at
 a directory. That is why this module imports ``config_documents`` and
-``serialization`` but never ``config`` or ``hooks``.
+``serialization`` but never ``config`` or ``hooks``, nor anything of
+``services``: the one rule it shares with the activation, where a SQLite
+runtime store's files may lie, is in ``runtime_store_location`` for that
+reason (#426). That rule looks at the directory as it is when asked,
+symlinks included, not at the bytes observed.
 """
 
 from __future__ import annotations
@@ -37,6 +41,7 @@ from .config_documents import (
 )
 from .config_store import ConfigFileStore, FileSnapshot
 from .config_writer import LockUnavailableError
+from .runtime_store_location import require_store_outside_the_configuration
 from .serialization import NotValidYaml, check_config_version, parse_yaml
 from .serialization import expand_env_vars as _expand_env_vars
 
@@ -230,11 +235,26 @@ def _validate_observation(
         )
         if settings_document is not None:
             try:
-                settings_document.to_settings()
+                settings = settings_document.to_settings()
             except (ValueError, TypeError) as exc:
                 # Domain-model validators and the duplicate-client_id rule:
                 # a file whose shape is fine can still be refused at startup.
                 findings.append(Finding(ERROR, f"{settings_path}: {exc}", SETTINGS_FILE))
+            else:
+                try:
+                    # The one rule of the activation that is about the
+                    # document and the directory alone (#426): where the
+                    # files of a SQLite runtime store may lie. Its own
+                    # function, which looks at paths and opens nothing.
+                    require_store_outside_the_configuration(settings, directory)
+                except (ValueError, RuntimeError) as exc:
+                    # The rule, or a path it cannot be applied to: a loop
+                    # of symlinks, which resolving refuses with a
+                    # RuntimeError before Python 3.13. From 3.13 on it
+                    # resolves to the link itself, the rule finds it
+                    # outside, and whether that file opens is the start's
+                    # to find out: nothing is opened here.
+                    findings.append(Finding(ERROR, f"{settings_path}: {exc}", SETTINGS_FILE))
     else:
         findings.append(
             Finding(WARNING, f"{settings_path}: not found, built-in defaults would be used", SETTINGS_FILE)

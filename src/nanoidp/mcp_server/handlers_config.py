@@ -23,6 +23,7 @@ from ..refusal_texts import (
     SAVE_FILES_UNAVAILABLE_TEXT,
     SAVE_FILES_UNLOADABLE_TEXT,
     SAVE_LOCK_UNAVAILABLE_TEXT,
+    SAVE_RELOAD_INCOMPLETE_TEXT,
 )
 from ..services import (
     ExternalKeysNotRotatable,
@@ -311,8 +312,17 @@ def _tool_save_config(arguments: dict[str, Any], config: ConfigManager, loaded: 
         # Both files were written, but the runtime could not reload what
         # was just saved - the file on disk is authoritative; a caller
         # should not retry save() expecting a different outcome (#229
-        # review, blocking 3).
-        return {"success": False, "error": exc.message, "kind": exc.kind}
+        # review, blocking 3). Said so: retryable is about this tool, and
+        # false also when what stood in the way is temporary, like a
+        # runtime store another process holds while the reload reconciles
+        # (#426). The exception names the directory and carries the
+        # cause's own words: save() has logged them, the answer is fixed.
+        return {
+            "success": False,
+            "error": SAVE_RELOAD_INCOMPLETE_TEXT,
+            "kind": exc.kind,
+            "retryable": False,
+        }
     except Exception as e:
         return {"success": False, "error": f"Failed to save config: {str(e)}"}
 

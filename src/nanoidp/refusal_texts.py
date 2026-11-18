@@ -35,6 +35,16 @@ SAVE_FILES_NOT_EDITABLE_TEXT = (
     "The configuration cannot be edited because it contains duplicate keys. Nothing was written."
 )
 SAVE_LOCK_UNAVAILABLE_TEXT = "The lock of the configuration files could not be taken; nothing was written."
+# save_config wrote both files, and the reload that follows did not end
+# (#426): whatever stood in the way, a store held by another writer or a
+# value that does not load back. Not to be saved again. The text names no
+# next step: an explicit reload runs on_before_load, which can bring an
+# older mirror over the files just saved, and some causes end only with a
+# restart. The log has the cause, and the recovery follows from it.
+SAVE_RELOAD_INCOMPLETE_TEXT = (
+    "The configuration files were saved, but the post-save reload did not complete. "
+    "Check the server log to determine the recovery steps."
+)
 # "Another writer": SQLite reports contention between processes and between
 # this process's own connections the same way.
 RUNTIME_STORE_UNAVAILABLE_TEXT = "The runtime store is held by another writer; try again."

@@ -10,6 +10,7 @@ refusal kinds and views as the HTTP surface.
 
 import base64
 import json
+import logging
 import os
 import shutil
 import socket
@@ -739,3 +740,96 @@ class TestAServerAndAnMcpServerOverOneStore:
         await mcp_call_tool("create_runtime_user", {"username": "rt-mcp", "password": "pw"})
         assert _http("DELETE", f"{base}/api/runtime")[1]["users_deleted"] == 1
         assert _payload(await mcp_call_tool("list_runtime_users", {})) == {"users": [], "count": 0}
+
+
+class TestASaveWhoseReloadDidNotComplete:
+    """``save_config`` writes the files and reloads them. The reload
+    reconciles the runtime identities, so a save that declares a name a
+    runtime identity has needs the store; held by another writer past its
+    wait, the reload fails after the files are written (#426, point 7).
+    Measured before: ``reload_after_save`` with the configuration
+    directory and SQLite's own words in the error, and no ``retryable``."""
+
+    @pytest.fixture
+    def a_short_wait(self, monkeypatch):
+        """Before the store is opened: a connection is given its wait
+        when it is made."""
+        from nanoidp.services import sqlite_runtime_store
+
+        monkeypatch.setattr(sqlite_runtime_store, "_BUSY_TIMEOUT_MS", 300)
+
+    @pytest.fixture
+    def held(self, a_short_wait, idp, tmp_path):
+        import sqlite3
+
+        _, config_dir = idp
+        other = sqlite3.connect(str(tmp_path / "state" / "runtime.db"), isolation_level=None)
+
+        def hold():
+            other.execute("BEGIN IMMEDIATE")
+
+        def release():
+            other.execute("ROLLBACK")
+
+        yield config_dir, hold, release
+        other.close()
+
+    async def test_the_answer_is_fixed_and_points_to_the_log(self, held, mcp_call_tool, caplog):
+        from nanoidp.refusal_texts import SAVE_RELOAD_INCOMPLETE_TEXT
+
+        config_dir, hold, release = held
+        assert _payload(await mcp_call_tool("create_runtime_user", {"username": "collide", "password": "pw"}))["success"]
+        assert _payload(await mcp_call_tool("create_user", {"username": "collide", "password": "pw"}))["success"]
+        hold()
+        try:
+            with caplog.at_level(logging.ERROR):
+                result = await mcp_call_tool("save_config", {})
+            answer = _payload(result)
+
+            assert result.is_error is True
+            assert answer == {
+                "success": False,
+                "error": SAVE_RELOAD_INCOMPLETE_TEXT,
+                "kind": "reload_after_save",
+                "retryable": False,
+            }
+            # No next step is named: which one it is depends on the cause.
+            assert answer["error"] == (
+                "The configuration files were saved, but the post-save reload did not complete. "
+                "Check the server log to determine the recovery steps."
+            )
+            text = result.content[0].text
+            assert str(config_dir) not in text and "database is locked" not in text
+            # The files are written, which is what retryable false is about.
+            declared = yaml.safe_load((config_dir / "users.yaml").read_text())["users"]
+            assert "collide" in declared
+            # What stood in the way is in the log.
+            assert "the runtime failed to reload it" in caplog.text and "held by another" in caplog.text
+
+            # The step the answer names, while the store is still held: its
+            # own refusal, which does invite a retry.
+            still = _payload(await mcp_call_tool("reload_config", {}))
+            assert still["code"] == "MCP_RUNTIME_STORE_UNAVAILABLE" and still["retryable"] is True
+            assert [user["username"] for user in _payload(await mcp_call_tool("list_runtime_users", {}))["users"]] == ["collide"]
+        finally:
+            release()
+
+        # And once it is free, it completes the operation: the runtime
+        # identity gives way to the declared one.
+        reloaded = _payload(await mcp_call_tool("reload_config", {}))
+
+        assert reloaded["success"] is True
+        assert _payload(await mcp_call_tool("list_runtime_users", {}))["users"] == []
+        declared = _payload(await mcp_call_tool("get_user", {"username": "collide"}))
+        assert declared["found"] is True and declared["user"]["username"] == "collide"
+        assert len(_events("runtime_identity_removed_on_reload")) == 1
+
+    async def test_a_save_with_nothing_to_reconcile_does_not_need_the_store(self, held, mcp_call_tool):
+        _, hold, release = held
+        hold()
+        try:
+            answer = _payload(await mcp_call_tool("save_config", {}))
+        finally:
+            release()
+
+        assert answer["success"] is True

@@ -842,7 +842,12 @@ the same `settings.yaml` must name the same store however each process was
 started. For the same reason a path starting with `~` is refused: it would
 name a file of each process's `HOME`. None of the store's files may lie inside the configuration directory
 (symlinks resolved): they are a secret, and the configuration directory is
-read, copied and committed as configuration. The files are created `0600`
+read, copied and committed as configuration. `nanoidp validate-config` and
+the MCP `validate_config` tool report a path that breaks this rule as an
+error, as the server refuses it at start. The rule is about the directory
+that is validated: with an absolute `path`, a copy of the configuration
+checked somewhere else (a checkout in CI) is judged against where the copy
+lies, not against where it will be deployed. The files are created `0600`
 (the leases directory `0700`); delete all of them to start afresh.
 
 **Choosing and changing it.** The store is chosen when the process starts. A

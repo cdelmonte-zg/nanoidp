@@ -75,6 +75,7 @@ from typing import (
 
 from .. import config_writer
 from ..config import OAuthClient, User
+from ..runtime_store_location import audit_path_of, owners_path_of
 from .audit_store import (
     AuditEntry,
     AuditEntryCodec,
@@ -199,12 +200,6 @@ def _require_upsert() -> None:
         raise RuntimeStoreUnsupported(
             f"the SQLite runtime store requires SQLite >= 3.24; running {sqlite3.sqlite_version}"
         )
-
-
-def owners_path_of(path: Path) -> Path:
-    """The directory of the owner leases, named after the store's file:
-    ``runtime.db`` has them in ``runtime-owners`` (#354, step 4b)."""
-    return path.with_name(f"{path.stem}-owners")
 
 
 # An owner id: 128 random bits, as hex. Anything else found in a claim names
@@ -375,12 +370,6 @@ class _OwnerLeases:
 
 
 _LEASES: "weakref.WeakSet[_OwnerLeases]" = weakref.WeakSet()
-
-
-def audit_path_of(path: Path) -> Path:
-    """The audit's file, named after the store's: ``runtime.db`` has its
-    audit in ``runtime-audit.db``. The two are the store."""
-    return path.with_name(f"{path.stem}-audit{path.suffix}")
 
 
 class RuntimeStoreFileRefused(ValueError):
