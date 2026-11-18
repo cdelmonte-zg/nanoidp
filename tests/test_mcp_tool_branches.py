@@ -396,8 +396,16 @@ class TestConfigToolBranches:
         result = await mcp_call_tool("save_config", {})
         assert result.is_error is True
         payload = _payload(result)
-        assert payload["success"] is False
-        assert payload["kind"] == "reload_after_save"
+        from nanoidp.refusal_texts import SAVE_RELOAD_INCOMPLETE_TEXT
+
+        # Fixed words, whatever stood in the way, and no retry of the save:
+        # the files are written (#426).
+        assert payload == {
+            "success": False,
+            "error": SAVE_RELOAD_INCOMPLETE_TEXT,
+            "kind": "reload_after_save",
+            "retryable": False,
+        }
 
     @pytest.mark.asyncio
     async def test_save_config_lock_unavailable_is_distinguishable(

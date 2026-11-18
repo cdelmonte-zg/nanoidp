@@ -191,6 +191,104 @@ async def run_with_a_file_where_a_rotation_writes(config_dir: str) -> int:
     return 0
 
 
+def _set_runtime(copy: Path, runtime: dict) -> None:
+    settings = yaml.safe_load((copy / "settings.yaml").read_text())
+    settings["runtime"] = runtime
+    (copy / "settings.yaml").write_text(yaml.safe_dump(settings))
+
+
+async def run_with_a_store_inside_the_configuration(config_dir: str) -> int:
+    """#426, point 10: the check and the start agree. A runtime.path that
+    puts the SQLite store inside the configuration directory is an error
+    for validate_config and for ``nanoidp validate-config``, as it is a
+    refusal for a server started on it."""
+    with tempfile.TemporaryDirectory() as scratch:
+        copy = _copy_of(config_dir, Path(scratch))
+        async with stdio_client(_server(str(copy))) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                _set_runtime(copy, {"store": "sqlite", "path": "runtime.db"})
+                validation = json.loads((await session.call_tool("validate_config", {})).content[0].text)
+                errors = [f for f in validation.get("findings", []) if f.get("level") == "error"]
+                if (
+                    validation.get("valid") is not False
+                    or [f.get("file") for f in errors] != ["settings.yaml"]
+                    or "inside the configuration directory" not in errors[0].get("message", "")
+                ):
+                    print(f"[FAIL] validate_config over a store inside the configuration: {validation!r}")
+                    return 1
+        environment = {**os.environ, "NANOIDP_CONFIG_DIR": str(copy)}
+        checked = subprocess.run(
+            [sys.executable, "-m", "nanoidp", "validate-config", "--config", str(copy)],
+            env=environment, capture_output=True, text=True, timeout=60,
+        )
+        started = subprocess.run(
+            [sys.executable, "-m", "nanoidp.mcp_server"],
+            env=environment, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60,
+        )
+        if checked.returncode != 1 or "inside the configuration directory" not in checked.stdout:
+            print(f"[FAIL] validate-config over a store inside the configuration: {checked.returncode} {checked.stdout!r}")
+            return 1
+        if started.returncode != 1 or "inside the configuration directory" not in started.stderr:
+            print(f"[FAIL] a server on a store inside the configuration: {started.returncode} {started.stderr!r}")
+            return 1
+        if (copy / "runtime.db").exists():
+            print("[FAIL] a store was made inside the configuration directory")
+            return 1
+        print("[OK] a store inside the configuration: an error for validate_config and validate-config, as for the start")
+    return 0
+
+
+async def run_with_a_reload_after_the_save_that_cannot_end(config_dir: str) -> int:
+    """#426, point 7: a save that declares a name a runtime identity has,
+    while another writer holds the runtime store. The files are written
+    and the reload is not made: the fixed text, reload_after_save,
+    retryable false, nothing of the directory or of SQLite on the wire.
+    With the store free, reload_config completes it."""
+    import sqlite3
+
+    from nanoidp.refusal_texts import SAVE_RELOAD_INCOMPLETE_TEXT
+
+    with tempfile.TemporaryDirectory() as scratch:
+        copy = _copy_of(config_dir, Path(scratch))
+        store = Path(scratch) / "state" / "runtime.db"
+        _set_runtime(copy, {"store": "sqlite", "path": str(store)})
+        async with stdio_client(_server(str(copy))) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                identity = {"username": "smoke-collide", "password": "pw"}
+                for tool in ("create_runtime_user", "create_user"):
+                    made = json.loads((await session.call_tool(tool, identity)).content[0].text)
+                    if made.get("success") is not True:
+                        print(f"[FAIL] {tool}: {made!r}")
+                        return 1
+                other = sqlite3.connect(str(store), isolation_level=None)
+                other.execute("BEGIN IMMEDIATE")
+                try:
+                    text = (await session.call_tool("save_config", {})).content[0].text
+                finally:
+                    other.execute("ROLLBACK")
+                    other.close()
+                if json.loads(text) != {
+                    "success": False,
+                    "error": SAVE_RELOAD_INCOMPLETE_TEXT,
+                    "kind": "reload_after_save",
+                    "retryable": False,
+                } or scratch in text or "locked" in text:
+                    print(f"[FAIL] save_config with the store held: {text!r}")
+                    return 1
+                if "smoke-collide" not in (copy / "users.yaml").read_text():
+                    print("[FAIL] the save that answered reload_after_save wrote no file")
+                    return 1
+                reloaded = json.loads((await session.call_tool("reload_config", {})).content[0].text)
+                left = json.loads((await session.call_tool("list_runtime_users", {})).content[0].text)
+                if reloaded.get("success") is not True or left.get("users") != []:
+                    print(f"[FAIL] reload_config after the store was freed: {reloaded!r} {left!r}")
+                    return 1
+        print("[OK] save_config with the store held: reload_after_save, fixed text; reload_config completes it")
+    return 0
+
+
 async def run(config_dir: str) -> int:
     params = _server(config_dir)
 
@@ -351,6 +449,12 @@ async def run(config_dir: str) -> int:
         return 1
 
     if await run_with_a_file_where_a_rotation_writes(config_dir):
+        return 1
+
+    if await run_with_a_store_inside_the_configuration(config_dir):
+        return 1
+
+    if await run_with_a_reload_after_the_save_that_cannot_end(config_dir):
         return 1
 
     print("\n[SUCCESS] MCP stdio smoke test passed")

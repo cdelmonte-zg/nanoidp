@@ -230,7 +230,15 @@ def _validate_observation(
         )
         if settings_document is not None:
             try:
-                settings_document.to_settings()
+                settings = settings_document.to_settings()
+                # And the one rule of the activation that is about the
+                # document alone (#426): where the files of a SQLite
+                # runtime store may lie. The activation's own function,
+                # which looks at paths and opens nothing. Imported here:
+                # the services import this package's configuration.
+                from .services.runtime_store import require_store_outside_the_configuration
+
+                require_store_outside_the_configuration(settings, directory)
             except (ValueError, TypeError) as exc:
                 # Domain-model validators and the duplicate-client_id rule:
                 # a file whose shape is fine can still be refused at startup.

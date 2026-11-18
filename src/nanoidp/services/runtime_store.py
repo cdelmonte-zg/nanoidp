@@ -257,6 +257,20 @@ def runtime_store_report(settings: Settings, config_dir: Optional[Path] = None) 
     return report
 
 
+def require_store_outside_the_configuration(settings: Settings, config_dir: Optional[Path] = None) -> None:
+    """The rule about where a SQLite store's files may lie, for these
+    settings: nothing to ask of a store that has no file. A ValueError
+    that says which file and why.
+
+    The activation applies it before it builds a store, and the
+    validation of a configuration directory applies it too (#426): what
+    one refuses the other reports, in the same words. Only paths are
+    looked at: no store is opened and no file is made."""
+    path = resolved_runtime_path(settings, config_dir)
+    if path is not None:
+        _outside_the_configuration(path, config_dir)
+
+
 def _outside_the_configuration(path: Path, config_dir: Optional[Path]) -> None:
     """The store's files are a secret of the processes that share it: none
     of them (the database, its audit, its owners' leases) may lie in the
@@ -319,8 +333,7 @@ def prepare_runtime_store(
     factory = _RUNTIME_STORE_FACTORIES.get(wanted[0])
     if factory is None:
         raise ValueError(f"runtime.store: {wanted[0]} is not a runtime store nanoidp has")
-    if wanted[0] == "sqlite":
-        _outside_the_configuration(Path(wanted[1]), config_dir)
+    require_store_outside_the_configuration(settings, config_dir)
     return factory(wanted), wanted
 
 

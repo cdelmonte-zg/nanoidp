@@ -62,6 +62,39 @@ def _loaded(config_dir):
     return ConfigManager(str(config_dir), activate=activate_services)
 
 
+_INSIDE = [
+    "the database in it",
+    "a symlink to it",
+    "the owners' leases as it",
+    "the owners' leases a symlink into it",
+    "the audit a symlink into it",
+]
+
+
+def _a_file_of_the_store_inside(tmp_path, layout):
+    if layout == "the database in it":
+        config_dir = _config_dir(tmp_path, {"store": "sqlite", "path": "runtime.db"})
+    elif layout == "a symlink to it":
+        config_dir = _config_dir(tmp_path)
+        (tmp_path / "looks-elsewhere").symlink_to(config_dir, target_is_directory=True)
+        _set_runtime(config_dir, {"store": "sqlite", "path": "../looks-elsewhere/runtime.db"})
+    elif layout == "the owners' leases as it":
+        # runtime.db next to a configuration directory named as its
+        # owners' directory would be.
+        config_dir = _config_dir(tmp_path, {"store": "sqlite", "path": "../runtime.db"}, name="runtime-owners")
+    elif layout == "the owners' leases a symlink into it":
+        # The database outside, its owners' directory a symlink into it.
+        config_dir = _config_dir(tmp_path)
+        (tmp_path / "runtime-owners").symlink_to(config_dir, target_is_directory=True)
+        _set_runtime(config_dir, {"store": "sqlite", "path": "../runtime.db"})
+    else:
+        # The database outside, its audit a symlink to a file inside.
+        config_dir = _config_dir(tmp_path)
+        (tmp_path / "runtime-audit.db").symlink_to(config_dir / "audit.db")
+        _set_runtime(config_dir, {"store": "sqlite", "path": "../runtime.db"})
+    return config_dir
+
+
 class TestTheDocument:
     @pytest.mark.parametrize(
         "runtime",
@@ -126,37 +159,9 @@ class TestThePath:
         assert resolved_runtime_path(settings, config_dir) is None
         assert runtime_store_inputs(settings, config_dir) == ("memory",)
 
-    @pytest.mark.parametrize(
-        "layout",
-        [
-            "the database in it",
-            "a symlink to it",
-            "the owners' leases as it",
-            "the owners' leases a symlink into it",
-            "the audit a symlink into it",
-        ],
-    )
+    @pytest.mark.parametrize("layout", _INSIDE)
     def test_no_file_of_the_store_lies_in_the_configuration_directory(self, tmp_path, layout):
-        if layout == "the database in it":
-            config_dir = _config_dir(tmp_path, {"store": "sqlite", "path": "runtime.db"})
-        elif layout == "a symlink to it":
-            config_dir = _config_dir(tmp_path)
-            (tmp_path / "looks-elsewhere").symlink_to(config_dir, target_is_directory=True)
-            _set_runtime(config_dir, {"store": "sqlite", "path": "../looks-elsewhere/runtime.db"})
-        elif layout == "the owners' leases as it":
-            # runtime.db next to a configuration directory named as its
-            # owners' directory would be.
-            config_dir = _config_dir(tmp_path, {"store": "sqlite", "path": "../runtime.db"}, name="runtime-owners")
-        elif layout == "the owners' leases a symlink into it":
-            # The database outside, its owners' directory a symlink into it.
-            config_dir = _config_dir(tmp_path)
-            (tmp_path / "runtime-owners").symlink_to(config_dir, target_is_directory=True)
-            _set_runtime(config_dir, {"store": "sqlite", "path": "../runtime.db"})
-        else:
-            # The database outside, its audit a symlink to a file inside.
-            config_dir = _config_dir(tmp_path)
-            (tmp_path / "runtime-audit.db").symlink_to(config_dir / "audit.db")
-            _set_runtime(config_dir, {"store": "sqlite", "path": "../runtime.db"})
+        config_dir = _a_file_of_the_store_inside(tmp_path, layout)
 
         with pytest.raises(ConfigurationRejected) as refused:
             _loaded(config_dir)
@@ -430,3 +435,92 @@ class TestTheReviewOf4c:
 
         with pytest.raises(ValueError, match="runtime.path"):
             resolved_runtime_path(settings, tmp_path)
+
+
+class TestTheValidationAppliesTheSameRule:
+    """``validate-config`` and the MCP tool said "ok" for a runtime.path
+    the activation then refused at the start (#426, point 10). They apply
+    the activation's rule now, through its own function: a computation on
+    paths, with no store opened and no file made."""
+
+    @staticmethod
+    def _files(tmp_path):
+        """Everything below, but the lock file a validation reads under."""
+        return sorted(str(path.relative_to(tmp_path)) for path in tmp_path.rglob("*") if path.name != ".nanoidp-write.lock")
+
+    @staticmethod
+    def _findings(config_dir):
+        from nanoidp.config_validation import validate_config_dir
+
+        return [(finding.level, finding.file, finding.message) for finding in validate_config_dir(config_dir)]
+
+    @pytest.mark.parametrize("layout", _INSIDE)
+    def test_what_the_activation_refuses_is_an_error_finding(self, tmp_path, layout):
+        from nanoidp.__main__ import validate_config_command
+
+        config_dir = _a_file_of_the_store_inside(tmp_path, layout)
+        before = self._files(tmp_path)
+
+        findings = self._findings(config_dir)
+
+        assert len(findings) == 1
+        level, file, message = findings[0]
+        assert (level, file) == ("error", "settings.yaml")
+        assert message.startswith(f"{config_dir / 'settings.yaml'}: runtime.path: ")
+        assert "inside the configuration directory" in message
+        assert validate_config_command(str(config_dir), False) == 1
+        assert self._files(tmp_path) == before
+        # The words are the activation's own, not a second wording of the rule.
+        with pytest.raises(ConfigurationRejected) as refused:
+            _loaded(config_dir)
+        assert message.split(": ", 1)[1] in refused.value.message
+
+    @pytest.mark.parametrize(
+        "runtime",
+        [None, {"store": "memory"}, {"store": "sqlite", "path": "../state/runtime.db"}, "absolute"],
+        ids=["no runtime section", "memory", "sqlite beside it", "sqlite at an absolute path"],
+    )
+    def test_what_the_activation_accepts_has_no_finding_and_makes_no_file(self, tmp_path, runtime):
+        from nanoidp.__main__ import validate_config_command
+
+        if runtime == "absolute":
+            runtime = {"store": "sqlite", "path": str(tmp_path / "elsewhere" / "runtime.db")}
+        config_dir = _config_dir(tmp_path, runtime)
+        before = self._files(tmp_path)
+
+        assert self._findings(config_dir) == []
+        assert validate_config_command(str(config_dir), False) == 0
+        assert self._files(tmp_path) == before
+
+    def test_a_relative_path_is_relative_to_the_configuration_directory(self, tmp_path, monkeypatch):
+        """As the activation resolves it, not against where the command
+        was started: from there this path would lie outside."""
+        config_dir = _config_dir(tmp_path, {"store": "sqlite", "path": "runtime.db"})
+        (tmp_path / "started-here").mkdir()
+        monkeypatch.chdir(tmp_path / "started-here")
+
+        assert [level for level, _, _ in self._findings(config_dir)] == ["error"]
+        assert [level for level, _, _ in self._findings(Path("..") / "config")] == ["error"]
+
+    def test_a_document_that_does_not_validate_gets_its_own_finding_and_not_this_one(self, tmp_path):
+        config_dir = _config_dir(tmp_path, {"store": "sqlite"})
+
+        findings = self._findings(config_dir)
+
+        assert len(findings) == 1 and "runtime.path is required" in findings[0][2]
+
+    @pytest.mark.asyncio
+    async def test_the_mcp_tool_answers_not_valid(self, tmp_path, monkeypatch, mcp_call_tool):
+        import json
+
+        config_dir = _config_dir(tmp_path, {"store": "sqlite", "path": "../state/runtime.db"})
+        monkeypatch.setenv("NANOIDP_CONFIG_DIR", str(config_dir))
+        first = json.loads((await mcp_call_tool("validate_config", {})).content[0].text)
+        _set_runtime(config_dir, {"store": "sqlite", "path": "runtime.db"})
+
+        answer = json.loads((await mcp_call_tool("validate_config", {})).content[0].text)
+
+        assert first["valid"] is True and first["findings"] == []
+        assert answer["valid"] is False
+        assert [(f["level"], f["file"]) for f in answer["findings"]] == [("error", "settings.yaml")]
+        assert "inside the configuration directory" in answer["findings"][0]["message"]
