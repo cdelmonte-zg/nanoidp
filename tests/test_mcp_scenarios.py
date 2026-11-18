@@ -47,6 +47,14 @@ def _declaration(name="role-change", username="alice", **after):
     }
 
 
+def _shape_with_null(name):
+    """The model's shape of a user field, with null where the model takes it."""
+    shape = dict(field_shape(User, name))
+    if any(branch.get("type") == "null" for branch in User.model_json_schema()["properties"][name].get("anyOf", [])):
+        shape["type"] = [shape["type"], "null"]
+    return shape
+
+
 def _payload(result):
     return json.loads(result.content[0].text)
 
@@ -277,8 +285,14 @@ class TestTheSchemaOfTheDeclaration:
         assert sorted(user["properties"]) == sorted(User.model_fields)
         for name in User.model_fields:
             shape = {key: value for key, value in user["properties"][name].items() if key != "description"}
-            assert shape == field_shape(User, name), name
+            assert shape == _shape_with_null(name), name
             assert user["properties"][name]["description"], name
+        assert user["properties"]["password"] == {
+            "minLength": 1,
+            "type": ["string", "null"],
+            "description": user["properties"]["password"]["description"],
+        }
+        assert user["properties"]["totp_secret"]["type"] == ["string", "null"]
         assert user["properties"]["roles"]["type"] == "array" and user["properties"]["roles"]["items"] == {"type": "string"}
         assert user["properties"]["username"]["minLength"] == 1
         # Other keys are attributes, as in a users.yaml entry.
@@ -308,8 +322,71 @@ class TestTheSchemaOfTheDeclaration:
         assert update["additionalProperties"] is False and update["minProperties"] == 1
         for name in scenarios.UPDATABLE:
             shape = {key: value for key, value in update["properties"][name].items() if key != "description"}
-            assert shape == field_shape(User, name), name
+            assert shape == _shape_with_null(name), name
         assert update["properties"]["attributes"]["type"] == "object"
+        # Named as null is not the same as not named: one clears, the other keeps.
+        assert update["properties"]["identity_class"]["type"] == ["string", "null"]
+        assert update["properties"]["roles"]["type"] == "array"
+
+    async def test_a_step_that_names_a_field_as_null_clears_it_as_over_http(self, idp, mcp_call_tool):
+        def declaration(name, username):
+            declared = _declaration(name=name, username=username)
+            declared["given"]["user"]["identity_class"] = "INTERNAL"
+            declared["steps"] = [
+                {"after": {"event": "token_issued"}, "update_user": {"identity_class": None}},
+                {"after": {"event": "token_issued", "count": 2}, "update_user": {"roles": ["ADMIN"]}},
+            ]
+            return declared
+
+        through_mcp = await mcp_call_tool("arm_scenario", declaration("through-mcp", "alice"))
+        over_http = idp.post(URL, json=declaration("over-http", "bob"))
+        assert through_mcp.is_error is not True and over_http.status_code == 201
+        assert _payload(through_mcp)["scenario"]["steps"] == over_http.get_json()["steps"]
+        users = get_runtime_store().users
+        assert (users.get("alice").identity_class, users.get("bob").identity_class) == ("INTERNAL", "INTERNAL")
+
+        for username in ("alice", "bob"):
+            _authorities(idp, username)
+        # Cleared by the step that named it as null, on both surfaces.
+        assert (users.get("alice").identity_class, users.get("bob").identity_class) == (None, None)
+
+        for username in ("alice", "bob"):
+            _authorities(idp, username)
+        # And kept by the step that did not name it.
+        assert (users.get("alice").identity_class, users.get("bob").identity_class) == (None, None)
+        assert (users.get("alice").roles, users.get("bob").roles) == (["ADMIN"], ["ADMIN"])
+        read = _payload(await mcp_call_tool("get_scenario", {"name": "through-mcp"}))["scenario"]["steps"]
+        assert read == idp.get(f"{URL}/over-http").get_json()["steps"]
+        assert [step["state"] for step in read] == ["applied", "applied"]
+
+    async def test_a_field_that_is_not_named_is_kept_and_a_list_cannot_be_null(self, idp, mcp_call_tool):
+        declared = _declaration()
+        declared["given"]["user"]["identity_class"] = "INTERNAL"
+        await mcp_call_tool("arm_scenario", declared)
+        _authorities(idp)
+        assert get_runtime_store().users.get("alice").identity_class == "INTERNAL"
+
+        no_list = _declaration(name="no-list", username="bob")
+        no_list["steps"][0]["update_user"] = {"roles": None}
+        refused = await mcp_call_tool("arm_scenario", no_list)
+
+        assert _payload(refused)["code"] == "MCP_INVALID_ARGUMENTS"
+        assert idp.post(URL, json=no_list).status_code == 400
+
+    async def test_a_user_given_a_null_password_is_armed_as_over_http(self, idp, mcp_call_tool):
+        """A persona-only user: null where the model takes it, in the user
+        the scenario creates too."""
+        def declaration(name, username):
+            declared = _declaration(name=name, username=username)
+            declared["given"]["user"].update(password=None, identity_class=None, totp_secret=None)
+            return declared
+
+        through_mcp = await mcp_call_tool("arm_scenario", declaration("through-mcp", "alice"))
+        over_http = idp.post(URL, json=declaration("over-http", "bob"))
+
+        assert through_mcp.is_error is not True and over_http.status_code == 201
+        users = get_runtime_store().users
+        assert users.get("alice").password is None and users.get("bob").password is None
 
     def test_it_takes_the_management_secret_and_no_other_key(self, schema):
         """The declaration takes no key of its own, and a client that builds

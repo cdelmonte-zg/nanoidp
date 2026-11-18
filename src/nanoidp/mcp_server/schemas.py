@@ -715,12 +715,27 @@ def _inlined(fragment: Any, definitions: dict[str, Any]) -> Any:
     }
 
 
+def _user_field(name: str, description: str) -> dict[str, Any]:
+    """A field of the user in a scenario's declaration: the model's shape,
+    and ``null`` where the model takes it. In a declaration the two are not
+    the same: a step that does not name ``identity_class`` leaves it, and
+    one that names it as null clears it, as over HTTP. So here a field
+    that may be null says so, flat: ``type: [<its type>, "null"]``, with
+    the constraints of its type kept."""
+    field: dict[str, Any] = dict(_domain(User, name, description))
+    branches = User.model_json_schema()["properties"][name].get("anyOf", [])
+    if any(branch.get("type") == "null" for branch in branches):
+        field["type"] = [field["type"], "null"]
+    return field
+
+
 def _scenario_declaration() -> dict[str, Any]:
     """The input schema of arm_scenario (#402): the declaration's own model
     for what is the scenario's (its name, the events and grant types as
     enums, the limits of count and of the steps), and the user model's
     field shapes for the user it creates and for what a step may set, as
-    every tool that takes a user's fields publishes them.
+    every tool that takes a user's fields publishes them, with null where
+    the model takes it (``_user_field``): the same inputs as over HTTP.
 
     The defaults are the parser's, which the descriptions say where they
     are not the obvious ones. A secret of the wrong type is not repeated in
@@ -735,17 +750,17 @@ def _scenario_declaration() -> dict[str, Any]:
         ),
         "properties": {
             "username": _domain(User, "username", "The user's name"),
-            "password": _domain(User, "password", "Password (omit for a user that only logs in through the persona picker)"),
-            "description": _domain(User, "description", "Display-only note shown in the persona login picker"),
-            "email": _domain(User, "email", "Email address (default: <username>@example.org)"),
-            "roles": _domain(User, "roles", "Roles (default: ['USER'])"),
-            "groups": _domain(User, "groups", "Groups"),
-            "tenant": _domain(User, "tenant", "Tenant identifier (default: 'default')"),
-            "identity_class": _domain(User, "identity_class", "Identity class (e.g., INTERNAL, EXTERNAL)"),
-            "entitlements": _domain(User, "entitlements", "Entitlements"),
-            "source_acl": _domain(User, "source_acl", "Source ACL list"),
-            "attributes": _domain(User, "attributes", "Custom key-value attributes"),
-            "totp_secret": _domain(User, "totp_secret", "Base32 TOTP secret, for a user that logs in with a second factor"),
+            "password": _user_field("password", "Password (omit for a user that only logs in through the persona picker)"),
+            "description": _user_field("description", "Display-only note shown in the persona login picker"),
+            "email": _user_field("email", "Email address (default: <username>@example.org)"),
+            "roles": _user_field("roles", "Roles (default: ['USER'])"),
+            "groups": _user_field("groups", "Groups"),
+            "tenant": _user_field("tenant", "Tenant identifier (default: 'default')"),
+            "identity_class": _user_field("identity_class", "Identity class (e.g., INTERNAL, EXTERNAL)"),
+            "entitlements": _user_field("entitlements", "Entitlements"),
+            "source_acl": _user_field("source_acl", "Source ACL list"),
+            "attributes": _user_field("attributes", "Custom key-value attributes"),
+            "totp_secret": _user_field("totp_secret", "Base32 TOTP secret, for a user that logs in with a second factor"),
         },
         "required": ["username"],
         "additionalProperties": True,
@@ -756,7 +771,7 @@ def _scenario_declaration() -> dict[str, Any]:
             "The fields to set on the scenario's user when the step fires. Each named field is replaced "
             "whole; a field that is not named stays as it is."
         ),
-        "properties": {name: _domain(User, name, f"The user's {name} from this step on") for name in UPDATABLE},
+        "properties": {name: _user_field(name, f"The user's {name} from this step on") for name in UPDATABLE},
         "minProperties": 1,
         "additionalProperties": False,
     }

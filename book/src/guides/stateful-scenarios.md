@@ -45,7 +45,7 @@ curl -X POST http://localhost:8000/api/runtime/scenarios \
 - `update_user` sets one or more of `roles`, `groups`, `entitlements`,
   `source_acl`, `identity_class` and `attributes`. Each field it names is
   replaced whole, `attributes` included; a field it does not name stays as
-  it is.
+  it is. `identity_class` named as `null` is cleared.
 - Unknown keys, an unknown event and a `grant_type` that issues no token
   for a user are refused: a step that could never fire is not armed.
 
@@ -167,9 +167,10 @@ can judge (an invalid email, a name that is taken) is answered with the
 same on both surfaces, and `get_scenario` answers `found: false` for a name
 that is not there.
 
-The schema is stricter than the HTTP body in one place: an optional field
-is published as its value type, as for the other tools, so a step that
-clears `identity_class` with `null` is armed over HTTP.
+In `update_user` a field that is not named is kept, and one that is named
+as `null` is cleared: `{"identity_class": null}` removes the class, on both
+surfaces. Only `identity_class` can be cleared this way; the lists and
+`attributes` are emptied with `[]` and `{}`.
 
 The MCP server arms, reads and removes; it fires nothing. A step is fired
 by the server that answers the application's request, which is why the
