@@ -502,6 +502,46 @@ class TestTheValidationAppliesTheSameRule:
         assert [level for level, _, _ in self._findings(config_dir)] == ["error"]
         assert [level for level, _, _ in self._findings(Path("..") / "config")] == ["error"]
 
+    @pytest.mark.skipif(os.name != "posix", reason="needs a symlink any user can make")
+    @pytest.mark.parametrize("looping", ["runtime.db", "runtime-audit.db", "runtime-owners"])
+    def test_a_path_that_cannot_be_resolved_is_a_finding_not_a_failure(self, tmp_path, looping):
+        """A loop of symlinks where the store, its audit or its leases
+        would be: the start refuses it, and so does the check, with a
+        report and not with the resolver's own error."""
+        from nanoidp.__main__ import validate_config_command
+
+        config_dir = _config_dir(tmp_path, {"store": "sqlite", "path": "../state/runtime.db"})
+        (tmp_path / "state").mkdir()
+        (tmp_path / "state" / looping).symlink_to(tmp_path / "state" / looping)
+
+        findings = self._findings(config_dir)
+
+        assert [(level, file) for level, file, _ in findings] == [("error", "settings.yaml")]
+        assert validate_config_command(str(config_dir), False) == 1
+        with pytest.raises(ConfigurationRejected):
+            _loaded(config_dir)
+
+    def test_the_validation_still_imports_nothing_that_runs(self, tmp_path):
+        """Its module's own rule: no configuration manager, no hooks, no
+        service. The location rule is shared with the activation through a
+        module that has none of them."""
+        import subprocess
+        import sys
+
+        config_dir = _config_dir(tmp_path, {"store": "sqlite", "path": "runtime.db"})
+        script = (
+            "import sys; from nanoidp.config_validation import validate_config_dir; "
+            f"found = validate_config_dir({str(config_dir)!r}); "
+            "assert [f.level for f in found] == ['error'], found; "
+            "loaded = [m for m in ('nanoidp.config', 'nanoidp.hooks', 'nanoidp.services') if m in sys.modules]; "
+            "assert not loaded, loaded"
+        )
+        environment = dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parent.parent / "src"))
+
+        ran = subprocess.run([sys.executable, "-c", script], env=environment, capture_output=True, text=True, timeout=60)
+
+        assert ran.returncode == 0, ran.stderr[-600:]
+
     def test_a_document_that_does_not_validate_gets_its_own_finding_and_not_this_one(self, tmp_path):
         config_dir = _config_dir(tmp_path, {"store": "sqlite"})
 

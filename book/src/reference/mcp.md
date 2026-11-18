@@ -164,8 +164,9 @@ declares a name a runtime identity has needs the store, and fails this way
 while another process holds it. The `error` is fixed and names the next
 step, `reload_config`; `retryable` is `false` and is about `save_config`,
 since the files are on disk whatever stood in the way. `reload_config` then
-completes the operation, or answers its own refusal with its own
-`retryable`. The cause is in the server log.
+completes the operation, or answers its own refusal, which says why. It is
+an explicit reload like any other: with an `on_before_load` hook it reads
+the mirror first. The cause of the failed reload is in the server log.
 
 A configuration that does not load is no internal error. `nanoidp-mcp`
 loads the configuration before it serves and exits with `error:

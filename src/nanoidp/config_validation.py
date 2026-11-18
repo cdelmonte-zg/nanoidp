@@ -14,7 +14,11 @@ here is a finding there, and it deliberately does NOT:
 the file's whole purpose is to name commands and plugins, and a lint step
 that ran them would be a remote-execution primitive triggered by looking at
 a directory. That is why this module imports ``config_documents`` and
-``serialization`` but never ``config`` or ``hooks``.
+``serialization`` but never ``config`` or ``hooks``, nor anything of
+``services``: the one rule it shares with the activation, where a SQLite
+runtime store's files may lie, is in ``runtime_store_location`` for that
+reason (#426). That rule looks at the directory as it is when asked,
+symlinks included, not at the bytes observed.
 """
 
 from __future__ import annotations
@@ -37,6 +41,7 @@ from .config_documents import (
 )
 from .config_store import ConfigFileStore, FileSnapshot
 from .config_writer import LockUnavailableError
+from .runtime_store_location import require_store_outside_the_configuration
 from .serialization import NotValidYaml, check_config_version, parse_yaml
 from .serialization import expand_env_vars as _expand_env_vars
 
@@ -231,18 +236,22 @@ def _validate_observation(
         if settings_document is not None:
             try:
                 settings = settings_document.to_settings()
-                # And the one rule of the activation that is about the
-                # document alone (#426): where the files of a SQLite
-                # runtime store may lie. The activation's own function,
-                # which looks at paths and opens nothing. Imported here:
-                # the services import this package's configuration.
-                from .services.runtime_store import require_store_outside_the_configuration
-
-                require_store_outside_the_configuration(settings, directory)
             except (ValueError, TypeError) as exc:
                 # Domain-model validators and the duplicate-client_id rule:
                 # a file whose shape is fine can still be refused at startup.
                 findings.append(Finding(ERROR, f"{settings_path}: {exc}", SETTINGS_FILE))
+            else:
+                try:
+                    # The one rule of the activation that is about the
+                    # document and the directory alone (#426): where the
+                    # files of a SQLite runtime store may lie. Its own
+                    # function, which looks at paths and opens nothing.
+                    require_store_outside_the_configuration(settings, directory)
+                except (ValueError, OSError, RuntimeError) as exc:
+                    # The rule, or a path that cannot be resolved to apply
+                    # it (a loop of symlinks is a RuntimeError before
+                    # Python 3.13): the start refuses both.
+                    findings.append(Finding(ERROR, f"{settings_path}: {exc}", SETTINGS_FILE))
     else:
         findings.append(
             Finding(WARNING, f"{settings_path}: not found, built-in defaults would be used", SETTINGS_FILE)

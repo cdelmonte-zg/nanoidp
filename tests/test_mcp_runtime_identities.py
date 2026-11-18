@@ -751,12 +751,17 @@ class TestASaveWhoseReloadDidNotComplete:
     directory and SQLite's own words in the error, and no ``retryable``."""
 
     @pytest.fixture
-    def held(self, idp, tmp_path, monkeypatch):
-        import sqlite3
-
+    def a_short_wait(self, monkeypatch):
+        """Before the store is opened: a connection is given its wait
+        when it is made."""
         from nanoidp.services import sqlite_runtime_store
 
         monkeypatch.setattr(sqlite_runtime_store, "_BUSY_TIMEOUT_MS", 300)
+
+    @pytest.fixture
+    def held(self, a_short_wait, idp, tmp_path):
+        import sqlite3
+
         _, config_dir = idp
         other = sqlite3.connect(str(tmp_path / "state" / "runtime.db"), isolation_level=None)
 
@@ -773,6 +778,7 @@ class TestASaveWhoseReloadDidNotComplete:
         from nanoidp.refusal_texts import SAVE_RELOAD_INCOMPLETE_TEXT
 
         config_dir, hold, release = held
+        started = time.monotonic()
         assert _payload(await mcp_call_tool("create_runtime_user", {"username": "collide", "password": "pw"}))["success"]
         assert _payload(await mcp_call_tool("create_user", {"username": "collide", "password": "pw"}))["success"]
         hold()
@@ -790,7 +796,7 @@ class TestASaveWhoseReloadDidNotComplete:
             }
             assert "reload_config" in answer["error"]
             text = result.content[0].text
-            assert str(config_dir) not in text and "database is locked" not in text and "5000" not in text
+            assert str(config_dir) not in text and "database is locked" not in text
             # The files are written, which is what retryable false is about.
             declared = yaml.safe_load((config_dir / "users.yaml").read_text())["users"]
             assert "collide" in declared
@@ -814,6 +820,8 @@ class TestASaveWhoseReloadDidNotComplete:
         declared = _payload(await mcp_call_tool("get_user", {"username": "collide"}))
         assert declared["found"] is True and declared["user"]["username"] == "collide"
         assert len(_events("runtime_identity_removed_on_reload")) == 1
+        # Two waits for the held store, each the short one of this test.
+        assert time.monotonic() - started < 4
 
     async def test_a_save_with_nothing_to_reconcile_does_not_need_the_store(self, held, mcp_call_tool):
         _, hold, release = held
