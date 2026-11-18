@@ -85,8 +85,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a generic flash. For the obstacles at `previous` the rotation had already
   written its journal, and until a process that can write the directory
   took its lock, a process that sees it read-only refused to load the keys.
-  The three directories and the files to replace are now checked before the
-  journal: all three surfaces answer `409` with
+  The three directories and what `previous/` holds are now checked before
+  the journal: all three surfaces answer `409` with
   `keys_directory_not_writable`, the active key keeps signing, and nothing
   is left to settle. **Behaviour change**: with `jwt.max_previous_keys: 0`
   and a read-only `previous/` a rotation used to answer success, fail to

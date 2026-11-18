@@ -1142,6 +1142,12 @@ def _a_directory_where_a_previous_key_goes(keys_dir, service):
     return target, target.rmdir
 
 
+def _a_directory_where_a_key_to_prune_is(keys_dir, service):
+    target = keys_dir / "previous" / "stray_public.pem"
+    target.mkdir(parents=True)
+    return target, target.rmdir
+
+
 def _a_file_at_the_work_directory(keys_dir, service):
     (keys_dir / ".rotation").write_text("not a directory")
     return keys_dir / ".rotation", lambda: (keys_dir / ".rotation").unlink()
@@ -1182,6 +1188,7 @@ _OBSTACLES = [
     pytest.param(_a_dangling_symlink_at_previous, id="a dangling symlink at previous", marks=_NEEDS_SYMLINKS),
     pytest.param(_previous_read_only, id="previous read-only", marks=_NEEDS_MODE_BITS),
     pytest.param(_a_directory_where_a_previous_key_goes, id="a directory where a previous key goes"),
+    pytest.param(_a_directory_where_a_key_to_prune_is, id="a directory where a key to prune is"),
     pytest.param(_a_file_at_the_work_directory, id="a file at .rotation"),
     pytest.param(_the_work_directory_read_only, id=".rotation read-only", marks=_NEEDS_MODE_BITS),
     pytest.param(_the_rollback_directory_read_only, id=".rotation/rollback read-only", marks=_NEEDS_MODE_BITS),
@@ -1235,6 +1242,7 @@ class TestAnObstacleWhereARotationWrites:
         # without the lock, before any rotation is tried: what is pinned is
         # that the refusal adds nothing to what the obstacle already did.
         under_way = key_directory._rotation_under_way(keys_dir)
+        work = [path.exists() for path in (keys_dir / ".rotation", keys_dir / ".rotation" / "rollback")]
         try:
             response = client.post("/api/keys/rotate")
 
@@ -1245,6 +1253,9 @@ class TestAnObstacleWhereARotationWrites:
             assert not (keys_dir / ".rotation" / "journal.json").exists()
             assert key_directory._rotation_under_way(keys_dir) is under_way
             assert under_way is (obstacle is _a_file_at_the_work_directory)
+            # No work directory either, where there was none: it is what a
+            # rotation that died leaves, and this one did not begin.
+            assert work == [path.exists() for path in (keys_dir / ".rotation", keys_dir / ".rotation" / "rollback")]
             assert not self._temporaries(keys_dir)
             assert key_directory.active_kid(keys_dir) == kid
             assert self._active(client, auth_header, before) is True
@@ -1437,3 +1448,13 @@ class TestAnObstacleWhereARotationWrites:
 
         assert target.is_file() and not target.is_symlink()
         assert [key.kid for key in _whole(keys_dir).previous_keys] == [kid]
+
+    def test_a_directory_under_a_name_no_key_has_is_not_in_the_way(self, tmp_path):
+        keys_dir = tmp_path / "keys"
+        service = CryptoService(keys_dir=str(keys_dir))
+        kid = service.kid
+        (keys_dir / "previous" / "notes").mkdir(parents=True)
+
+        assert service.rotate_keys()["old_kid"] == kid
+        assert (keys_dir / "previous" / "notes").is_dir()
+        assert not (keys_dir / ".rotation").exists()
