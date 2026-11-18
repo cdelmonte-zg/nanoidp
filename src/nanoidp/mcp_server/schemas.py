@@ -12,6 +12,7 @@ from mcp.types import Tool
 from pydantic import BaseModel
 
 from ..models import OAuthClient, Settings, User
+from ..services.scenarios import ScenarioDeclaration
 from .field_schemas import field_property
 
 
@@ -684,6 +685,16 @@ def _named(model: type[BaseModel], argument: str, description: str) -> dict[str,
 
 _NOTHING: dict[str, Any] = {"type": "object", "properties": {}, "required": []}
 
+# The declaration of a scenario (#402), as its model says it: the events
+# and grant types as enums, the limits of name, count and steps, the fields
+# of the user it creates and the ones a step may set.
+_SCENARIO_DECLARATION: dict[str, Any] = ScenarioDeclaration.model_json_schema()
+_SCENARIO_NAME: dict[str, Any] = {
+    "type": "object",
+    "properties": {"name": {"type": "string", "description": "The scenario's name"}},
+    "required": ["name"],
+}
+
 _TOOLS.extend(
     [
         Tool(
@@ -761,6 +772,44 @@ _TOOLS.extend(
                 "configuration. Refusal kinds as for promote_runtime_user." + _REQUIRES_A_SHARED_STORE
             ),
             input_schema=_named(OAuthClient, "client_id", "The runtime client's id"),
+        ),
+        Tool(
+            name="arm_scenario",
+            description=(
+                "Arm a stateful identity scenario on the running NanoIDP: create the runtime user 'given.user' and "
+                "the steps that change it as the application under test uses the protocol. A step fires after "
+                "'count' events for that user (token_issued at /token, optionally of one grant_type, or "
+                "authorization_completed at /authorize) and sets the fields 'update_user' names, each replaced "
+                "whole. The token that fires a step carries the values from before the change; the next request "
+                "sees the changed user. Read the outcome with get_scenario. Refusal kinds: invalid, exists, "
+                "declared, full, conflict." + _REQUIRES_A_SHARED_STORE
+            ),
+            input_schema=_SCENARIO_DECLARATION,
+        ),
+        Tool(
+            name="list_scenarios",
+            description="List the scenarios armed on the running NanoIDP, with the state of their steps."
+            + _REQUIRES_A_SHARED_STORE,
+            input_schema=_NOTHING,
+        ),
+        Tool(
+            name="get_scenario",
+            description=(
+                "Get one scenario of the running NanoIDP; found false if there is none by that name. Each step "
+                "says 'seen' (events counted) and 'state': waiting, applied, refused (reason user_gone or "
+                "user_held), failed (reason store_unavailable or error) or pending (its outcome was not recorded)."
+                + _REQUIRES_A_SHARED_STORE
+            ),
+            input_schema=_SCENARIO_NAME,
+        ),
+        Tool(
+            name="remove_scenario",
+            description=(
+                "Remove a scenario and the runtime user it created; answers 'user' and 'user_removed'. A user "
+                "created again under the name, or promoted since, is left. Refusal kinds: not_found, "
+                "promotion_in_progress (the scenario stays, to be removed afterwards)." + _REQUIRES_A_SHARED_STORE
+            ),
+            input_schema=_SCENARIO_NAME,
         ),
         Tool(
             name="reset_runtime_identities",

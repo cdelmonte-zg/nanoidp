@@ -48,8 +48,18 @@ _WRITING = {
     "delete_runtime_client",
     "promote_runtime_client",
     "reset_runtime_identities",
+    # The scenarios of #402: test state of the same store.
+    "arm_scenario",
+    "remove_scenario",
 }
-_READING = {"list_runtime_users", "get_runtime_user", "list_runtime_clients", "get_runtime_client"}
+_READING = {
+    "list_runtime_users",
+    "get_runtime_user",
+    "list_runtime_clients",
+    "get_runtime_client",
+    "list_scenarios",
+    "get_scenario",
+}
 # Arguments that pass each tool's schema, for the checks made before a tool runs.
 _VALID_ARGUMENTS = {
     "create_runtime_user": {"username": "rt-user", "password": "pw"},
@@ -63,6 +73,14 @@ _VALID_ARGUMENTS = {
     "delete_runtime_client": {"client_id": "rt-client"},
     "promote_runtime_client": {"client_id": "rt-client"},
     "reset_runtime_identities": {},
+    "arm_scenario": {
+        "name": "rt-scenario",
+        "given": {"user": {"username": "rt-scenario-user", "password": "pw"}},
+        "steps": [{"after": {"event": "token_issued"}, "update_user": {"roles": ["ADMIN"]}}],
+    },
+    "list_scenarios": {},
+    "get_scenario": {"name": "rt-scenario"},
+    "remove_scenario": {"name": "rt-scenario"},
 }
 
 
@@ -122,13 +140,13 @@ class TestTheSurface:
         assert RUNTIME_STATE_READERS == _READING
         assert {name: mcp._TOOL_HANDLERS[name] for name in RUNTIME_STATE_HANDLERS} == RUNTIME_STATE_HANDLERS
 
-    def test_eleven_tools_about_the_runtime_state(self):
+    def test_fifteen_tools_about_the_runtime_state(self):
         names = {tool.name for tool in _TOOLS}
 
         assert RUNTIME_STATE_TOOLS == _WRITING | _READING
         assert RUNTIME_STATE_TOOLS <= names
-        assert {name for name in names if "runtime" in name} == set(RUNTIME_STATE_TOOLS)
-        assert len(names) == 37
+        assert {name for name in names if "runtime" in name or "scenario" in name} == set(RUNTIME_STATE_TOOLS)
+        assert len(names) == 41
 
     def test_the_ones_that_write_are_gated_like_every_mutating_tool(self):
         assert _WRITING <= MUTATING_TOOLS

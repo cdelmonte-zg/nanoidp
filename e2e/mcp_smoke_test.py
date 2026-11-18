@@ -31,7 +31,7 @@ from mcp.client.stdio import stdio_client
 
 # Deliberately a hard number: the docs advertise the tool count, so growing or
 # shrinking the MCP surface must consciously update both (metadata never lies).
-EXPECTED_TOOLS = 37
+EXPECTED_TOOLS = 41
 
 
 # What the parser says about _BROKEN; never part of an answer (#477).
@@ -289,6 +289,69 @@ async def run_with_a_reload_after_the_save_that_cannot_end(config_dir: str) -> i
     return 0
 
 
+async def run_with_a_scenario(config_dir: str) -> int:
+    """#402: the scenario tools over stdio. With the store of this process
+    alone they refuse; with a shared one a scenario is armed against the
+    schema the tool publishes, listed, read and removed with its user."""
+    declaration = {
+        "name": "smoke-scenario",
+        "given": {"user": {"username": "smoke-scn-user", "password": "pw", "roles": ["USER"]}},
+        "steps": [
+            {"after": {"event": "token_issued", "grant_type": "refresh_token"}, "update_user": {"roles": ["ADMIN"]}}
+        ],
+    }
+    async with stdio_client(_server(config_dir)) as (read, write):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            alone = json.loads((await session.call_tool("arm_scenario", declaration)).content[0].text)
+            if alone.get("code") != "MCP_RUNTIME_STORE_NOT_SHARED":
+                print(f"[FAIL] arm_scenario with a store of this process alone: {alone!r}")
+                return 1
+    with tempfile.TemporaryDirectory() as scratch:
+        copy = _copy_of(config_dir, Path(scratch))
+        _set_runtime(copy, {"store": "sqlite", "path": str(Path(scratch) / "state" / "runtime.db")})
+        async with stdio_client(_server(str(copy))) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+
+                async def call(tool: str, arguments: dict) -> dict:
+                    return json.loads((await session.call_tool(tool, arguments)).content[0].text)
+
+                schema = {tool.name: tool.input_schema for tool in (await session.list_tools()).tools}["arm_scenario"]
+                after = schema["$defs"]["Trigger"]["properties"]
+                if after["event"].get("enum") != ["token_issued", "authorization_completed"] or (
+                    "roles" not in schema["$defs"]["StepDeclaration"]["properties"]["update_user"]["properties"]
+                ):
+                    print(f"[FAIL] the schema of arm_scenario does not say its events and fields: {schema!r}")
+                    return 1
+                refused = await call("arm_scenario", {**declaration, "steps": [{"after": {"event": "nope"}, "update_user": {"roles": []}}]})
+                armed = await call("arm_scenario", declaration)
+                listed = await call("list_scenarios", {})
+                read_back = await call("get_scenario", {"name": "smoke-scenario"})
+                user = await call("get_runtime_user", {"username": "smoke-scn-user"})
+                removed = await call("remove_scenario", {"name": "smoke-scenario"})
+                after_it = await call("get_scenario", {"name": "smoke-scenario"})
+                gone = await call("get_runtime_user", {"username": "smoke-scn-user"})
+                if (
+                    refused.get("code") != "MCP_INVALID_ARGUMENTS"
+                    or armed.get("success") is not True
+                    or armed["scenario"].get("state") != "armed"
+                    or listed != {"scenarios": [armed["scenario"]], "count": 1}
+                    or read_back != {"found": True, "scenario": armed["scenario"]}
+                    or user.get("found") is not True
+                    or removed != {"success": True, "deleted": "smoke-scenario", "user": "smoke-scn-user", "user_removed": True}
+                    or after_it != {"found": False, "name": "smoke-scenario"}
+                    or gone.get("found") is not False
+                ):
+                    print(
+                        f"[FAIL] the scenario tools: refused={refused!r} armed={armed!r} listed={listed!r} "
+                        f"read={read_back!r} user={user!r} removed={removed!r} after={after_it!r} gone={gone!r}"
+                    )
+                    return 1
+        print("[OK] scenario tools: refused without a shared store; armed, listed, read and removed with one")
+    return 0
+
+
 async def run(config_dir: str) -> int:
     params = _server(config_dir)
 
@@ -455,6 +518,9 @@ async def run(config_dir: str) -> int:
         return 1
 
     if await run_with_a_reload_after_the_save_that_cannot_end(config_dir):
+        return 1
+
+    if await run_with_a_scenario(config_dir):
         return 1
 
     print("\n[SUCCESS] MCP stdio smoke test passed")

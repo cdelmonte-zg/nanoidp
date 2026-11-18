@@ -23,7 +23,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   owns the user it created, by instance: removing it removes that user and
   no other of the same name, and leaves a promoted user declared.
   `DELETE /api/runtime` removes the scenarios too and answers
-  `scenarios_removed`, as the MCP tool `reset_runtime_identities` does. See
+  `scenarios_removed`, as the MCP tool `reset_runtime_identities` does.
+  Four MCP tools offer the same operations over a shared runtime store:
+  `arm_scenario`, whose input schema is the declaration's own (events and
+  grant types as enums, the fields of the user and the ones a step may
+  set), `list_scenarios`, `get_scenario` and `remove_scenario`; the two
+  that read stay available in read-only mode. See
   the guide [Stateful identity
   scenarios](https://cdelmonte-zg.github.io/nanoidp/guides/stateful-scenarios.html).
 

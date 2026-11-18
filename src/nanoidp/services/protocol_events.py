@@ -24,7 +24,7 @@ more than a log line keeps it in its own state.
 
 import logging
 from dataclasses import dataclass
-from typing import Callable, Optional, Sequence
+from typing import Callable, Literal, Optional, Sequence, Tuple, get_args
 
 logger = logging.getLogger(__name__)
 
@@ -39,17 +39,21 @@ TOKEN_ISSUED = "token_issued"
 # login form, a second factor, persona auto-login, a reused session).
 AUTHORIZATION_COMPLETED = "authorization_completed"
 
-EVENTS = (TOKEN_ISSUED, AUTHORIZATION_COMPLETED)
+# As types too, so that whoever declares something about an event (a
+# scenario's step) publishes the names in its schema.
+EventName = Literal["token_issued", "authorization_completed"]
+EVENTS: Tuple[str, ...] = get_args(EventName)
 
 # The grants that issue a token for a user, which is what ``grant_type`` of
 # a token_issued can be: every grant of ``/token`` but client_credentials
 # (a test holds the two lists together).
-USER_GRANT_TYPES = (
+UserGrantType = Literal[
     "password",
     "authorization_code",
     "refresh_token",
     "urn:ietf:params:oauth:grant-type:device_code",
-)
+]
+USER_GRANT_TYPES: Tuple[str, ...] = get_args(UserGrantType)
 
 
 @dataclass(frozen=True)

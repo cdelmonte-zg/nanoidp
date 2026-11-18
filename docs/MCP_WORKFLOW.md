@@ -194,6 +194,7 @@ Prompt: "I need to test role-based access. Create a user 'role-test' with
 | `get_keys_info` | Get signing key info | "Which signing key is active?" |
 | `list_runtime_users`, `get_runtime_user` | Read the runtime users of the running NanoIDP (needs `runtime.store: sqlite`) | "List the runtime users" |
 | `list_runtime_clients`, `get_runtime_client` | Read its runtime clients | "List the runtime clients" |
+| `list_scenarios`, `get_scenario` | Read its stateful scenarios and the state of their steps | "Did the step of the scenario 'role-change' apply?" |
 
 ### Mutating Tools (disabled in `--readonly` mode)
 
@@ -213,7 +214,8 @@ Prompt: "I need to test role-based access. Create a user 'role-test' with
 | `create_runtime_user`, `create_runtime_client` | Create a disposable identity on the running NanoIDP (needs `runtime.store: sqlite`) | "Create a runtime user 'qa-1' with password 'pw'" |
 | `delete_runtime_user`, `delete_runtime_client` | Delete one | "Delete the runtime user 'qa-1'" |
 | `promote_runtime_user`, `promote_runtime_client` | Write one into the configuration files | "Promote the runtime user 'qa-1'" |
-| `reset_runtime_identities` | Remove every runtime identity | "Reset the runtime identities" |
+| `arm_scenario`, `remove_scenario` | Arm a stateful scenario (a runtime user that changes as the protocol is used), or remove one | "Arm a scenario where alice becomes ADMIN after her first token" |
+| `reset_runtime_identities` | Remove every runtime identity and every scenario | "Reset the runtime identities" |
 
 ---
 
