@@ -400,8 +400,8 @@ A rotation also writes `previous/`, where the public keys of earlier
 rotations are kept. Something in the way there or at `.rotation/` (a file
 under one of those names, a directory the process cannot write) refuses the
 rotation before anything is changed, with `keys_directory_not_writable`; the
-server log names what it was. So does a directory under the name of
-`keys.json`, of `idp-cert.pem` or of a key in `previous/`. NanoIDP removes
+server log names what it was. So does a directory under the name of one of
+the files in the keys directory or of a key in `previous/`. NanoIDP removes
 none of these: take the obstacle away by hand and rotate again. A file at
 `.rotation` in particular is worth removing soon: a process that cannot
 write the directory takes it for a rotation that never ends, and refuses to

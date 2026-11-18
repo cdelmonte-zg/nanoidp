@@ -1253,6 +1253,27 @@ class TestAnObstacleWhereARotationWrites:
         return client.post("/introspect", data={"token": token}, headers=auth_header).get_json()["active"]
 
     @staticmethod
+    def _fail(monkeypatch, keys_dir, directory, step, code):
+        """From now on, making ``directory`` below the keys directory, or
+        writing a probe into it, fails with ``code``."""
+        import tempfile
+
+        real_mkdir, real_mkstemp = Path.mkdir, tempfile.mkstemp
+
+        def mkdir(self, *args, **kwargs):
+            if step == "mkdir" and self.name == directory and keys_dir in self.parents:
+                raise OSError(code, os.strerror(code))
+            return real_mkdir(self, *args, **kwargs)
+
+        def mkstemp(*args, **kwargs):
+            if step == "probe" and Path(kwargs["dir"]).name == directory:
+                raise OSError(code, os.strerror(code))
+            return real_mkstemp(*args, **kwargs)
+
+        monkeypatch.setattr(Path, "mkdir", mkdir)
+        monkeypatch.setattr(tempfile, "mkstemp", mkstemp)
+
+    @staticmethod
     def _temporaries(keys_dir):
         return [file for file in keys_dir.rglob(".writing-*") if not file.is_dir()]
 
@@ -1349,7 +1370,7 @@ class TestAnObstacleWhereARotationWrites:
         refusals = [r.getMessage() for r in caplog.records if "Key rotation refused" in r.getMessage()]
         # The obstacle itself, not a path below or above it.
         assert len(refusals) == 1 and f"refused: {where} stands in the way" in refusals[0]
-        assert "nothing was changed" in refusals[0]
+        assert "the keys were not touched" in refusals[0]
 
     @_NEEDS_MODE_BITS
     def test_a_process_with_a_read_only_view_loads_the_keys_after_a_refusal(self, published):
@@ -1400,26 +1421,11 @@ class TestAnObstacleWhereARotationWrites:
 
     @pytest.mark.parametrize("directory", [".rotation", "rollback", "previous"])
     @pytest.mark.parametrize("step", ["mkdir", "probe"])
-    def test_any_other_failure_stays_what_it_is(self, tmp_path, monkeypatch, directory, step):
+    def test_any_other_failure_of_a_check_stays_what_it_is(self, tmp_path, monkeypatch, directory, step):
         """``EIO`` at the same steps is no refusal: it propagates."""
-        import tempfile
-
         keys_dir = tmp_path / "keys"
         service = CryptoService(keys_dir=str(keys_dir))
-        real_mkdir, real_mkstemp = Path.mkdir, tempfile.mkstemp
-
-        def mkdir(self, *args, **kwargs):
-            if step == "mkdir" and self.name == directory and keys_dir in self.parents:
-                raise OSError(errno.EIO, "Input/output error")
-            return real_mkdir(self, *args, **kwargs)
-
-        def mkstemp(*args, **kwargs):
-            if step == "probe" and Path(kwargs["dir"]).name == directory:
-                raise OSError(errno.EIO, "Input/output error")
-            return real_mkstemp(*args, **kwargs)
-
-        monkeypatch.setattr(Path, "mkdir", mkdir)
-        monkeypatch.setattr(tempfile, "mkstemp", mkstemp)
+        self._fail(monkeypatch, keys_dir, directory, step, errno.EIO)
 
         with pytest.raises(OSError) as raised:
             service.rotate_keys()
@@ -1438,25 +1444,10 @@ class TestAnObstacleWhereARotationWrites:
     def test_every_errno_of_a_directory_in_the_way_is_the_refusal(self, tmp_path, monkeypatch, directory, step, code):
         """The ones no test can make for real (a read-only mount, a
         directory of another owner) with the ones it can."""
-        import tempfile
-
         keys_dir = tmp_path / "keys"
         service = CryptoService(keys_dir=str(keys_dir))
         kid = service.kid
-        real_mkdir, real_mkstemp = Path.mkdir, tempfile.mkstemp
-
-        def mkdir(self, *args, **kwargs):
-            if step == "mkdir" and self.name == directory and keys_dir in self.parents:
-                raise OSError(code, os.strerror(code))
-            return real_mkdir(self, *args, **kwargs)
-
-        def mkstemp(*args, **kwargs):
-            if step == "probe" and Path(kwargs["dir"]).name == directory:
-                raise OSError(code, os.strerror(code))
-            return real_mkstemp(*args, **kwargs)
-
-        monkeypatch.setattr(Path, "mkdir", mkdir)
-        monkeypatch.setattr(tempfile, "mkstemp", mkstemp)
+        self._fail(monkeypatch, keys_dir, directory, step, code)
 
         with pytest.raises(key_directory.KeysDirectoryNotWritable, match="stands in the way"):
             service.rotate_keys()
@@ -1489,3 +1480,31 @@ class TestAnObstacleWhereARotationWrites:
         assert service.rotate_keys()["old_kid"] == kid
         assert (keys_dir / "previous" / "notes").is_dir()
         assert not (keys_dir / ".rotation").exists()
+
+    @pytest.mark.parametrize(
+        "name, gone",
+        [("rsa_private.pem", "kid.txt"), ("rsa_public.pem", "rsa_private.pem")],
+        ids=["the private key, with no marker", "the public key, with no private key"],
+    )
+    def test_a_directory_at_a_key_the_rotation_did_not_read_is_refused_too(self, tmp_path, name, gone):
+        """With nothing published the rotation retires what the service
+        signs with and reads no key from the directory, so a directory
+        under a key's name is met by the first write. Before: after the
+        journal, and then by every recovery."""
+        keys_dir = tmp_path / "keys"
+        service = CryptoService(keys_dir=str(keys_dir))
+        kid = service.kid
+        (keys_dir / gone).unlink()
+        (keys_dir / name).unlink(missing_ok=True)
+        (keys_dir / name).mkdir()
+
+        with pytest.raises(key_directory.KeysDirectoryNotWritable, match=f"{name} stands in the way"):
+            service.rotate_keys()
+
+        assert service.kid == kid
+        assert not (keys_dir / ".rotation").exists()
+        with key_directory.locked(keys_dir):
+            pass
+        (keys_dir / name).rmdir()
+        assert service.rotate_keys()["old_kid"] == kid
+        assert _whole(keys_dir).kid == service.kid

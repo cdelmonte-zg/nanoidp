@@ -93,7 +93,13 @@ class KeysDirectoryNotWritable(LockNamespaceUnavailable):
     "not here, and not later either", and is reached by another road: a lock
     file that is already there can be taken through a read-only view, as
     ``config_writer`` allows on purpose, so the lock is had and it is the
-    writing that fails. A directory NanoIDP has used before has that file."""
+    writing that fails. A directory NanoIDP has used before has that file.
+
+    Also what a rotation answers when something stands in the way of what
+    it writes there (#492, ``obstacle``): a directory that can be written,
+    and a rotation that cannot be made in it until somebody takes the
+    obstacle away. The same refusal on every surface, by decision; what it
+    was is in the message, which is for the log."""
 
     # What a directory that is not this process's to write answers with:
     # its mode bits, its owner, or the mount. The last is a plain OSError,
@@ -110,7 +116,7 @@ class KeysDirectoryNotWritable(LockNamespaceUnavailable):
             # Found by a rotation's checks, before its journal (#492).
             message = (
                 f"{obstacle} stands in the way of a key rotation in {keys_dir} "
-                f"({failure.strerror or failure}): nothing was changed"
+                f"({failure.strerror or failure}): the keys were not touched"
             )
         super().__init__(message, kind="keys_directory_not_writable")
 
@@ -225,46 +231,48 @@ def _probe(directory: Path) -> None:
 
 
 def _require_what_it_writes(keys_dir: Path) -> None:
-    """What a rotation writes besides the keys themselves, found out before
-    its journal is written (#492): the certificate and the metadata, then
-    ``previous``, where it adds a key and prunes the ones nothing refers to
-    any more (even when it keeps none), then the work directory and the
-    rollback in it.
-
-    The certificate and the metadata because a bundle loads without them,
-    so a directory under one of those names got as far as the journal, and
-    then stood in the way of every recovery: no rotation and no load under
-    the lock, until somebody took it away. The two keys and the marker are
-    not looked at here: the caller has just read them, under this lock.
+    """What a rotation writes, found out before its journal is written
+    (#492): the live files, then ``previous``, where it adds a key and
+    prunes the ones nothing refers to any more (even when it keeps none),
+    then the work directory and the rollback in it.
 
     Something in the way here refuses the rotation as a directory that
-    cannot be written does, and leaves no journal: one left behind keeps a
+    cannot be written does, and leaves no journal. One left behind keeps a
     process with a read-only view from loading the keys until a writer
-    takes the lock. Each directory is made if it is not there, ``previous``
-    first, so that a refusal about it leaves no work directory either.
-    This anticipates what can be seen beforehand and promises nothing
-    about the writes that follow: one of those that fails is settled by
-    the next ``locked``, as ever."""
-    work = keys_dir / _WORK
-    previous = keys_dir / PREVIOUS
-    for name in (CERTIFICATE, METADATA):
+    takes the lock; one written over a directory under a live file's name
+    is worse, since the recovery fails on it too, and with it every later
+    rotation and every load under the lock. The marker is not looked at
+    here: ``rotate`` has just read it.
+
+    A directory that is not there is made, which changes no key, and
+    ``previous`` comes before the work directory so that a refusal about
+    it leaves none. This anticipates what can be seen beforehand and
+    promises nothing about the writes that follow: one of those that fails
+    is settled by the next ``locked``, as ever."""
+    for name in _LIVE:
         _require_no_directory_at(keys_dir, keys_dir / name)
-    for directory in (previous, work, work / _ROLLBACK):
-        try:
-            directory.mkdir(exist_ok=True)
-            _probe(directory)
-            listed = sorted(previous.iterdir()) if directory is previous else []
-        except OSError as failure:
-            # A file or a dangling link in its place, a file above it, or
-            # a directory that is not this process's to write or to list.
-            if failure.errno in KeysDirectoryCannotBeCreated.ERRNOS:
-                raise KeysDirectoryNotWritable(keys_dir, failure, obstacle=directory) from failure
-            raise
-        for entry in listed:
-            # The file of a previous key. Under any other name it is
-            # nothing a rotation touches.
-            if entry.name.endswith("_public.pem"):
-                _require_no_directory_at(keys_dir, entry)
+    for entry in _require_directory(keys_dir, keys_dir / PREVIOUS):
+        # The file of a previous key. Under any other name it is nothing
+        # a rotation touches.
+        if entry.name.endswith("_public.pem"):
+            _require_no_directory_at(keys_dir, entry)
+    _require_directory(keys_dir, keys_dir / _WORK)
+    _require_directory(keys_dir, keys_dir / _WORK / _ROLLBACK)
+
+
+def _require_directory(keys_dir: Path, directory: Path) -> List[Path]:
+    """Made if it is not there, written to and listed, as a rotation will:
+    what it holds."""
+    try:
+        directory.mkdir(exist_ok=True)
+        _probe(directory)
+        return sorted(directory.iterdir())
+    except OSError as failure:
+        # A file or a dangling link in its place, a file above it, or a
+        # directory that is not this process's to write or to list.
+        if failure.errno in KeysDirectoryCannotBeCreated.ERRNOS:
+            raise KeysDirectoryNotWritable(keys_dir, failure, obstacle=directory) from failure
+        raise
 
 
 def _require_no_directory_at(keys_dir: Path, file: Path) -> None:

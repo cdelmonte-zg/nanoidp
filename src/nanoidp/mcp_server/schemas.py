@@ -641,7 +641,7 @@ _TOOLS: list[Tool] = [
     ),
     Tool(
         name="rotate_keys",
-        description="Rotate the signing keys: the active key moves to 'previous' (still valid for verification) and a new active key is generated - useful to test clients' JWKS refresh handling. A refusal answers success false with a fixed error and a kind: external_keys_not_rotatable (operator keys), keys_directory_not_writable (a keys directory this process cannot write, or something in the way of previous/ or .rotation/ below it), lock_namespace_unavailable (a directory where no lock file can be made), lock_timeout (another process holds the directory's lock, worth a retry) or lock_unsupported (no advisory locks on this filesystem)",
+        description="Rotate the signing keys: the active key moves to 'previous' (still valid for verification) and a new active key is generated - useful to test clients' JWKS refresh handling. A refusal answers success false with a fixed error and a kind: external_keys_not_rotatable (operator keys), keys_directory_not_writable (a keys directory this process cannot write, or something in the way of what a rotation writes there: a file at previous or .rotation, a directory under the name of one of its files), lock_namespace_unavailable (a directory where no lock file can be made), lock_timeout (another process holds the directory's lock, worth a retry) or lock_unsupported (no advisory locks on this filesystem)",
         input_schema={
             "type": "object",
             "properties": {},
