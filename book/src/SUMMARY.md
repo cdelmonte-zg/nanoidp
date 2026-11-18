@@ -19,6 +19,7 @@
 
 - [Requesting tokens](guides/token-requests.md)
 - [Disposable test identities](guides/runtime-identities.md)
+- [Stateful identity scenarios](guides/stateful-scenarios.md)
 - [Two processes, one runtime state](guides/shared-runtime-store.md)
 - [Dynamic client registration](guides/dynamic-client-registration.md)
 - [Client ID metadata documents](guides/client-metadata-documents.md)

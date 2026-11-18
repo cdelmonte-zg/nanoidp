@@ -5909,6 +5909,59 @@ class NanoIDPTestAgent:
             checks,
         )
 
+    def test_stateful_scenario(self) -> TestResult:
+        """A stateful identity scenario (#402): armed once over
+        /api/runtime/scenarios, then driven by two ordinary token requests.
+        The token that fires the step carries the role from before, the
+        next one the changed role, and the scenario says the step was
+        applied. Removing the scenario removes its user."""
+        suffix = secrets.token_hex(3)
+        name, username = f"ci-scenario-{suffix}", f"ci-scn-{suffix}"
+        base = f"{self.base_url}/api/runtime/scenarios"
+        checks: Dict[str, bool] = {}
+
+        def authorities() -> List[str]:
+            grant = requests.post(
+                f"{self.base_url}/token",
+                data={"grant_type": "password", "username": username, "password": "scn-pw"},
+                auth=("demo-client", "demo-secret"),
+                timeout=5,
+            )
+            if grant.status_code != 200:
+                return [f"status {grant.status_code}"]
+            return list(jwt.decode(grant.json()["access_token"], options={"verify_signature": False}).get("authorities", []))
+
+        try:
+            declaration = {
+                "name": name,
+                "given": {"user": {"username": username, "password": "scn-pw", "roles": ["USER"]}},
+                "steps": [{"after": {"event": "token_issued"}, "update_user": {"roles": ["ADMIN"]}}],
+            }
+            armed = self.session.post(base, json=declaration, timeout=5)
+            checks["armed"] = armed.status_code == 201 and armed.json().get("state") == "armed"
+            checks["duplicate_refused"] = self.session.post(base, json=declaration, timeout=5).status_code == 409
+            checks["first_token_from_before"] = authorities() == ["ROLE_USER"]
+            checks["next_token_from_after"] = authorities() == ["ROLE_ADMIN"]
+            step = self.session.get(f"{base}/{name}", timeout=5).json()["steps"][0]
+            checks["step_applied"] = step.get("state") == "applied" and step.get("seen") == 1
+            removed = self.session.delete(f"{base}/{name}", timeout=5)
+            checks["removed_with_its_user"] = (
+                removed.status_code == 200
+                and removed.json().get("user_removed") is True
+                and self.session.get(f"{self.base_url}/api/runtime/users/{username}", timeout=5).status_code == 404
+            )
+        except Exception as e:
+            return self._add_result("Stateful Scenario", TestCategory.API, False, str(e), checks)
+        finally:
+            self.session.delete(f"{base}/{name}", timeout=5)
+
+        failed = [check for check, ok in checks.items() if not ok]
+        return self._add_result(
+            "Stateful Scenario", TestCategory.API, not failed,
+            "all checks passed" if not failed else f"failed: {', '.join(failed)}",
+            checks,
+        )
+
     def test_api_direct_token(self) -> TestResult:
         """REST API - Direct token generation."""
         try:
@@ -7426,6 +7479,7 @@ class NanoIDPTestAgent:
                 self.test_api_user_details,
                 self.test_api_direct_token,
                 self.test_runtime_identities,
+                self.test_stateful_scenario,
                 self.test_api_config,
                 self.test_api_verbose_logging_setting,
                 self.test_api_config_version,

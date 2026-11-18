@@ -232,15 +232,37 @@ class IdentityResolver:
         return [(entry.user.username, entry.user.description) for entry in self.list_users()]
 
     def create_runtime_user(self, user: User) -> User:
-        def create() -> User:
+        return self.create_runtime_user_entry(user).value
+
+    def create_runtime_user_entry(self, user: User) -> Entry[User]:
+        """``create_runtime_user``, returning the entry stored: how a caller
+        that keeps a record about the user (a scenario, #402) learns which
+        instance it is about, so that a user created under the same name
+        later is not taken for this one."""
+        def create() -> Entry[User]:
             if self.config.get_user(user.username) is not None:
                 raise DeclaredNameCollision(f"user {user.username!r} is declared in users.yaml")
-            return self.store.users.create(user)
+            return self.store.users.create_entry(user)
 
         created = self._checked_against_the_declaration(create)
-        if self.get_client(created.username) is not None:
-            logger.warning(shared_name_warning(created.username))
+        self._warn_of_a_shared_name(created.name, self.get_client)
         return created
+
+    @staticmethod
+    def _warn_of_a_shared_name(name: str, other_kind: Callable[[str], Any]) -> None:
+        """Warn when an identity of the other kind goes by the name just
+        created. The object is in the store by now: the creation has
+        happened, and this look, which only warns, must not turn it into a
+        failure. A caller told that it failed would undo nothing (it has
+        no instance to name) and collide with its own object at the next
+        try (#402)."""
+        try:
+            shared = other_kind(name) is not None
+        except Exception:
+            logger.exception("%r was created; whether another identity shares the name could not be looked up", name)
+            return
+        if shared:
+            logger.warning(shared_name_warning(name))
 
     def _checked_against_the_declaration(self, create: Callable[[], _Created]) -> _Created:
         """A creation whose check against the declared names and whose insert
@@ -370,14 +392,16 @@ class IdentityResolver:
             return self.store.clients.create_entry(client)
 
         created = self._checked_against_the_declaration(create)
-        if self.get_user(client.client_id) is not None:
-            logger.warning(shared_name_warning(client.client_id))
+        self._warn_of_a_shared_name(client.client_id, self.get_user)
         return created
 
     # ---- lifecycle (#192) ------------------------------------------------
 
-    def delete_runtime_user(self, username: str) -> None:
-        self._delete(self.store.users, "user", username)
+    def delete_runtime_user(self, username: str, instance_id: Optional[str] = None) -> None:
+        """Remove the runtime user. ``instance_id`` names the instance that
+        is meant, as for a client: a user created under the same name after
+        that one went is answered as not found rather than deleted (#402)."""
+        self._delete(self.store.users, "user", username, instance_id)
 
     def delete_runtime_client(
         self, client_id: str, instance_id: Optional[str] = None
@@ -391,6 +415,26 @@ class IdentityResolver:
         by name means.
         """
         return self._delete(self.store.clients, "client", client_id, instance_id)
+
+    def replace_runtime_user(self, username: str, instance_id: str, change: Callable[[User], User]) -> User:
+        """Apply ``change`` to that instance of the runtime user, as one
+        step, and return the user it left (#402).
+
+        The instance, because whoever asks is keeping a record about one
+        user: RuntimeObjectNotFound when it is gone, or another goes by the
+        name. Not a held one: a promotion writes the value it claimed and
+        retires the object, so a change made meanwhile would be lost without
+        a word (#405). PromotionInProgress then, after the claim of a writer
+        that is proved dead was recovered, as for a delete."""
+
+        def decide(view: RepositoryTransaction[User]) -> User:
+            current = view.entry(username)
+            if current is None or current.instance_id != instance_id:
+                raise RuntimeObjectNotFound(f"no runtime user {username!r}")
+            _refuse_if_held(current, "user")
+            return view.replace(username, change(current.value)).value
+
+        return self._recovering(self.store.users, "user", username, lambda: self.store.users.transact(decide))
 
     def reset_runtime_identities(self) -> Tuple[int, int]:
         """Remove every runtime user and client; returns (users, clients).

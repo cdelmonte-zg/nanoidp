@@ -765,8 +765,8 @@ _TOOLS.extend(
         Tool(
             name="reset_runtime_identities",
             description=(
-                "Remove every runtime user and client of the running NanoIDP, and end the browser sessions at "
-                "/authorize: the per-test reset. Never touches the declared configuration." + _REQUIRES_A_SHARED_STORE
+                "Remove every runtime user and client of the running NanoIDP, its stateful scenarios, and end the "
+                "browser sessions at /authorize: the per-test reset. Never touches the declared configuration." + _REQUIRES_A_SHARED_STORE
             ),
             input_schema=_NOTHING,
         ),

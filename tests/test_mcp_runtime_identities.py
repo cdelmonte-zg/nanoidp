@@ -247,7 +247,7 @@ class TestReset:
 
         reset = _payload(await mcp_call_tool("reset_runtime_identities", {}))
 
-        assert reset == {"success": True, "users_deleted": 2, "clients_deleted": 1, "sessions_ended": 0}
+        assert reset == {"success": True, "users_deleted": 2, "clients_deleted": 1, "sessions_ended": 0, "scenarios_removed": 0}
         assert client.get("/api/runtime/users").get_json()["count"] == 0
         assert client.get("/api/runtime/clients").get_json()["count"] == 0
         assert reset == {"success": True, **client.delete("/api/runtime").get_json(), "users_deleted": 2, "clients_deleted": 1}
@@ -520,7 +520,7 @@ class TestTheAuditOfTheToolsThatWrite:
         assert said("runtime_identity_deleted") == [("mcp", "delete_runtime_user", "rt-user")]
         reset = _events("runtime_identities_reset")
         assert [(e["endpoint"], e["method"]) for e in reset] == [("mcp", "reset_runtime_identities")]
-        assert reset[0]["details"] == {"users_deleted": 0, "clients_deleted": 1, "sessions_ended": 0}
+        assert reset[0]["details"] == {"users_deleted": 0, "clients_deleted": 1, "sessions_ended": 0, "scenarios_removed": 0}
 
     async def test_a_refusal_records_no_lifecycle_event(self, idp, mcp_call_tool):
         await mcp_call_tool("create_runtime_user", {"username": "admin", "password": "pw"})
