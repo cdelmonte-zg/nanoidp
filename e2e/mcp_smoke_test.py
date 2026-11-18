@@ -300,13 +300,19 @@ async def run_with_a_scenario(config_dir: str) -> int:
             {"after": {"event": "token_issued", "grant_type": "refresh_token"}, "update_user": {"roles": ["ADMIN"]}}
         ],
     }
-    async with stdio_client(_server(config_dir)) as (read, write):
-        async with ClientSession(read, write) as session:
-            await session.initialize()
-            alone = json.loads((await session.call_tool("arm_scenario", declaration)).content[0].text)
-            if alone.get("code") != "MCP_RUNTIME_STORE_NOT_SHARED":
-                print(f"[FAIL] arm_scenario with a store of this process alone: {alone!r}")
-                return 1
+    # Both halves on a copy whose store is set here, whatever the store of
+    # the directory given: on that one, were it SQLite, the first half would
+    # arm the scenario in a store that is not this leg's to write.
+    with tempfile.TemporaryDirectory() as scratch:
+        copy = _copy_of(config_dir, Path(scratch))
+        _set_runtime(copy, {"store": "memory"})
+        async with stdio_client(_server(str(copy))) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                alone = json.loads((await session.call_tool("arm_scenario", declaration)).content[0].text)
+                if alone.get("code") != "MCP_RUNTIME_STORE_NOT_SHARED":
+                    print(f"[FAIL] arm_scenario with a store of this process alone: {alone!r}")
+                    return 1
     with tempfile.TemporaryDirectory() as scratch:
         copy = _copy_of(config_dir, Path(scratch))
         _set_runtime(copy, {"store": "sqlite", "path": str(Path(scratch) / "state" / "runtime.db")})
