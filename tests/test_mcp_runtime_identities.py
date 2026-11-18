@@ -774,7 +774,7 @@ class TestASaveWhoseReloadDidNotComplete:
         yield config_dir, hold, release
         other.close()
 
-    async def test_the_answer_is_fixed_and_says_what_to_do_next(self, held, mcp_call_tool, caplog):
+    async def test_the_answer_is_fixed_and_points_to_the_log(self, held, mcp_call_tool, caplog):
         from nanoidp.refusal_texts import SAVE_RELOAD_INCOMPLETE_TEXT
 
         config_dir, hold, release = held
@@ -793,7 +793,11 @@ class TestASaveWhoseReloadDidNotComplete:
                 "kind": "reload_after_save",
                 "retryable": False,
             }
-            assert "reload_config" in answer["error"]
+            # No next step is named: which one it is depends on the cause.
+            assert answer["error"] == (
+                "The configuration files were saved, but the post-save reload did not complete. "
+                "Check the server log to determine the recovery steps."
+            )
             text = result.content[0].text
             assert str(config_dir) not in text and "database is locked" not in text
             # The files are written, which is what retryable false is about.

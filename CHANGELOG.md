@@ -83,13 +83,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Both now apply the rule the start applies, through the same function, and
   report an error on `settings.yaml`: the command exits `1` and the tool
   answers `valid: false`. Only paths are looked at; no store is opened.
-- **MCP `save_config` says what to do when the reload after the save did
-  not complete** (#426). The refusal `reload_after_save` carried the
+- **MCP `save_config` answers a fixed text when the reload after the save
+  did not complete** (#426). The refusal `reload_after_save` carried the
   configuration directory and the cause's own words (SQLite's, for a
   runtime store held by another process while the reload reconciles the
-  runtime identities). It now answers a fixed `error` that names the next
-  step, `reload_config`, and `retryable: false`: the files are written, so
-  the save is not to be repeated. The cause stays in the server log.
+  runtime identities). It now answers a fixed `error` that points to the
+  server log, and `retryable: false`: the files are written, so the save is
+  not to be repeated. The cause, and with it the recovery, is in the log.
 - **What stands in the way of a key rotation below the keys directory
   answers the rotate refusal** (#492). A rotation writes `.rotation/`,
   `.rotation/rollback/` and `previous/`, and only the keys directory itself

@@ -244,7 +244,7 @@ async def run_with_a_reload_after_the_save_that_cannot_end(config_dir: str) -> i
     while another writer holds the runtime store. The files are written
     and the reload is not made: the fixed text, reload_after_save,
     retryable false, nothing of the directory or of SQLite on the wire.
-    With the store free, reload_config completes it."""
+    For this cause, with the store free, reload_config completes it."""
     import sqlite3
 
     from nanoidp.refusal_texts import SAVE_RELOAD_INCOMPLETE_TEXT

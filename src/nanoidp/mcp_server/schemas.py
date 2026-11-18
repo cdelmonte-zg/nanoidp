@@ -541,9 +541,10 @@ _TOOLS: list[Tool] = [
             "not support advisory locks), a hook's own 'kind' under "
             "hooks.strict (both files ARE written; only the mirror push "
             "failed), or 'reload_after_save' (both files ARE written but "
-            "the reload that follows did not complete - 'retryable' is false, "
-            "do not save again: the file on disk is authoritative; call "
-            "reload_config to complete the operation)."
+            "the reload that follows did not complete - 'retryable' is false "
+            "and is about save_config: do not save again, the file on disk is "
+            "authoritative; the cause is in the server log, and the recovery "
+            "depends on it)."
         ),
         input_schema={
             "type": "object",

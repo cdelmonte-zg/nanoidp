@@ -161,12 +161,14 @@ One refusal comes after the files are written: `kind: "reload_after_save"`,
 when the reload that follows the save did not complete. With a shared
 runtime store that reload reconciles the runtime identities, so a save that
 declares a name a runtime identity has needs the store, and fails this way
-while another process holds it. The `error` is fixed and names the next
-step, `reload_config`; `retryable` is `false` and is about `save_config`,
-since the files are on disk whatever stood in the way. `reload_config` then
-completes the operation, or answers its own refusal, which says why. It is
-an explicit reload like any other: with an `on_before_load` hook it reads
-the mirror first. The cause of the failed reload is in the server log.
+while another process holds it. The `error` is fixed and points to the
+server log, which has the cause; `retryable` is `false` and is about
+retrying `save_config`, since the files are on disk whatever stood in the
+way. The recovery depends on the cause. Once a store held by another
+process is free, `reload_config` completes the reconciliation. It is an
+explicit reload like any other: with an `on_before_load` hook it reads the
+mirror first, so a mirror the save's push did not reach comes back over the
+saved files. A changed `runtime.store` needs a restart.
 
 A configuration that does not load is no internal error. `nanoidp-mcp`
 loads the configuration before it serves and exits with `error:
