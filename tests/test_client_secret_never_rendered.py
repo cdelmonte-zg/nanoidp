@@ -214,6 +214,7 @@ def test_a_dynamically_registered_client_gets_the_same_mask(ui, registered_secre
 _ARGUMENTS = {
     ("runtime", "client_id"): ["runtime-12", "<registered>"],
     ("runtime", "username"): ["runtime-user"],
+    ("runtime", "name"): ["runtime-scenario"],
     ("registration", "client_id"): ["<registered>"],
     "client_id": ["declared-12", "declared-40", "runtime-12", "<registered>"],
     "username": ["admin"],
@@ -263,6 +264,15 @@ def test_no_read_carries_a_stored_client_secret(ui, registered_secret):
     assert ui.post(
         "/api/runtime/users",
         json={"username": "runtime-user", "password": "irrelevant-here"},
+        headers=_PROOF,
+    ).status_code == 201
+    assert ui.post(
+        "/api/runtime/scenarios",
+        json={
+            "name": "runtime-scenario",
+            "given": {"user": {"username": "scenario-user", "password": "irrelevant-here"}},
+            "steps": [{"after": {"event": "token_issued"}, "update_user": {"roles": ["ADMIN"]}}],
+        },
         headers=_PROOF,
     ).status_code == 201
     registered = ui.post(

@@ -275,4 +275,8 @@ never written to the declared files unless promoted; see
 | `GET /api/runtime/clients/{client_id}` | Get a runtime client |
 | `DELETE /api/runtime/clients/{client_id}` | Delete a runtime client |
 | `POST /api/runtime/clients/{client_id}/promote` | Write it into `settings.yaml` and retire the runtime object |
-| `DELETE /api/runtime` | Remove every runtime user and client, end every authenticated session at `/authorize` and drop the parked `id_token_hint` references; answers `users_deleted`, `clients_deleted` and `sessions_ended` |
+| `POST /api/runtime/scenarios` | Arm a [stateful scenario](../guides/stateful-scenarios.md): create its user and the steps that change it as the protocol is used |
+| `GET /api/runtime/scenarios` | List the scenarios with the state of their steps |
+| `GET /api/runtime/scenarios/{name}` | Get a scenario |
+| `DELETE /api/runtime/scenarios/{name}` | Remove a scenario and the user it created; `409` while a promotion holds that user |
+| `DELETE /api/runtime` | Remove every scenario, runtime user and client, end every authenticated session at `/authorize` and drop the parked `id_token_hint` references; answers `users_deleted`, `clients_deleted`, `sessions_ended` and `scenarios_removed` |

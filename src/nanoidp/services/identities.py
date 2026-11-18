@@ -232,14 +232,21 @@ class IdentityResolver:
         return [(entry.user.username, entry.user.description) for entry in self.list_users()]
 
     def create_runtime_user(self, user: User) -> User:
-        def create() -> User:
+        return self.create_runtime_user_entry(user).value
+
+    def create_runtime_user_entry(self, user: User) -> Entry[User]:
+        """``create_runtime_user``, returning the entry stored: how a caller
+        that keeps a record about the user (a scenario, #402) learns which
+        instance it is about, so that a user created under the same name
+        later is not taken for this one."""
+        def create() -> Entry[User]:
             if self.config.get_user(user.username) is not None:
                 raise DeclaredNameCollision(f"user {user.username!r} is declared in users.yaml")
-            return self.store.users.create(user)
+            return self.store.users.create_entry(user)
 
         created = self._checked_against_the_declaration(create)
-        if self.get_client(created.username) is not None:
-            logger.warning(shared_name_warning(created.username))
+        if self.get_client(created.name) is not None:
+            logger.warning(shared_name_warning(created.name))
         return created
 
     def _checked_against_the_declaration(self, create: Callable[[], _Created]) -> _Created:
@@ -376,8 +383,11 @@ class IdentityResolver:
 
     # ---- lifecycle (#192) ------------------------------------------------
 
-    def delete_runtime_user(self, username: str) -> None:
-        self._delete(self.store.users, "user", username)
+    def delete_runtime_user(self, username: str, instance_id: Optional[str] = None) -> None:
+        """Remove the runtime user. ``instance_id`` names the instance that
+        is meant, as for a client: a user created under the same name after
+        that one went is answered as not found rather than deleted (#402)."""
+        self._delete(self.store.users, "user", username, instance_id)
 
     def delete_runtime_client(
         self, client_id: str, instance_id: Optional[str] = None

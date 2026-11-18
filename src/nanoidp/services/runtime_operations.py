@@ -19,6 +19,7 @@ from ..config import ConfigurationRejected, DeclaredConfigurationUnloadable, OAu
 from ..config_documents import DocumentRejected, EntryInvalid, parse_client_entry, parse_user_entry
 from ..config_writer import ConflictError, LockUnavailableError
 from ..hooks import HookError
+from . import scenarios
 from .authenticated_sessions import get_authenticated_session_store
 from .dynamic_registration import prune_stale_registrations, registration_of
 from .id_token_hint_references import get_parked_hint_store
@@ -39,6 +40,8 @@ logger = logging.getLogger(__name__)
 CREATED = "runtime_identity_created"
 DELETED = "runtime_identity_deleted"
 RESET = "runtime_identities_reset"
+SCENARIO_ARMED = "runtime_scenario_armed"
+SCENARIO_REMOVED = "runtime_scenario_removed"
 
 # The file a promotion writes, by kind.
 PROMOTION_FILES = {"user": "users.yaml", "client": "settings.yaml"}
@@ -106,6 +109,46 @@ def delete(kind: str, name: str, remove: Callable[[str], None]) -> Optional[Refu
     return None
 
 
+def arm_scenario(resolver: IdentityResolver, body: Dict[str, Any], where: str) -> Union[Dict[str, Any], Refused]:
+    """Arm the scenario ``body`` declares and create its user (#402): what
+    a caller is shown of it, or why not."""
+    try:
+        scenario, user = scenarios.scenario_from(body, where)
+    except EntryInvalid as exc:
+        return Refused("invalid", exc.message)
+    try:
+        return scenarios.view_of(scenarios.arm(resolver, scenario, user))
+    except scenarios.ScenarioExists:
+        return Refused("exists", f"a scenario {scenario.name!r} already exists")
+    except scenarios.ScenariosFull:
+        return Refused("full", f"{scenarios.MAX_SCENARIOS} scenarios are armed already; remove one first")
+    except scenarios.ScenarioRemovedWhileArming:
+        return Refused("conflict", f"scenario {scenario.name!r} was removed while it was being armed")
+    except DeclaredNameCollision:
+        return Refused("declared", f"user {user.username!r} is declared in the configuration")
+    except RuntimeObjectExists:
+        return Refused("exists", f"a runtime user {user.username!r} already exists")
+
+
+def scenario_not_found(name: str) -> Refused:
+    return Refused("not_found", f"no scenario {name!r}")
+
+
+def remove_scenario(resolver: IdentityResolver, name: str) -> Union[Dict[str, Any], Refused]:
+    """Remove the scenario and the user it created; a user a promotion
+    holds refuses, and the scenario stays to be removed later."""
+    try:
+        user_removed = scenarios.remove(resolver, name)
+    except scenarios.ScenarioNotFound:
+        return scenario_not_found(name)
+    except PromotionInProgress:
+        return Refused(
+            "promotion_in_progress",
+            f"the user of scenario {name!r} is being promoted; the scenario was not removed",
+        )
+    return {"deleted": name, "kind": "scenario", "user_removed": user_removed}
+
+
 def promote(kind: str, name: str, do: Callable[[], PromotionOutcome]) -> Union[Dict[str, Any], Refused]:
     """The promotion's answer: what was promoted and into which file, or why
     not. The reasons a caller must not see go to the log."""
@@ -167,6 +210,10 @@ def promote(kind: str, name: str, do: Callable[[], PromotionOutcome]) -> Union[D
 def reset(resolver: IdentityResolver) -> Dict[str, int]:
     """Remove every runtime user and client, and the test state that goes
     with them. Never touches the declared configuration."""
+    # The scenarios first (#402): a scenario without its user refuses its
+    # steps, while a user without its scenario is a runtime user like any
+    # other, which the next line removes.
+    scenarios_removed = scenarios.reset()
     users_deleted, clients_deleted = resolver.reset_runtime_identities()
     # Every browser's authenticated session at /authorize is test state
     # too (#468): a reset ends them all, whoever they were for.
@@ -182,4 +229,5 @@ def reset(resolver: IdentityResolver) -> Dict[str, int]:
         "users_deleted": users_deleted,
         "clients_deleted": clients_deleted,
         "sessions_ended": sessions_ended,
+        "scenarios_removed": scenarios_removed,
     }

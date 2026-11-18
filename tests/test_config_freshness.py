@@ -1333,7 +1333,7 @@ class TestTheCriticalCreation:
         config_dir, config, store = shared
         b = IdentityResolver(config, config.snapshot, store)
         held = []
-        real_create = store.users.create
+        real_create = store.users.create_entry
 
         def create(user, *args, **kwargs):
             probe = os.open(config_dir / ".nanoidp-write.lock", os.O_RDWR)
@@ -1347,7 +1347,7 @@ class TestTheCriticalCreation:
                 os.close(probe)
             return real_create(user, *args, **kwargs)
 
-        monkeypatch.setattr(store.users, "create", create)
+        monkeypatch.setattr(store.users, "create_entry", create)
         b.create_runtime_user(User(username="fresh", password="pw"))
 
         assert held == [True]

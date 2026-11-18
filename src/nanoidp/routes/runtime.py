@@ -5,7 +5,8 @@ them on a running IdP, uses them in any protocol flow, and throws them away
 without touching the declared configuration, unless one is explicitly
 promoted into it. The operations are create, read, delete, reset and
 promote; there is no update, since the store is by value (#235) and a change
-is a delete and a create.
+is a delete and a create. A scenario (#402) is test state of the same kind:
+a runtime user and the changes to make to it as the protocol is used.
 
 The rules (declared first, no runtime object under a declared name, the
 promotion order, the reconciliation on reload) live in
@@ -21,6 +22,7 @@ from flask.typing import ResponseReturnValue
 from ..config import get_config
 from ..config_documents import EntryInvalid
 from ..services import runtime_operations as operations
+from ..services import scenarios
 from ..services.dynamic_registration import delete_client_and_registration
 from ..services.identities import identities_for
 from ..services.identity_views import client_summary, user_summary
@@ -41,6 +43,7 @@ _STATUS = {
     "exists": 409,
     "promotion_in_progress": 409,
     "conflict": 409,
+    "full": 409,
     "unloadable": 422,
     "reload_failed": 500,
     "write_failed": 500,
@@ -154,6 +157,63 @@ def delete_client(client_id: str) -> ResponseReturnValue:
 def promote_client(client_id: str) -> ResponseReturnValue:
     resolver = identities_for(get_config(), request_config())
     return _promote("client", client_id, lambda context: resolver.promote_runtime_client(client_id, context))
+
+
+# ---- scenarios (#402) -------------------------------------------------------
+
+
+@runtime_bp.route("/scenarios", methods=["POST"])
+def arm_scenario() -> ResponseReturnValue:
+    """Arm a scenario: create its user and watch the protocol events for
+    it. The rules are in ``services.scenarios``."""
+    try:
+        body = _json_object()
+    except EntryInvalid as exc:
+        return _refused(Refused("invalid", exc.message))
+    armed = operations.arm_scenario(
+        identities_for(get_config(), request_config()), body, "POST /api/runtime/scenarios"
+    )
+    if isinstance(armed, Refused):
+        return _refused(armed)
+    _audit_scenario(operations.SCENARIO_ARMED, armed["name"], armed["user"])
+    return jsonify(armed), 201
+
+
+@runtime_bp.route("/scenarios")
+def list_scenarios() -> ResponseReturnValue:
+    views = [scenarios.view_of(scenario) for scenario in scenarios.all_scenarios()]
+    return jsonify({"scenarios": views, "count": len(views)})
+
+
+@runtime_bp.route("/scenarios/<name>")
+def get_scenario(name: str) -> ResponseReturnValue:
+    scenario = scenarios.get(name)
+    if scenario is None:
+        return _refused(operations.scenario_not_found(name))
+    return jsonify(scenarios.view_of(scenario))
+
+
+@runtime_bp.route("/scenarios/<name>", methods=["DELETE"])
+def remove_scenario(name: str) -> ResponseReturnValue:
+    seen = scenarios.get(name)
+    removed = operations.remove_scenario(identities_for(get_config(), request_config()), name)
+    if isinstance(removed, Refused):
+        return _refused(removed)
+    _audit_scenario(
+        operations.SCENARIO_REMOVED, name, seen.username if seen is not None else None,
+        user_removed=removed["user_removed"],
+    )
+    return jsonify(removed)
+
+
+def _audit_scenario(event_type: str, name: str, username: Any, **details: Any) -> None:
+    audit_event(
+        event_type,
+        "success",
+        endpoint=request.path,
+        username=username,
+        details={"kind": "scenario", "name": name, **details},
+    )
 
 
 # ---- reset ------------------------------------------------------------------

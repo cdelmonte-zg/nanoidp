@@ -77,6 +77,12 @@ from ..services.id_token_hint_references import (
     is_reference,
 )
 from ..services.introspection import build_introspection_response
+from ..services.protocol_events import (
+    AUTHORIZATION_COMPLETED,
+    TOKEN_ISSUED,
+    ProtocolEvent,
+    emit_protocol_event,
+)
 from ..services.redirect_uri import (
     RESPONSE_MODES,
     append_authorization_fragment,
@@ -1344,6 +1350,9 @@ def _issue_authorization_code(
         )
     else:
         logger.info("Authorization code issued")
+
+    # The one point of authorization_completed (#402): the code is stored.
+    emit_protocol_event(ProtocolEvent(AUTHORIZATION_COMPLETED, username, client_id=p.client_id))
 
     return _deliver_authorization_response(p, redirect_params)
 
@@ -2638,6 +2647,14 @@ def token() -> ResponseReturnValue:
 
     if loaded.settings.log_token_requests:
         logger.info(f"Token issued for user '{result.subject}' via {grant_type} grant")
+
+    # The one point of token_issued (#402): the token exists, built from
+    # the user the grant read, so what an observer changes about the user
+    # is in the next token and never in this one, and the response below is
+    # returned whatever the observer did.
+    emit_protocol_event(
+        ProtocolEvent(TOKEN_ISSUED, result.subject, client_id=client_id, grant_type=grant_type)
+    )
 
     return jsonify(token_response)
 

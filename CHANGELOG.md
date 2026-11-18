@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Stateful identity scenarios** (#402). A scenario, armed with
+  `POST /api/runtime/scenarios`, creates a runtime user and changes it as
+  the application under test uses the protocol: after a number of
+  `token_issued` or `authorization_completed` events for that user, a step
+  sets its roles, groups, entitlements, `source_acl`, `identity_class` or
+  attributes. The token that fires a step carries the values from before
+  the change and the next request sees the changed user, so a test of an
+  application that reflects a change of role orchestrates no timing. A
+  step that cannot be applied does not fail the request that fired it: the
+  token is delivered and `GET /api/runtime/scenarios/{name}` says
+  `applied`, `refused`, `failed` or `pending` for each step. A scenario
+  owns the user it created, by instance: removing it removes that user and
+  no other of the same name, and leaves a promoted user declared.
+  `DELETE /api/runtime` removes the scenarios too and answers
+  `scenarios_removed`, as the MCP tool `reset_runtime_identities` does. See
+  the guide [Stateful identity
+  scenarios](https://cdelmonte-zg.github.io/nanoidp/guides/stateful-scenarios.html).
+
 ## [3.5.0] - 2026-11-18
 
 ### Migration notes

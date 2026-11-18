@@ -39,7 +39,7 @@ readonly mode, and the exposure warnings, see the
 | `list_runtime_users`, `get_runtime_user`, `list_runtime_clients`, `get_runtime_client` | Read the runtime users and clients (not the declared ones) |
 | `delete_runtime_user`, `delete_runtime_client` | Delete one |
 | `promote_runtime_user`, `promote_runtime_client` | Write one into `users.yaml` or `settings.yaml` and retire the runtime object |
-| `reset_runtime_identities` | Remove every runtime user and client, and end the browser sessions at `/authorize` |
+| `reset_runtime_identities` | Remove every runtime user and client and every [stateful scenario](../guides/stateful-scenarios.md), and end the browser sessions at `/authorize` |
 | `get_keys_info` | Get signing key info (active kid, previous keys) |
 | `rotate_keys` | Rotate signing keys (old key stays valid for verification). A refusal answers `success: false` with a fixed `error` and a `kind`, the same as `POST /api/keys/rotate`: `external_keys_not_rotatable`, `keys_directory_not_writable` (also for something in the way of what a rotation writes in the keys directory: a file at `previous` or `.rotation`, a directory under the name of `keys.json`, `idp-cert.pem` or a key in `previous/`), `lock_namespace_unavailable`, `lock_timeout` (worth a retry) or `lock_unsupported` |
 
