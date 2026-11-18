@@ -1148,6 +1148,28 @@ def _a_directory_where_a_key_to_prune_is(keys_dir, service):
     return target, target.rmdir
 
 
+def _a_directory_at(name):
+    """A directory under the name of a file a bundle loads without: the
+    file is put aside, and comes back when the directory goes."""
+
+    def obstacle(keys_dir, service):
+        aside = keys_dir.parent / f"{name}.aside"
+        (keys_dir / name).rename(aside)
+        (keys_dir / name).mkdir()
+
+        def remove():
+            (keys_dir / name).rmdir()
+            aside.rename(keys_dir / name)
+
+        return keys_dir / name, remove
+
+    return obstacle
+
+
+_a_directory_at_the_metadata = _a_directory_at("keys.json")
+_a_directory_at_the_certificate = _a_directory_at("idp-cert.pem")
+
+
 def _a_file_at_the_work_directory(keys_dir, service):
     (keys_dir / ".rotation").write_text("not a directory")
     return keys_dir / ".rotation", lambda: (keys_dir / ".rotation").unlink()
@@ -1189,6 +1211,8 @@ _OBSTACLES = [
     pytest.param(_previous_read_only, id="previous read-only", marks=_NEEDS_MODE_BITS),
     pytest.param(_a_directory_where_a_previous_key_goes, id="a directory where a previous key goes"),
     pytest.param(_a_directory_where_a_key_to_prune_is, id="a directory where a key to prune is"),
+    pytest.param(_a_directory_at_the_metadata, id="a directory at keys.json"),
+    pytest.param(_a_directory_at_the_certificate, id="a directory at idp-cert.pem"),
     pytest.param(_a_file_at_the_work_directory, id="a file at .rotation"),
     pytest.param(_the_work_directory_read_only, id=".rotation read-only", marks=_NEEDS_MODE_BITS),
     pytest.param(_the_rollback_directory_read_only, id=".rotation/rollback read-only", marks=_NEEDS_MODE_BITS),
@@ -1262,9 +1286,15 @@ class TestAnObstacleWhereARotationWrites:
             assert self._active(client, auth_header, self._token(client, auth_header)) is True
             jwks = client.get("/.well-known/jwks.json").get_json()
             assert kid in [key["kid"] for key in jwks["keys"]]
+            # And the lock is as usable as it was: a journal written over
+            # a directory at a live file's name made every later one fail.
+            with key_directory.locked(keys_dir):
+                pass
         finally:
             remove()
 
+        with key_directory.locked(keys_dir):
+            assert key_directory.load(keys_dir).kid == kid
         rotated = client.post("/api/keys/rotate")
 
         assert rotated.status_code == 200, rotated.get_data(as_text=True)
@@ -1317,7 +1347,8 @@ class TestAnObstacleWhereARotationWrites:
             remove()
 
         refusals = [r.getMessage() for r in caplog.records if "Key rotation refused" in r.getMessage()]
-        assert len(refusals) == 1 and str(where) in refusals[0]
+        # The obstacle itself, not a path below or above it.
+        assert len(refusals) == 1 and f"refused: {where} stands in the way" in refusals[0]
         assert "nothing was changed" in refusals[0]
 
     @_NEEDS_MODE_BITS

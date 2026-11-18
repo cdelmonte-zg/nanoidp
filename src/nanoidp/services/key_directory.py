@@ -224,11 +224,18 @@ def _probe(directory: Path) -> None:
     os.unlink(probe)
 
 
-def _require_its_directories(keys_dir: Path) -> None:
-    """What a rotation writes below the keys directory, found out before
-    its journal is written (#492): ``previous``, where it adds a key and
-    prunes the ones nothing refers to any more (even when it keeps none),
-    then the work directory and the rollback in it.
+def _require_what_it_writes(keys_dir: Path) -> None:
+    """What a rotation writes besides the keys themselves, found out before
+    its journal is written (#492): the certificate and the metadata, then
+    ``previous``, where it adds a key and prunes the ones nothing refers to
+    any more (even when it keeps none), then the work directory and the
+    rollback in it.
+
+    The certificate and the metadata because a bundle loads without them,
+    so a directory under one of those names got as far as the journal, and
+    then stood in the way of every recovery: no rotation and no load under
+    the lock, until somebody took it away. The two keys and the marker are
+    not looked at here: the caller has just read them, under this lock.
 
     Something in the way here refuses the rotation as a directory that
     cannot be written does, and leaves no journal: one left behind keeps a
@@ -240,6 +247,8 @@ def _require_its_directories(keys_dir: Path) -> None:
     the next ``locked``, as ever."""
     work = keys_dir / _WORK
     previous = keys_dir / PREVIOUS
+    for name in (CERTIFICATE, METADATA):
+        _require_no_directory_at(keys_dir, keys_dir / name)
     for directory in (previous, work, work / _ROLLBACK):
         try:
             directory.mkdir(exist_ok=True)
@@ -252,13 +261,19 @@ def _require_its_directories(keys_dir: Path) -> None:
                 raise KeysDirectoryNotWritable(keys_dir, failure, obstacle=directory) from failure
             raise
         for entry in listed:
-            # A previous key's file is replaced or removed, and so is a
-            # link, whatever it points at. A directory is neither, and
-            # writing a file into ``previous`` does not find that out.
-            # Under any other name it is nothing a rotation touches.
-            if entry.name.endswith("_public.pem") and entry.is_dir() and not entry.is_symlink():
-                in_the_way = IsADirectoryError(errno.EISDIR, os.strerror(errno.EISDIR), str(entry))
-                raise KeysDirectoryNotWritable(keys_dir, in_the_way, obstacle=entry)
+            # The file of a previous key. Under any other name it is
+            # nothing a rotation touches.
+            if entry.name.endswith("_public.pem"):
+                _require_no_directory_at(keys_dir, entry)
+
+
+def _require_no_directory_at(keys_dir: Path, file: Path) -> None:
+    """A file is replaced or removed, and so is a link, whatever it points
+    at. A directory is neither, and writing another file beside it does not
+    find that out."""
+    if file.is_dir() and not file.is_symlink():
+        in_the_way = IsADirectoryError(errno.EISDIR, os.strerror(errno.EISDIR), str(file))
+        raise KeysDirectoryNotWritable(keys_dir, in_the_way, obstacle=file)
 
 
 def load_published(keys_dir: Path) -> Optional[Bundle]:
@@ -400,7 +415,7 @@ def rotate(keys_dir: Path, new: Bundle) -> None:
     shutil.rmtree(work, ignore_errors=True)
     # And only now, with the litter gone where it could go, what this
     # rotation writes is looked at: refused here, there is no journal.
-    _require_its_directories(keys_dir)
+    _require_what_it_writes(keys_dir)
     kept = []
     for name in _LIVE:
         try:
