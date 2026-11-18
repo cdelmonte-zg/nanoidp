@@ -16,7 +16,12 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional, Union
 
 from ..config import ConfigurationRejected, DeclaredConfigurationUnloadable, OAuthClient, User
-from ..config_documents import DocumentRejected, EntryInvalid, parse_client_entry, parse_user_entry
+from ..config_documents import (
+    DocumentRejected,
+    EntryInvalid,
+    parse_client_entry,
+    parse_runtime_user,
+)
 from ..config_writer import ConflictError, LockUnavailableError
 from ..hooks import HookError
 from . import scenarios
@@ -62,11 +67,7 @@ class Refused:
 def user_from(body: Dict[str, Any], where: str) -> User:
     """A runtime user from a ``users.yaml``-shaped entry plus ``username``,
     validated exactly like a declared user. EntryInvalid otherwise."""
-    entry = dict(body)
-    username = entry.pop("username", None)
-    if not isinstance(username, str) or not username:
-        raise EntryInvalid(f"{where}: username is required")
-    return parse_user_entry(username, entry, where)
+    return parse_runtime_user(body, where)
 
 
 def client_from(body: Dict[str, Any], where: str) -> OAuthClient:
@@ -138,7 +139,7 @@ def remove_scenario(resolver: IdentityResolver, name: str) -> Union[Dict[str, An
     """Remove the scenario and the user it created; a user a promotion
     holds refuses, and the scenario stays to be removed later."""
     try:
-        user_removed = scenarios.remove(resolver, name)
+        username, user_removed = scenarios.remove(resolver, name)
     except scenarios.ScenarioNotFound:
         return scenario_not_found(name)
     except PromotionInProgress:
@@ -146,7 +147,7 @@ def remove_scenario(resolver: IdentityResolver, name: str) -> Union[Dict[str, An
             "promotion_in_progress",
             f"the user of scenario {name!r} is being promoted; the scenario was not removed",
         )
-    return {"deleted": name, "kind": "scenario", "user_removed": user_removed}
+    return {"deleted": name, "kind": "scenario", "user": username, "user_removed": user_removed}
 
 
 def promote(kind: str, name: str, do: Callable[[], PromotionOutcome]) -> Union[Dict[str, Any], Refused]:

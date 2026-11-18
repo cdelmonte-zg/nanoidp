@@ -854,6 +854,18 @@ def parse_user_entry(username: str, data: Any, source: str) -> User:
         raise _entry_error(source, f"users.{username}.", exc) from None
 
 
+def parse_runtime_user(body: Mapping[str, Any], source: str) -> User:
+    """A runtime user from a ``users.yaml``-shaped entry plus ``username``
+    (#192), validated exactly like a declared user: the one reading of what
+    such a body is, for ``/api/runtime/users``, the MCP tool and the user a
+    scenario is given (#402). EntryInvalid otherwise."""
+    entry = dict(body)
+    username = entry.pop("username", None)
+    if not isinstance(username, str) or not username:
+        raise EntryInvalid(f"{source}: username is required")
+    return parse_user_entry(username, entry, source)
+
+
 def parse_client_entry(data: Any, source: str) -> OAuthClient:
     """One client from a mapping shaped like an ``oauth.clients[]`` entry
     (#192): the same model, coercions and rules as a declared client."""

@@ -187,6 +187,24 @@ class TestTheRoleChange:
         tokens = [_password(client) for _ in range(3)]
 
         assert [_authorities(t) for t in tokens] == [["ROLE_USER"], ["ROLE_ADMIN"], ["ROLE_AUDITOR"]]
+        # The first step fired at the first token and counted nothing after,
+        # while the second was still waiting.
+        assert _step(client, index=0)["seen"] == 1 and _step(client, index=1)["seen"] == 2
+        assert len(_events(scenarios.STEP)) == 2
+
+    def test_a_scenario_with_no_step_waiting_for_the_event_takes_no_decision(self, idp, monkeypatch):
+        """A decision takes the store's write lock: a scenario whose steps
+        have fired, or wait for another event, costs a token a read."""
+        client, _ = idp
+        _arm(client)
+        _password(client)
+        counted = []
+        real = scenarios._count
+        monkeypatch.setattr(scenarios, "_count", lambda event: counted.append(event) or real(event))
+
+        _password(client)
+
+        assert counted == []
 
     def test_an_authorization_completed_fires_when_the_code_is_stored(self, idp):
         client, _ = idp
@@ -293,6 +311,7 @@ class TestTheRoleChange:
         assert armed["username"] == "alice" and armed["details"] == {"kind": "scenario", "name": "role-change"}
         assert step["status"] == "success" and step["username"] == "alice"
         assert step["details"] == {"scenario": "role-change", "step": 0, "outcome": "applied"}
+        assert removed["username"] == "alice"
         assert removed["details"] == {"kind": "scenario", "name": "role-change", "user_removed": True}
 
 
@@ -304,11 +323,15 @@ class TestTheDeclaration:
             (lambda d: d.update(name="has space"), "name"),
             (lambda d: d.pop("given"), "given"),
             (lambda d: d["given"].update(client={}), "given.client"),
-            (lambda d: d["given"]["user"].pop("username"), "given.user.username is required"),
+            (lambda d: d["given"]["user"].pop("username"), "given.user: username is required"),
             (lambda d: d["given"]["user"].update(roles="USER"), "given.user"),
             (lambda d: d.update(steps=[]), "steps"),
             (lambda d: d["steps"][0]["after"].update(event="userinfo_read"), "event must be one of"),
             (lambda d: d["steps"][0]["after"].update(count=0), "steps.0.after.count"),
+            (lambda d: d["steps"][0]["after"].update(count=True), "steps.0.after.count"),
+            (lambda d: d["steps"][0]["after"].update(grant_type="refresh"), "grant_type must be one of"),
+            (lambda d: d["steps"][0]["after"].update(grant_type="client_credentials"), "grant_type must be one of"),
+            (lambda d: d.update(name=".."), "name"),
             (lambda d: d["steps"][0]["after"].update(user="alice"), "steps.0.after.user"),
             (
                 lambda d: d["steps"][0]["after"].update(event="authorization_completed", grant_type="password"),
@@ -355,6 +378,25 @@ class TestTheDeclaration:
         assert (user.identity_class, user.attributes, user.source_acl) == ("INTERNAL", {"team": "blue"}, ["s1"])
         # What the step does not name stays as given.
         assert user.roles == ["USER"]
+
+
+    def test_the_grant_types_a_step_may_name_are_the_grants_that_issue_for_a_user(self):
+        from nanoidp.routes.oauth_grants import _GRANT_HANDLERS
+        from nanoidp.services.protocol_events import USER_GRANT_TYPES
+
+        assert set(USER_GRANT_TYPES) == set(_GRANT_HANDLERS) - {"client_credentials"}
+
+    def test_a_named_field_is_replaced_whole(self, idp):
+        client, _ = idp
+        _arm(
+            client,
+            attributes={"a": 1, "b": 2},
+            steps=[{"after": {"event": "token_issued"}, "update_user": {"attributes": {"a": 9}}}],
+        )
+
+        _password(client)
+
+        assert get_runtime_store().users.get("alice").attributes == {"a": 9}
 
 
 class TestCollisions:
@@ -406,7 +448,7 @@ class TestTheScenarioOwnsOneInstance:
 
         removed = client.delete(f"{URL}/role-change")
 
-        assert removed.get_json() == {"deleted": "role-change", "kind": "scenario", "user_removed": True}
+        assert removed.get_json() == {"deleted": "role-change", "kind": "scenario", "user": "alice", "user_removed": True}
         assert client.get(f"{URL}/role-change").status_code == 404
         assert client.get("/api/runtime/users/alice").status_code == 404
         assert client.delete(f"{URL}/role-change").status_code == 404
@@ -459,6 +501,25 @@ class TestTheScenarioOwnsOneInstance:
 
         get_runtime_store().users.transact(lambda view: view.release_hold("alice", held.hold_id))
         assert client.delete(f"{URL}/role-change").get_json()["user_removed"] is True
+
+    def test_the_change_is_the_resolvers_and_follows_its_rule_for_a_held_user(self, idp, monkeypatch):
+        """One home for 'a held user is not changed': the resolver, which
+        also recovers the claim of a writer that died. The scenario does
+        not write the users' repository on its own."""
+        client, _ = idp
+        _arm(client)
+        calls = []
+        real = IdentityResolver.replace_runtime_user
+
+        def seen(self, username, instance_id, change):
+            calls.append((username, instance_id))
+            return real(self, username, instance_id, change)
+
+        monkeypatch.setattr(IdentityResolver, "replace_runtime_user", seen)
+        _password(client)
+
+        assert calls == [("alice", get_runtime_store().users.entry("alice").instance_id)]
+        assert _roles(client) == ["ADMIN"]
 
     def test_a_promoted_user_stays_declared_when_the_scenario_is_removed(self, idp):
         client, config_dir = idp
@@ -648,6 +709,52 @@ class TestArmingIsTwoRepositories:
         removed = client.delete(f"{URL}/role-change")
         assert removed.get_json()["user_removed"] is False
         assert client.get("/api/runtime/users/alice").status_code == 200
+
+    def test_an_arming_that_cannot_record_its_user_leaves_neither(self, idp, monkeypatch):
+        """The store held by another process at the third step: the answer
+        says to come back, and coming back has to work."""
+        client, _ = idp
+        real = scenarios._take_the_user
+
+        def held(repository, record, created):
+            raise RuntimeStoreUnavailable("held")
+
+        monkeypatch.setattr(scenarios, "_take_the_user", held)
+        refused = client.post(URL, json=_declaration())
+        monkeypatch.setattr(scenarios, "_take_the_user", real)
+
+        assert refused.status_code == 503
+        assert client.get(URL).get_json()["count"] == 0
+        assert client.get("/api/runtime/users/alice").status_code == 404
+        assert client.post(URL, json=_declaration()).status_code == 201
+
+    def test_a_removal_that_met_the_scenario_arming_removes_the_user_it_got_meanwhile(self, idp, monkeypatch):
+        """The removal read the record before it had its user, and the
+        arming completed before the record went."""
+        client, _ = idp
+        real = IdentityResolver.create_runtime_user_entry
+        answers = []
+
+        def removed_in_between(self, user):
+            created = real(self, user)
+            # The removal reads the arming record now, and reaches its
+            # second step once the arming has recorded the user.
+            def arm_completes(name):
+                monkeypatch.setattr(scenarios, "_about_to_remove_the_record", lambda name: None)
+                scenarios._take_the_user(*taking)
+
+            taking = (scenarios._repository(), scenarios._repository().entry("role-change"), created)
+            monkeypatch.setattr(scenarios, "_about_to_remove_the_record", arm_completes)
+            answers.append(client.delete(f"{URL}/role-change").get_json())
+            return created
+
+        monkeypatch.setattr(IdentityResolver, "create_runtime_user_entry", removed_in_between)
+        client.post(URL, json=_declaration())
+        monkeypatch.undo()
+
+        assert answers == [{"deleted": "role-change", "kind": "scenario", "user": "alice", "user_removed": True}]
+        assert client.get(URL).get_json()["count"] == 0
+        assert client.get("/api/runtime/users/alice").status_code == 404
 
     def test_a_reset_while_arming_leaves_neither_the_scenario_nor_its_user(self, idp, monkeypatch):
         client, _ = idp

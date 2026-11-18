@@ -43,10 +43,11 @@ curl -X POST http://localhost:8000/api/runtime/scenarios \
   which the step fires, counted for each step from the moment the scenario
   is armed; it defaults to 1. A step fires once.
 - `update_user` sets one or more of `roles`, `groups`, `entitlements`,
-  `source_acl`, `identity_class` and `attributes`. What it does not name
-  stays as it is.
-- Unknown keys are refused: there is nothing to match on a request and no
-  response to script.
+  `source_acl`, `identity_class` and `attributes`. Each field it names is
+  replaced whole, `attributes` included; a field it does not name stays as
+  it is.
+- Unknown keys, an unknown event and a `grant_type` that issues no token
+  for a user are refused: a step that could never fire is not armed.
 
 With `session.management_secret` set, arming and removing need it, as every
 write of `/api`; reading does not.
@@ -107,12 +108,16 @@ the token is delivered, the server log says what happened, and a test that
 depends on the change asserts `applied`.
 
 `pending` is what a step shows between reaching its count and its outcome.
-A step that still shows it after the request has ended lost its process in
-between: whether the change was made is not known, and nothing applies it
-later. Remove the scenario and arm it again.
+A step that still shows it after the request has ended never had its
+outcome recorded: the process was lost in between, or the store could not
+be written, which the server log says. From the scenario alone it is not
+known whether the change was made; the user is read at
+`/api/runtime/users/{username}`. Nothing applies the step later: remove the
+scenario and arm it again.
 
-A scenario whose `state` is `arming` lost its process while it was being
-armed. It never fires, and removing it removes no user.
+A scenario whose `state` is `arming` was not armed to the end: the process
+was lost while arming it. It never fires, and removing it removes no user,
+so a runtime user it had already created is removed on its own.
 
 ## Removing a scenario
 
@@ -120,8 +125,9 @@ armed. It never fires, and removing it removes no user.
 curl -X DELETE http://localhost:8000/api/runtime/scenarios/role-change
 ```
 
-removes the scenario and the user it created, and answers
-`user_removed`. The scenario owns that one user, not its name:
+removes the scenario and the user it created, and answers the `user` and
+whether it was removed (`user_removed`). The scenario owns that one user,
+not its name:
 
 - A user deleted and created again under the same name is another user.
   Its steps are refused as `user_gone`, and removing the scenario leaves

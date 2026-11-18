@@ -44,19 +44,20 @@ test tells an applied step from one that was not.
 
 import logging
 import uuid
-from typing import Any, Dict, List, Literal, Optional, Tuple
+from typing import Any, Callable, Dict, List, Literal, Optional, Tuple
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, ValidationError, model_validator
 
 from ..config import User
-from ..config_documents import EntryInvalid, parse_user_entry
+from ..config_documents import EntryInvalid, parse_runtime_user, parse_user_entry
 from .audit import get_audit_log
-from .identities import IdentityResolver, RuntimeObjectNotFound
-from .protocol_events import EVENTS, TOKEN_ISSUED, ProtocolEvent
+from .identities import IdentityResolver, PromotionInProgress, RuntimeObjectNotFound, get_identities
+from .protocol_events import EVENTS, TOKEN_ISSUED, USER_GRANT_TYPES, ProtocolEvent
 from .runtime_repository import (
     Entry,
     RepositoryTransaction,
     RuntimeStoreUnavailable,
+    consume,
     create_within,
     delete_if,
 )
@@ -118,7 +119,7 @@ class _Strict(BaseModel):
 class Trigger(_Strict):
     event: str
     grant_type: Optional[str] = Field(default=None, min_length=1)
-    count: int = Field(default=1, ge=1)
+    count: StrictInt = Field(default=1, ge=1)
 
     @model_validator(mode="after")
     def _known(self) -> "Trigger":
@@ -126,6 +127,10 @@ class Trigger(_Strict):
             raise ValueError(f"event must be one of {', '.join(EVENTS)}")
         if self.grant_type is not None and self.event != TOKEN_ISSUED:
             raise ValueError(f"grant_type is only for {TOKEN_ISSUED}")
+        if self.grant_type is not None and self.grant_type not in USER_GRANT_TYPES:
+            # A grant that issues nothing for a user would arm a step that
+            # never fires.
+            raise ValueError(f"grant_type must be one of {', '.join(USER_GRANT_TYPES)}")
         return self
 
     def matches(self, event: ProtocolEvent) -> bool:
@@ -142,7 +147,8 @@ class _Given(_Strict):
 
 
 class _ScenarioSpec(_Strict):
-    name: str = Field(pattern=r"^[A-Za-z0-9._-]{1,100}$")
+    # A path segment as every client sends it: no dot segment.
+    name: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
     given: _Given
     steps: List[_StepSpec] = Field(min_length=1, max_length=MAX_STEPS)
 
@@ -193,11 +199,9 @@ def scenario_from(body: Dict[str, Any], where: str) -> Tuple[Scenario, User]:
         spec = _ScenarioSpec.model_validate(body)
     except ValidationError as exc:
         raise EntryInvalid(f"{where}: {_message(exc)}") from None
-    entry = dict(spec.given.user)
-    username = entry.pop("username", None)
-    if not isinstance(username, str) or not username:
-        raise EntryInvalid(f"{where}: given.user.username is required")
-    user = parse_user_entry(username, entry, f"{where}: given.user")
+    user = parse_runtime_user(spec.given.user, f"{where}: given.user")
+    username = user.username
+    entry = {key: value for key, value in spec.given.user.items() if key != "username"}
     steps = []
     for index, step in enumerate(spec.steps):
         unknown = sorted(set(step.update_user) - set(UPDATABLE))
@@ -234,21 +238,40 @@ def arm(resolver: IdentityResolver, scenario: Scenario, user: User) -> Scenario:
         delete_if(repository, scenario.name, record.instance_id)
         raise
 
-    def armed(view: RepositoryTransaction[Scenario]) -> Optional[Scenario]:
-        current = view.entry(scenario.name)
-        if current is None or current.instance_id != record.instance_id:
-            return None
-        return view.replace(
-            scenario.name, current.value.model_copy(update={"user_instance_id": created.instance_id})
-        ).value
-
-    result = repository.transact(armed)
+    try:
+        result = _take_the_user(repository, record, created)
+    except Exception:
+        # The user exists and the record does not name it (the store held
+        # by another process): both go, so that arming again can succeed.
+        # What cannot be undone either stays as an arming record and a
+        # runtime user, each removable on its own.
+        _remove_user(resolver, user.username, created.instance_id)
+        delete_if(repository, scenario.name, record.instance_id)
+        raise
     if result is None:
         # A reset took the record in between: the user is this call's and
         # nobody's scenario, so it goes too.
         _remove_user(resolver, user.username, created.instance_id)
         raise ScenarioRemovedWhileArming(scenario.name)
     return result
+
+
+def _take_the_user(
+    repository: RuntimeRepository[Scenario], record: Entry[Scenario], created: Entry[User]
+) -> Optional[Scenario]:
+    """The third step of arming: that instance of the record takes the
+    user's instance. None when the record is gone or another goes by its
+    name."""
+
+    def armed(view: RepositoryTransaction[Scenario]) -> Optional[Scenario]:
+        current = view.entry(record.name)
+        if current is None or current.instance_id != record.instance_id:
+            return None
+        return view.replace(
+            record.name, current.value.model_copy(update={"user_instance_id": created.instance_id})
+        ).value
+
+    return repository.transact(armed)
 
 
 def _remove_user(resolver: IdentityResolver, username: str, instance_id: str) -> bool:
@@ -263,21 +286,46 @@ def _remove_user(resolver: IdentityResolver, username: str, instance_id: str) ->
     return True
 
 
-def remove(resolver: IdentityResolver, name: str) -> bool:
-    """Remove the scenario and the user it created; whether a user was
-    removed. Raises ScenarioNotFound, or PromotionInProgress when a
-    promotion holds the user, and then the scenario stays as it was."""
+def remove(resolver: IdentityResolver, name: str) -> Tuple[str, bool]:
+    """Remove the scenario and the user it created; the user's name and
+    whether a user was removed. Raises ScenarioNotFound, or
+    PromotionInProgress when a promotion holds the user, and then the
+    scenario stays as it was."""
     repository = _repository()
     seen = repository.entry(name)
     if seen is None:
         raise ScenarioNotFound(name)
     removed = False
-    if seen.value.user_instance_id is not None:
-        removed = _remove_user(resolver, seen.value.username, seen.value.user_instance_id)
-    # That instance of the record: one armed under the name meanwhile is
-    # another scenario.
-    delete_if(repository, name, seen.instance_id)
-    return removed
+    while True:
+        if seen.value.user_instance_id is not None:
+            removed = _remove_user(resolver, seen.value.username, seen.value.user_instance_id) or removed
+        _about_to_remove_the_record(name)
+        if consume(repository, name, _as_seen(seen)) is not None:
+            return seen.value.username, removed
+        current = repository.entry(name)
+        if current is None or current.instance_id != seen.instance_id:
+            return seen.value.username, removed
+        seen = current
+
+
+def _as_seen(seen: Entry[Scenario]) -> Callable[[Entry[Scenario]], bool]:
+    """Whether a record is the one that was looked at: that instance (one
+    armed under the name meanwhile is another scenario) and that user. A
+    record that took its user since (an arming that completed) is looked
+    at again, or its user would be left behind."""
+
+    def as_seen(current: Entry[Scenario]) -> bool:
+        return (
+            current.instance_id == seen.instance_id
+            and current.value.user_instance_id == seen.value.user_instance_id
+        )
+
+    return as_seen
+
+
+def _about_to_remove_the_record(name: str) -> None:
+    """Called after the user's removal and before the record's: a seam for
+    a test to stand between the two."""
 
 
 def reset() -> int:
@@ -364,20 +412,17 @@ def _count(event: ProtocolEvent) -> List[_Fired]:
 
 def _change(fired: _Fired) -> Optional[str]:
     """Make the step's change to the user, as one decision on that
-    instance. None when it was made, or why it was refused."""
-
-    def decide(view: RepositoryTransaction[User]) -> Optional[str]:
-        current: Optional[Entry[User]] = view.entry(fired.username)
-        if current is None or current.instance_id != fired.user_instance_id:
-            return USER_GONE
-        if current.hold is not None:
-            # A promotion writes the value it claimed, and retires the
-            # object: a change made now would be lost without a word (#405).
-            return USER_HELD
-        view.replace(fired.username, current.value.model_copy(update=fired.update_user))
-        return None
-
-    return get_runtime_store().users.transact(decide)
+    instance. None when it was made, or why it was refused. The rule (that
+    instance, and not while a promotion holds it) is the resolver's."""
+    try:
+        get_identities().replace_runtime_user(
+            fired.username, fired.user_instance_id, lambda user: user.model_copy(update=fired.update_user)
+        )
+    except RuntimeObjectNotFound:
+        return USER_GONE
+    except PromotionInProgress:
+        return USER_HELD
+    return None
 
 
 def _record(fired: _Fired, state: str, reason: Optional[str]) -> None:
@@ -469,7 +514,10 @@ def on_protocol_event(event: ProtocolEvent) -> None:
     # A look before the decision: most events are for no scenario's user,
     # and a decision takes the store's write lock.
     if not any(
-        scenario.state == ARMED and scenario.username == event.username for scenario in all_scenarios()
+        scenario.state == ARMED
+        and scenario.username == event.username
+        and any(step.state == WAITING and step.after.matches(event) for step in scenario.steps)
+        for scenario in all_scenarios()
     ):
         return
     try:

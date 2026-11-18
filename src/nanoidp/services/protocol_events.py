@@ -41,6 +41,16 @@ AUTHORIZATION_COMPLETED = "authorization_completed"
 
 EVENTS = (TOKEN_ISSUED, AUTHORIZATION_COMPLETED)
 
+# The grants that issue a token for a user, which is what ``grant_type`` of
+# a token_issued can be: every grant of ``/token`` but client_credentials
+# (a test holds the two lists together).
+USER_GRANT_TYPES = (
+    "password",
+    "authorization_code",
+    "refresh_token",
+    "urn:ietf:params:oauth:grant-type:device_code",
+)
+
 
 @dataclass(frozen=True)
 class ProtocolEvent:

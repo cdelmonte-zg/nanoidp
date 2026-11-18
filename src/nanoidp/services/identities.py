@@ -402,6 +402,26 @@ class IdentityResolver:
         """
         return self._delete(self.store.clients, "client", client_id, instance_id)
 
+    def replace_runtime_user(self, username: str, instance_id: str, change: Callable[[User], User]) -> User:
+        """Apply ``change`` to that instance of the runtime user, as one
+        step, and return the user it left (#402).
+
+        The instance, because whoever asks is keeping a record about one
+        user: RuntimeObjectNotFound when it is gone, or another goes by the
+        name. Not a held one: a promotion writes the value it claimed and
+        retires the object, so a change made meanwhile would be lost without
+        a word (#405). PromotionInProgress then, after the claim of a writer
+        that is proved dead was recovered, as for a delete."""
+
+        def decide(view: RepositoryTransaction[User]) -> User:
+            current = view.entry(username)
+            if current is None or current.instance_id != instance_id:
+                raise RuntimeObjectNotFound(f"no runtime user {username!r}")
+            _refuse_if_held(current, "user")
+            return view.replace(username, change(current.value)).value
+
+        return self._recovering(self.store.users, "user", username, lambda: self.store.users.transact(decide))
+
     def reset_runtime_identities(self) -> Tuple[int, int]:
         """Remove every runtime user and client; returns (users, clients).
 

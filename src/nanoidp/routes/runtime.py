@@ -4,9 +4,10 @@ Runtime identities are disposable test state: a CI job or a test creates
 them on a running IdP, uses them in any protocol flow, and throws them away
 without touching the declared configuration, unless one is explicitly
 promoted into it. The operations are create, read, delete, reset and
-promote; there is no update, since the store is by value (#235) and a change
-is a delete and a create. A scenario (#402) is test state of the same kind:
-a runtime user and the changes to make to it as the protocol is used.
+promote; there is no update here, since the store is by value (#235) and a
+change a caller makes is a delete and a create. A scenario (#402) is test
+state of the same kind: a runtime user and the changes the server makes to
+it, in place, as the protocol is used.
 
 The rules (declared first, no runtime object under a declared name, the
 promotion order, the reconciliation on reload) live in
@@ -195,14 +196,10 @@ def get_scenario(name: str) -> ResponseReturnValue:
 
 @runtime_bp.route("/scenarios/<name>", methods=["DELETE"])
 def remove_scenario(name: str) -> ResponseReturnValue:
-    seen = scenarios.get(name)
     removed = operations.remove_scenario(identities_for(get_config(), request_config()), name)
     if isinstance(removed, Refused):
         return _refused(removed)
-    _audit_scenario(
-        operations.SCENARIO_REMOVED, name, seen.username if seen is not None else None,
-        user_removed=removed["user_removed"],
-    )
+    _audit_scenario(operations.SCENARIO_REMOVED, name, removed["user"], user_removed=removed["user_removed"])
     return jsonify(removed)
 
 
