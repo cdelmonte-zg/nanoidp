@@ -396,6 +396,19 @@ directory right from it: the bundle from before the rotation if `kid.txt` had
 not been replaced yet, the new one if it had. Do not edit or remove
 `.rotation/` by hand while a NanoIDP process is running.
 
+A rotation also writes `previous/`, where the public keys of earlier
+rotations are kept. Something in the way there or at `.rotation/` (a file
+under one of those names, a directory the process cannot write) refuses the
+rotation before anything is changed, with `keys_directory_not_writable`; the
+server log names what it was. So does a directory under the name of
+`keys.json`, of `idp-cert.pem` or of a key in `previous/`. A directory under
+the name of `kid.txt` or of one of the two key files is not classified: the
+rotation fails with an internal error before anything is changed. NanoIDP
+removes none of these: take the obstacle away by hand and rotate again. A
+file at `.rotation` in particular is worth removing soon: a process that
+cannot write the directory takes it for a rotation that never ends, and
+refuses to load the keys while it is there.
+
 A keys directory that a process cannot write (a read-only mount, a volume
 owned by another user) still works for that process: it loads the published
 keys without the lock and cannot rotate them. It cannot settle an interrupted
