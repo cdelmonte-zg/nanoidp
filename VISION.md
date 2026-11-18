@@ -172,16 +172,26 @@ named here:
    reason it had been scheduled, because a separate stdio MCP process can
    now observe the same runtime state as the HTTP server. A remote MCP
    transport remains a separate idea for a concrete use case.
+9. **Runtime identities through MCP**
+   ([#432](https://github.com/cdelmonte-zg/nanoidp/issues/432)): the MCP
+   surface caught up with the store. Runtime identities are created,
+   promoted, removed and reset through MCP tools, which refuse when the
+   store is process-local rather than operate on state nobody else can
+   see.
+10. **[Corrections from an OpenID conformance run](https://github.com/cdelmonte-zg/nanoidp/milestone/19)**:
+    what a run of the Basic OP tests showed the authorization endpoint
+    and its neighbours to do differently from the specifications: an
+    authenticated session at `/authorize` with `prompt`, `max_age` and
+    `id_token_hint`, `response_mode`, the authorization request as a form
+    POST, request objects refused instead of ignored, the access token at
+    `/userinfo` in a POST body, and a reused authorization code that
+    revokes the tokens issued from it. No certification is claimed.
 
 ### What comes next
 
 The shared store settled the direction that used to be written here as
 a chain. What follows from it is concrete and tracked:
 
-- [#432](https://github.com/cdelmonte-zg/nanoidp/issues/432): the MCP
-  surface catches up with the store: runtime identities created, promoted,
-  removed and reset through MCP tools, which refuse when the store is
-  process-local rather than operate on state nobody else can see.
 - [#402](https://github.com/cdelmonte-zg/nanoidp/issues/402): stateful
   identity test scenarios: an identity evolves deterministically during a
   test in response to the application's own protocol operations, without

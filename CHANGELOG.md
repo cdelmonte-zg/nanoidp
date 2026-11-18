@@ -5,7 +5,38 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [3.5.0] - 2026-11-18
+
+### Migration notes
+
+This release stays a minor. Most of it corrects what the authorization
+endpoint and its neighbours did differently from the specifications. What
+may need a hand on upgrade is collected here, with the details under the
+entries named.
+
+- **A login at `/authorize` is remembered for the browser** (#468, under
+  Added), for `login.session_minutes`, 60 by default. A second request
+  from the same browser gets its code without a login page. *Migration:*
+  a script that GETs `/authorize` and then POSTs credentials with one
+  cookie jar gets the code on the GET while the session lives; a test that
+  expects the login page every time sends `prompt=login`, or sets
+  `login.session_minutes: 0`, which is the behaviour before this release.
+- **Request objects are refused** (#463, under Fixed). `/authorize`
+  ignored `request` and `request_uri` and answered from the query string.
+  *Migration:* a client that sends either gets `request_not_supported` or
+  `request_uri_not_supported` now: send the parameters in the query or in
+  the form.
+- **An HTTP(S) `redirect_uri` must name its host** (#486, under Fixed).
+  *Migration:* a client declared with a URI such as `https:/callback`
+  still loads and is refused at `/authorize`: write the host.
+- **The SAML Assertion Consumer Service URL is validated before the
+  login** (under Changed). *Migration:* a service provider whose ACS is
+  relative, has another scheme than `http` or `https`, or is the address
+  of nanoidp itself gets a `400` where it got a login page.
+- **Processes sharing a runtime store run the same version** (#466 and
+  #468). The authorization code record gained fields a 3.4.0 process
+  cannot read back. *Migration:* with `runtime.store: sqlite`, upgrade
+  every process on the store together.
 
 ### Added
 
@@ -3139,6 +3170,7 @@ previous leniency allowed - needs a one-time adjustment.
 - Key rotation with JWKS support for multiple keys
 - External key import support
 
+[3.5.0]: https://github.com/cdelmonte-zg/nanoidp/compare/v3.4.0...v3.5.0
 [3.4.0]: https://github.com/cdelmonte-zg/nanoidp/compare/v3.3.0...v3.4.0
 [3.3.0]: https://github.com/cdelmonte-zg/nanoidp/compare/v3.2.0...v3.3.0
 [3.2.0]: https://github.com/cdelmonte-zg/nanoidp/compare/v3.1.0...v3.2.0
