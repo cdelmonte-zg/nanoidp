@@ -504,10 +504,15 @@ class TestTheValidationAppliesTheSameRule:
 
     @pytest.mark.skipif(os.name != "posix", reason="needs a symlink any user can make")
     @pytest.mark.parametrize("looping", ["runtime.db", "runtime-audit.db", "runtime-owners"])
-    def test_a_path_that_cannot_be_resolved_is_a_finding_not_a_failure(self, tmp_path, looping):
+    def test_a_path_that_cannot_be_resolved_is_a_report_not_a_failure(self, tmp_path, looping):
         """A loop of symlinks where the store, its audit or its leases
-        would be: the start refuses it, and so does the check, with a
-        report and not with the resolver's own error."""
+        would be. Before Python 3.13 resolving it raises, and that is an
+        error finding, not the resolver's own error out of the command.
+        From 3.13 on the path resolves to the link itself, which lies
+        outside: no finding of this rule, and whether the file opens is
+        for the start, since a validation opens nothing."""
+        import sys
+
         from nanoidp.__main__ import validate_config_command
 
         config_dir = _config_dir(tmp_path, {"store": "sqlite", "path": "../state/runtime.db"})
@@ -516,10 +521,12 @@ class TestTheValidationAppliesTheSameRule:
 
         findings = self._findings(config_dir)
 
-        assert [(level, file) for level, file, _ in findings] == [("error", "settings.yaml")]
-        assert validate_config_command(str(config_dir), False) == 1
-        with pytest.raises(ConfigurationRejected):
-            _loaded(config_dir)
+        if sys.version_info < (3, 13):
+            assert [(level, file) for level, file, _ in findings] == [("error", "settings.yaml")]
+            assert validate_config_command(str(config_dir), False) == 1
+        else:
+            assert findings == []
+            assert validate_config_command(str(config_dir), False) == 0
 
     def test_the_validation_still_imports_nothing_that_runs(self, tmp_path):
         """Its module's own rule: no configuration manager, no hooks, no

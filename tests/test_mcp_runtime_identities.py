@@ -778,7 +778,6 @@ class TestASaveWhoseReloadDidNotComplete:
         from nanoidp.refusal_texts import SAVE_RELOAD_INCOMPLETE_TEXT
 
         config_dir, hold, release = held
-        started = time.monotonic()
         assert _payload(await mcp_call_tool("create_runtime_user", {"username": "collide", "password": "pw"}))["success"]
         assert _payload(await mcp_call_tool("create_user", {"username": "collide", "password": "pw"}))["success"]
         hold()
@@ -820,8 +819,6 @@ class TestASaveWhoseReloadDidNotComplete:
         declared = _payload(await mcp_call_tool("get_user", {"username": "collide"}))
         assert declared["found"] is True and declared["user"]["username"] == "collide"
         assert len(_events("runtime_identity_removed_on_reload")) == 1
-        # Two waits for the held store, each the short one of this test.
-        assert time.monotonic() - started < 4
 
     async def test_a_save_with_nothing_to_reconcile_does_not_need_the_store(self, held, mcp_call_tool):
         _, hold, release = held

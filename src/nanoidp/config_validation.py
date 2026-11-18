@@ -247,10 +247,13 @@ def _validate_observation(
                     # files of a SQLite runtime store may lie. Its own
                     # function, which looks at paths and opens nothing.
                     require_store_outside_the_configuration(settings, directory)
-                except (ValueError, OSError, RuntimeError) as exc:
-                    # The rule, or a path that cannot be resolved to apply
-                    # it (a loop of symlinks is a RuntimeError before
-                    # Python 3.13): the start refuses both.
+                except (ValueError, RuntimeError) as exc:
+                    # The rule, or a path it cannot be applied to: a loop
+                    # of symlinks, which resolving refuses with a
+                    # RuntimeError before Python 3.13. From 3.13 on it
+                    # resolves to the link itself, the rule finds it
+                    # outside, and whether that file opens is the start's
+                    # to find out: nothing is opened here.
                     findings.append(Finding(ERROR, f"{settings_path}: {exc}", SETTINGS_FILE))
     else:
         findings.append(
