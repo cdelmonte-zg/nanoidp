@@ -447,7 +447,16 @@ async def call_tool(ctx: ServerRequestContext, params: CallToolRequestParams) ->
         error = best_match(validator.iter_errors(arguments))
         if error is not None:
             field = ".".join(str(p) for p in error.absolute_path)
-            message = f"{field}: {error.message}" if field else error.message
+            text = error.message
+            wrong_kind = error.validator == "type" or isinstance(error.instance, (dict, list))
+            if wrong_kind and text.startswith(repr(error.instance)):
+                # jsonschema opens its message with the value it refused.
+                # A value of the wrong type says nothing by being repeated,
+                # and it may be a secret, or hold one: a password sent as a
+                # number, the user of a scenario sent as a list or as a
+                # string. What is said is where it is and why.
+                text = "the value" + text[len(repr(error.instance)) :]
+            message = f"{field}: {text}" if field else text
             return _reject(name, "MCP_INVALID_ARGUMENTS", f"Input validation error: {message}")
 
         if name in RUNTIME_STATE_TOOLS and not get_runtime_store().shared:

@@ -551,7 +551,8 @@ The following MCP tools modify configuration and require extra caution:
 | `create_runtime_user`, `create_runtime_client` | Create a runtime identity on the running NanoIDP |
 | `delete_runtime_user`, `delete_runtime_client` | Delete one |
 | `promote_runtime_user`, `promote_runtime_client` | Write one into the configuration files |
-| `reset_runtime_identities` | Remove every runtime identity |
+| `arm_scenario`, `remove_scenario` | Arm a stateful scenario, which creates a runtime user, or remove one with its user |
+| `reset_runtime_identities` | Remove every runtime identity and every scenario |
 
 ### Admin Secret Protection
 

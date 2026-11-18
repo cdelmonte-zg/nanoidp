@@ -14,7 +14,9 @@ process records, the other serves, and it is consumed once for both.
     6. the audit of both reads as one;
     7. with ``--mcp-config-dir``: a runtime user created through a real
        ``nanoidp-mcp`` process on the same directory logs in at a server,
-       and is gone for the servers once the MCP process deletes it (#432).
+       and is gone for the servers once the MCP process deletes it (#432);
+    8. with ``--mcp-config-dir``: a scenario armed through ``nanoidp-mcp``
+       is fired by the servers and read back through MCP (#402).
 
 Scenario 5 writes `users.yaml` and removes the user again, so a run leaves
 the configuration directory as it found it.
@@ -270,6 +272,79 @@ def an_agent_creates_a_user_the_servers_authenticate(a: str, b: str, config_dir:
     asyncio.run(through_mcp())
 
 
+def an_agent_arms_a_scenario_the_servers_fire(a: str, b: str, config_dir: str) -> None:
+    """What an agent does with the scenario tools of #402: arm a scenario
+    through MCP, let the application ask the servers for its tokens, read
+    the outcome through MCP. The event counted at one server fires the step
+    at the other: the scenario is in the store, not in a process."""
+    from mcp import ClientSession, StdioServerParameters
+    from mcp.client.stdio import stdio_client
+
+    suffix = secrets.token_hex(4)
+    name, username = f"e2e-scenario-{suffix}", f"e2e-scn-{suffix}"
+
+    def authorities(server: str) -> List[str]:
+        grant = requests.post(
+            f"{server}/token",
+            data={"grant_type": "password", "username": username, "password": "pw"},
+            auth=(CLIENT_ID, CLIENT_SECRET),
+            timeout=TIMEOUT,
+        )
+        check(grant.status_code == 200, f"{server} answered {grant.status_code} to the scenario user's token request")
+        payload = grant.json()["access_token"].split(".")[1]
+        claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+        return list(claims.get("authorities", []))
+
+    async def through_mcp() -> None:
+        params = StdioServerParameters(
+            command=sys.executable,
+            args=["-m", "nanoidp.mcp_server"],
+            env={**os.environ, "NANOIDP_CONFIG_DIR": config_dir},
+        )
+        async with stdio_client(params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+
+                async def call(tool: str, arguments: dict) -> dict:
+                    return json.loads((await session.call_tool(tool, arguments)).content[0].text)
+
+                armed = await call(
+                    "arm_scenario",
+                    {
+                        "name": name,
+                        "given": {"user": {"username": username, "password": "pw", "roles": ["USER"]}},
+                        "steps": [
+                            {"after": {"event": "token_issued", "count": 2}, "update_user": {"roles": ["ADMIN"]}}
+                        ],
+                    },
+                )
+                check(armed.get("success") is True, f"arm_scenario answered {armed!r}")
+                try:
+                    served = requests.get(f"{a}/api/runtime/scenarios/{name}", timeout=TIMEOUT)
+                    check(served.status_code == 200, f"A does not serve the scenario MCP armed ({served.status_code})")
+                    check(served.json() == armed["scenario"], "A serves another view of the scenario than the tool returned")
+                    check(authorities(a) == ["ROLE_USER"], "the first token, at A, does not carry the given role")
+                    check(authorities(b) == ["ROLE_USER"], "the token that fires the step, at B, is not from before the change")
+                    check(authorities(a) == ["ROLE_ADMIN"], "the token after the step, at A, does not carry the changed role")
+                    read = await call("get_scenario", {"name": name})
+                    step = read.get("scenario", {}).get("steps", [{}])[0]
+                    check(
+                        read.get("found") is True and step.get("state") == "applied" and step.get("seen") == 2,
+                        f"get_scenario answered {read!r}",
+                    )
+                finally:
+                    removed = await call("remove_scenario", {"name": name})
+                check(
+                    removed.get("success") is True and removed.get("user_removed") is True,
+                    f"remove_scenario answered {removed!r}",
+                )
+                for server in (a, b):
+                    gone = requests.get(f"{server}/api/runtime/users/{username}", timeout=TIMEOUT)
+                    check(gone.status_code == 404, f"{server} still serves the scenario's user ({gone.status_code})")
+
+    asyncio.run(through_mcp())
+
+
 # ---- the run ----------------------------------------------------------------
 
 def main() -> int:
@@ -310,6 +385,13 @@ def main() -> int:
             (
                 "a runtime user created through nanoidp-mcp logs in at the servers",
                 lambda: an_agent_creates_a_user_the_servers_authenticate(a, b, args.mcp_config_dir),
+                False,
+            )
+        )
+        scenarios.append(
+            (
+                "a scenario armed through nanoidp-mcp is fired by the servers",
+                lambda: an_agent_arms_a_scenario_the_servers_fire(a, b, args.mcp_config_dir),
                 False,
             )
         )

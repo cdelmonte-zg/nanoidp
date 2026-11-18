@@ -23,7 +23,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   owns the user it created, by instance: removing it removes that user and
   no other of the same name, and leaves a promoted user declared.
   `DELETE /api/runtime` removes the scenarios too and answers
-  `scenarios_removed`, as the MCP tool `reset_runtime_identities` does. See
+  `scenarios_removed`, as the MCP tool `reset_runtime_identities` does.
+  Four MCP tools offer the same operations over a shared runtime store:
+  `arm_scenario`, whose input schema is the declaration's own (events and
+  grant types as enums, the fields of the user and the ones a step may
+  set), `list_scenarios`, `get_scenario` and `remove_scenario`; the two
+  that read stay available in read-only mode. See
   the guide [Stateful identity
   scenarios](https://cdelmonte-zg.github.io/nanoidp/guides/stateful-scenarios.html).
 
@@ -36,6 +41,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `POST /api/runtime/clients` answered `503` for an object that existed,
   and the retry the answer invites met `409`. The look can no longer fail
   the creation: its failure is logged.
+- **An MCP argument of the wrong type is not repeated in the refusal**. The
+  `MCP_INVALID_ARGUMENTS` text opened with the value that failed, so a
+  password sent as a number, or an object sent as a string, came back in
+  the answer. It now says `the value is not of type ...` after the
+  argument's path; a value of the right type that is refused for another
+  reason (an unknown enum member, a pattern) is still named.
 
 ## [3.5.0] - 2026-11-18
 

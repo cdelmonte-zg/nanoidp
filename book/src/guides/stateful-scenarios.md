@@ -45,7 +45,7 @@ curl -X POST http://localhost:8000/api/runtime/scenarios \
 - `update_user` sets one or more of `roles`, `groups`, `entitlements`,
   `source_acl`, `identity_class` and `attributes`. Each field it names is
   replaced whole, `attributes` included; a field it does not name stays as
-  it is.
+  it is. `identity_class` named as `null` is cleared.
 - Unknown keys, an unknown event and a `grant_type` that issues no token
   for a user are refused: a step that could never fire is not armed.
 
@@ -143,6 +143,41 @@ state and counts them in `scenarios_removed`.
 Several scenarios can be armed on one instance as long as their users
 differ, so tests that run in parallel each remove their own instead of
 resetting.
+
+## The same operations as MCP tools
+
+With a [runtime store shared with the
+server](shared-runtime-store.md) an agent arms and reads scenarios through
+`nanoidp-mcp`:
+
+| Tool | HTTP |
+|------|------|
+| `arm_scenario` | `POST /api/runtime/scenarios` |
+| `list_scenarios` | `GET /api/runtime/scenarios` |
+| `get_scenario` | `GET /api/runtime/scenarios/{name}` |
+| `remove_scenario` | `DELETE /api/runtime/scenarios/{name}` |
+
+The arguments of `arm_scenario` are the declaration above, and its input
+schema says it in full: the events and the grant types as enums, the limits
+of the name, of `count` and of the steps, the fields of the user and the
+ones `update_user` may set. A declaration the schema refuses is answered
+`MCP_INVALID_ARGUMENTS` before anything is created; what only the server
+can judge (an invalid email, a name that is taken) is answered with the
+`kind` the HTTP surface gives it. The views and the refusal kinds are the
+same on both surfaces, and `get_scenario` answers `found: false` for a name
+that is not there.
+
+In `update_user` a field that is not named is kept, and one that is named
+as `null` is cleared: `{"identity_class": null}` removes the class, on both
+surfaces. Only `identity_class` can be cleared this way; the lists and
+`attributes` are emptied with `[]` and `{}`.
+
+The MCP server arms, reads and removes; it fires nothing. A step is fired
+by the server that answers the application's request, which is why the
+tools need the shared store: with the default in-memory store they are
+refused with `MCP_RUNTIME_STORE_NOT_SHARED`. The token tools of MCP are no
+event, as `POST /api/users/{username}/token` is none. In read-only mode
+`list_scenarios` and `get_scenario` stay available.
 
 ## Good to know
 

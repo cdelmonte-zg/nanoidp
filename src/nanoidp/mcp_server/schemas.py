@@ -12,6 +12,7 @@ from mcp.types import Tool
 from pydantic import BaseModel
 
 from ..models import OAuthClient, Settings, User
+from ..services.scenarios import UPDATABLE, ScenarioDeclaration
 from .field_schemas import field_property
 
 
@@ -684,6 +685,114 @@ def _named(model: type[BaseModel], argument: str, description: str) -> dict[str,
 
 _NOTHING: dict[str, Any] = {"type": "object", "properties": {}, "required": []}
 
+
+
+def _inlined(fragment: Any, definitions: dict[str, Any]) -> Any:
+    """A model's JSON Schema as the other tools publish theirs: flat, with
+    each definition in the place that refers to it, an optional field as its
+    value branch (optional through ``required``, not through a null branch,
+    as ``field_schemas`` has it) and none of the titles pydantic generates."""
+    if isinstance(fragment, list):
+        return [_inlined(item, definitions) for item in fragment]
+    if not isinstance(fragment, dict):
+        return fragment
+    if "$ref" in fragment:
+        return _inlined(definitions[fragment["$ref"].rsplit("/", 1)[1]], definitions)
+    branches = fragment.get("anyOf")
+    if branches is not None:
+        (concrete,) = [branch for branch in branches if branch.get("type") != "null"]
+        rest = {key: value for key, value in fragment.items() if key not in ("anyOf", "default")}
+        return _inlined({**concrete, **rest}, definitions)
+    return {
+        key: (
+            # The names of an object's properties are data, not keywords.
+            {name: _inlined(value, definitions) for name, value in value.items()}
+            if key == "properties"
+            else _inlined(value, definitions)
+        )
+        for key, value in fragment.items()
+        if key not in ("title", "$defs")
+    }
+
+
+def _user_field(name: str, description: str) -> dict[str, Any]:
+    """A field of the user in a scenario's declaration: the model's shape,
+    and ``null`` where the model takes it. In a declaration the two are not
+    the same: a step that does not name ``identity_class`` leaves it, and
+    one that names it as null clears it, as over HTTP. So here a field
+    that may be null says so, flat: ``type: [<its type>, "null"]``, with
+    the constraints of its type kept."""
+    field: dict[str, Any] = dict(_domain(User, name, description))
+    branches = User.model_json_schema()["properties"][name].get("anyOf", [])
+    if any(branch.get("type") == "null" for branch in branches):
+        field["type"] = [field["type"], "null"]
+    return field
+
+
+def _scenario_declaration() -> dict[str, Any]:
+    """The input schema of arm_scenario (#402): the declaration's own model
+    for what is the scenario's (its name, the events and grant types as
+    enums, the limits of count and of the steps), and the user model's
+    field shapes for the user it creates and for what a step may set, as
+    every tool that takes a user's fields publishes them, with null where
+    the model takes it (``_user_field``): the same inputs as over HTTP.
+
+    The defaults are the parser's, which the descriptions say where they
+    are not the obvious ones. A secret of the wrong type is not repeated in
+    the refusal: that is the dispatcher's rule, for every tool."""
+    model = ScenarioDeclaration.model_json_schema()
+    schema: dict[str, Any] = _inlined(model, model.get("$defs", {}))
+    schema["properties"]["given"]["properties"]["user"] = {
+        "type": "object",
+        "description": (
+            "The runtime user the scenario creates: 'username' plus the fields of a users.yaml entry, "
+            "validated as the file is. Other keys are attributes, as in the file."
+        ),
+        "properties": {
+            "username": _domain(User, "username", "The user's name"),
+            "password": _user_field("password", "Password (omit for a user that only logs in through the persona picker)"),
+            "description": _user_field("description", "Display-only note shown in the persona login picker"),
+            "email": _user_field("email", "Email address (default: <username>@example.org)"),
+            "roles": _user_field("roles", "Roles (default: ['USER'])"),
+            "groups": _user_field("groups", "Groups"),
+            "tenant": _user_field("tenant", "Tenant identifier (default: 'default')"),
+            "identity_class": _user_field("identity_class", "Identity class (e.g., INTERNAL, EXTERNAL)"),
+            "entitlements": _user_field("entitlements", "Entitlements"),
+            "source_acl": _user_field("source_acl", "Source ACL list"),
+            "attributes": _user_field("attributes", "Custom key-value attributes"),
+            "totp_secret": _user_field("totp_secret", "Base32 TOTP secret, for a user that logs in with a second factor"),
+        },
+        "required": ["username"],
+        "additionalProperties": True,
+    }
+    schema["properties"]["steps"]["items"]["properties"]["update_user"] = {
+        "type": "object",
+        "description": (
+            "The fields to set on the scenario's user when the step fires. Each named field is replaced "
+            "whole; a field that is not named stays as it is."
+        ),
+        "properties": {name: _user_field(name, f"The user's {name} from this step on") for name in UPDATABLE},
+        "minProperties": 1,
+        "additionalProperties": False,
+    }
+    # The one argument that is not the declaration's: the management secret,
+    # which the dispatcher takes off before the tool runs. Named here because
+    # the declaration takes no other key.
+    schema["properties"]["admin_secret"] = {
+        "type": "string",
+        "description": "The management secret, when one is configured (see the security guide)",
+    }
+    return schema
+
+
+# Built once: the declaration of a scenario as a tool argument.
+_SCENARIO_DECLARATION: dict[str, Any] = _scenario_declaration()
+_SCENARIO_NAME: dict[str, Any] = {
+    "type": "object",
+    "properties": {"name": {"type": "string", "description": "The scenario's name"}},
+    "required": ["name"],
+}
+
 _TOOLS.extend(
     [
         Tool(
@@ -761,6 +870,44 @@ _TOOLS.extend(
                 "configuration. Refusal kinds as for promote_runtime_user." + _REQUIRES_A_SHARED_STORE
             ),
             input_schema=_named(OAuthClient, "client_id", "The runtime client's id"),
+        ),
+        Tool(
+            name="arm_scenario",
+            description=(
+                "Arm a stateful identity scenario on the running NanoIDP: create the runtime user 'given.user' and "
+                "the steps that change it as the application under test uses the protocol. A step fires after "
+                "'count' events for that user (token_issued at /token, optionally of one grant_type, or "
+                "authorization_completed at /authorize) and sets the fields 'update_user' names, each replaced "
+                "whole. The token that fires a step carries the values from before the change; the next request "
+                "sees the changed user. Read the outcome with get_scenario. Refusal kinds: invalid, exists, "
+                "declared, full, conflict." + _REQUIRES_A_SHARED_STORE
+            ),
+            input_schema=_SCENARIO_DECLARATION,
+        ),
+        Tool(
+            name="list_scenarios",
+            description="List the scenarios armed on the running NanoIDP, with the state of their steps."
+            + _REQUIRES_A_SHARED_STORE,
+            input_schema=_NOTHING,
+        ),
+        Tool(
+            name="get_scenario",
+            description=(
+                "Get one scenario of the running NanoIDP; found false if there is none by that name. Each step "
+                "says 'seen' (events counted) and 'state': waiting, applied, refused (reason user_gone or "
+                "user_held), failed (reason store_unavailable or error) or pending (its outcome was not recorded)."
+                + _REQUIRES_A_SHARED_STORE
+            ),
+            input_schema=_SCENARIO_NAME,
+        ),
+        Tool(
+            name="remove_scenario",
+            description=(
+                "Remove a scenario and the runtime user it created; answers 'user' and 'user_removed'. A user "
+                "created again under the name, or promoted since, is left. Refusal kinds: not_found, "
+                "promotion_in_progress (the scenario stays, to be removed afterwards)." + _REQUIRES_A_SHARED_STORE
+            ),
+            input_schema=_SCENARIO_NAME,
         ),
         Tool(
             name="reset_runtime_identities",

@@ -39,7 +39,10 @@ readonly mode, and the exposure warnings, see the
 | `list_runtime_users`, `get_runtime_user`, `list_runtime_clients`, `get_runtime_client` | Read the runtime users and clients (not the declared ones) |
 | `delete_runtime_user`, `delete_runtime_client` | Delete one |
 | `promote_runtime_user`, `promote_runtime_client` | Write one into `users.yaml` or `settings.yaml` and retire the runtime object |
-| `reset_runtime_identities` | Remove every runtime user and client and every [stateful scenario](../guides/stateful-scenarios.md), and end the browser sessions at `/authorize` |
+| `arm_scenario` | Arm a [stateful scenario](../guides/stateful-scenarios.md): a runtime user and the steps that change it as the protocol is used. The input schema is the declaration's: events and grant types as enums, the fields of the user and the ones a step may set |
+| `list_scenarios`, `get_scenario` | Read the scenarios and the state of their steps |
+| `remove_scenario` | Remove a scenario and the user it created |
+| `reset_runtime_identities` | Remove every runtime user and client and every stateful scenario, and end the browser sessions at `/authorize` |
 | `get_keys_info` | Get signing key info (active kid, previous keys) |
 | `rotate_keys` | Rotate signing keys (old key stays valid for verification). A refusal answers `success: false` with a fixed `error` and a `kind`, the same as `POST /api/keys/rotate`: `external_keys_not_rotatable`, `keys_directory_not_writable` (also for something in the way of what a rotation writes in the keys directory: a file at `previous` or `.rotation`, a directory under the name of `keys.json`, `idp-cert.pem` or a key in `previous/`), `lock_namespace_unavailable`, `lock_timeout` (worth a retry) or `lock_unsupported` |
 
@@ -115,9 +118,15 @@ runtime user created through MCP logs in at the server at once, with no
 `save_config` and no reload, and is removed the same way. They are the MCP
 form of `/api/runtime`, with the same entries, views and refusal kinds; see
 [Disposable test identities](../guides/runtime-identities.md#the-same-operations-as-mcp-tools).
-With the default in-memory store they are refused with
+The four scenario tools are of the same group, the MCP form of
+`/api/runtime/scenarios`: a scenario armed through MCP is fired by the
+server that answers the application's token requests, and read back
+through MCP; see [Stateful identity
+scenarios](../guides/stateful-scenarios.md#the-same-operations-as-mcp-tools).
+With the default in-memory store the tools of this group are refused with
 `MCP_RUNTIME_STORE_NOT_SHARED`, since what they created would exist in the
-MCP server only. The tools of the first list above are not affected by the
+MCP server only. In read-only mode the ones that read stay available
+(`list_*`, `get_*`), scenarios included. The tools of the first list above are not affected by the
 store: they answer from the declared configuration either way, so
 `list_users`, `get_user` and `generate_token` do not know a runtime user.
 

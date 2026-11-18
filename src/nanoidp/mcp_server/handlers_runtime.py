@@ -7,14 +7,16 @@ deleted, promoted and reset through the same services and the same rules
 parsers, the same refusal kinds, the same views. They act on the runtime
 store, so the dispatcher refuses every one of them when that store is this
 process's alone (``RUNTIME_STATE_TOOLS`` in the package): an identity
-created there would exist nowhere else.
+created there would exist nowhere else. The scenario tools (#402) are of the
+same group: a scenario is armed here and fired by the NanoIDP that serves
+the application's requests, which is another process.
 """
 
 from typing import Any, Callable, Dict, Union
 
 from ..config import ConfigManager, ConfigSnapshot
 from ..config_documents import EntryInvalid
-from ..services import get_audit_log
+from ..services import get_audit_log, scenarios
 from ..services import runtime_operations as operations
 from ..services.dynamic_registration import delete_client_and_registration
 from ..services.identities import IdentityResolver, identities_for
@@ -32,18 +34,26 @@ def _refused(refused: Refused) -> Dict[str, Any]:
     return answer
 
 
-def _audit(event_type: str, tool: str, kind: str, name: str) -> None:
+def _audit(event_type: str, tool: str, kind: str, name: str, username: Any = None, **details: Any) -> None:
     """The event the HTTP route records for the same operation, said by
-    this surface: endpoint ``mcp``, the tool as the method."""
+    this surface: endpoint ``mcp``, the tool as the method. ``username`` is
+    for an object that is not the user itself but is about one (a
+    scenario), and ``details`` what the route adds to its own."""
     get_audit_log().log(
         event_type=event_type,
         endpoint="mcp",
         method=tool,
         status="success",
-        username=name if kind == "user" else None,
+        username=name if kind == "user" else username,
         client_id=name if kind == "client" else None,
-        details={"kind": kind, "name": name},
+        details={"kind": kind, "name": name, **details},
     )
+
+
+def _without_kind(answer: Dict[str, Any]) -> Dict[str, Any]:
+    """A success without the object's kind: the tool's name says it, and
+    ``kind`` in a result of these tools is the reason of a refusal."""
+    return {"success": True, **{key: value for key, value in answer.items() if key != "kind"}}
 
 
 def _resolver(config: ConfigManager, loaded: ConfigSnapshot) -> IdentityResolver:
@@ -72,9 +82,7 @@ def _promoted(tool: str, kind: str, name: str, promote: Callable[[Dict[str, Any]
     outcome: Union[Dict[str, Any], Refused] = operations.promote(kind, name, lambda: promote(context))
     if isinstance(outcome, Refused):
         return _refused(outcome)
-    # Without the identity's kind: the tool's name says it, and ``kind`` in
-    # a result of these tools is the reason of a refusal.
-    return {"success": True, **{key: value for key, value in outcome.items() if key != "kind"}}
+    return _without_kind(outcome)
 
 
 # ---- users ------------------------------------------------------------------
@@ -174,6 +182,46 @@ def _tool_promote_runtime_client(arguments: dict[str, Any], config: ConfigManage
     )
 
 
+# ---- scenarios (#402) -------------------------------------------------------
+
+
+def _tool_arm_scenario(arguments: dict[str, Any], config: ConfigManager, loaded: ConfigSnapshot) -> dict[str, Any]:
+    armed = operations.arm_scenario(_resolver(config, loaded), arguments, "arm_scenario")
+    if isinstance(armed, Refused):
+        return _refused(armed)
+    _audit(operations.SCENARIO_ARMED, "arm_scenario", "scenario", armed["name"], username=armed["user"])
+    return {"success": True, "scenario": armed}
+
+
+def _tool_list_scenarios(arguments: dict[str, Any], config: ConfigManager, loaded: ConfigSnapshot) -> dict[str, Any]:
+    views = [scenarios.view_of(scenario) for scenario in scenarios.all_scenarios()]
+    return {"scenarios": views, "count": len(views)}
+
+
+def _tool_get_scenario(arguments: dict[str, Any], config: ConfigManager, loaded: ConfigSnapshot) -> dict[str, Any]:
+    name = arguments["name"]
+    scenario = scenarios.get(name)
+    if scenario is None:
+        return {"found": False, "name": name}
+    return {"found": True, "scenario": scenarios.view_of(scenario)}
+
+
+def _tool_remove_scenario(arguments: dict[str, Any], config: ConfigManager, loaded: ConfigSnapshot) -> dict[str, Any]:
+    name = arguments["name"]
+    removed = operations.remove_scenario(_resolver(config, loaded), name)
+    if isinstance(removed, Refused):
+        return _refused(removed)
+    _audit(
+        operations.SCENARIO_REMOVED,
+        "remove_scenario",
+        "scenario",
+        name,
+        username=removed["user"],
+        user_removed=removed["user_removed"],
+    )
+    return _without_kind(removed)
+
+
 # ---- reset ------------------------------------------------------------------
 
 
@@ -204,9 +252,20 @@ RUNTIME_STATE_HANDLERS: Dict[str, Handler] = {
     "get_runtime_client": _tool_get_runtime_client,
     "delete_runtime_client": _tool_delete_runtime_client,
     "promote_runtime_client": _tool_promote_runtime_client,
+    "arm_scenario": _tool_arm_scenario,
+    "list_scenarios": _tool_list_scenarios,
+    "get_scenario": _tool_get_scenario,
+    "remove_scenario": _tool_remove_scenario,
     "reset_runtime_identities": _tool_reset_runtime_identities,
 }
 # The ones that only read; every other one writes, and is a mutating tool.
 RUNTIME_STATE_READERS = frozenset(
-    {"list_runtime_users", "get_runtime_user", "list_runtime_clients", "get_runtime_client"}
+    {
+        "list_runtime_users",
+        "get_runtime_user",
+        "list_runtime_clients",
+        "get_runtime_client",
+        "list_scenarios",
+        "get_scenario",
+    }
 )

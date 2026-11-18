@@ -46,13 +46,20 @@ import logging
 import uuid
 from typing import Any, Callable, Dict, List, Literal, Optional, Tuple
 
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, ValidationError, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictInt,
+    ValidationError,
+    model_validator,
+)
 
 from ..config import User
 from ..config_documents import EntryInvalid, parse_runtime_user, parse_user_entry
 from .audit import get_audit_log
 from .identities import IdentityResolver, PromotionInProgress, RuntimeObjectNotFound, get_identities
-from .protocol_events import EVENTS, TOKEN_ISSUED, USER_GRANT_TYPES, ProtocolEvent
+from .protocol_events import TOKEN_ISSUED, EventName, ProtocolEvent, UserGrantType
 from .runtime_repository import (
     Entry,
     RepositoryTransaction,
@@ -117,40 +124,47 @@ class _Strict(BaseModel):
 
 
 class Trigger(_Strict):
-    event: str
-    grant_type: Optional[str] = Field(default=None, min_length=1)
-    count: StrictInt = Field(default=1, ge=1)
+    event: EventName = Field(description="The protocol event the step waits for")
+    # One of the grants that issue a token for a user: any other would arm
+    # a step that never fires.
+    grant_type: Optional[UserGrantType] = Field(
+        default=None, description="Only for token_issued: count the tokens of this grant only"
+    )
+    count: StrictInt = Field(
+        default=1, ge=1, description="The number of matching events after which the step fires, counted from the arming"
+    )
 
     @model_validator(mode="after")
     def _known(self) -> "Trigger":
-        if self.event not in EVENTS:
-            raise ValueError(f"event must be one of {', '.join(EVENTS)}")
         if self.grant_type is not None and self.event != TOKEN_ISSUED:
             raise ValueError(f"grant_type is only for {TOKEN_ISSUED}")
-        if self.grant_type is not None and self.grant_type not in USER_GRANT_TYPES:
-            # A grant that issues nothing for a user would arm a step that
-            # never fires.
-            raise ValueError(f"grant_type must be one of {', '.join(USER_GRANT_TYPES)}")
         return self
 
     def matches(self, event: ProtocolEvent) -> bool:
         return self.event == event.name and self.grant_type in (None, event.grant_type)
 
 
-class _StepSpec(_Strict):
+class StepDeclaration(_Strict):
     after: Trigger
+    # Read by the parser of a runtime user, as the fields of a users.yaml
+    # entry are, and not by a model of its own: see ``scenario_from``.
     update_user: Dict[str, Any]
 
 
-class _Given(_Strict):
+class Given(_Strict):
     user: Dict[str, Any]
 
 
-class _ScenarioSpec(_Strict):
+class ScenarioDeclaration(_Strict):
+    # What a caller declares to arm a scenario: the body of POST
+    # /api/runtime/scenarios and the arguments of the MCP tool, whose input
+    # schema is built from this model's (mcp_server.schemas). No docstring:
+    # pydantic would publish it as the schema's description.
+
     # A path segment as every client sends it: no dot segment.
-    name: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
-    given: _Given
-    steps: List[_StepSpec] = Field(min_length=1, max_length=MAX_STEPS)
+    name: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$", description="The scenario's name")
+    given: Given
+    steps: List[StepDeclaration] = Field(min_length=1, max_length=MAX_STEPS)
 
 
 class Step(BaseModel):
@@ -196,7 +210,7 @@ def scenario_from(body: Dict[str, Any], where: str) -> Tuple[Scenario, User]:
     shape, the user as a runtime user is validated, and each change as the
     user's model validates the fields it sets."""
     try:
-        spec = _ScenarioSpec.model_validate(body)
+        spec = ScenarioDeclaration.model_validate(body)
     except ValidationError as exc:
         raise EntryInvalid(f"{where}: {_message(exc)}") from None
     user = parse_runtime_user(spec.given.user, f"{where}: given.user")

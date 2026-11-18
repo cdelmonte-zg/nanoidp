@@ -341,8 +341,10 @@ class TestMCPSecurityDocumentation:
         #              delete_client, generate_token, update_settings,
         #              save_config, clear_audit_log, rotate_keys (#48),
         #              and the seven runtime identity tools that write (#432):
-        #              create/delete/promote for users and for clients, reset
-        expected_count = 19
+        #              create/delete/promote for users and for clients, reset,
+        #              and the two scenario tools that write (#402):
+        #              arm_scenario, remove_scenario
+        expected_count = 21
         assert len(MUTATING_TOOLS) == expected_count
 
     def test_mcp_server_has_security_docstring(self):
