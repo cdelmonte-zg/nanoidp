@@ -75,6 +75,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **What stands in the way of a key rotation below the keys directory
+  answers the rotate refusal** (#492). A rotation writes `.rotation/`,
+  `.rotation/rollback/` and `previous/`, and only the keys directory itself
+  was checked first. A file or a dangling link at `previous` or at
+  `.rotation`, a read-only `previous/`, a read-only `.rotation/` that is not
+  empty, or a directory in the place of a previous key's file made `POST /api/keys/rotate` answer a bare `500` page,
+  MCP `rotate_keys` an internal error with the path on the wire, and the UI
+  a generic flash. For the obstacles at `previous` the rotation had already
+  written its journal, and until a process that can write the directory
+  took its lock, a process that sees it read-only refused to load the keys.
+  The three directories and the files to replace are now checked before the
+  journal: all three surfaces answer `409` with
+  `keys_directory_not_writable`, the active key keeps signing, and nothing
+  is left to settle. **Behaviour change**: with `jwt.max_previous_keys: 0`
+  and a read-only `previous/` a rotation used to answer success, fail to
+  prune the directory and leave its work directory behind; it is now
+  refused the same way.
 - **A runtime store or a configuration that is unavailable during a
   promotion is said as such** (#432). `POST /api/runtime/.../promote`
   answered `500 write_failed` for a runtime store held by another process

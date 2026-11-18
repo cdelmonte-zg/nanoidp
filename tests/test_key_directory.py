@@ -1116,3 +1116,324 @@ class TestADirectoryThatCannotBeCreated:
             "kind": "keys_directory_not_writable",
         }
         assert str(keys_dir) not in text
+
+
+def _a_file_at_previous(keys_dir, service):
+    shutil.rmtree(keys_dir / "previous", ignore_errors=True)
+    (keys_dir / "previous").write_text("not a directory")
+    return keys_dir / "previous", lambda: (keys_dir / "previous").unlink()
+
+
+def _a_dangling_symlink_at_previous(keys_dir, service):
+    shutil.rmtree(keys_dir / "previous", ignore_errors=True)
+    (keys_dir / "previous").symlink_to(keys_dir / "nowhere")
+    return keys_dir / "previous", lambda: (keys_dir / "previous").unlink()
+
+
+def _previous_read_only(keys_dir, service):
+    (keys_dir / "previous").mkdir(exist_ok=True)
+    (keys_dir / "previous").chmod(0o555)
+    return keys_dir / "previous", lambda: (keys_dir / "previous").chmod(0o755)
+
+
+def _a_directory_where_a_previous_key_goes(keys_dir, service):
+    target = keys_dir / "previous" / f"{service.kid}_public.pem"
+    target.mkdir(parents=True)
+    return target, target.rmdir
+
+
+def _a_file_at_the_work_directory(keys_dir, service):
+    (keys_dir / ".rotation").write_text("not a directory")
+    return keys_dir / ".rotation", lambda: (keys_dir / ".rotation").unlink()
+
+
+def _the_work_directory_read_only(keys_dir, service):
+    work = keys_dir / ".rotation"
+    work.mkdir()
+    (work / "litter").write_text("left by an earlier attempt")
+    work.chmod(0o555)
+
+    def remove():
+        work.chmod(0o755)
+        shutil.rmtree(work)
+
+    return work, remove
+
+
+def _the_rollback_directory_read_only(keys_dir, service):
+    rollback = keys_dir / ".rotation" / "rollback"
+    rollback.mkdir(parents=True)
+    (rollback / "litter").write_text("left by an earlier attempt")
+    rollback.chmod(0o555)
+
+    def remove():
+        rollback.chmod(0o755)
+        shutil.rmtree(keys_dir / ".rotation")
+
+    return rollback, remove
+
+
+_NEEDS_MODE_BITS = pytest.mark.skipif(
+    os.name != "posix" or os.geteuid() == 0, reason="needs a directory this user cannot write"
+)
+_NEEDS_SYMLINKS = pytest.mark.skipif(os.name != "posix", reason="needs a symlink any user can make")
+_OBSTACLES = [
+    pytest.param(_a_file_at_previous, id="a file at previous"),
+    pytest.param(_a_dangling_symlink_at_previous, id="a dangling symlink at previous", marks=_NEEDS_SYMLINKS),
+    pytest.param(_previous_read_only, id="previous read-only", marks=_NEEDS_MODE_BITS),
+    pytest.param(_a_directory_where_a_previous_key_goes, id="a directory where a previous key goes"),
+    pytest.param(_a_file_at_the_work_directory, id="a file at .rotation"),
+    pytest.param(_the_work_directory_read_only, id=".rotation read-only", marks=_NEEDS_MODE_BITS),
+    pytest.param(_the_rollback_directory_read_only, id=".rotation/rollback read-only", marks=_NEEDS_MODE_BITS),
+]
+_REFUSED = {
+    "success": False,
+    "error": KEYS_DIRECTORY_NOT_WRITABLE,
+    "kind": "keys_directory_not_writable",
+}
+
+
+class TestAnObstacleWhereARotationWrites:
+    """A rotation writes three directories under the keys directory, and
+    replaces one file per previous key (#492). What stands in the way of
+    any of them is found before the journal is written, and answers the
+    refusal #459 defined on every surface. Measured before: a bare 500, the
+    path on the MCP wire, and for the obstacles at ``previous`` a journal
+    left behind, which keeps a process with a read-only view from loading
+    the keys until a writer takes the lock."""
+
+    @pytest.fixture
+    def published(self, tmp_path, app):
+        from nanoidp.services import crypto as crypto_module
+
+        keys_dir = tmp_path / "keys"
+        service = CryptoService(keys_dir=str(keys_dir))
+        crypto_module.publish_crypto_service(service)
+        return keys_dir, service, app.test_client()
+
+    @staticmethod
+    def _token(client, auth_header):
+        response = client.post("/token", data={"grant_type": "client_credentials"}, headers=auth_header)
+        assert response.status_code == 200, response.get_data(as_text=True)
+        return response.get_json()["access_token"]
+
+    @staticmethod
+    def _active(client, auth_header, token):
+        return client.post("/introspect", data={"token": token}, headers=auth_header).get_json()["active"]
+
+    @staticmethod
+    def _temporaries(keys_dir):
+        return [file for file in keys_dir.rglob(".writing-*") if not file.is_dir()]
+
+    @pytest.mark.parametrize("obstacle", _OBSTACLES)
+    def test_the_api_refuses_and_the_active_key_stays_usable(self, published, auth_header, obstacle):
+        keys_dir, service, client = published
+        before = self._token(client, auth_header)
+        kid = service.kid
+        where, remove = obstacle(keys_dir, service)
+        # A file at .rotation is taken for a rotation under way by a reader
+        # without the lock, before any rotation is tried: what is pinned is
+        # that the refusal adds nothing to what the obstacle already did.
+        under_way = key_directory._rotation_under_way(keys_dir)
+        try:
+            response = client.post("/api/keys/rotate")
+
+            assert response.status_code == 409 and "Retry-After" not in response.headers
+            assert response.get_json() == _REFUSED
+            assert str(keys_dir) not in response.get_data(as_text=True)
+            # Refused before the journal: nothing a reader would have to wait for.
+            assert not (keys_dir / ".rotation" / "journal.json").exists()
+            assert key_directory._rotation_under_way(keys_dir) is under_way
+            assert under_way is (obstacle is _a_file_at_the_work_directory)
+            assert not self._temporaries(keys_dir)
+            assert key_directory.active_kid(keys_dir) == kid
+            assert self._active(client, auth_header, before) is True
+            assert self._active(client, auth_header, self._token(client, auth_header)) is True
+            jwks = client.get("/.well-known/jwks.json").get_json()
+            assert kid in [key["kid"] for key in jwks["keys"]]
+        finally:
+            remove()
+
+        rotated = client.post("/api/keys/rotate")
+
+        assert rotated.status_code == 200, rotated.get_data(as_text=True)
+        assert rotated.get_json()["old_kid"] == kid and rotated.get_json()["new_kid"] != kid
+        assert key_directory.active_kid(keys_dir) == rotated.get_json()["new_kid"]
+        assert not (keys_dir / ".rotation").exists()
+        assert self._active(client, auth_header, before) is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("obstacle", _OBSTACLES)
+    async def test_the_mcp_tool_answers_the_same_refusal(self, published, obstacle):
+        """Through the real protocol, where the old answer lived: the
+        dispatcher's internal error, with the path on the wire."""
+        from tests.conftest import call_mcp_tool
+
+        keys_dir, service, _ = published
+        _, remove = obstacle(keys_dir, service)
+        try:
+            result = await call_mcp_tool("rotate_keys", {})
+        finally:
+            remove()
+
+        text = result.content[0].text
+        assert json.loads(text) == _REFUSED
+        assert str(keys_dir) not in text
+
+    @pytest.mark.parametrize("obstacle", _OBSTACLES)
+    def test_the_ui_flashes_the_fixed_message(self, published, obstacle):
+        keys_dir, service, client = published
+        _, remove = obstacle(keys_dir, service)
+        try:
+            response = client.post("/keys/regenerate", follow_redirects=True)
+        finally:
+            remove()
+
+        html = response.get_data(as_text=True)
+        assert KEYS_DIRECTORY_NOT_WRITABLE in html
+        assert "see the server log" not in html
+        # The keys page shows the directory itself; the refusal's own words are for the log.
+        assert "stands in the way" not in html
+
+    @pytest.mark.parametrize("obstacle", _OBSTACLES)
+    def test_the_log_names_what_stands_in_the_way(self, published, caplog, obstacle):
+        keys_dir, service, client = published
+        where, remove = obstacle(keys_dir, service)
+        try:
+            with caplog.at_level(logging.WARNING):
+                client.post("/api/keys/rotate")
+        finally:
+            remove()
+
+        refusals = [r.getMessage() for r in caplog.records if "Key rotation refused" in r.getMessage()]
+        assert len(refusals) == 1 and str(where) in refusals[0]
+        assert "nothing was changed" in refusals[0]
+
+    @_NEEDS_MODE_BITS
+    def test_a_process_with_a_read_only_view_loads_the_keys_after_a_refusal(self, published):
+        """Why the checks come before the journal: with one left behind
+        this load waited out its patience and raised."""
+        keys_dir, service, client = published
+        _, remove = _a_file_at_previous(keys_dir, service)
+        assert client.post("/api/keys/rotate").status_code == 409
+        keys_dir.chmod(0o555)
+        try:
+            loaded = key_directory.load_published(keys_dir)
+        finally:
+            keys_dir.chmod(0o755)
+            remove()
+
+        assert loaded is not None and loaded.kid == service.kid
+
+    @_NEEDS_MODE_BITS
+    def test_with_no_previous_key_to_keep_a_read_only_previous_is_refused_too(self, tmp_path):
+        """Pruning ``previous`` is part of the rotation: before, this one
+        answered success, could not prune, and left its work directory to
+        be warned about at every later lock."""
+        keys_dir = tmp_path / "keys"
+        service = CryptoService(keys_dir=str(keys_dir), max_previous_keys=0)
+        kid = service.kid
+        _, remove = _previous_read_only(keys_dir, service)
+        try:
+            with pytest.raises(key_directory.KeysDirectoryNotWritable):
+                service.rotate_keys()
+
+            assert key_directory.active_kid(keys_dir) == kid and service.kid == kid
+            assert not (keys_dir / ".rotation" / "journal.json").exists()
+        finally:
+            remove()
+
+        assert service.rotate_keys()["old_kid"] == kid
+        assert not (keys_dir / ".rotation").exists()
+
+    def test_a_rotation_with_nothing_in_the_way_leaves_no_probe_behind(self, tmp_path):
+        keys_dir = tmp_path / "keys"
+        service = CryptoService(keys_dir=str(keys_dir))
+
+        service.rotate_keys()
+        service.rotate_keys()
+
+        assert not self._temporaries(keys_dir)
+        assert not (keys_dir / ".rotation").exists()
+
+    @pytest.mark.parametrize("directory", [".rotation", "rollback", "previous"])
+    @pytest.mark.parametrize("step", ["mkdir", "probe"])
+    def test_any_other_failure_stays_what_it_is(self, tmp_path, monkeypatch, directory, step):
+        """``EIO`` at the same steps is no refusal: it propagates."""
+        import tempfile
+
+        keys_dir = tmp_path / "keys"
+        service = CryptoService(keys_dir=str(keys_dir))
+        real_mkdir, real_mkstemp = Path.mkdir, tempfile.mkstemp
+
+        def mkdir(self, *args, **kwargs):
+            if step == "mkdir" and self.name == directory and keys_dir in self.parents:
+                raise OSError(errno.EIO, "Input/output error")
+            return real_mkdir(self, *args, **kwargs)
+
+        def mkstemp(*args, **kwargs):
+            if step == "probe" and Path(kwargs["dir"]).name == directory:
+                raise OSError(errno.EIO, "Input/output error")
+            return real_mkstemp(*args, **kwargs)
+
+        monkeypatch.setattr(Path, "mkdir", mkdir)
+        monkeypatch.setattr(tempfile, "mkstemp", mkstemp)
+
+        with pytest.raises(OSError) as raised:
+            service.rotate_keys()
+
+        assert not isinstance(raised.value, LockUnavailableError)
+        assert raised.value.errno == errno.EIO
+        assert not (keys_dir / ".rotation" / "journal.json").exists()
+
+    def test_a_directory_at_a_file_is_a_refusal_for_this_check_only(self):
+        assert errno.EISDIR not in key_directory.KeysDirectoryNotWritable.ERRNOS
+        assert errno.EISDIR not in key_directory.KeysDirectoryCannotBeCreated.ERRNOS
+
+    @pytest.mark.parametrize("directory", [".rotation", "rollback", "previous"])
+    @pytest.mark.parametrize("step", ["mkdir", "probe"])
+    @pytest.mark.parametrize("code", [errno.EACCES, errno.EPERM, errno.EROFS, errno.ENOTDIR, errno.EEXIST])
+    def test_every_errno_of_a_directory_in_the_way_is_the_refusal(self, tmp_path, monkeypatch, directory, step, code):
+        """The ones no test can make for real (a read-only mount, a
+        directory of another owner) with the ones it can."""
+        import tempfile
+
+        keys_dir = tmp_path / "keys"
+        service = CryptoService(keys_dir=str(keys_dir))
+        kid = service.kid
+        real_mkdir, real_mkstemp = Path.mkdir, tempfile.mkstemp
+
+        def mkdir(self, *args, **kwargs):
+            if step == "mkdir" and self.name == directory and keys_dir in self.parents:
+                raise OSError(code, os.strerror(code))
+            return real_mkdir(self, *args, **kwargs)
+
+        def mkstemp(*args, **kwargs):
+            if step == "probe" and Path(kwargs["dir"]).name == directory:
+                raise OSError(code, os.strerror(code))
+            return real_mkstemp(*args, **kwargs)
+
+        monkeypatch.setattr(Path, "mkdir", mkdir)
+        monkeypatch.setattr(tempfile, "mkstemp", mkstemp)
+
+        with pytest.raises(key_directory.KeysDirectoryNotWritable, match="stands in the way"):
+            service.rotate_keys()
+
+        assert service.kid == kid and key_directory.active_kid(keys_dir) == kid
+        assert not (keys_dir / ".rotation" / "journal.json").exists()
+
+    @_NEEDS_SYMLINKS
+    def test_a_link_where_a_previous_key_goes_is_replaced_like_a_file(self, tmp_path):
+        """Even one that points at a directory: the link is what is replaced."""
+        keys_dir = tmp_path / "keys"
+        service = CryptoService(keys_dir=str(keys_dir))
+        kid = service.kid
+        (tmp_path / "elsewhere").mkdir()
+        (keys_dir / "previous").mkdir()
+        target = keys_dir / "previous" / f"{kid}_public.pem"
+        target.symlink_to(tmp_path / "elsewhere")
+
+        service.rotate_keys()
+
+        assert target.is_file() and not target.is_symlink()
+        assert [key.kid for key in _whole(keys_dir).previous_keys] == [kid]

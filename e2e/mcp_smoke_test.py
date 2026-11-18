@@ -151,6 +151,46 @@ async def run_with_a_tag_the_parser_refuses(config_dir: str) -> int:
     return 0
 
 
+async def run_with_a_file_where_a_rotation_writes(config_dir: str) -> int:
+    """#492, through the real entry point: a file at ``previous`` in the
+    keys directory refuses rotate_keys with the fixed text and the kind,
+    the path stays off the wire, the active key is the same, and with the
+    file gone the next rotation succeeds."""
+    with tempfile.TemporaryDirectory() as scratch:
+        copy = _copy_of(config_dir, Path(scratch))
+        keys_dir = Path(scratch) / "keys"
+        async with stdio_client(_server(str(copy))) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                before = json.loads((await session.call_tool("get_keys_info", {})).content[0].text)
+                (keys_dir / "previous").write_text("not a directory")
+                result = await session.call_tool("rotate_keys", {})
+                text = result.content[0].text
+                from nanoidp.services.crypto import KEYS_DIRECTORY_NOT_WRITABLE
+
+                if json.loads(text) != {
+                    "success": False,
+                    "error": KEYS_DIRECTORY_NOT_WRITABLE,
+                    "kind": "keys_directory_not_writable",
+                } or str(keys_dir) in text:
+                    print(f"[FAIL] rotate_keys with a file at previous: {text!r}")
+                    return 1
+                after = json.loads((await session.call_tool("get_keys_info", {})).content[0].text)
+                journal = keys_dir / ".rotation" / "journal.json"
+                if after.get("active_kid") != before.get("active_kid") or journal.exists():
+                    print(f"[FAIL] the refusal changed something: {before!r} -> {after!r}")
+                    return 1
+                print("[OK] a file where a rotation writes: rotate_keys refused, kind keys_directory_not_writable")
+
+                (keys_dir / "previous").unlink()
+                rotated = json.loads((await session.call_tool("rotate_keys", {})).content[0].text)
+                if rotated.get("success") is not True or rotated.get("old_kid") != before.get("active_kid"):
+                    print(f"[FAIL] rotate_keys with the file gone: {rotated!r}")
+                    return 1
+                print("[OK] with the file gone the rotation succeeds")
+    return 0
+
+
 async def run(config_dir: str) -> int:
     params = _server(config_dir)
 
@@ -308,6 +348,9 @@ async def run(config_dir: str) -> int:
         return 1
 
     if await run_with_a_tag_the_parser_refuses(config_dir):
+        return 1
+
+    if await run_with_a_file_where_a_rotation_writes(config_dir):
         return 1
 
     print("\n[SUCCESS] MCP stdio smoke test passed")

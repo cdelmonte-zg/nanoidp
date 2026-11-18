@@ -100,12 +100,19 @@ class KeysDirectoryNotWritable(LockNamespaceUnavailable):
     # not a PermissionError.
     ERRNOS = (errno.EACCES, errno.EPERM, errno.EROFS)
 
-    def __init__(self, keys_dir: Path, failure: OSError) -> None:
-        super().__init__(
-            f"{keys_dir} is not writable for this process ({failure.strerror or failure}): it can sign "
-            "with the keys there and cannot create, rotate or repair them",
-            kind="keys_directory_not_writable",
-        )
+    def __init__(self, keys_dir: Path, failure: OSError, obstacle: Optional[Path] = None) -> None:
+        if obstacle is None:
+            message = (
+                f"{keys_dir} is not writable for this process ({failure.strerror or failure}): it can sign "
+                "with the keys there and cannot create, rotate or repair them"
+            )
+        else:
+            # Found by a rotation's checks, before its journal (#492).
+            message = (
+                f"{obstacle} stands in the way of a key rotation in {keys_dir} "
+                f"({failure.strerror or failure}): nothing was changed"
+            )
+        super().__init__(message, kind="keys_directory_not_writable")
 
 
 class KeysDirectoryCannotBeCreated(LockUnavailableError):
@@ -202,13 +209,54 @@ def _require_writable(keys_dir: Path) -> None:
     ``os.access`` answers for the mode bits and not for a read-only mount,
     and a mutation that finds out half way has already begun."""
     try:
-        fd, probe = tempfile.mkstemp(dir=keys_dir, prefix=_TEMPORARY)
-        os.close(fd)
-        os.unlink(probe)
+        _probe(keys_dir)
     except OSError as failure:
         if failure.errno in KeysDirectoryNotWritable.ERRNOS:
             raise KeysDirectoryNotWritable(keys_dir, failure) from failure
         raise
+
+
+def _probe(directory: Path) -> None:
+    """Write a file there and take it away again. Under the prefix the
+    lock's sweep knows, should the second half ever fail."""
+    fd, probe = tempfile.mkstemp(dir=directory, prefix=_TEMPORARY)
+    os.close(fd)
+    os.unlink(probe)
+
+
+def _require_its_directories(keys_dir: Path, new: Bundle) -> None:
+    """What a rotation writes below the keys directory, found out before
+    its journal is written (#492): the work directory and the rollback in
+    it, ``previous`` (pruned even when ``new`` keeps no previous key), and
+    the file of each previous key ``new`` refers to.
+
+    Something in the way here refuses the rotation as a directory that
+    cannot be written does, and leaves no journal: one left behind keeps a
+    process with a read-only view from loading the keys until a writer
+    takes the lock. Each directory is made if it is not there, which is no
+    change to a bundle. This anticipates what can be seen beforehand and
+    promises nothing about the writes that follow: one of those that fails
+    is settled by the next ``locked``, as ever."""
+    work = keys_dir / _WORK
+    previous = keys_dir / PREVIOUS
+    for directory in (work, work / _ROLLBACK, previous):
+        try:
+            directory.mkdir(exist_ok=True)
+            _probe(directory)
+        except OSError as failure:
+            # A file or a dangling link in its place, a file above it, or
+            # a directory that is not this process's to write.
+            if failure.errno in KeysDirectoryCannotBeCreated.ERRNOS:
+                raise KeysDirectoryNotWritable(keys_dir, failure, obstacle=directory) from failure
+            raise
+    for key in new.previous:
+        target = previous / f"{key.kid}_public.pem"
+        # A file is replaced, and so is a link, whatever it points at. A
+        # directory is not, and writing a file into ``previous`` does not
+        # find that out.
+        if target.is_dir() and not target.is_symlink():
+            in_the_way = IsADirectoryError(errno.EISDIR, os.strerror(errno.EISDIR), str(target))
+            raise KeysDirectoryNotWritable(keys_dir, in_the_way, obstacle=target)
 
 
 def load_published(keys_dir: Path) -> Optional[Bundle]:
@@ -348,7 +396,9 @@ def rotate(keys_dir: Path, new: Bundle) -> None:
     # (a file held open on Windows), it does no harm: the journal lists the
     # files THIS rollback wrote, and a restore takes nothing else from it.
     shutil.rmtree(work, ignore_errors=True)
-    rollback.mkdir(parents=True, exist_ok=True)
+    # And only now, with the litter gone where it could go, what this
+    # rotation writes is looked at: refused here, there is no journal.
+    _require_its_directories(keys_dir, new)
     kept = []
     for name in _LIVE:
         try:
@@ -365,7 +415,6 @@ def rotate(keys_dir: Path, new: Bundle) -> None:
     # The previous keys NEW refers to. None is deleted yet: OLD still refers
     # to the ones it has.
     previous = keys_dir / PREVIOUS
-    previous.mkdir(parents=True, exist_ok=True)
     for key in new.previous:
         _replace(previous / f"{key.kid}_public.pem", key.public_pem, 0o644)
     _checkpoint("previous:added")
