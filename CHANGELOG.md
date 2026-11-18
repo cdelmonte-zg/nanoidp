@@ -41,6 +41,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `POST /api/runtime/clients` answered `503` for an object that existed,
   and the retry the answer invites met `409`. The look can no longer fail
   the creation: its failure is logged.
+- **An MCP argument of the wrong type is not repeated in the refusal**. The
+  `MCP_INVALID_ARGUMENTS` text opened with the value that failed, so a
+  password sent as a number, or an object sent as a string, came back in
+  the answer. It now says `the value is not of type ...` after the
+  argument's path; a value of the right type that is refused for another
+  reason (an unknown enum member, a pattern) is still named.
 
 ## [3.5.0] - 2026-11-18
 

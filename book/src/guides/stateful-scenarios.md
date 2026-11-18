@@ -167,6 +167,10 @@ can judge (an invalid email, a name that is taken) is answered with the
 same on both surfaces, and `get_scenario` answers `found: false` for a name
 that is not there.
 
+The schema is stricter than the HTTP body in one place: an optional field
+is published as its value type, as for the other tools, so a step that
+clears `identity_class` with `null` is armed over HTTP.
+
 The MCP server arms, reads and removes; it fires nothing. A step is fired
 by the server that answers the application's request, which is why the
 tools need the shared store: with the default in-memory store they are

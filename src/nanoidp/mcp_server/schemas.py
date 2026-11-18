@@ -12,7 +12,7 @@ from mcp.types import Tool
 from pydantic import BaseModel
 
 from ..models import OAuthClient, Settings, User
-from ..services.scenarios import ScenarioDeclaration
+from ..services.scenarios import UPDATABLE, ScenarioDeclaration
 from .field_schemas import field_property
 
 
@@ -685,10 +685,93 @@ def _named(model: type[BaseModel], argument: str, description: str) -> dict[str,
 
 _NOTHING: dict[str, Any] = {"type": "object", "properties": {}, "required": []}
 
-# The declaration of a scenario (#402), as its model says it: the events
-# and grant types as enums, the limits of name, count and steps, the fields
-# of the user it creates and the ones a step may set.
-_SCENARIO_DECLARATION: dict[str, Any] = ScenarioDeclaration.model_json_schema()
+
+
+def _inlined(fragment: Any, definitions: dict[str, Any]) -> Any:
+    """A model's JSON Schema as the other tools publish theirs: flat, with
+    each definition in the place that refers to it, an optional field as its
+    value branch (optional through ``required``, not through a null branch,
+    as ``field_schemas`` has it) and none of the titles pydantic generates."""
+    if isinstance(fragment, list):
+        return [_inlined(item, definitions) for item in fragment]
+    if not isinstance(fragment, dict):
+        return fragment
+    if "$ref" in fragment:
+        return _inlined(definitions[fragment["$ref"].rsplit("/", 1)[1]], definitions)
+    branches = fragment.get("anyOf")
+    if branches is not None:
+        (concrete,) = [branch for branch in branches if branch.get("type") != "null"]
+        rest = {key: value for key, value in fragment.items() if key not in ("anyOf", "default")}
+        return _inlined({**concrete, **rest}, definitions)
+    return {
+        key: (
+            # The names of an object's properties are data, not keywords.
+            {name: _inlined(value, definitions) for name, value in value.items()}
+            if key == "properties"
+            else _inlined(value, definitions)
+        )
+        for key, value in fragment.items()
+        if key not in ("title", "$defs")
+    }
+
+
+def _scenario_declaration() -> dict[str, Any]:
+    """The input schema of arm_scenario (#402): the declaration's own model
+    for what is the scenario's (its name, the events and grant types as
+    enums, the limits of count and of the steps), and the user model's
+    field shapes for the user it creates and for what a step may set, as
+    every tool that takes a user's fields publishes them.
+
+    The defaults are the parser's, which the descriptions say where they
+    are not the obvious ones. A secret of the wrong type is not repeated in
+    the refusal: that is the dispatcher's rule, for every tool."""
+    model = ScenarioDeclaration.model_json_schema()
+    schema: dict[str, Any] = _inlined(model, model.get("$defs", {}))
+    schema["properties"]["given"]["properties"]["user"] = {
+        "type": "object",
+        "description": (
+            "The runtime user the scenario creates: 'username' plus the fields of a users.yaml entry, "
+            "validated as the file is. Other keys are attributes, as in the file."
+        ),
+        "properties": {
+            "username": _domain(User, "username", "The user's name"),
+            "password": _domain(User, "password", "Password (omit for a user that only logs in through the persona picker)"),
+            "description": _domain(User, "description", "Display-only note shown in the persona login picker"),
+            "email": _domain(User, "email", "Email address (default: <username>@example.org)"),
+            "roles": _domain(User, "roles", "Roles (default: ['USER'])"),
+            "groups": _domain(User, "groups", "Groups"),
+            "tenant": _domain(User, "tenant", "Tenant identifier (default: 'default')"),
+            "identity_class": _domain(User, "identity_class", "Identity class (e.g., INTERNAL, EXTERNAL)"),
+            "entitlements": _domain(User, "entitlements", "Entitlements"),
+            "source_acl": _domain(User, "source_acl", "Source ACL list"),
+            "attributes": _domain(User, "attributes", "Custom key-value attributes"),
+            "totp_secret": _domain(User, "totp_secret", "Base32 TOTP secret, for a user that logs in with a second factor"),
+        },
+        "required": ["username"],
+        "additionalProperties": True,
+    }
+    schema["properties"]["steps"]["items"]["properties"]["update_user"] = {
+        "type": "object",
+        "description": (
+            "The fields to set on the scenario's user when the step fires. Each named field is replaced "
+            "whole; a field that is not named stays as it is."
+        ),
+        "properties": {name: _domain(User, name, f"The user's {name} from this step on") for name in UPDATABLE},
+        "minProperties": 1,
+        "additionalProperties": False,
+    }
+    # The one argument that is not the declaration's: the management secret,
+    # which the dispatcher takes off before the tool runs. Named here because
+    # the declaration takes no other key.
+    schema["properties"]["admin_secret"] = {
+        "type": "string",
+        "description": "The management secret, when one is configured (see the security guide)",
+    }
+    return schema
+
+
+# Built once: the declaration of a scenario as a tool argument.
+_SCENARIO_DECLARATION: dict[str, Any] = _scenario_declaration()
 _SCENARIO_NAME: dict[str, Any] = {
     "type": "object",
     "properties": {"name": {"type": "string", "description": "The scenario's name"}},

@@ -318,9 +318,9 @@ async def run_with_a_scenario(config_dir: str) -> int:
                     return json.loads((await session.call_tool(tool, arguments)).content[0].text)
 
                 schema = {tool.name: tool.input_schema for tool in (await session.list_tools()).tools}["arm_scenario"]
-                after = schema["$defs"]["Trigger"]["properties"]
-                if after["event"].get("enum") != ["token_issued", "authorization_completed"] or (
-                    "roles" not in schema["$defs"]["StepDeclaration"]["properties"]["update_user"]["properties"]
+                step = schema["properties"]["steps"]["items"]["properties"]
+                if step["after"]["properties"]["event"].get("enum") != ["token_issued", "authorization_completed"] or (
+                    "roles" not in step["update_user"]["properties"]
                 ):
                     print(f"[FAIL] the schema of arm_scenario does not say its events and fields: {schema!r}")
                     return 1

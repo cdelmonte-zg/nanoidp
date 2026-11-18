@@ -21,10 +21,16 @@ import yaml
 import nanoidp.mcp_server as mcp
 from nanoidp.app import create_app
 from nanoidp.config import User
+from nanoidp.mcp_server.field_schemas import field_shape
 from nanoidp.mcp_server.schemas import _TOOLS
 from nanoidp.services import scenarios
 from nanoidp.services.audit import get_audit_log
-from nanoidp.services.protocol_events import EVENTS, USER_GRANT_TYPES
+from nanoidp.services.protocol_events import (
+    AUTHORIZATION_COMPLETED,
+    EVENTS,
+    TOKEN_ISSUED,
+    USER_GRANT_TYPES,
+)
 from nanoidp.services.runtime_store import get_runtime_store
 from tests.conftest import claim_for_promotion
 
@@ -215,7 +221,8 @@ class TestTheAudit:
 
 
 class TestTheSchemaOfTheDeclaration:
-    """The input schema of arm_scenario is the declaration's own model: an
+    """The input schema of arm_scenario: the declaration's own model for
+    what is the scenario's, the user model's field shapes for the user. An
     agent sees the fields, the names and the limits without the guide."""
 
     @pytest.fixture
@@ -223,56 +230,118 @@ class TestTheSchemaOfTheDeclaration:
         (tool,) = [tool for tool in _TOOLS if tool.name == "arm_scenario"]
         return tool.input_schema
 
-    def _resolved(self, schema, fragment):
-        while "$ref" in fragment:
-            fragment = schema["$defs"][fragment["$ref"].rsplit("/", 1)[1]]
-        return fragment
-
-    def test_it_is_the_models(self, schema):
-        assert schema == scenarios.ScenarioDeclaration.model_json_schema()
+    def test_it_is_flat_like_the_schema_of_every_other_tool(self, schema):
+        """No definition to resolve, no null branch, none of the titles and
+        docstrings pydantic would publish: what a host that does not follow
+        local references still reads whole."""
         jsonschema.Draft202012Validator.check_schema(schema)
+        text = json.dumps(schema)
 
-    def test_the_scenario_its_name_and_its_steps(self, schema):
-        assert schema["required"] == ["name", "given", "steps"] and schema["additionalProperties"] is False
+        assert "$ref" not in text and "$defs" not in text and "anyOf" not in text
+        assert '"title"' not in text and "description" not in schema
+        for tool in _TOOLS:
+            assert "$ref" not in json.dumps(tool.input_schema), tool.name
+
+    def test_what_is_the_scenarios_comes_from_its_model(self, schema):
+        model = scenarios.ScenarioDeclaration.model_json_schema()
+
+        assert schema["required"] == model["required"] == ["name", "given", "steps"]
+        assert schema["additionalProperties"] is False
+        assert schema["properties"]["name"]["pattern"] == model["properties"]["name"]["pattern"]
         assert schema["properties"]["name"]["pattern"] == r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$"
         steps = schema["properties"]["steps"]
         assert (steps["minItems"], steps["maxItems"]) == (1, scenarios.MAX_STEPS)
-        step = self._resolved(schema, steps["items"])
-        assert step["required"] == ["after", "update_user"] and step["additionalProperties"] is False
+        assert steps["items"]["required"] == ["after", "update_user"] and steps["items"]["additionalProperties"] is False
+        assert schema["properties"]["given"]["required"] == ["user"]
+        assert schema["properties"]["given"]["additionalProperties"] is False
 
     def test_the_events_and_the_grant_types_are_enums(self, schema):
-        after = self._resolved(schema, self._resolved(schema, schema["properties"]["steps"]["items"])["properties"]["after"])
+        after = schema["properties"]["steps"]["items"]["properties"]["after"]
 
         assert after["additionalProperties"] is False and after["required"] == ["event"]
-        assert after["properties"]["event"]["enum"] == list(EVENTS)
-        grant_type = after["properties"]["grant_type"]
-        assert [option.get("enum") for option in grant_type["anyOf"]] == [list(USER_GRANT_TYPES), None]
+        assert after["properties"]["event"]["enum"] == [TOKEN_ISSUED, AUTHORIZATION_COMPLETED]
+        assert after["properties"]["grant_type"]["enum"] == list(USER_GRANT_TYPES)
+        assert after["properties"]["grant_type"]["type"] == "string"
         count = after["properties"]["count"]
         assert (count["type"], count["minimum"], count["default"]) == ("integer", 1, 1)
 
-    def test_the_user_it_creates_has_the_fields_of_the_user_model(self, schema):
-        user = self._resolved(schema, schema["properties"]["given"])["properties"]["user"]
-        fields = User.model_json_schema()["properties"]
+    def test_the_names_a_step_may_declare_are_the_ones_the_protocol_emits(self):
+        """The enum is a type and the emitted names are constants: this is
+        what holds them together."""
+        assert EVENTS == (TOKEN_ISSUED, AUTHORIZATION_COMPLETED)
+
+    def test_the_user_it_creates_has_the_shapes_of_the_user_model(self, schema):
+        user = schema["properties"]["given"]["properties"]["user"]
 
         assert user["type"] == "object" and user["required"] == ["username"]
-        assert user["properties"] == fields
-        assert user["properties"]["roles"] == {
-            "description": "User roles", "items": {"type": "string"}, "title": "Roles", "type": "array"
-        }
+        assert sorted(user["properties"]) == sorted(User.model_fields)
+        for name in User.model_fields:
+            shape = {key: value for key, value in user["properties"][name].items() if key != "description"}
+            assert shape == field_shape(User, name), name
+            assert user["properties"][name]["description"], name
+        assert user["properties"]["roles"]["type"] == "array" and user["properties"]["roles"]["items"] == {"type": "string"}
         assert user["properties"]["username"]["minLength"] == 1
         # Other keys are attributes, as in a users.yaml entry.
         assert user["additionalProperties"] is True
 
+    def test_the_defaults_it_states_are_the_ones_the_parser_gives(self, schema, idp):
+        user = schema["properties"]["given"]["properties"]["user"]["properties"]
+        _, made = scenarios.scenario_from(
+            {
+                "name": "defaults",
+                "given": {"user": {"username": "newcomer", "password": "pw"}},
+                "steps": [{"after": {"event": "token_issued"}, "update_user": {"roles": []}}],
+            },
+            "test",
+        )
+
+        assert (made.email, made.roles, made.tenant) == ("newcomer@example.org", ["USER"], "default")
+        assert "<username>@example.org" in user["email"]["description"]
+        assert "['USER']" in user["roles"]["description"]
+        assert "'default'" in user["tenant"]["description"]
+        assert "default" not in json.dumps({name: {k: v for k, v in p.items() if k != "description"} for name, p in user.items()})
+
     def test_a_step_sets_the_fields_that_carry_authority_and_no_other(self, schema):
-        step = self._resolved(schema, schema["properties"]["steps"]["items"])
-        update = step["properties"]["update_user"]
-        fields = User.model_json_schema()["properties"]
+        update = schema["properties"]["steps"]["items"]["properties"]["update_user"]
 
         assert sorted(update["properties"]) == sorted(scenarios.UPDATABLE)
         assert update["additionalProperties"] is False and update["minProperties"] == 1
         for name in scenarios.UPDATABLE:
-            assert update["properties"][name] == {k: v for k, v in fields[name].items() if k != "default"}, name
+            shape = {key: value for key, value in update["properties"][name].items() if key != "description"}
+            assert shape == field_shape(User, name), name
         assert update["properties"]["attributes"]["type"] == "object"
+
+    def test_it_takes_the_management_secret_and_no_other_key(self, schema):
+        """The declaration takes no key of its own, and a client that builds
+        its arguments from the schema has to be able to send the secret."""
+        validator = jsonschema.Draft202012Validator(schema)
+
+        assert schema["properties"]["admin_secret"]["type"] == "string"
+        assert list(validator.iter_errors({**_declaration(), "admin_secret": "the-secret"})) == []
+        assert [error.message for error in validator.iter_errors({**_declaration(), "other": 1})] == [
+            "Additional properties are not allowed ('other' was unexpected)"
+        ]
+
+    @pytest.mark.parametrize(
+        "user",
+        [
+            ["alice", "hunter2-in-a-list"],
+            '{"username": "alice", "password": "hunter2-in-a-string"}',
+            {"username": "alice", "password": 20261118},
+            {"username": "alice", "password": "pw", "totp_secret": 20261119},
+        ],
+    )
+    async def test_a_mistyped_user_is_refused_without_its_secrets_in_the_answer(self, idp, mcp_call_tool, user):
+        declaration = _declaration()
+        declaration["given"]["user"] = user
+
+        refused = await mcp_call_tool("arm_scenario", declaration)
+
+        assert refused.is_error is True
+        text = refused.content[0].text
+        assert "hunter2" not in text and "20261118" not in text and "20261119" not in text
+        assert "given.user" in text
+        assert idp.get(URL).get_json()["count"] == 0
 
     @pytest.mark.parametrize(
         "change, says",
@@ -304,10 +373,29 @@ class TestTheSchemaOfTheDeclaration:
         # did not validate: the schema promises nothing the service does not.
         assert idp.post(URL, json=declaration).status_code == 400
 
+    async def test_no_tool_repeats_a_value_of_the_wrong_type(self, idp, mcp_call_tool):
+        """The rule is the dispatcher's, for every tool: a password sent
+        as a number to create_user is not said back either."""
+        refused = await mcp_call_tool("create_user", {"username": "typo", "password": 20261120})
+
+        assert _payload(refused) == {
+            "error": "Input validation error: password: the value is not of type 'string'",
+            "code": "MCP_INVALID_ARGUMENTS",
+            "tool": "create_user",
+        }
+
+    async def test_a_value_of_the_right_type_is_still_named_in_its_refusal(self, idp, mcp_call_tool):
+        declaration = _declaration()
+        declaration["steps"][0]["after"]["event"] = "userinfo_read"
+
+        refused = _payload(await mcp_call_tool("arm_scenario", declaration))
+
+        assert refused["error"].startswith("Input validation error: steps.0.after.event: 'userinfo_read' is not one of")
+
     async def test_what_the_schema_accepts_the_service_arms(self, idp, mcp_call_tool):
         declaration = _declaration(grant_type="refresh_token", count=3)
         declaration["given"]["user"].update(
-            email="a@ci.test", groups=["ops"], attributes={"team": "blue"}, legacy_attr="old", identity_class=None
+            email="a@ci.test", groups=["ops"], attributes={"team": "blue"}, legacy_attr="old", identity_class="EXTERNAL"
         )
         declaration["steps"][0]["update_user"] = {
             "roles": ["ADMIN"], "groups": [], "entitlements": ["e1"], "source_acl": ["s1"],

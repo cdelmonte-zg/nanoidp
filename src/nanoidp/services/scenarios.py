@@ -44,7 +44,7 @@ test tells an applied step from one that was not.
 
 import logging
 import uuid
-from typing import Annotated, Any, Callable, Dict, List, Literal, Optional, Tuple
+from typing import Any, Callable, Dict, List, Literal, Optional, Tuple
 
 from pydantic import (
     BaseModel,
@@ -52,7 +52,6 @@ from pydantic import (
     Field,
     StrictInt,
     ValidationError,
-    WithJsonSchema,
     model_validator,
 )
 
@@ -145,51 +144,22 @@ class Trigger(_Strict):
         return self.event == event.name and self.grant_type in (None, event.grant_type)
 
 
-def _user_properties() -> Dict[str, Any]:
-    properties: Dict[str, Any] = User.model_json_schema()["properties"]
-    return properties
-
-
-# What the two objects below are, said as the user model says its fields.
-# They are read by the parser of a runtime user, in every form a users.yaml
-# entry has, and not by a model of their own, so the schema is attached to
-# them rather than derived from a second description of a user.
-_GIVEN_USER_SCHEMA: Dict[str, Any] = {
-    "type": "object",
-    "description": (
-        "The runtime user the scenario creates: 'username' plus the fields of a users.yaml entry. "
-        "Other keys are attributes, as in the file."
-    ),
-    "properties": _user_properties(),
-    "required": ["username"],
-    "additionalProperties": True,
-}
-_UPDATE_USER_SCHEMA: Dict[str, Any] = {
-    "type": "object",
-    "description": "The fields to set on the scenario's user when the step fires; each named field is replaced whole.",
-    # Without the defaults of the model: a field that is not named is left
-    # as it is, not set to its default.
-    "properties": {
-        name: {key: value for key, value in _user_properties()[name].items() if key != "default"} for name in UPDATABLE
-    },
-    "minProperties": 1,
-    "additionalProperties": False,
-}
-
-
 class StepDeclaration(_Strict):
     after: Trigger
-    update_user: Annotated[Dict[str, Any], WithJsonSchema(_UPDATE_USER_SCHEMA)]
+    # Read by the parser of a runtime user, as the fields of a users.yaml
+    # entry are, and not by a model of its own: see ``scenario_from``.
+    update_user: Dict[str, Any]
 
 
 class Given(_Strict):
-    user: Annotated[Dict[str, Any], WithJsonSchema(_GIVEN_USER_SCHEMA)]
+    user: Dict[str, Any]
 
 
 class ScenarioDeclaration(_Strict):
-    """What a caller declares to arm a scenario: the body of ``POST
-    /api/runtime/scenarios`` and the arguments of the MCP tool, whose
-    input schema is this model's."""
+    # What a caller declares to arm a scenario: the body of POST
+    # /api/runtime/scenarios and the arguments of the MCP tool, whose input
+    # schema is built from this model's (mcp_server.schemas). No docstring:
+    # pydantic would publish it as the schema's description.
 
     # A path segment as every client sends it: no dot segment.
     name: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$", description="The scenario's name")
