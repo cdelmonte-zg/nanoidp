@@ -1824,7 +1824,27 @@ class TestTheKeysThatSignAreOnePair:
         CryptoService(keys_dir=str(keys_dir))
         (keys_dir / "rsa_public.pem").write_bytes(b"not a key")
 
-        with pytest.raises(KeysAreNotOnePair):
+        with pytest.raises(KeysAreNotOnePair) as refused:
+            CryptoService(keys_dir=str(keys_dir))
+
+        # Said as what it is, not as a rotation that never happened.
+        said = str(refused.value)
+        assert "cannot be read as an RSA key pair" in said and "two key pairs" not in said
+
+    def test_a_pair_that_is_not_rsa_is_refused_too(self, tmp_path):
+        from cryptography.hazmat.primitives.asymmetric import ec
+
+        keys_dir = tmp_path / "keys"
+        CryptoService(keys_dir=str(keys_dir))
+        key = ec.generate_private_key(ec.SECP256R1())
+        (keys_dir / "rsa_private.pem").write_bytes(
+            key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption())
+        )
+        (keys_dir / "rsa_public.pem").write_bytes(
+            key.public_key().public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
+        )
+
+        with pytest.raises(KeysAreNotOnePair, match="must be RSA keys"):
             CryptoService(keys_dir=str(keys_dir))
 
     def test_a_rotation_still_puts_such_a_directory_right(self, behind_a_link):

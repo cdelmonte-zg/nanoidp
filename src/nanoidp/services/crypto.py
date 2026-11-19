@@ -97,21 +97,56 @@ class ExternalKeysNotRotatable(ValueError):
     kind = EXTERNAL_KEYS_NOT_ROTATABLE_KIND
 
 
+def _rsa_keys(
+    private_pem: bytes, public_pem: bytes, whose: str, validate: bool = True
+) -> Tuple[rsa.RSAPrivateKey, rsa.RSAPublicKey]:
+    """The two PEMs as RSA keys, or a ValueError that says which they are
+    not: keys at all, or RSA keys. ``validate`` is the consistency check of
+    the private key's own numbers, which takes some twenty milliseconds:
+    for keys an operator provides, not for a comparison of public numbers
+    made under the keys directory's lock."""
+    try:
+        private = serialization.load_pem_private_key(
+            private_pem, password=None, unsafe_skip_rsa_key_validation=not validate
+        )
+        public = serialization.load_pem_public_key(public_pem)
+    except Exception as unreadable:
+        # ValueError, TypeError or UnsupportedAlgorithm, by what the bytes are.
+        raise ValueError(f"Invalid PEM key format: {unreadable}") from unreadable
+    if not isinstance(private, rsa.RSAPrivateKey) or not isinstance(public, rsa.RSAPublicKey):
+        raise ValueError(f"{whose} must be RSA keys")
+    return private, public
+
+
+def _are_one_pair(private: rsa.RSAPrivateKey, public: rsa.RSAPublicKey) -> bool:
+    """Two valid keys from different pairs would sign tokens with one key
+    while the JWKS serves the other (#358, #507)."""
+    return private.public_key().public_numbers() == public.public_numbers()
+
+
 class KeysAreNotOnePair(ValueError):
     """The private key of a bundle is not the private key of its public
     key (#507): the files of two key pairs, which is what a key rotation
     that did not finish leaves when nothing recovers it. A service that
     signed with them would issue tokens its own published key does not
-    verify, so none is built on them."""
+    verify, so none is built on them. Also what two files that are no RSA
+    keys are answered with (``unreadable``), which is said as what it is."""
 
-    def __init__(self, keys_dir: Path, kid: str) -> None:
-        work = keys_dir / ".rotation"
+    def __init__(self, keys_dir: Path, kid: str, unreadable: Optional[ValueError] = None) -> None:
+        private, public = key_directory.PRIVATE, key_directory.PUBLIC
+        if unreadable is not None:
+            super().__init__(
+                f"{keys_dir}: {private} and {public} cannot be read as an RSA key pair ({unreadable}), and "
+                "nothing is signed with them. Restore the files of the key pair, or remove the keys to have "
+                "new ones generated"
+            )
+            return
         super().__init__(
-            f"{keys_dir}: rsa_private.pem is not the private key of rsa_public.pem, the key kid.txt names ({kid}). "
-            "These are the files of two key pairs, as a key rotation that did not finish leaves them, and "
-            f"nothing is signed with them. If {work} is a symbolic link, put the directory it points at in its "
-            "place and start again: the rotation is then recovered. Otherwise restore the files of one key pair, "
-            "or remove the keys to have new ones generated"
+            f"{keys_dir}: {private} is not the private key of {public}, the key {key_directory.MARKER} names "
+            f"({kid}). These are the files of two key pairs, as a key rotation that did not finish leaves them, "
+            f"and nothing is signed with them. If {keys_dir / key_directory.WORK} is a symbolic link, put the "
+            "directory it points at in its place and start again: the rotation is then recovered. Otherwise "
+            "restore the files of one key pair, or remove the keys to have new ones generated"
         )
 
 
@@ -316,13 +351,10 @@ class CryptoService:
 
     def _require_one_pair(self, bundle: "key_directory.Bundle") -> None:
         try:
-            private = serialization.load_pem_private_key(bundle.private_pem, password=None)
-            published = serialization.load_pem_public_key(bundle.public_pem)
-            one_pair = private.public_key().public_numbers() == published.public_numbers()  # type: ignore[union-attr]
-        except (ValueError, TypeError, AttributeError):
-            # Not a key, or not an RSA key: no pair either.
-            one_pair = False
-        if not one_pair:
+            private, published = _rsa_keys(bundle.private_pem, bundle.public_pem, "The keys", validate=False)
+        except ValueError as unreadable:
+            raise KeysAreNotOnePair(self.keys_dir, bundle.kid, unreadable) from unreadable
+        if not _are_one_pair(private, published):
             raise KeysAreNotOnePair(self.keys_dir, bundle.kid)
 
     def _new_bundle(self, previous: Tuple["key_directory.PreviousKey", ...]) -> "key_directory.Bundle":
@@ -366,18 +398,8 @@ class CryptoService:
             pub_pem = f.read()
 
         # Validate keys are valid RSA
-        try:
-            private_key = serialization.load_pem_private_key(priv_pem, password=None)
-            public_key = serialization.load_pem_public_key(pub_pem)
-        except Exception as e:
-            raise ValueError(f"Invalid PEM key format: {e}") from e
-        if not isinstance(private_key, rsa.RSAPrivateKey) or not isinstance(
-            public_key, rsa.RSAPublicKey
-        ):
-            raise ValueError("External keys must be RSA keys")
-        # Two valid keys from different pairs would sign tokens with one key
-        # while the JWKS serves the other (#358).
-        if private_key.public_key().public_numbers() != public_key.public_numbers():
+        private_key, public_key = _rsa_keys(priv_pem, pub_pem, "External keys")
+        if not _are_one_pair(private_key, public_key):
             raise ValueError(
                 f"External public key {pub_path} does not belong to the private key {priv_path}"
             )

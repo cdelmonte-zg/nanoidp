@@ -74,7 +74,8 @@ _MODES = {PRIVATE: 0o600, PUBLIC: 0o644, CERTIFICATE: 0o644, METADATA: 0o644, MA
 
 # Where a rotation keeps what it needs to be undone or finished.
 _TEMPORARY = ".writing-"
-_WORK = ".rotation"
+WORK = ".rotation"
+_WORK = WORK
 _JOURNAL = "journal.json"
 _ROLLBACK = "rollback"
 
