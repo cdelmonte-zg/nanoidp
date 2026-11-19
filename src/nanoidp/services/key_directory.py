@@ -379,7 +379,6 @@ def _load_without_the_lock(keys_dir: Path) -> Optional[Bundle]:
     """What a read-only view can do: read, and check that nothing moved
     while it did. It cannot recover a rotation that died, so one it keeps
     finding under way is an error that says what to do."""
-    _require_no_link_at_the_work_directory(keys_dir)
     deadline = time.monotonic() + _READ_ONLY_PATIENCE_SECONDS
     while True:
         # Looked at before the read and after it: a rotation, or the
@@ -414,7 +413,9 @@ def load(keys_dir: Path) -> Optional[Bundle]:
     """The published bundle, or None when there is none. Caller holds the
     lock, so what the marker names is whole: the lock's recovery settled
     whatever a rotation left, unless a link stands where its work directory
-    would be, and then nothing here can be called whole (#507)."""
+    would be, and then nothing here can be called whole (#507). Refused
+    here, the one place both the load under the lock and the reader without
+    it come through."""
     _require_no_link_at_the_work_directory(keys_dir)
     kid = active_kid(keys_dir)
     if kid is None:
