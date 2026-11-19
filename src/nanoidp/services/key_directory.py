@@ -162,6 +162,38 @@ class RestoreNeedsItsRollback(LockUnavailableError):
         )
 
 
+class WorkDirectoryIsALink(LockUnavailableError):
+    """A symbolic link stands at the work directory's name, and the keys
+    are not loaded while it does (#507), with the lock or without. The link
+    is not followed, so a rotation that was interrupted through it cannot be
+    told from none, and what such a rotation leaves can look whole: after
+    the public key is replaced the pair is the new one under the old kid,
+    which no look at the live files tells from a published bundle.
+
+    Not a ``LockNamespaceUnavailable``, on purpose: that is what
+    ``load_published`` answers by reading without the lock, and the reader
+    without the lock refuses for the same link. The same refusal as an
+    obstacle of #492 on the surfaces of a rotation."""
+
+    def __init__(self, keys_dir: Path, work: Path) -> None:
+        super().__init__(
+            f"{work} stands in the way of the keys in {keys_dir}: it is a symbolic link, which is not followed, so "
+            "a key rotation that was interrupted through it cannot be told from none; the keys were not touched "
+            "and are not loaded. Check the keys and whether a key rotation was interrupted before changing the "
+            "link: if one was, put the directory the link points at in its place and start again, and it is "
+            "recovered; if none was, remove the link",
+            kind="keys_directory_not_writable",
+        )
+
+
+def _require_no_link_at_the_work_directory(keys_dir: Path) -> None:
+    """Before the keys are read to be used. It stops at the link: nothing
+    behind it is looked at."""
+    work = keys_dir / _WORK
+    if not _its_own(work):
+        raise WorkDirectoryIsALink(keys_dir, work)
+
+
 def _checkpoint(step: str) -> None:
     """A seam and nothing else: the tests put a death here, at each step in
     turn."""
@@ -347,6 +379,7 @@ def _load_without_the_lock(keys_dir: Path) -> Optional[Bundle]:
     """What a read-only view can do: read, and check that nothing moved
     while it did. It cannot recover a rotation that died, so one it keeps
     finding under way is an error that says what to do."""
+    _require_no_link_at_the_work_directory(keys_dir)
     deadline = time.monotonic() + _READ_ONLY_PATIENCE_SECONDS
     while True:
         # Looked at before the read and after it: a rotation, or the
@@ -379,7 +412,10 @@ def active_kid(keys_dir: Path) -> Optional[str]:
 
 def load(keys_dir: Path) -> Optional[Bundle]:
     """The published bundle, or None when there is none. Caller holds the
-    lock, so what the marker names is whole."""
+    lock, so what the marker names is whole: the lock's recovery settled
+    whatever a rotation left, unless a link stands where its work directory
+    would be, and then nothing here can be called whole (#507)."""
+    _require_no_link_at_the_work_directory(keys_dir)
     kid = active_kid(keys_dir)
     if kid is None:
         return None
@@ -520,11 +556,10 @@ def _recover(keys_dir: Path) -> None:
     if not _its_own(work):
         # Nothing is settled through it, a journal behind it included: a
         # rotation an earlier version made through a link and did not end
-        # is not recovered, and the operator looks at the keys (#507).
+        # is not recovered, and no load takes the keys for whole (#507).
         logger.warning(
-            "A symbolic link at %s is not followed: no key rotation is made while it is there, and one that "
-            "was interrupted through it is not recovered. To have it recovered, put the directory the link "
-            "points at in its place; otherwise remove the link",
+            "A symbolic link at %s is not followed: no key rotation is recovered through it, and the keys are "
+            "neither loaded nor rotated while it is there",
             work,
         )
         return

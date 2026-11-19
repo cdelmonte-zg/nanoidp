@@ -410,11 +410,16 @@ cannot write the directory takes it for a rotation that never ends, and
 refuses to load the keys while it is there.
 
 A symbolic link at `.rotation` is never followed, whatever it points at:
-the keys load, nothing is recovered, removed or written through the link,
-and a rotation is refused in the same way while the link is there. The
-same holds for `.rotation/rollback`: a rotation that was interrupted is not
-restored through a link there, and the process does not start until the
-rollback directory is back in its place.
+nothing is recovered, removed or written through it. Since nothing behind
+it is looked at, a rotation that was interrupted through it cannot be told
+from none, so while the link is there the keys are not loaded, with the
+lock or without, and a process does not start; a rotation is refused in
+the same way. Check the keys and whether a rotation was interrupted before
+changing the link: if one was, put the directory the link points at in its
+place and it is recovered at the next start; if none was, remove the link.
+The same holds one level down: a rotation that was interrupted is not
+restored through a link at `.rotation/rollback`, and the process does not
+start until the rollback directory is back in its place.
 
 A symbolic link at `previous/` is read and never written through: the
 public keys `keys.json` lists are loaded from its target, so tokens issued
@@ -426,9 +431,9 @@ verified with.
 
 Before a process signs with the keys it loaded, it checks that
 `rsa_private.pem` is the private key of `rsa_public.pem`. Files of two key
-pairs, which an interrupted rotation leaves when nothing recovers it, are
-refused with a message that names the directory: the process does not
-start on them, and a running one keeps the keys it has.
+pairs, which an interrupted rotation leaves when its work directory was
+removed by hand, are refused with a message that names the directory: the
+process does not start on them, and a running one keeps the keys it has.
 
 A keys directory that a process cannot write (a read-only mount, a volume
 owned by another user) still works for that process: it loads the published

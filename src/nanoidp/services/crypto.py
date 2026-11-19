@@ -143,10 +143,9 @@ class KeysAreNotOnePair(ValueError):
             return
         super().__init__(
             f"{keys_dir}: {private} is not the private key of {public}, the key {key_directory.MARKER} names "
-            f"({kid}). These are the files of two key pairs, as a key rotation that did not finish leaves them, "
-            f"and nothing is signed with them. If {keys_dir / key_directory.WORK} is a symbolic link, put the "
-            "directory it points at in its place and start again: the rotation is then recovered. Otherwise "
-            "restore the files of one key pair, or remove the keys to have new ones generated"
+            f"({kid}). These are the files of two key pairs, as a key rotation that did not finish and was not "
+            "recovered leaves them, and nothing is signed with them. Either restore the files of one key pair, or "
+            "remove the keys to have new ones generated"
         )
 
 
@@ -178,7 +177,12 @@ def rotation_refusal(refused: Union[ExternalKeysNotRotatable, LockUnavailableErr
     logger.warning("Key rotation refused: %s", refused)
     permanent = isinstance(
         refused,
-        (LockNamespaceUnavailable, key_directory.KeysDirectoryCannotBeCreated, key_directory.RestoreNeedsItsRollback),
+        (
+            LockNamespaceUnavailable,
+            key_directory.KeysDirectoryCannotBeCreated,
+            key_directory.RestoreNeedsItsRollback,
+            key_directory.WorkDirectoryIsALink,
+        ),
     )
     message = KEYS_DIRECTORY_NOT_WRITABLE if permanent else KEYS_DIRECTORY_LOCK_UNAVAILABLE
     return RotationRefusal(message, refused.kind, permanent=permanent, retryable=refused.retryable)
