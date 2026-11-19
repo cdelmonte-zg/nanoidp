@@ -1745,7 +1745,9 @@ class TestTheKeysThatSignAreOnePair:
 
         said = str(refused.value)
         assert str(keys_dir) in said and "rsa_private.pem" in said and "rsa_public.pem" in said
-        assert "nothing is signed" in said and ".rotation" in said
+        assert "nothing is signed" in said
+        # What to do, and where: the operator's way back to one key pair.
+        assert f"If {keys_dir / '.rotation'} is a symbolic link, put the directory it points at in its place" in said
         assert _what_is_in(keys_dir.parent / "elsewhere") == there
 
     @_NEEDS_MODE_BITS
