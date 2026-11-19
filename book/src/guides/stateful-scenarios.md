@@ -181,15 +181,9 @@ event, as `POST /api/users/{username}/token` is none. In read-only mode
 
 ## Recipes
 
-The repository [nanoidp-recipes](https://github.com/cdelmonte-zg/nanoidp-recipes)
-holds scenarios as tests that run: each recipe is a declaration, the
-`settings.yaml` and `users.yaml` it needs, and a pytest test that arms it,
-makes the application's calls and checks the tokens. Among them are a role
-taken away between the login and the refresh, a change during an
-authorization code flow with PKCE, a step with a `count`, and a scenario
-armed by an agent through the MCP tools. A recipe folder and one
-`conftest.py` are all a project needs to take one away; the README of each
-recipe says what to change.
+[nanoidp-recipes](https://github.com/cdelmonte-zg/nanoidp-recipes) holds
+scenarios as tests that run: each recipe is a declaration, its
+`settings.yaml` and `users.yaml`, and a pytest test to copy into a project.
 
 ## Good to know
 

@@ -182,3 +182,8 @@ Runtime identities live in the runtime store, which is the process's own by
 default: a second NanoIDP process does not see them. When a test setup needs
 two processes on one machine to share them, see [Two processes, one runtime
 state](shared-runtime-store.md).
+
+## An identity that changes during a test
+
+A runtime user whose roles change when the application asks for its next
+token is a [stateful identity scenario](stateful-scenarios.md).

@@ -186,18 +186,15 @@ named here:
     POST, request objects refused instead of ignored, the access token at
     `/userinfo` in a POST body, and a reused authorization code that
     revokes the tokens issued from it. No certification is claimed.
+11. **Stateful identity scenarios**
+    ([#402](https://github.com/cdelmonte-zg/nanoidp/issues/402)): a test
+    user changes during a test in answer to the application's own protocol
+    calls, armed over the runtime API or through MCP tools, without
+    turning nanoidp into a general request/response scripting engine.
 
 ### What comes next
 
-The shared store settled the direction that used to be written here as
-a chain. What follows from it is concrete and tracked:
-
-- [#402](https://github.com/cdelmonte-zg/nanoidp/issues/402): stateful
-  identity test scenarios: an identity evolves deterministically during a
-  test in response to the application's own protocol operations, without
-  turning nanoidp into a general request/response scripting engine.
-
-Beyond these the project stays open to extension, and the test for
+Nothing is planned. The project stays open to extension, and the test for
 an extension is principle 1 rather than a feature freeze: it belongs when
 it makes nanoidp a better instrument for testing a client, a server or an
 agent, and it does not when its purpose is to operate an identity

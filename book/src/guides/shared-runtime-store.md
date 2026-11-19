@@ -137,5 +137,7 @@ on up to 50 ms between tries, within the same 10 seconds.
 
 - [Disposable test identities](runtime-identities.md), the identities this
   store lets two processes share.
+- [Stateful identity scenarios](stateful-scenarios.md), which live in the
+  same store and are armed from either process.
 - [Configuration](../reference/configuration.md), for the `runtime:` section
   rule by rule.
