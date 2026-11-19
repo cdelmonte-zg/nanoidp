@@ -1131,6 +1131,34 @@ def _a_dangling_symlink_at_previous(keys_dir, service):
     return keys_dir / "previous", lambda: (keys_dir / "previous").unlink()
 
 
+def _somebody_elses_previous(elsewhere):
+    """A directory that is not NanoIDP's, with the two files that tell its
+    sweep from its pruning: a temporary file under the sweep's prefix, and
+    a public key no ``keys.json`` refers to."""
+    elsewhere.mkdir()
+    (elsewhere / ".writing-theirs").write_text("not a temporary file of NanoIDP")
+    (elsewhere / "theirs_public.pem").write_text("not a key of NanoIDP")
+    (elsewhere / "notes.txt").write_text("keep")
+    return elsewhere
+
+
+def _a_link_at_previous(keys_dir, service):
+    """The previous keys kept elsewhere, by a link: what is there already
+    moves to the target, as an operator would have set it up."""
+    elsewhere = _somebody_elses_previous(keys_dir.parent / "previous-elsewhere")
+    if (keys_dir / "previous").is_dir():
+        for file in (keys_dir / "previous").iterdir():
+            file.rename(elsewhere / file.name)
+        (keys_dir / "previous").rmdir()
+    (keys_dir / "previous").symlink_to(elsewhere)
+
+    def remove():
+        (keys_dir / "previous").unlink()
+        shutil.rmtree(elsewhere)
+
+    return keys_dir / "previous", remove
+
+
 def _previous_read_only(keys_dir, service):
     (keys_dir / "previous").mkdir(exist_ok=True)
     (keys_dir / "previous").chmod(0o555)
@@ -1255,6 +1283,7 @@ _NEEDS_SYMLINKS = pytest.mark.skipif(os.name != "posix", reason="needs a symlink
 _OBSTACLES = [
     pytest.param(_a_file_at_previous, id="a file at previous"),
     pytest.param(_a_dangling_symlink_at_previous, id="a dangling symlink at previous", marks=_NEEDS_SYMLINKS),
+    pytest.param(_a_link_at_previous, id="a link at previous", marks=_NEEDS_SYMLINKS),
     pytest.param(_previous_read_only, id="previous read-only", marks=_NEEDS_MODE_BITS),
     pytest.param(_a_directory_where_a_previous_key_goes, id="a directory where a previous key goes"),
     pytest.param(_a_directory_where_a_key_to_prune_is, id="a directory where a key to prune is"),
@@ -1899,3 +1928,129 @@ class TestARestoreNeverReadsItsRollbackThroughALink:
 
         assert _whole(keys_dir).kid == new_kid
         assert _what_is_in(tmp_path / "elsewhere") == there
+
+
+@_NEEDS_SYMLINKS
+class TestASymbolicLinkAtPrevious:
+    """Through a symbolic link at ``previous`` NanoIDP reads, and never
+    writes, deletes or sweeps (#513). Measured before: taking the lock
+    deleted the ``.writing-*`` files of the target, and a rotation wrote the
+    retired key there and pruned every ``*_public.pem`` that ``keys.json``
+    did not name."""
+
+    @pytest.fixture
+    def published(self, tmp_path, app):
+        from nanoidp.services import crypto as crypto_module
+
+        keys_dir = tmp_path / "keys"
+        service = CryptoService(keys_dir=str(keys_dir))
+        crypto_module.publish_crypto_service(service)
+        return keys_dir, service, app.test_client()
+
+    @staticmethod
+    def _token(client, auth_header):
+        response = client.post("/token", data={"grant_type": "client_credentials"}, headers=auth_header)
+        assert response.status_code == 200, response.get_data(as_text=True)
+        return response.get_json()["access_token"]
+
+    @staticmethod
+    def _active(client, auth_header, token):
+        return client.post("/introspect", data={"token": token}, headers=auth_header).get_json()["active"]
+
+    def test_a_token_from_before_the_rotation_verifies_after_a_restart_through_the_link(self, published, auth_header):
+        from nanoidp.services import crypto as crypto_module
+
+        keys_dir, service, client = published
+        earlier = self._token(client, auth_header)
+        retired = service.kid
+        assert client.post("/api/keys/rotate").status_code == 200
+        where, _ = _a_link_at_previous(keys_dir, service)
+        target = Path(os.readlink(where))
+        assert (target / f"{retired}_public.pem").is_file()
+
+        crypto_module.publish_crypto_service(CryptoService(keys_dir=str(keys_dir)))
+
+        assert self._active(client, auth_header, earlier) is True
+        # And it is the key behind the link that verifies it: without the
+        # file there, the same restart leaves the token unverified.
+        (target / f"{retired}_public.pem").unlink()
+        crypto_module.publish_crypto_service(CryptoService(keys_dir=str(keys_dir)))
+        assert self._active(client, auth_header, earlier) is False
+
+    @pytest.mark.parametrize("kept", [3, 0])
+    def test_a_rotation_is_refused_before_it_probes_or_writes_a_journal(self, tmp_path, app, monkeypatch, kept):
+        import tempfile
+
+        from nanoidp.services import crypto as crypto_module
+
+        keys_dir = tmp_path / "keys"
+        service = CryptoService(keys_dir=str(keys_dir), max_previous_keys=kept)
+        crypto_module.publish_crypto_service(service)
+        kid = service.kid
+        where, _ = _a_link_at_previous(keys_dir, service)
+        target = Path(os.readlink(where))
+        there = _what_is_in(target)
+        probed, real_mkstemp = [], tempfile.mkstemp
+
+        def mkstemp(*args, **kwargs):
+            probed.append(Path(kwargs["dir"]).resolve())
+            return real_mkstemp(*args, **kwargs)
+
+        monkeypatch.setattr(tempfile, "mkstemp", mkstemp)
+
+        response = app.test_client().post("/api/keys/rotate")
+
+        assert response.status_code == 409 and response.get_json() == _REFUSED
+        assert target.resolve() not in probed
+        assert not (keys_dir / ".rotation").exists()
+        assert key_directory.active_kid(keys_dir) == kid and service.kid == kid
+        assert where.is_symlink() and _what_is_in(target) == there
+
+    def test_taking_the_lock_at_a_start_sweeps_nothing_through_the_link(self, published):
+        keys_dir, service, _ = published
+        where, _ = _a_link_at_previous(keys_dir, service)
+        target = Path(os.readlink(where))
+        there = _what_is_in(target)
+        assert ".writing-theirs" in there
+
+        CryptoService(keys_dir=str(keys_dir))
+
+        assert where.is_symlink() and _what_is_in(target) == there
+
+    @pytest.mark.parametrize("step", ["live:rsa_private.pem", "marker:committed"])
+    def test_a_recovery_is_made_and_prunes_nothing_through_the_link(self, tmp_path, monkeypatch, step):
+        """A rotation that began with a real ``previous`` and died, before
+        its commit or after it; the link came afterwards. The recovery is
+        owed all the same, and its last step is the pruning: neither the key
+        the dead rotation added nor a public key of somebody else is its to
+        delete there."""
+        keys_dir = tmp_path / "keys"
+        service = CryptoService(keys_dir=str(keys_dir))
+        before = _snapshot(keys_dir)
+        _die_at(monkeypatch, step)
+        with pytest.raises(Killed):
+            service.rotate_keys()
+        monkeypatch.undo()
+        where, _ = _a_link_at_previous(keys_dir, service)
+        target = Path(os.readlink(where))
+        there = _what_is_in(target)
+        assert "theirs_public.pem" in there and f"{before['kid.txt'].decode()}_public.pem" in there
+
+        loaded = CryptoService(keys_dir=str(keys_dir))
+
+        assert not (keys_dir / ".rotation").exists()
+        assert (loaded.kid == before["kid.txt"].decode()) is (step == "live:rsa_private.pem")
+        assert where.is_symlink() and _what_is_in(target) == there
+
+    def test_a_real_directory_is_still_pruned(self, tmp_path):
+        """The other side of the guard: what nothing refers to goes."""
+        keys_dir = tmp_path / "keys"
+        service = CryptoService(keys_dir=str(keys_dir), max_previous_keys=1)
+        first = service.kid
+        service.rotate_keys()
+        (keys_dir / "previous" / "stray_public.pem").write_text("nobody's")
+
+        service.rotate_keys()
+
+        assert not (keys_dir / "previous" / "stray_public.pem").exists()
+        assert not (keys_dir / "previous" / f"{first}_public.pem").exists()

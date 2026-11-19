@@ -416,6 +416,14 @@ same holds for `.rotation/rollback`: a rotation that was interrupted is not
 restored through a link there, and the process does not start until the
 rollback directory is back in its place.
 
+A symbolic link at `previous/` is read and never written through: the
+public keys `keys.json` lists are loaded from its target, so tokens issued
+before the last rotation still verify, while nothing is swept or pruned
+there and a rotation is refused until a real directory stands in its
+place. The target then counts as much as the keys directory itself:
+whoever can replace a public key there changes the key its `kid` is
+verified with.
+
 Before a process signs with the keys it loaded, it checks that
 `rsa_private.pem` is the private key of `rsa_public.pem`. Files of two key
 pairs, which an interrupted rotation leaves when nothing recovers it, are

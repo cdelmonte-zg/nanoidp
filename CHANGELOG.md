@@ -15,6 +15,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   refuses to start on the two key pairs the rotation left. Put the
   directory the link points at in its place, as `<keys_dir>/.rotation`,
   and start again: a real directory there is recovered as ever.
+- **A rotation is refused while `previous/` in the keys directory is a
+  symbolic link** (#513). The previous public keys are still read through
+  the link, so tokens issued before the last rotation go on verifying,
+  and the target counts as much as the keys directory: whoever can
+  replace a public key there changes the key its `kid` is verified with.
+  To rotate again and keep verifying those tokens, replace the link with
+  a real directory that holds the public keys `keys.json` still lists.
 - **A keys directory whose `rsa_private.pem` is not the private key of its
   `rsa_public.pem` no longer starts a server** (#507). It did, and issued
   tokens its own published key did not verify. The message names the
@@ -58,6 +65,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   link at `.rotation/rollback` is not followed either: an interrupted
   rotation is not restored through it, the live keys are not touched, and
   the start and a rotation are refused until the directory is back.
+- **Nothing is written, swept or pruned through a symbolic link at
+  `previous/`** (#513). Taking the keys directory's lock deleted the
+  `.writing-*` files of the link's target, and a rotation wrote the
+  retired public key there and deleted every `*_public.pem` that
+  `keys.json` did not name. Now the link is read only: a rotation answers
+  `409 keys_directory_not_writable` before it writes anything, also with
+  `max_previous_keys: 0`, and the sweep and the pruning leave the target
+  alone.
 - **A server signs only with keys that are one pair** (#507). Before a
   bundle becomes what the service signs with, loaded with the keys
   directory's lock or without it, its private key is checked against its

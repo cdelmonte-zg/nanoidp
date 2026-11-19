@@ -296,20 +296,26 @@ def _require_directory(keys_dir: Path, directory: Path) -> List[Path]:
 
 
 def _its_own(directory: Path) -> bool:
-    """Whether what stands at a work directory's name is this keys
-    directory's to use: a real directory, or nothing yet. A symbolic link is
-    neither (#507), and is never followed, whatever it points at: finding
-    out what is behind it would already be following it. NanoIDP makes no
-    link here, so one that is there is somebody else's, and so is its
-    target."""
+    """Whether what stands at the name of a directory NanoIDP writes is
+    this keys directory's to write: a real directory, or nothing yet. A
+    symbolic link is neither. NanoIDP makes no link here, so one that is
+    there is somebody else's, and so is its target: nothing is written,
+    removed or swept through it.
+
+    At the work directory and its rollback the link is not followed at all
+    (#507): finding out what is behind it would already be following it,
+    and what is read there drives a restore. At ``previous`` it is read
+    (#513): the public keys of earlier rotations, which an instance may
+    keep elsewhere and still verify with."""
     return not directory.is_symlink()
 
 
-def _require_no_link_at(keys_dir: Path, directory: Path) -> None:
-    """Before a rotation removes, probes or writes anything at a work
-    directory's name: through a link all three would land in the target."""
+def _require_no_link_at(keys_dir: Path, directory: Path, a_link_there: str = "a symbolic link, which is not followed") -> None:
+    """Before a rotation removes, probes or writes anything at the name of
+    a directory it writes: through a link all three would land in the
+    target."""
     if not _its_own(directory):
-        a_link = NotADirectoryError(errno.ENOTDIR, "a symbolic link, which is not followed", str(directory))
+        a_link = NotADirectoryError(errno.ENOTDIR, a_link_there, str(directory))
         raise KeysDirectoryNotWritable(keys_dir, a_link, obstacle=directory)
 
 
@@ -461,8 +467,11 @@ def rotate(keys_dir: Path, new: Bundle) -> None:
     # left of an earlier attempt is litter. It goes if it can; if it cannot
     # (a file held open on Windows), it does no harm: the journal lists the
     # files THIS rollback wrote, and a restore takes nothing else from it.
-    # A link at its name is no litter of ours and is refused first (#507).
+    # A link at its name is no litter of ours and is refused first (#507),
+    # and so is one at ``previous`` (#513), before the checks that follow
+    # write a probe there.
     _require_no_link_at(keys_dir, work)
+    _require_no_link_at(keys_dir, keys_dir / PREVIOUS, "a symbolic link, which is read and never written through")
     shutil.rmtree(work, ignore_errors=True)
     # And only now, with the litter gone where it could go, what this
     # rotation writes is looked at: refused here, there is no journal.
@@ -568,8 +577,10 @@ def _sweep_temporaries(keys_dir: Path) -> None:
     it for the external keys' certificate too), so under it a temporary
     file is nobody's, and one of them may hold a private key."""
     work = keys_dir / _WORK
-    swept = [keys_dir, keys_dir / PREVIOUS]
-    # Not through a link at either name: the files there are not ours.
+    swept = [keys_dir]
+    # Not through a link at any of these names: the files there are not ours.
+    if _its_own(keys_dir / PREVIOUS):
+        swept.append(keys_dir / PREVIOUS)
     if _its_own(work):
         swept.append(work)
         if _its_own(work / _ROLLBACK):
@@ -593,7 +604,9 @@ def _finish(keys_dir: Path) -> None:
         if isinstance(entry, dict) and entry.get("kid")
     }
     previous = keys_dir / PREVIOUS
-    if previous.is_dir():
+    # Not through a link (#513): a public key there that the metadata does
+    # not refer to may be somebody else's.
+    if previous.is_dir() and _its_own(previous):
         for file in previous.iterdir():
             if file.name.endswith("_public.pem") and file.name not in referred:
                 file.unlink(missing_ok=True)
