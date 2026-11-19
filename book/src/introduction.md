@@ -57,6 +57,9 @@ an API would, and points to Authorization Code with PKCE for a real login.
   running IdP through a REST API and remove them all with one call, without
   touching the declared files:
   [Disposable test identities](guides/runtime-identities.md).
+- **An application that must follow a change of role.** A test user changes
+  when the application logs in or refreshes, with no timing in the test:
+  [Stateful identity scenarios](guides/stateful-scenarios.md).
 - **Two processes that must see the same state,** such as an app server
   and a CLI talking to the same IdP: [Two processes, one runtime state](guides/shared-runtime-store.md).
 - **A client that registers itself.** Dynamic client registration (RFC

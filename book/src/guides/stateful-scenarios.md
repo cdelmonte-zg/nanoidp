@@ -179,6 +179,12 @@ refused with `MCP_RUNTIME_STORE_NOT_SHARED`. The token tools of MCP are no
 event, as `POST /api/users/{username}/token` is none. In read-only mode
 `list_scenarios` and `get_scenario` stay available.
 
+## Recipes
+
+[nanoidp-recipes](https://github.com/cdelmonte-zg/nanoidp-recipes) holds
+scenarios as tests that run: each recipe is a declaration, its
+`settings.yaml` and `users.yaml`, and a pytest test to copy into a project.
+
 ## Good to know
 
 - **A shared store.** With `runtime.store: sqlite` the scenario is in the
