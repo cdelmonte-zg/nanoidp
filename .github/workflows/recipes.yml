@@ -28,12 +28,12 @@ permissions:
 
 jobs:
   recipes:
-    # nanoidp-recipes at the head of its pull request #1, until that is merged and tagged v2
-    uses: cdelmonte-zg/nanoidp-recipes/.github/workflows/run-recipes.yml@8fd77c895b9e69dfd1eb755d982088600ac19f13
+    # nanoidp-recipes v2
+    uses: cdelmonte-zg/nanoidp-recipes/.github/workflows/run-recipes.yml@0fa78ea435b7066a3a8a4e45f0ae100808815f6e
     with:
       # github.sha is what the other workflows test too: on a pull request,
       # the merge of its head into the base, which this repository holds
       # also for a pull request from a fork
       nanoidp-repository: ${{ github.repository }}
       nanoidp-ref: ${{ github.sha }}
-      recipes-ref: 8fd77c895b9e69dfd1eb755d982088600ac19f13
+      recipes-ref: 0fa78ea435b7066a3a8a4e45f0ae100808815f6e  # v2
