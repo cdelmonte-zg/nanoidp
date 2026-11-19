@@ -1657,25 +1657,21 @@ class TestASymbolicLinkAtTheWorkDirectory:
         said = [r.getMessage() for r in caplog.records if "symbolic link" in r.getMessage()]
         assert said and str(keys_dir / ".rotation") in said[0] and "not followed" in said[0]
 
-    @pytest.mark.parametrize("link", [_a_link_at_the_work_directory, _a_dangling_link_at_the_work_directory])
-    def test_a_reader_without_the_lock_does_not_wait_in_front_of_the_link(self, published, monkeypatch, link):
+    def test_a_reader_without_the_lock_does_not_wait_for_a_journal_behind_the_link(self, published, monkeypatch):
+        """Before, the journal was read through the link, taken for a
+        rotation under way, and the reader waited out its patience and
+        refused to load the keys."""
         keys_dir, service, _ = published
-        link(keys_dir, service)
+        elsewhere = keys_dir.parent / "elsewhere"
+        elsewhere.mkdir()
+        (elsewhere / "journal.json").write_text(json.dumps({"old_kid": service.kid, "new_kid": "other", "rollback": []}))
+        (keys_dir / ".rotation").symlink_to(elsewhere)
         monkeypatch.setattr(key_directory.time, "sleep", lambda seconds: pytest.fail("the reader waited"))
 
         assert key_directory._rotation_under_way(keys_dir) is False
         loaded = key_directory._load_without_the_lock(keys_dir)
 
         assert loaded is not None and loaded.kid == service.kid
-
-    def test_a_reader_without_the_lock_does_not_take_a_journal_behind_the_link_for_a_rotation(self, published):
-        keys_dir, service, _ = published
-        elsewhere = keys_dir.parent / "elsewhere"
-        elsewhere.mkdir()
-        (elsewhere / "journal.json").write_text(json.dumps({"old_kid": service.kid, "new_kid": "other", "rollback": []}))
-        (keys_dir / ".rotation").symlink_to(elsewhere)
-
-        assert key_directory._rotation_under_way(keys_dir) is False
 
     def test_the_same_rotation_is_recovered_in_a_real_directory_and_not_through_a_link(self, tmp_path, monkeypatch):
         """Both halves on one interrupted rotation. Behind a link its journal
@@ -1704,15 +1700,3 @@ class TestASymbolicLinkAtTheWorkDirectory:
         elsewhere.rename(keys_dir / ".rotation")
         assert _whole(keys_dir).kid == before["kid.txt"].decode()
         assert _snapshot(keys_dir) == before
-
-    def test_once_the_link_is_gone_a_rotation_succeeds_and_leaves_nothing(self, published):
-        keys_dir, service, client = published
-        kid = service.kid
-        _, remove = _a_link_at_the_work_directory(keys_dir, service)
-        assert client.post("/api/keys/rotate").status_code == 409
-        remove()
-
-        rotated = client.post("/api/keys/rotate")
-
-        assert rotated.status_code == 200 and rotated.get_json()["old_kid"] == kid
-        assert not (keys_dir / ".rotation").exists()

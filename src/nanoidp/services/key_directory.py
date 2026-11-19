@@ -492,8 +492,9 @@ def _recover(keys_dir: Path) -> None:
         # rotation an earlier version made through a link and did not end
         # is not recovered, and the operator looks at the keys (#507).
         logger.warning(
-            "A symbolic link at %s is not followed: no key rotation is recovered through it, "
-            "and none is made until it is removed",
+            "A symbolic link at %s is not followed: no key rotation is made while it is there, and one that "
+            "was interrupted through it is not recovered. To have it recovered, put the directory the link "
+            "points at in its place; otherwise remove the link",
             work,
         )
         return
