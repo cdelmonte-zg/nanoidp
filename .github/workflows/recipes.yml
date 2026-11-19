@@ -1,0 +1,39 @@
+# Runs the recipes of cdelmonte-zg/nanoidp-recipes against the code of this
+# checkout, so a change here that breaks one shows as a check before it is
+# merged. The procedure lives in that repository, as a reusable workflow;
+# here it is only called.
+#
+# The workflow and the recipes are pinned to ONE commit of that repository:
+# the `@<sha>` of `uses` and `recipes-ref` below must be the same value, and
+# move together. Not a required check: a deliberate change of behaviour here
+# is followed by a change to a recipe there, and then by a new pin.
+name: Recipes
+
+on:
+  pull_request:
+    paths:
+      - "src/nanoidp/**"
+      - "pyproject.toml"
+      - ".github/workflows/recipes.yml"
+  push:
+    branches: [main]
+    paths:
+      - "src/nanoidp/**"
+      - "pyproject.toml"
+      - ".github/workflows/recipes.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  recipes:
+    # nanoidp-recipes v2
+    uses: cdelmonte-zg/nanoidp-recipes/.github/workflows/run-recipes.yml@0fa78ea435b7066a3a8a4e45f0ae100808815f6e
+    with:
+      # github.sha is what the other workflows test too: on a pull request,
+      # the merge of its head into the base, which this repository holds
+      # also for a pull request from a fork
+      nanoidp-repository: ${{ github.repository }}
+      nanoidp-ref: ${{ github.sha }}
+      recipes-ref: 0fa78ea435b7066a3a8a4e45f0ae100808815f6e  # v2
