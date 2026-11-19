@@ -44,7 +44,7 @@ readonly mode, and the exposure warnings, see the
 | `remove_scenario` | Remove a scenario and the user it created |
 | `reset_runtime_identities` | Remove every runtime user and client and every stateful scenario, and end the browser sessions at `/authorize` |
 | `get_keys_info` | Get signing key info (active kid, previous keys) |
-| `rotate_keys` | Rotate signing keys (old key stays valid for verification). A refusal answers `success: false` with a fixed `error` and a `kind`, the same as `POST /api/keys/rotate`: `external_keys_not_rotatable`, `keys_directory_not_writable` (also for something in the way of what a rotation writes in the keys directory: a file at `previous` or `.rotation`, a directory under the name of `keys.json`, `idp-cert.pem` or a key in `previous/`), `lock_namespace_unavailable`, `lock_timeout` (worth a retry) or `lock_unsupported` |
+| `rotate_keys` | Rotate signing keys (old key stays valid for verification). A refusal answers `success: false` with a fixed `error` and a `kind`, the same as `POST /api/keys/rotate`: `external_keys_not_rotatable`, `keys_directory_not_writable` (also for something in the way of what a rotation writes in the keys directory: a file or a symbolic link at `previous` or `.rotation`, a directory under the name of `keys.json`, `idp-cert.pem` or a key in `previous/`), `lock_namespace_unavailable`, `lock_timeout` (worth a retry) or `lock_unsupported` |
 
 ## Tool arguments and the domain models
 

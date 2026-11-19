@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Migration notes
+
+- **A keys directory with a symbolic link at `.rotation` no longer starts
+  a server** (#507). The link is not followed any more, so a rotation that
+  was interrupted through it cannot be told from none, and the keys are
+  not loaded while it is there. This also refuses an installation that
+  started until now with such a link and whole keys. Before changing the
+  link, check the keys and whether a rotation was interrupted: if one was
+  (an earlier version died while rotating), put the directory the link
+  points at in its place, as `<keys_dir>/.rotation`, and start again, and
+  it is recovered as ever; if none was, remove the link.
+- **A rotation is refused while `previous/` in the keys directory is a
+  symbolic link** (#513). The previous public keys are still read through
+  the link, so tokens issued before the last rotation go on verifying,
+  and the target counts as much as the keys directory: whoever can
+  replace a public key there changes the key its `kid` is verified with.
+  To rotate again and keep verifying those tokens, replace the link with
+  a real directory that holds the public keys `keys.json` still lists.
+- **A keys directory whose `rsa_private.pem` is not the private key of its
+  `rsa_public.pem` no longer starts a server** (#507). It did, and issued
+  tokens its own published key did not verify. The message names the
+  directory and says what to do.
+
 ### Added
 
 - **Stateful identity scenarios** (#402). A scenario, armed with
@@ -34,6 +57,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A symbolic link at `.rotation` in the keys directory is not followed**
+  (#507). It was, at every start and by every rotation: a start deleted
+  the `.writing-*` files of the link's target and ran a `journal.json`
+  found there over the live keys, and a rotation answered `200` and left
+  the retired private key in the target. Now nothing is read, removed or
+  written through the link, and while it is there the keys are not
+  loaded, with the keys directory's lock or without: the start is refused
+  with a message that says what to check, and a rotation answers `409
+  keys_directory_not_writable`, as for a file at that name. The link and
+  its target stay as they are; NanoIDP does not remove the link. A
+  link at `.rotation/rollback` is not followed either: an interrupted
+  rotation is not restored through it, the live keys are not touched, and
+  the start and a rotation are refused until the directory is back.
+- **Nothing is written, swept or pruned through a symbolic link at
+  `previous/`** (#513). Taking the keys directory's lock deleted the
+  `.writing-*` files of the link's target, and a rotation wrote the
+  retired public key there and deleted every `*_public.pem` that
+  `keys.json` did not name. Now the link is read only: a rotation answers
+  `409 keys_directory_not_writable` before it writes anything, also with
+  `max_previous_keys: 0`, and the sweep and the pruning leave the target
+  alone.
+- **A server signs only with keys that are one pair** (#507). Before a
+  bundle becomes what the service signs with, loaded with the keys
+  directory's lock or without it, its private key is validated and
+  checked against its public key, both RSA. A mismatch, or a private key
+  whose own numbers do not agree, refuses the start; a running process
+  that meets it after another process's rotation keeps the keys it has
+  and logs it.
 - **A runtime user or client that was stored is answered as created**.
   After storing it, the creation looks for an identity of the other kind
   under the same name, to warn. When that look failed (the runtime store

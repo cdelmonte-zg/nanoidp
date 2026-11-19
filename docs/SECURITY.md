@@ -409,6 +409,33 @@ file at `.rotation` in particular is worth removing soon: a process that
 cannot write the directory takes it for a rotation that never ends, and
 refuses to load the keys while it is there.
 
+A symbolic link at `.rotation` is never followed, whatever it points at:
+nothing is recovered, removed or written through it. Since nothing behind
+it is looked at, a rotation that was interrupted through it cannot be told
+from none, so while the link is there the keys are not loaded, with the
+lock or without, and a process does not start; a rotation is refused in
+the same way. Check the keys and whether a rotation was interrupted before
+changing the link: if one was, put the directory the link points at in its
+place and it is recovered at the next start; if none was, remove the link.
+The same holds one level down: a rotation that was interrupted is not
+restored through a link at `.rotation/rollback`, and the process does not
+start until the rollback directory is back in its place.
+
+A symbolic link at `previous/` is read and never written through: the
+public keys `keys.json` lists are loaded from its target, so tokens issued
+before the last rotation still verify, while nothing is swept or pruned
+there and a rotation is refused until a real directory stands in its
+place. The target then counts as much as the keys directory itself:
+whoever can replace a public key there changes the key its `kid` is
+verified with.
+
+Before a process signs with the keys it loaded, it checks that
+`rsa_private.pem` is a valid RSA private key and the private key of
+`rsa_public.pem`. Files of two key
+pairs, which an interrupted rotation leaves when its work directory was
+removed by hand, are refused with a message that names the directory: the
+process does not start on them, and a running one keeps the keys it has.
+
 A keys directory that a process cannot write (a read-only mount, a volume
 owned by another user) still works for that process: it loads the published
 keys without the lock and cannot rotate them. It cannot settle an interrupted

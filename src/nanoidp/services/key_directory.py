@@ -74,7 +74,8 @@ _MODES = {PRIVATE: 0o600, PUBLIC: 0o644, CERTIFICATE: 0o644, METADATA: 0o644, MA
 
 # Where a rotation keeps what it needs to be undone or finished.
 _TEMPORARY = ".writing-"
-_WORK = ".rotation"
+WORK = ".rotation"
+_WORK = WORK
 _JOURNAL = "journal.json"
 _ROLLBACK = "rollback"
 
@@ -139,6 +140,58 @@ class KeysDirectoryCannotBeCreated(LockUnavailableError):
             f"{keys_dir} cannot be created by this process ({failure.strerror or failure})",
             kind="keys_directory_not_writable",
         )
+
+
+class RestoreNeedsItsRollback(LockUnavailableError):
+    """A rotation was interrupted before its commit, and the rollback its
+    journal names is a symbolic link (#507). The restore is not made: the
+    link is not followed, and going on without the restore would leave the
+    files of two key pairs for the caller to load. Nothing was changed, so
+    the journal, the link and its target are as they were found.
+
+    Not a ``LockNamespaceUnavailable``, on purpose: that is what
+    ``load_published`` answers by reading without the lock, and there is
+    nothing here a read could make whole. The same refusal as an obstacle
+    of #492 on the surfaces of a rotation."""
+
+    def __init__(self, keys_dir: Path, rollback: Path) -> None:
+        super().__init__(
+            f"{rollback} is a symbolic link, which is not followed: the key rotation that was interrupted in "
+            f"{keys_dir} cannot be restored from it, and no key was touched. Put the rollback directory in its place",
+            kind="keys_directory_not_writable",
+        )
+
+
+class WorkDirectoryIsALink(LockUnavailableError):
+    """A symbolic link stands at the work directory's name, and the keys
+    are not loaded while it does (#507), with the lock or without. The link
+    is not followed, so a rotation that was interrupted through it cannot be
+    told from none, and what such a rotation leaves can look whole: after
+    the public key is replaced the pair is the new one under the old kid,
+    which no look at the live files tells from a published bundle.
+
+    Not a ``LockNamespaceUnavailable``, on purpose: that is what
+    ``load_published`` answers by reading without the lock, and the reader
+    without the lock refuses for the same link. The same refusal as an
+    obstacle of #492 on the surfaces of a rotation."""
+
+    def __init__(self, keys_dir: Path, work: Path) -> None:
+        super().__init__(
+            f"{work} stands in the way of the keys in {keys_dir}: it is a symbolic link, which is not followed, so "
+            "a key rotation that was interrupted through it cannot be told from none; the keys were not touched "
+            "and are not loaded. Check the keys and whether a key rotation was interrupted before changing the "
+            "link: if one was, put the directory the link points at in its place and start again, and it is "
+            "recovered; if none was, remove the link",
+            kind="keys_directory_not_writable",
+        )
+
+
+def _require_no_link_at_the_work_directory(keys_dir: Path) -> None:
+    """Before the keys are read to be used. It stops at the link: nothing
+    behind it is looked at."""
+    work = keys_dir / _WORK
+    if not _its_own(work):
+        raise WorkDirectoryIsALink(keys_dir, work)
 
 
 def _checkpoint(step: str) -> None:
@@ -275,6 +328,30 @@ def _require_directory(keys_dir: Path, directory: Path) -> List[Path]:
         raise
 
 
+def _its_own(directory: Path) -> bool:
+    """Whether what stands at the name of a directory NanoIDP writes is
+    this keys directory's to write: a real directory, or nothing yet. A
+    symbolic link is neither. NanoIDP makes no link here, so one that is
+    there is somebody else's, and so is its target: nothing is written,
+    removed or swept through it.
+
+    At the work directory and its rollback the link is not followed at all
+    (#507): finding out what is behind it would already be following it,
+    and what is read there drives a restore. At ``previous`` it is read
+    (#513): the public keys of earlier rotations, which an instance may
+    keep elsewhere and still verify with."""
+    return not directory.is_symlink()
+
+
+def _require_no_link_at(keys_dir: Path, directory: Path, a_link_there: str = "a symbolic link, which is not followed") -> None:
+    """Before a rotation removes, probes or writes anything at the name of
+    a directory it writes: through a link all three would land in the
+    target."""
+    if not _its_own(directory):
+        a_link = NotADirectoryError(errno.ENOTDIR, a_link_there, str(directory))
+        raise KeysDirectoryNotWritable(keys_dir, a_link, obstacle=directory)
+
+
 def _require_no_directory_at(keys_dir: Path, file: Path) -> None:
     """A file is replaced or removed, and so is a link, whatever it points
     at. A directory is neither, and writing another file beside it does not
@@ -334,7 +411,12 @@ def active_kid(keys_dir: Path) -> Optional[str]:
 
 def load(keys_dir: Path) -> Optional[Bundle]:
     """The published bundle, or None when there is none. Caller holds the
-    lock, so what the marker names is whole."""
+    lock, so what the marker names is whole: the lock's recovery settled
+    whatever a rotation left, unless a link stands where its work directory
+    would be, and then nothing here can be called whole (#507). Refused
+    here, the one place both the load under the lock and the reader without
+    it come through."""
+    _require_no_link_at_the_work_directory(keys_dir)
     kid = active_kid(keys_dir)
     if kid is None:
         return None
@@ -360,7 +442,10 @@ def _rotation_under_way(keys_dir: Path) -> bool:
     rotation began; once the marker names its NEW kid the commit point is
     past, every live file is NEW's, and what is left is tidying up, which a
     reader need not wait for (and which, in a directory nobody can write,
-    nobody would ever do)."""
+    nobody would ever do). A symbolic link at the work directory's name is
+    no rotation: a journal behind it is not this directory's (#507)."""
+    if not _its_own(keys_dir / _WORK):
+        return False
     try:
         journal = json.loads((keys_dir / _WORK / _JOURNAL).read_text(encoding="utf-8"))
     except FileNotFoundError:
@@ -420,6 +505,11 @@ def rotate(keys_dir: Path, new: Bundle) -> None:
     # left of an earlier attempt is litter. It goes if it can; if it cannot
     # (a file held open on Windows), it does no harm: the journal lists the
     # files THIS rollback wrote, and a restore takes nothing else from it.
+    # A link at its name is no litter of ours and is refused first (#507),
+    # and so is one at ``previous`` (#513), before the checks that follow
+    # write a probe there.
+    _require_no_link_at(keys_dir, work)
+    _require_no_link_at(keys_dir, keys_dir / PREVIOUS, "a symbolic link, which is read and never written through")
     shutil.rmtree(work, ignore_errors=True)
     # And only now, with the litter gone where it could go, what this
     # rotation writes is looked at: refused here, there is no journal.
@@ -464,6 +554,16 @@ def rotate(keys_dir: Path, new: Bundle) -> None:
 def _recover(keys_dir: Path) -> None:
     """Settle a rotation that did not reach its end. Caller holds the lock."""
     work = keys_dir / _WORK
+    if not _its_own(work):
+        # Nothing is settled through it, a journal behind it included: a
+        # rotation an earlier version made through a link and did not end
+        # is not recovered, and no load takes the keys for whole (#507).
+        logger.warning(
+            "A symbolic link at %s is not followed: no key rotation is recovered through it, and the keys are "
+            "neither loaded nor rotated while it is there",
+            work,
+        )
+        return
     if not work.exists():
         return
     try:
@@ -478,8 +578,12 @@ def _recover(keys_dir: Path) -> None:
         logger.warning("A key rotation to %s was committed and not finished: finishing it", new_kid)
         _finish_or_leave_it(keys_dir)
         return
-    logger.warning("A key rotation from %s was interrupted before its commit: restoring it", old_kid)
     rollback = work / _ROLLBACK
+    if not _its_own(rollback):
+        # Before the first live file is touched, and whatever the journal
+        # says was kept: what a restore takes is read from here.
+        raise RestoreNeedsItsRollback(keys_dir, rollback)
+    logger.warning("A key rotation from %s was interrupted before its commit: restoring it", old_kid)
     for name in _LIVE:
         _checkpoint(f"restore:{name}")
         if name in kept:
@@ -509,7 +613,16 @@ def _sweep_temporaries(keys_dir: Path) -> None:
     target. Every writer in this directory holds the lock (``crypto`` takes
     it for the external keys' certificate too), so under it a temporary
     file is nobody's, and one of them may hold a private key."""
-    for directory in (keys_dir, keys_dir / PREVIOUS, keys_dir / _WORK, keys_dir / _WORK / _ROLLBACK):
+    work = keys_dir / _WORK
+    swept = [keys_dir]
+    # Not through a link at any of these names: the files there are not ours.
+    if _its_own(keys_dir / PREVIOUS):
+        swept.append(keys_dir / PREVIOUS)
+    if _its_own(work):
+        swept.append(work)
+        if _its_own(work / _ROLLBACK):
+            swept.append(work / _ROLLBACK)
+    for directory in swept:
         if not directory.is_dir():
             continue
         for file in directory.iterdir():
@@ -528,7 +641,9 @@ def _finish(keys_dir: Path) -> None:
         if isinstance(entry, dict) and entry.get("kid")
     }
     previous = keys_dir / PREVIOUS
-    if previous.is_dir():
+    # Not through a link (#513): a public key there that the metadata does
+    # not refer to may be somebody else's.
+    if previous.is_dir() and _its_own(previous):
         for file in previous.iterdir():
             if file.name.endswith("_public.pem") and file.name not in referred:
                 file.unlink(missing_ok=True)
