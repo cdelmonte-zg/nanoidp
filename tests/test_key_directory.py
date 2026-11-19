@@ -1597,6 +1597,19 @@ class TestASymbolicLinkAtTheWorkDirectory:
         assert _what_is_in(target) == there
         assert _snapshot(keys_dir) == keys and service.kid == keys["kid.txt"].decode()
 
+    @pytest.mark.parametrize("link", [_a_link_at_the_work_directory, _a_dangling_link_at_the_work_directory])
+    def test_the_log_says_it_is_a_link_whether_or_not_it_leads_anywhere(self, published, caplog, link):
+        """One rule for both: a dangling link is refused for being a link,
+        not for the ``mkdir`` that fails on it later."""
+        keys_dir, service, client = published
+        link(keys_dir, service)
+
+        with caplog.at_level(logging.WARNING):
+            client.post("/api/keys/rotate")
+
+        refusals = [r.getMessage() for r in caplog.records if "Key rotation refused" in r.getMessage()]
+        assert len(refusals) == 1 and "a symbolic link, which is not followed" in refusals[0]
+
     def test_taking_the_lock_sweeps_nothing_through_the_link(self, published):
         keys_dir, service, _ = published
         where, _ = _a_link_at_the_work_directory(keys_dir, service)
