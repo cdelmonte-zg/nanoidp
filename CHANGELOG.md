@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Migration notes
+
+- **A key rotation that an earlier version made through a symbolic link at
+  `.rotation` and did not finish is not recovered** (#507). The link is no
+  longer followed, so the journal behind it is not read. If the keys
+  directory has such a link and a process died while rotating, put the
+  directory the link points at in its place, as `<keys_dir>/.rotation`,
+  before starting this version: a real directory there is recovered as
+  ever.
+
 ### Added
 
 - **Stateful identity scenarios** (#402). A scenario, armed with
@@ -34,6 +44,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A symbolic link at `.rotation` in the keys directory is not followed**
+  (#507). It was, at every start and by every rotation: a start deleted
+  the `.writing-*` files of the link's target and ran a `journal.json`
+  found there over the live keys, and a rotation answered `200` and left
+  the retired private key in the target. Now the keys load and nothing is
+  read, removed or written through the link; a rotation answers `409
+  keys_directory_not_writable`, as for a file at that name, and the link
+  and its target stay as they are. NanoIDP does not remove the link.
 - **A runtime user or client that was stored is answered as created**.
   After storing it, the creation looks for an identity of the other kind
   under the same name, to warn. When that look failed (the runtime store

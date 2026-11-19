@@ -409,6 +409,10 @@ file at `.rotation` in particular is worth removing soon: a process that
 cannot write the directory takes it for a rotation that never ends, and
 refuses to load the keys while it is there.
 
+A symbolic link at `.rotation` is never followed, whatever it points at:
+the keys load, nothing is recovered, removed or written through the link,
+and a rotation is refused in the same way until the link is removed.
+
 A keys directory that a process cannot write (a read-only mount, a volume
 owned by another user) still works for that process: it loads the published
 keys without the lock and cannot rotate them. It cannot settle an interrupted

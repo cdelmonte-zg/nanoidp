@@ -275,6 +275,24 @@ def _require_directory(keys_dir: Path, directory: Path) -> List[Path]:
         raise
 
 
+def _its_own(directory: Path) -> bool:
+    """Whether what stands at a work directory's name is this keys
+    directory's to use: a real directory, or nothing yet. A symbolic link is
+    neither (#507), and is never followed, whatever it points at: finding
+    out what is behind it would already be following it. NanoIDP makes no
+    link here, so one that is there is somebody else's, and so is its
+    target."""
+    return not directory.is_symlink()
+
+
+def _require_no_link_at(keys_dir: Path, directory: Path) -> None:
+    """Before a rotation removes, probes or writes anything at a work
+    directory's name: through a link all three would land in the target."""
+    if not _its_own(directory):
+        a_link = NotADirectoryError(errno.ENOTDIR, "a symbolic link, which is not followed", str(directory))
+        raise KeysDirectoryNotWritable(keys_dir, a_link, obstacle=directory)
+
+
 def _require_no_directory_at(keys_dir: Path, file: Path) -> None:
     """A file is replaced or removed, and so is a link, whatever it points
     at. A directory is neither, and writing another file beside it does not
@@ -360,7 +378,10 @@ def _rotation_under_way(keys_dir: Path) -> bool:
     rotation began; once the marker names its NEW kid the commit point is
     past, every live file is NEW's, and what is left is tidying up, which a
     reader need not wait for (and which, in a directory nobody can write,
-    nobody would ever do)."""
+    nobody would ever do). A symbolic link at the work directory's name is
+    no rotation: a journal behind it is not this directory's (#507)."""
+    if not _its_own(keys_dir / _WORK):
+        return False
     try:
         journal = json.loads((keys_dir / _WORK / _JOURNAL).read_text(encoding="utf-8"))
     except FileNotFoundError:
@@ -420,6 +441,8 @@ def rotate(keys_dir: Path, new: Bundle) -> None:
     # left of an earlier attempt is litter. It goes if it can; if it cannot
     # (a file held open on Windows), it does no harm: the journal lists the
     # files THIS rollback wrote, and a restore takes nothing else from it.
+    # A link at its name is no litter of ours and is refused first (#507).
+    _require_no_link_at(keys_dir, work)
     shutil.rmtree(work, ignore_errors=True)
     # And only now, with the litter gone where it could go, what this
     # rotation writes is looked at: refused here, there is no journal.
@@ -464,6 +487,16 @@ def rotate(keys_dir: Path, new: Bundle) -> None:
 def _recover(keys_dir: Path) -> None:
     """Settle a rotation that did not reach its end. Caller holds the lock."""
     work = keys_dir / _WORK
+    if not _its_own(work):
+        # Nothing is settled through it, a journal behind it included: a
+        # rotation an earlier version made through a link and did not end
+        # is not recovered, and the operator looks at the keys (#507).
+        logger.warning(
+            "A symbolic link at %s is not followed: no key rotation is recovered through it, "
+            "and none is made until it is removed",
+            work,
+        )
+        return
     if not work.exists():
         return
     try:
@@ -509,7 +542,14 @@ def _sweep_temporaries(keys_dir: Path) -> None:
     target. Every writer in this directory holds the lock (``crypto`` takes
     it for the external keys' certificate too), so under it a temporary
     file is nobody's, and one of them may hold a private key."""
-    for directory in (keys_dir, keys_dir / PREVIOUS, keys_dir / _WORK, keys_dir / _WORK / _ROLLBACK):
+    work = keys_dir / _WORK
+    swept = [keys_dir, keys_dir / PREVIOUS]
+    # Not through a link at either name: the files there are not ours.
+    if _its_own(work):
+        swept.append(work)
+        if _its_own(work / _ROLLBACK):
+            swept.append(work / _ROLLBACK)
+    for directory in swept:
         if not directory.is_dir():
             continue
         for file in directory.iterdir():
