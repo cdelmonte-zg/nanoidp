@@ -411,7 +411,16 @@ refuses to load the keys while it is there.
 
 A symbolic link at `.rotation` is never followed, whatever it points at:
 the keys load, nothing is recovered, removed or written through the link,
-and a rotation is refused in the same way until the link is removed.
+and a rotation is refused in the same way while the link is there. The
+same holds for `.rotation/rollback`: a rotation that was interrupted is not
+restored through a link there, and the process does not start until the
+rollback directory is back in its place.
+
+Before a process signs with the keys it loaded, it checks that
+`rsa_private.pem` is the private key of `rsa_public.pem`. Files of two key
+pairs, which an interrupted rotation leaves when nothing recovers it, are
+refused with a message that names the directory: the process does not
+start on them, and a running one keeps the keys it has.
 
 A keys directory that a process cannot write (a read-only mount, a volume
 owned by another user) still works for that process: it loads the published

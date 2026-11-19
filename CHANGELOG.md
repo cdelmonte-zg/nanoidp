@@ -11,11 +11,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **A key rotation that an earlier version made through a symbolic link at
   `.rotation` and did not finish is not recovered** (#507). The link is no
-  longer followed, so the journal behind it is not read. If the keys
-  directory has such a link and a process died while rotating, put the
+  longer followed, so the journal behind it is not read, and the process
+  refuses to start on the two key pairs the rotation left. Put the
   directory the link points at in its place, as `<keys_dir>/.rotation`,
-  before starting this version: a real directory there is recovered as
-  ever.
+  and start again: a real directory there is recovered as ever.
+- **A keys directory whose `rsa_private.pem` is not the private key of its
+  `rsa_public.pem` no longer starts a server** (#507). It did, and issued
+  tokens its own published key did not verify. The message names the
+  directory and says what to do.
 
 ### Added
 
@@ -51,7 +54,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the retired private key in the target. Now the keys load and nothing is
   read, removed or written through the link; a rotation answers `409
   keys_directory_not_writable`, as for a file at that name, and the link
-  and its target stay as they are. NanoIDP does not remove the link.
+  and its target stay as they are. NanoIDP does not remove the link. A
+  link at `.rotation/rollback` is not followed either: an interrupted
+  rotation is not restored through it, the live keys are not touched, and
+  the start and a rotation are refused until the directory is back.
+- **A server signs only with keys that are one pair** (#507). Before a
+  bundle becomes what the service signs with, loaded with the keys
+  directory's lock or without it, its private key is checked against its
+  public key. A mismatch refuses the start; a running process that meets
+  it after another process's rotation keeps the keys it has and logs it.
 - **A runtime user or client that was stored is answered as created**.
   After storing it, the creation looks for an identity of the other kind
   under the same name, to warn. When that look failed (the runtime store

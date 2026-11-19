@@ -97,6 +97,24 @@ class ExternalKeysNotRotatable(ValueError):
     kind = EXTERNAL_KEYS_NOT_ROTATABLE_KIND
 
 
+class KeysAreNotOnePair(ValueError):
+    """The private key of a bundle is not the private key of its public
+    key (#507): the files of two key pairs, which is what a key rotation
+    that did not finish leaves when nothing recovers it. A service that
+    signed with them would issue tokens its own published key does not
+    verify, so none is built on them."""
+
+    def __init__(self, keys_dir: Path, kid: str) -> None:
+        work = keys_dir / ".rotation"
+        super().__init__(
+            f"{keys_dir}: rsa_private.pem is not the private key of rsa_public.pem, the key kid.txt names ({kid}). "
+            "These are the files of two key pairs, as a key rotation that did not finish leaves them, and "
+            f"nothing is signed with them. If {work} is a symbolic link, put the directory it points at in its "
+            "place and start again: the rotation is then recovered. Otherwise restore the files of one key pair, "
+            "or remove the keys to have new ones generated"
+        )
+
+
 @dataclass(frozen=True)
 class RotationRefusal:
     """What a surface answers for a rotation that was refused: the fixed
@@ -124,7 +142,8 @@ def rotation_refusal(refused: Union[ExternalKeysNotRotatable, LockUnavailableErr
         return RotationRefusal(EXTERNAL_KEYS_NOT_ROTATABLE, refused.kind, permanent=True, retryable=False)
     logger.warning("Key rotation refused: %s", refused)
     permanent = isinstance(
-        refused, (LockNamespaceUnavailable, key_directory.KeysDirectoryCannotBeCreated)
+        refused,
+        (LockNamespaceUnavailable, key_directory.KeysDirectoryCannotBeCreated, key_directory.RestoreNeedsItsRollback),
     )
     message = KEYS_DIRECTORY_NOT_WRITABLE if permanent else KEYS_DIRECTORY_LOCK_UNAVAILABLE
     return RotationRefusal(message, refused.kind, permanent=permanent, retryable=refused.retryable)
@@ -273,7 +292,10 @@ class CryptoService:
 
     def _adopt(self, bundle: "key_directory.Bundle") -> None:
         """Sign and verify with ``bundle`` from here on: one assignment, so
-        that no reader finds part of it."""
+        that no reader finds part of it. Every bundle comes through here,
+        loaded under the lock or without it, so this is where it is checked
+        to be one key pair."""
+        self._require_one_pair(bundle)
         # The retention applies as soon as the service is built, not only at
         # the next rotation (#358): keys.json lists the newest first. Only the
         # served list is trimmed: the public-key files of keys dropped here
@@ -291,6 +313,17 @@ class CryptoService:
             previous_keys=previous,
         )
         logger.info(f"Loaded {len(previous)} previous keys for JWKS")
+
+    def _require_one_pair(self, bundle: "key_directory.Bundle") -> None:
+        try:
+            private = serialization.load_pem_private_key(bundle.private_pem, password=None)
+            published = serialization.load_pem_public_key(bundle.public_pem)
+            one_pair = private.public_key().public_numbers() == published.public_numbers()  # type: ignore[union-attr]
+        except (ValueError, TypeError, AttributeError):
+            # Not a key, or not an RSA key: no pair either.
+            one_pair = False
+        if not one_pair:
+            raise KeysAreNotOnePair(self.keys_dir, bundle.kid)
 
     def _new_bundle(self, previous: Tuple["key_directory.PreviousKey", ...]) -> "key_directory.Bundle":
         """A fresh key pair with its certificate, as a bundle nobody has

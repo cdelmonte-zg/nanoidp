@@ -141,6 +141,26 @@ class KeysDirectoryCannotBeCreated(LockUnavailableError):
         )
 
 
+class RestoreNeedsItsRollback(LockUnavailableError):
+    """A rotation was interrupted before its commit, and the rollback its
+    journal names is a symbolic link (#507). The restore is not made: the
+    link is not followed, and going on without the restore would leave the
+    files of two key pairs for the caller to load. Nothing was changed, so
+    the journal, the link and its target are as they were found.
+
+    Not a ``LockNamespaceUnavailable``, on purpose: that is what
+    ``load_published`` answers by reading without the lock, and there is
+    nothing here a read could make whole. The same refusal as an obstacle
+    of #492 on the surfaces of a rotation."""
+
+    def __init__(self, keys_dir: Path, rollback: Path) -> None:
+        super().__init__(
+            f"{rollback} is a symbolic link, which is not followed: the key rotation that was interrupted in "
+            f"{keys_dir} cannot be restored from it, and no key was touched. Put the rollback directory in its place",
+            kind="keys_directory_not_writable",
+        )
+
+
 def _checkpoint(step: str) -> None:
     """A seam and nothing else: the tests put a death here, at each step in
     turn."""
@@ -512,8 +532,12 @@ def _recover(keys_dir: Path) -> None:
         logger.warning("A key rotation to %s was committed and not finished: finishing it", new_kid)
         _finish_or_leave_it(keys_dir)
         return
-    logger.warning("A key rotation from %s was interrupted before its commit: restoring it", old_kid)
     rollback = work / _ROLLBACK
+    if not _its_own(rollback):
+        # Before the first live file is touched, and whatever the journal
+        # says was kept: what a restore takes is read from here.
+        raise RestoreNeedsItsRollback(keys_dir, rollback)
+    logger.warning("A key rotation from %s was interrupted before its commit: restoring it", old_kid)
     for name in _LIVE:
         _checkpoint(f"restore:{name}")
         if name in kept:

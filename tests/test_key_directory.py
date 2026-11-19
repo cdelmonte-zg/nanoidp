@@ -39,6 +39,7 @@ from nanoidp.services.crypto import (
     KEYS_DIRECTORY_LOCK_UNAVAILABLE,
     KEYS_DIRECTORY_NOT_WRITABLE,
     CryptoService,
+    KeysAreNotOnePair,
 )
 
 _REPO = Path(__file__).resolve().parent.parent
@@ -1700,3 +1701,199 @@ class TestASymbolicLinkAtTheWorkDirectory:
         elsewhere.rename(keys_dir / ".rotation")
         assert _whole(keys_dir).kid == before["kid.txt"].decode()
         assert _snapshot(keys_dir) == before
+
+
+def _interrupted_with_two_key_pairs(keys_dir, monkeypatch):
+    """A rotation that died with the new private key over the old public
+    one, the case the journal exists for. What the directory held before,
+    and the service that was rotating."""
+    service = CryptoService(keys_dir=str(keys_dir))
+    before = _snapshot(keys_dir)
+    _die_at(monkeypatch, "live:rsa_private.pem")
+    with pytest.raises(Killed):
+        service.rotate_keys()
+    monkeypatch.undo()
+    assert _snapshot(keys_dir)["rsa_private.pem"] != before["rsa_private.pem"]
+    assert _snapshot(keys_dir)["rsa_public.pem"] == before["rsa_public.pem"]
+    return before, service
+
+
+@_NEEDS_SYMLINKS
+class TestTheKeysThatSignAreOnePair:
+    """Before a bundle becomes what a service signs with, its private key is
+    checked against its public key (#507). Not following a link at
+    ``.rotation`` leaves a rotation that was interrupted through one
+    unrecovered, and what is then in the directory is the private key of
+    one pair under the public key of another: a server that started on it
+    issued tokens its own published key does not verify."""
+
+    @pytest.fixture
+    def behind_a_link(self, tmp_path, monkeypatch):
+        """The interrupted rotation, its work directory moved behind a link."""
+        keys_dir = tmp_path / "keys"
+        before, service = _interrupted_with_two_key_pairs(keys_dir, monkeypatch)
+        (keys_dir / ".rotation").rename(tmp_path / "elsewhere")
+        (keys_dir / ".rotation").symlink_to(tmp_path / "elsewhere")
+        return keys_dir, before, service
+
+    def test_a_start_refuses_two_key_pairs_and_says_what_to_do(self, behind_a_link):
+        keys_dir, _, _ = behind_a_link
+        there = _what_is_in(keys_dir.parent / "elsewhere")
+
+        with pytest.raises(KeysAreNotOnePair) as refused:
+            CryptoService(keys_dir=str(keys_dir))
+
+        said = str(refused.value)
+        assert str(keys_dir) in said and "rsa_private.pem" in said and "rsa_public.pem" in said
+        assert "nothing is signed" in said and ".rotation" in said
+        assert _what_is_in(keys_dir.parent / "elsewhere") == there
+
+    @_NEEDS_MODE_BITS
+    def test_a_process_that_reads_without_the_lock_refuses_them_too(self, behind_a_link):
+        keys_dir, _, _ = behind_a_link
+        (keys_dir / ".nanoidp-write.lock").unlink(missing_ok=True)
+        keys_dir.chmod(0o555)
+        try:
+            with pytest.raises(LockNamespaceUnavailable):
+                with key_directory.locked(keys_dir):
+                    pass
+            with pytest.raises(KeysAreNotOnePair):
+                CryptoService(keys_dir=str(keys_dir))
+        finally:
+            keys_dir.chmod(0o755)
+
+    def test_a_running_service_does_not_adopt_them(self, behind_a_link):
+        """What a process does when a peer's marker moved: it loads, and a
+        load of two pairs is a failure it signs on through with its own."""
+        keys_dir, _, service = behind_a_link
+
+        with pytest.raises(KeysAreNotOnePair):
+            service.reloaded()
+
+    def test_one_pair_with_a_link_at_the_work_directory_loads(self, tmp_path):
+        keys_dir = tmp_path / "keys"
+        service = CryptoService(keys_dir=str(keys_dir))
+        _a_link_at_the_work_directory(keys_dir, service)
+
+        loaded = CryptoService(keys_dir=str(keys_dir))
+
+        assert (loaded.kid, loaded.priv_pem, loaded.pub_pem) == (service.kid, service.priv_pem, service.pub_pem)
+
+    def test_the_directory_put_back_is_recovered_and_then_loads(self, behind_a_link):
+        """What the refusal tells the operator to do."""
+        keys_dir, before, _ = behind_a_link
+        (keys_dir / ".rotation").unlink()
+        (keys_dir.parent / "elsewhere").rename(keys_dir / ".rotation")
+
+        assert _whole(keys_dir).kid == before["kid.txt"].decode()
+        assert _snapshot(keys_dir) == before
+
+    def test_a_key_that_cannot_be_read_as_one_is_refused_the_same_way(self, tmp_path):
+        keys_dir = tmp_path / "keys"
+        CryptoService(keys_dir=str(keys_dir))
+        (keys_dir / "rsa_public.pem").write_bytes(b"not a key")
+
+        with pytest.raises(KeysAreNotOnePair):
+            CryptoService(keys_dir=str(keys_dir))
+
+    def test_a_rotation_still_puts_such_a_directory_right(self, behind_a_link):
+        """The service that was rotating signs with its own pair, and a
+        rotation publishes a whole bundle over whatever is there."""
+        keys_dir, _, service = behind_a_link
+        (keys_dir / ".rotation").unlink()
+
+        service.rotate_keys()
+
+        assert _whole(keys_dir).kid == service.kid
+
+
+@_NEEDS_SYMLINKS
+class TestARestoreNeverReadsItsRollbackThroughALink:
+    """The rollback is where a recovery takes the live keys from. When the
+    journal asks for a restore and ``rollback`` is a symbolic link, the
+    recovery stops before it changes a live file (#507): going on without
+    the restore would leave two key pairs, and going on with it would
+    install whatever the link points at."""
+
+    @pytest.fixture
+    def rollback_behind_a_link(self, tmp_path, monkeypatch):
+        keys_dir = tmp_path / "keys"
+        before, service = _interrupted_with_two_key_pairs(keys_dir, monkeypatch)
+        (keys_dir / ".rotation" / "rollback").rename(tmp_path / "elsewhere")
+        (keys_dir / ".rotation" / "rollback").symlink_to(tmp_path / "elsewhere")
+        return keys_dir, before, service
+
+    @staticmethod
+    def _state(keys_dir):
+        rollback = keys_dir / ".rotation" / "rollback"
+        return (
+            _snapshot(keys_dir),
+            (keys_dir / ".rotation" / "journal.json").read_bytes(),
+            rollback.is_symlink() and os.readlink(rollback),
+            _what_is_in(keys_dir.parent / "elsewhere"),
+        )
+
+    def test_taking_the_lock_stops_before_any_live_file_changes(self, rollback_behind_a_link):
+        keys_dir, before, _ = rollback_behind_a_link
+        state = self._state(keys_dir)
+
+        with pytest.raises(key_directory.RestoreNeedsItsRollback) as refused:
+            with key_directory.locked(keys_dir):
+                pytest.fail("the caller was let in")
+
+        assert self._state(keys_dir) == state and state[0] != before
+        said = str(refused.value)
+        assert str(keys_dir / ".rotation" / "rollback") in said and "symbolic link" in said
+
+    def test_a_start_fails_on_it_and_reads_nothing_around_the_lock(self, rollback_behind_a_link, monkeypatch):
+        """Not one of the failures ``load_published`` answers by reading
+        without the lock: that would end in two key pairs, said as a
+        rotation nobody can settle."""
+        keys_dir, _, _ = rollback_behind_a_link
+        state = self._state(keys_dir)
+        monkeypatch.setattr(key_directory, "_load_without_the_lock", lambda keys_dir: pytest.fail("read without the lock"))
+
+        with pytest.raises(key_directory.RestoreNeedsItsRollback):
+            CryptoService(keys_dir=str(keys_dir))
+
+        assert self._state(keys_dir) == state
+
+    def test_a_rotation_is_refused_as_for_any_obstacle(self, rollback_behind_a_link, app, caplog):
+        from nanoidp.services import crypto as crypto_module
+
+        keys_dir, _, service = rollback_behind_a_link
+        crypto_module.publish_crypto_service(service)
+        state = self._state(keys_dir)
+
+        with caplog.at_level(logging.WARNING):
+            response = app.test_client().post("/api/keys/rotate")
+
+        assert response.status_code == 409 and "Retry-After" not in response.headers
+        assert response.get_json() == _REFUSED
+        assert self._state(keys_dir) == state
+        assert any("Key rotation refused" in r.getMessage() and "rollback" in r.getMessage() for r in caplog.records)
+
+    def test_with_the_rollback_put_back_the_restore_is_made(self, rollback_behind_a_link):
+        keys_dir, before, _ = rollback_behind_a_link
+        (keys_dir / ".rotation" / "rollback").unlink()
+        (keys_dir.parent / "elsewhere").rename(keys_dir / ".rotation" / "rollback")
+
+        assert _whole(keys_dir).kid == before["kid.txt"].decode()
+        assert _snapshot(keys_dir) == before
+
+    def test_a_rotation_that_was_committed_needs_no_rollback_and_is_finished(self, tmp_path, monkeypatch):
+        """No restore, so nothing is read from the rollback: the link is
+        removed with the work directory, and its target is left alone."""
+        keys_dir = tmp_path / "keys"
+        service = CryptoService(keys_dir=str(keys_dir))
+        _die_at(monkeypatch, "marker:committed")
+        with pytest.raises(Killed):
+            service.rotate_keys()
+        monkeypatch.undo()
+        new_kid = (keys_dir / "kid.txt").read_text()
+        (keys_dir / ".rotation" / "rollback").rename(tmp_path / "elsewhere")
+        (keys_dir / ".rotation" / "rollback").symlink_to(tmp_path / "elsewhere")
+        there = _what_is_in(tmp_path / "elsewhere")
+
+        assert _whole(keys_dir).kid == new_kid
+        assert _what_is_in(tmp_path / "elsewhere") == there
