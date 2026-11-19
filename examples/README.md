@@ -45,3 +45,10 @@ Each preset is designed as a starting point. You can:
 2. Add `users.yaml` with your test users
 3. Add `settings.yaml` with OAuth/SAML settings
 4. Add a `README.md` with integration instructions
+
+## Recipes for stateful scenarios
+
+The presets here are configurations for an integration. Tests that run a
+[stateful identity scenario](https://cdelmonte-zg.github.io/nanoidp/guides/stateful-scenarios.html),
+each with its own configuration, live in a repository of their own:
+[nanoidp-recipes](https://github.com/cdelmonte-zg/nanoidp-recipes).

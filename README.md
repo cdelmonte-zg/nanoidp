@@ -104,6 +104,8 @@ The full documentation lives at
 
 - [Requesting tokens](https://cdelmonte-zg.github.io/nanoidp/guides/token-requests.html): curl examples for every grant, introspection, revocation
 - [Disposable test identities](https://cdelmonte-zg.github.io/nanoidp/guides/runtime-identities.html): users and clients for one CI run, over `/api/runtime`
+- [Stateful identity scenarios](https://cdelmonte-zg.github.io/nanoidp/guides/stateful-scenarios.html): a test user that changes during a test, in answer to the application's own protocol calls (3.6.0 and later)
+- [Recipes](https://github.com/cdelmonte-zg/nanoidp-recipes): runnable scenario tests in a repository of their own, each with its configuration, to take into a project
 - [Dynamic client registration](https://cdelmonte-zg.github.io/nanoidp/guides/dynamic-client-registration.html): RFC 7591/7592 for a client that was handed only a server URL
 - [Client ID metadata documents](https://cdelmonte-zg.github.io/nanoidp/guides/client-metadata-documents.html): a `client_id` that is a URL, and what the server will and will not fetch
 - [MCP workflow](https://cdelmonte-zg.github.io/nanoidp/guides/MCP_WORKFLOW.html): drive NanoIDP from Claude Code or any MCP host
