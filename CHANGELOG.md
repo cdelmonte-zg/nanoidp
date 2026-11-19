@@ -80,9 +80,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   alone.
 - **A server signs only with keys that are one pair** (#507). Before a
   bundle becomes what the service signs with, loaded with the keys
-  directory's lock or without it, its private key is checked against its
-  public key. A mismatch refuses the start; a running process that meets
-  it after another process's rotation keeps the keys it has and logs it.
+  directory's lock or without it, its private key is validated and
+  checked against its public key, both RSA. A mismatch, or a private key
+  whose own numbers do not agree, refuses the start; a running process
+  that meets it after another process's rotation keeps the keys it has
+  and logs it.
 - **A runtime user or client that was stored is answered as created**.
   After storing it, the creation looks for an identity of the other kind
   under the same name, to warn. When that look failed (the runtime store

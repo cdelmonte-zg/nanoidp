@@ -1918,6 +1918,32 @@ class TestTheKeysThatSignAreOnePair:
         said = str(refused.value)
         assert "cannot be read as an RSA key pair" in said and "two key pairs" not in said
 
+    @pytest.mark.parametrize("wrong", ["d", "dmp1"])
+    def test_a_private_key_whose_own_numbers_do_not_agree_is_refused(self, tmp_path, wrong):
+        """Its public numbers are the published key's, and the certificate
+        still matches, so nothing else stops it before the first signature,
+        which fails. Read from the files, a key is validated in full."""
+        from cryptography.hazmat.primitives.asymmetric import rsa
+
+        keys_dir = tmp_path / "keys"
+        service = CryptoService(keys_dir=str(keys_dir))
+        numbers = serialization.load_pem_private_key(service.priv_pem, password=None).private_numbers()
+        parts = {name: getattr(numbers, name) for name in ("p", "q", "d", "dmp1", "dmq1", "iqmp")}
+        parts[wrong] += 2
+        inconsistent = rsa.RSAPrivateNumbers(public_numbers=numbers.public_numbers, **parts).private_key(
+            unsafe_skip_rsa_key_validation=True
+        )
+        (keys_dir / "rsa_private.pem").write_bytes(
+            inconsistent.private_bytes(
+                serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()
+            )
+        )
+
+        with pytest.raises(KeysAreNotOnePair, match="cannot be read as an RSA key pair"):
+            CryptoService(keys_dir=str(keys_dir))
+        with pytest.raises(KeysAreNotOnePair):
+            service.reloaded()
+
     def test_a_pair_that_is_not_rsa_is_refused_too(self, tmp_path):
         from cryptography.hazmat.primitives.asymmetric import ec
 

@@ -430,7 +430,8 @@ whoever can replace a public key there changes the key its `kid` is
 verified with.
 
 Before a process signs with the keys it loaded, it checks that
-`rsa_private.pem` is the private key of `rsa_public.pem`. Files of two key
+`rsa_private.pem` is a valid RSA private key and the private key of
+`rsa_public.pem`. Files of two key
 pairs, which an interrupted rotation leaves when its work directory was
 removed by hand, are refused with a message that names the directory: the
 process does not start on them, and a running one keeps the keys it has.

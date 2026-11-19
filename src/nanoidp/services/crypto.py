@@ -103,8 +103,8 @@ def _rsa_keys(
     """The two PEMs as RSA keys, or a ValueError that says which they are
     not: keys at all, or RSA keys. ``validate`` is the consistency check of
     the private key's own numbers, which takes some twenty milliseconds:
-    for keys an operator provides, not for a comparison of public numbers
-    made under the keys directory's lock."""
+    for every key read from a file, and left out only for one this process
+    has just generated."""
     try:
         private = serialization.load_pem_private_key(
             private_pem, password=None, unsafe_skip_rsa_key_validation=not validate
@@ -291,6 +291,7 @@ class CryptoService:
         # directory's lock. The key itself is generated outside it (it takes
         # a tenth of a second or more), and only by whoever found nothing.
         bundle = key_directory.load_published(self.keys_dir)
+        generated_here = False
         if bundle is None:
             logger.info("Generating new RSA key pair...")
             candidate = self._new_bundle(previous=())
@@ -300,9 +301,9 @@ class CryptoService:
                 bundle = key_directory.load(self.keys_dir)
                 if bundle is None:
                     key_directory.publish_first(self.keys_dir, candidate)
-                    bundle = candidate
+                    bundle, generated_here = candidate, True
                     logger.info(f"Generated new key pair with KID: {bundle.kid}")
-        self._adopt(bundle)
+        self._adopt(bundle, generated_here=generated_here)
         self._repair_certificate()
 
     def _repair_certificate(self) -> None:
@@ -329,12 +330,16 @@ class CryptoService:
             self._adopt(published)
         return published.certificate_pem
 
-    def _adopt(self, bundle: "key_directory.Bundle") -> None:
+    def _adopt(self, bundle: "key_directory.Bundle", generated_here: bool = False) -> None:
         """Sign and verify with ``bundle`` from here on: one assignment, so
         that no reader finds part of it. Every bundle comes through here,
         loaded under the lock or without it, so this is where it is checked
-        to be one key pair."""
-        self._require_one_pair(bundle)
+        to be one key pair. One read from the files is validated in full:
+        a private key whose own numbers do not agree has the right public
+        numbers and fails at the first signature. One this process has just
+        generated is known to be valid, and that check, some twenty
+        milliseconds, is not made on it under the keys directory's lock."""
+        self._require_one_pair(bundle, validate=not generated_here)
         # The retention applies as soon as the service is built, not only at
         # the next rotation (#358): keys.json lists the newest first. Only the
         # served list is trimmed: the public-key files of keys dropped here
@@ -353,9 +358,9 @@ class CryptoService:
         )
         logger.info(f"Loaded {len(previous)} previous keys for JWKS")
 
-    def _require_one_pair(self, bundle: "key_directory.Bundle") -> None:
+    def _require_one_pair(self, bundle: "key_directory.Bundle", validate: bool) -> None:
         try:
-            private, published = _rsa_keys(bundle.private_pem, bundle.public_pem, "The keys", validate=False)
+            private, published = _rsa_keys(bundle.private_pem, bundle.public_pem, "The keys", validate=validate)
         except ValueError as unreadable:
             raise KeysAreNotOnePair(self.keys_dir, bundle.kid, unreadable) from unreadable
         if not _are_one_pair(private, published):
@@ -792,7 +797,7 @@ class CryptoService:
             # process that sees the new marker and wants to load it waits for
             # that lock, and by then this service has the new keys, so that
             # nobody loads and publishes a second service for this rotation.
-            self._adopt(new)
+            self._adopt(new, generated_here=True)
         old_kid = old.kid
         new_kid = new.kid
 
